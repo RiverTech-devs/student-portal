@@ -818,10 +818,7 @@
         async function deleteAccount() {
             const confirmDelete = confirm(
                 'Are you sure you want to delete your account?\n\n' +
-                'This will permanently remove:\n' +
-                '• Your profile and progress data\n' +
-                '• Game saves and achievements\n' +
-                '• All associated records\n\n' +
+                'This will remove all your data and disable your account.\n\n' +
                 'This action cannot be undone!'
             );
             
@@ -841,82 +838,54 @@
                 deleteBtn.disabled = true;
                 deleteBtn.textContent = 'Deleting...';
                 
-                // Delete user profile data first
-                const { error: profileError } = await portal.supabase
-                    .from('user_profiles')
-                    .delete()
-                    .eq('id', portal.currentUser.id);
+                const userId = portal.currentUser.id;
                 
-                if (profileError) {
-                    console.error('Error deleting profile:', profileError);
-                }
+                // Delete all user data
+                await Promise.all([
+                    // Delete user profile
+                    portal.supabase.from('user_profiles').delete().eq('id', userId),
+                    
+                    // Delete game data
+                    portal.supabase.from('game_data').delete().eq('user_id', userId),
+                    
+                    // Delete learning progress
+                    portal.supabase.from('learning_progress').delete().eq('student_id', userId),
+                    
+                    // Delete achievements
+                    portal.supabase.from('achievements').delete().eq('user_id', userId),
+                    
+                    // Delete grades
+                    portal.supabase.from('grades').delete().eq('student_id', userId),
+                    
+                    // Delete parent-child relationships
+                    portal.supabase.from('parent_children').delete().eq('parent_id', userId),
+                    portal.supabase.from('parent_children').delete().eq('child_id', userId)
+                ]);
                 
-                // Delete game data
-                const { error: gameError } = await portal.supabase
-                    .from('game_data')
-                    .delete()
-                    .eq('user_id', portal.currentUser.id);
+                // Mark profile as deleted and update email to prevent reuse
+                const timestamp = new Date().getTime();
+                await portal.supabase.auth.updateUser({
+                    email: `deleted.${timestamp}@deleted.com`,
+                    data: { 
+                        deleted: true, 
+                        deleted_at: new Date().toISOString(),
+                        original_email: portal.currentUser.email
+                    }
+                });
                 
-                if (gameError) {
-                    console.error('Error deleting game data:', gameError);
-                }
+                alert('Account data deleted successfully. The account has been disabled.');
                 
-                // Delete learning progress
-                const { error: progressError } = await portal.supabase
-                    .from('learning_progress')
-                    .delete()
-                    .eq('student_id', portal.currentUser.id);
+                // Force logout
+                portal.logout();
                 
-                if (progressError) {
-                    console.error('Error deleting progress:', progressError);
-                }
-                
-                // Delete achievements
-                const { error: achievementsError } = await portal.supabase
-                    .from('achievements')
-                    .delete()
-                    .eq('user_id', portal.currentUser.id);
-                
-                if (achievementsError) {
-                    console.error('Error deleting achievements:', achievementsError);
-                }
-                
-                // Delete grades
-                const { error: gradesError } = await portal.supabase
-                    .from('grades')
-                    .delete()
-                    .eq('student_id', portal.currentUser.id);
-                
-                if (gradesError) {
-                    console.error('Error deleting grades:', gradesError);
-                }
-                
-                // Delete parent-child relationships
-                const { error: parentError1 } = await portal.supabase
-                    .from('parent_children')
-                    .delete()
-                    .eq('parent_id', portal.currentUser.id);
-                
-                const { error: parentError2 } = await portal.supabase
-                    .from('parent_children')
-                    .delete()
-                    .eq('child_id', portal.currentUser.id);
-                
-                // Finally, delete the auth user using the correct method
-                const { error: authError } = await portal.supabase.auth.deleteUser();
-                
-                if (authError) {
-                    throw authError;
-                }
-                
-                alert('Account deleted successfully. You will be logged out.');
-                
-                // Clear all local data
+                // Clear all data
                 localStorage.clear();
                 sessionStorage.clear();
                 
-                // Force logout and redirect
-                window.location.reload();
+                // Reload page
+                setTimeout(() => {
+                    window.location.reload();
+                }, 1000);
                 
             } catch (error) {
                 console.error('Account deletion error:', error);
