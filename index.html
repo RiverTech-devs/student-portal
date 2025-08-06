@@ -290,6 +290,11 @@
                                 <option value="12">12th Grade</option>
                             </select>
                         </div>
+                        <div class="form-group" id="child-email-group" style="display:none;">
+                            <label for="child-email">Child's Email Address</label>
+                            <input type="email" id="child-email" placeholder="Enter your child's registered email">
+                            <small style="color: #666; font-size: 12px;">Enter the email address your child used to register their student account</small>
+                        </div>
                         <button type="submit" class="btn btn-primary" id="register-btn">Register</button>
                         <button type="button" class="btn btn-secondary" onclick="showLoginForm()">Back to Login</button>
                     </form>
@@ -444,6 +449,36 @@
 
                 document.getElementById('login-form').addEventListener('submit', (e) => this.handleLogin(e));
                 document.getElementById('register-form').addEventListener('submit', (e) => this.handleRegister(e));
+
+                // Handle account type changes for showing/hiding fields
+                document.getElementById('reg-usertype').addEventListener('change', (e) => {
+                    const userType = e.target.value;
+                    const isStudent = userType === 'student';
+                    const isParent = userType === 'parent';
+                    
+                    // Show/hide grade level for students
+                    const gradeGroup = document.getElementById('grade-group');
+                    if (gradeGroup) gradeGroup.style.display = isStudent ? 'block' : 'none';
+                    
+                    // Show/hide child email for parents
+                    const childEmailGroup = document.getElementById('child-email-group');
+                    if (childEmailGroup) childEmailGroup.style.display = isParent ? 'block' : 'none';
+                    
+                    // Set required fields
+                    const gradeField = document.getElementById('reg-grade');
+                    const childEmailField = document.getElementById('child-email');
+                    
+                    if (isStudent) {
+                        if (gradeField) gradeField.required = true;
+                        if (childEmailField) childEmailField.required = false;
+                    } else if (isParent) {
+                        if (gradeField) gradeField.required = false;
+                        if (childEmailField) childEmailField.required = true;
+                    } else {
+                        if (gradeField) gradeField.required = false;
+                        if (childEmailField) childEmailField.required = false;
+                    }
+                });
             }
 
             async initializeSupabase() {
@@ -552,6 +587,7 @@
 
                     if (authError) throw authError;
 
+                    // Create user profile
                     const { error: profileError } = await this.supabase
                         .from('user_profiles')
                         .insert({
@@ -562,6 +598,39 @@
                             user_type: userType,
                             grade_level: userType === 'student' ? grade : null
                         });
+                    
+                    if (profileError) throw profileError;
+                    
+                    // If parent account, link to child
+                    if (userType === 'parent') {
+                        const childEmail = document.getElementById('child-email').value;
+                        if (childEmail) {
+                            // Find child user by email
+                            const { data: childUser, error: childError } = await this.supabase
+                                .from('user_profiles')
+                                .select('id')
+                                .eq('id', (await this.supabase.auth.admin.getUserByEmail(childEmail)).data?.user?.id)
+                                .single();
+                    
+                            if (childUser) {
+                                // Create parent-child relationship
+                                const { error: linkError } = await this.supabase
+                                    .from('parent_children')
+                                    .insert({
+                                        parent_id: authData.user.id,
+                                        child_id: childUser.id,
+                                        relationship: 'parent'
+                                    });
+                                
+                                if (linkError) {
+                                    console.error('Could not link parent to child:', linkError);
+                                    // Don't fail registration, just log the error
+                                }
+                            } else {
+                                console.log('Child account not found with that email');
+                            }
+                        }
+                    }
 
                     if (profileError) throw profileError;
 
