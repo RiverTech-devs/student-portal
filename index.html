@@ -618,6 +618,7 @@
                         .from('user_profiles')
                         .insert({
                             id: authData.user.id,
+                            email: email, // Add email to profile
                             username: username,
                             first_name: firstName,
                             last_name: lastName,
@@ -867,43 +868,164 @@
             
             async loadLinkedChildren() {
                 try {
+                    const childrenListDiv = document.getElementById('children-list');
+                    if (!childrenListDiv) return;
+                    
                     // First, try to get linked children from parent_child_links table
                     const { data: links, error: linksError } = await this.supabase
                         .from('parent_child_links')
                         .select('child_id')
                         .eq('parent_id', this.currentUser.id);
                     
-                    const childrenListDiv = document.getElementById('children-list');
-                    if (!childrenListDiv) return;
+                    // Also check for pending children emails stored during registration
+                    let pendingEmails = [];
+                    if (this.userProfile && this.userProfile.parent_email) {
+                        // We stored children emails in parent_email field (we should rename this field later)
+                        pendingEmails = this.userProfile.parent_email.split(',').map(e => e.trim()).filter(e => e.length > 0);
+                    }
                     
-                    if (!links || links.length === 0) {
-                        childrenListDiv.innerHTML = `
+                    let htmlContent = '';
+                    
+                    // Show linked children
+                    if (links && links.length > 0) {
+                        // Get children's profiles
+                        const childIds = links.map(link => link.child_id);
+                        const { data: children, error: childrenError } = await this.supabase
+                            .from('user_profiles')
+                            .select('*')
+                            .in('id', childIds);
+                        
+                        if (children && children.length > 0) {
+                            htmlContent += '<h5>Linked Children:</h5>';
+                            htmlContent += children.map(child => `
+                                <div style="padding: 10px; border: 1px solid #28a745; background: #d4edda; border-radius: 8px; margin-bottom: 10px; cursor: pointer;"
+                                     onclick="portal.viewChildDetails('${child.id}')">
+                                    <strong>${child.first_name} ${child.last_name}</strong>
+                                    <span style="float: right; color: #155724;">Grade ${child.grade_level || 'N/A'}</span>
+                                    <br>
+                                    <small style="color: #155724;">${child.username} ✓ Linked</small>
+                                </div>
+                            `).join('');
+                        }
+                    }
+                    
+                    // Show pending children (emails entered but not yet linked)
+                    if (pendingEmails.length > 0) {
+                        htmlContent += '<h5 style="margin-top: 15px;">Pending Children (awaiting account creation):</h5>';
+                        for (const email of pendingEmails) {
+                            // Check if this email has an account
+                            const { data: profiles, error } = await this.supabase
+                                .from('user_profiles')
+                                .select('*')
+                                .eq('email', email)
+                                .single();
+                            
+                            if (profiles) {
+                                // Account exists but not linked
+                                htmlContent += `
+                                    <div style="padding: 10px; border: 1px solid #ffc107; background: #fff3cd; border-radius: 8px; margin-bottom: 10px;">
+                                        <strong>${profiles.first_name} ${profiles.last_name}</strong>
+                                        <br>
+                                        <small style="color: #856404;">${email} - Account exists</small>
+                                        <button class="btn btn-sm" style="float: right; padding: 4px 8px; font-size: 12px; background: #ffc107;" 
+                                                onclick="portal.autoLinkChild('${profiles.id}', '${email}')">
+                                            Link Now
+                                        </button>
+                                    </div>
+                                `;
+                            } else {
+                                // No account yet
+                                htmlContent += `
+                                    <div style="padding: 10px; border: 1px solid #dc3545; background: #f8d7da; border-radius: 8px; margin-bottom: 10px;">
+                                        <small style="color: #721c24;">${email} - No account yet</small>
+                                        <button class="btn btn-sm" style="float: right; padding: 4px 8px; font-size: 12px; background: #dc3545; color: white;" 
+                                                onclick="portal.removePendingEmail('${email}')">
+                                            Remove
+                                        </button>
+                                    </div>
+                                `;
+                            }
+                        }
+                    }
+                    
+                    if (!htmlContent) {
+                        htmlContent = `
                             <p>No children linked yet.</p>
                             <small>Click "Link Child Account" to connect your children's accounts.</small>
                         `;
-                        return;
                     }
                     
-                    // Get children's profiles
-                    const childIds = links.map(link => link.child_id);
-                    const { data: children, error: childrenError } = await this.supabase
-                        .from('user_profiles')
-                        .select('*')
-                        .in('id', childIds);
+                    childrenListDiv.innerHTML = htmlContent;
                     
-                    if (children && children.length > 0) {
-                        childrenListDiv.innerHTML = children.map(child => `
-                            <div style="padding: 10px; border: 1px solid #dee2e6; border-radius: 8px; margin-bottom: 10px; cursor: pointer;"
-                                 onclick="portal.viewChildDetails('${child.id}')">
-                                <strong>${child.first_name} ${child.last_name}</strong>
-                                <span style="float: right; color: #666;">Grade ${child.grade_level || 'N/A'}</span>
-                                <br>
-                                <small style="color: #666;">${child.username}</small>
-                            </div>
-                        `).join('');
-                    }
                 } catch (error) {
                     console.error('Error loading children:', error);
+                    childrenListDiv.innerHTML = '<p>Error loading children. Please refresh the page.</p>';
+                }
+            }
+
+            async autoLinkChild(childId, childEmail) {
+                try {
+                    // Create the link in parent_child_links table
+                    const { data, error } = await this.supabase
+                        .from('parent_child_links')
+                        .insert({
+                            parent_id: this.currentUser.id,
+                            child_id: childId
+                        });
+                    
+                    if (error) {
+                        if (error.code === '23505') { // Unique violation
+                            alert('This child is already linked to your account.');
+                        } else {
+                            throw error;
+                        }
+                    } else {
+                        alert('Child account linked successfully!');
+                        
+                        // Remove this email from pending list
+                        await this.removePendingEmail(childEmail, false);
+                        
+                        // Reload the children list
+                        await this.loadLinkedChildren();
+                    }
+                } catch (error) {
+                    console.error('Error linking child:', error);
+                    alert('Unable to link child account. Please try again.');
+                }
+            }
+            
+            async removePendingEmail(email, showConfirm = true) {
+                if (showConfirm && !confirm('Remove this email from pending children?')) {
+                    return;
+                }
+                
+                try {
+                    // Get current pending emails
+                    let pendingEmails = [];
+                    if (this.userProfile && this.userProfile.parent_email) {
+                        pendingEmails = this.userProfile.parent_email.split(',').map(e => e.trim()).filter(e => e.length > 0);
+                    }
+                    
+                    // Remove the specified email
+                    pendingEmails = pendingEmails.filter(e => e !== email);
+                    
+                    // Update the profile
+                    const { error } = await this.supabase
+                        .from('user_profiles')
+                        .update({ 
+                            parent_email: pendingEmails.join(', ')
+                        })
+                        .eq('id', this.currentUser.id);
+                    
+                    if (!error) {
+                        // Update local profile
+                        this.userProfile.parent_email = pendingEmails.join(', ');
+                        
+                        // Reload the children list
+                        await this.loadLinkedChildren();
+                    }
+                } catch (error) {
+                    console.error('Error removing pending email:', error);
                 }
             }
             
