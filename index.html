@@ -880,20 +880,22 @@
                     // Also check for pending children emails stored during registration
                     let pendingEmails = [];
                     if (this.userProfile && this.userProfile.parent_email) {
-                        // We stored children emails in parent_email field (we should rename this field later)
+                        // We stored children emails in parent_email field
                         pendingEmails = this.userProfile.parent_email.split(',').map(e => e.trim()).filter(e => e.length > 0);
+                        console.log('Pending emails from registration:', pendingEmails);
                     }
                     
                     let htmlContent = '';
+                    let linkedChildIds = [];
                     
                     // Show linked children
                     if (links && links.length > 0) {
                         // Get children's profiles
-                        const childIds = links.map(link => link.child_id);
+                        linkedChildIds = links.map(link => link.child_id);
                         const { data: children, error: childrenError } = await this.supabase
                             .from('user_profiles')
                             .select('*')
-                            .in('id', childIds);
+                            .in('id', linkedChildIds);
                         
                         if (children && children.length > 0) {
                             htmlContent += '<h5>Linked Children:</h5>';
@@ -911,34 +913,60 @@
                     
                     // Show pending children (emails entered but not yet linked)
                     if (pendingEmails.length > 0) {
-                        htmlContent += '<h5 style="margin-top: 15px;">Pending Children (awaiting account creation):</h5>';
+                        htmlContent += '<h5 style="margin-top: 15px;">Pending Children (from registration):</h5>';
+                        
+                        // Get ALL student profiles to check against pending emails
+                        const { data: allStudents, error: studentsError } = await this.supabase
+                            .from('user_profiles')
+                            .select('*')
+                            .eq('user_type', 'student');
+                        
+                        console.log('Found students:', allStudents);
+                        
                         for (const email of pendingEmails) {
-                            // Check if this email has an account
-                            const { data: profiles, error } = await this.supabase
-                                .from('user_profiles')
-                                .select('*')
-                                .eq('email', email)
-                                .single();
+                            // Try to find a matching student profile
+                            let matchingStudent = null;
                             
-                            if (profiles) {
+                            if (allStudents) {
+                                // First try exact email match
+                                matchingStudent = allStudents.find(s => s.email && s.email.toLowerCase() === email.toLowerCase());
+                                
+                                // If no email match, try to match by username (sometimes email is used as username)
+                                if (!matchingStudent) {
+                                    const emailUsername = email.split('@')[0];
+                                    matchingStudent = allStudents.find(s => 
+                                        s.username && s.username.toLowerCase() === emailUsername.toLowerCase()
+                                    );
+                                }
+                            }
+                            
+                            // Check if already linked
+                            const isAlreadyLinked = matchingStudent && linkedChildIds.includes(matchingStudent.id);
+                            
+                            if (isAlreadyLinked) {
+                                // Skip if already linked
+                                continue;
+                            } else if (matchingStudent) {
                                 // Account exists but not linked
+                                console.log('Found matching student for', email, matchingStudent);
                                 htmlContent += `
                                     <div style="padding: 10px; border: 1px solid #ffc107; background: #fff3cd; border-radius: 8px; margin-bottom: 10px;">
-                                        <strong>${profiles.first_name} ${profiles.last_name}</strong>
+                                        <strong>${matchingStudent.first_name} ${matchingStudent.last_name}</strong>
                                         <br>
-                                        <small style="color: #856404;">${email} - Account exists</small>
-                                        <button class="btn btn-sm" style="float: right; padding: 4px 8px; font-size: 12px; background: #ffc107;" 
-                                                onclick="portal.autoLinkChild('${profiles.id}', '${email}')">
+                                        <small style="color: #856404;">${email} - Account found!</small>
+                                        <button class="btn btn-sm" style="float: right; padding: 4px 8px; font-size: 12px; background: #28a745; color: white;" 
+                                                onclick="portal.autoLinkChild('${matchingStudent.id}', '${email}')">
                                             Link Now
                                         </button>
                                     </div>
                                 `;
                             } else {
                                 // No account yet
+                                console.log('No matching student found for', email);
                                 htmlContent += `
-                                    <div style="padding: 10px; border: 1px solid #dc3545; background: #f8d7da; border-radius: 8px; margin-bottom: 10px;">
-                                        <small style="color: #721c24;">${email} - No account yet</small>
-                                        <button class="btn btn-sm" style="float: right; padding: 4px 8px; font-size: 12px; background: #dc3545; color: white;" 
+                                    <div style="padding: 10px; border: 1px solid #6c757d; background: #e9ecef; border-radius: 8px; margin-bottom: 10px;">
+                                        <small style="color: #495057;">${email} - Waiting for account creation</small>
+                                        <button class="btn btn-sm" style="float: right; padding: 4px 8px; font-size: 12px; background: #6c757d; color: white;" 
                                                 onclick="portal.removePendingEmail('${email}')">
                                             Remove
                                         </button>
@@ -1088,20 +1116,47 @@
                 }
                 
                 try {
-                    // Find child's account by email
-                    const { data: { users }, error: searchError } = await this.supabase.auth.admin.listUsers();
+                    // Search for the child's account in user_profiles
+                    const { data: profiles, error } = await this.supabase
+                        .from('user_profiles')
+                        .select('*')
+                        .or(`email.eq.${email},username.eq.${email.split('@')[0]}`)
+                        .eq('user_type', 'student')
+                        .single();
                     
-                    // Since we can't use admin API from client, we'll need to do this differently
-                    // We'll create a request that the child needs to approve
-                    alert('Link request sent! Your child needs to log in and approve the connection.');
-                    
-                    // For now, we'll store the request
-                    // In production, you'd want a proper linking system with child approval
-                    
-                    await this.loadLinkedChildren();
+                    if (profiles) {
+                        // Found the child's account - create the link
+                        await this.autoLinkChild(profiles.id, email);
+                    } else {
+                        // Try adding to pending list
+                        let pendingEmails = [];
+                        if (this.userProfile && this.userProfile.parent_email) {
+                            pendingEmails = this.userProfile.parent_email.split(',').map(e => e.trim());
+                        }
+                        
+                        if (!pendingEmails.includes(email)) {
+                            pendingEmails.push(email);
+                            
+                            const { error: updateError } = await this.supabase
+                                .from('user_profiles')
+                                .update({ 
+                                    parent_email: pendingEmails.join(', ')
+                                })
+                                .eq('id', this.currentUser.id);
+                            
+                            if (!updateError) {
+                                this.userProfile.parent_email = pendingEmails.join(', ');
+                                alert('Email added to pending list. The child needs to create their account first.');
+                            }
+                        } else {
+                            alert('This email is already in your pending list.');
+                        }
+                        
+                        await this.loadLinkedChildren();
+                    }
                 } catch (error) {
                     console.error('Error linking child account:', error);
-                    alert('Unable to link account. Make sure the email is correct.');
+                    alert('Unable to find a student account with that email. Make sure they have registered as a student.');
                 }
             }
 
