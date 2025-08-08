@@ -523,6 +523,25 @@
                 const accessToken = hashParams.get('access_token');
                 const refreshToken = hashParams.get('refresh_token');
                 const type = hashParams.get('type');
+                const error = hashParams.get('error');
+                const errorCode = hashParams.get('error_code');
+                const errorDescription = hashParams.get('error_description');
+
+                // Handle errors (like expired links)
+                if (error || errorCode) {
+                    console.log('Auth error detected:', errorCode, errorDescription);
+                    
+                    // Clear the URL hash
+                    window.history.replaceState(null, '', window.location.pathname);
+                    
+                    if (errorCode === 'otp_expired') {
+                        this.showAlert('Password reset link has expired. Please request a new one.', 'error');
+                        this.showForgotPasswordForm();
+                    } else {
+                        this.showAlert(errorDescription || 'An error occurred. Please try again.', 'error');
+                    }
+                    return;
+                }
                 
                 if (type === 'recovery' && accessToken) {
                     console.log('Password reset detected - showing reset form');
@@ -602,6 +621,12 @@
                 resetBtn.textContent = 'Updating...';
                 
                 try {
+                    // Make sure we have a session
+                    const { data: { session } } = await this.supabase.auth.getSession();
+                    if (!session) {
+                        throw new Error('No active session. Please request a new password reset link.');
+                    }
+                    
                     const { data, error } = await this.supabase.auth.updateUser({
                         password: newPassword
                     });
@@ -707,6 +732,15 @@
                     const { data: { session } } = await this.supabase.auth.getSession();
                     if (session) {
                         console.log('Session found:', session.user.email);
+
+                        // Check for pending password reset
+                        if (sessionStorage.getItem('pending_password_reset') === 'true') {
+                            console.log('Processing pending password reset');
+                            sessionStorage.removeItem('pending_password_reset');
+                            this.currentUser = session.user;
+                            this.showPasswordResetForm();
+                            return;
+                        }
                         
                         // Check if this is a recovery session
                         // Recovery sessions have specific AMR (Authentication Methods Reference) values
