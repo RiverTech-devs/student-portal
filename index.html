@@ -1373,23 +1373,36 @@
                         .single();
                     
                     if (child) {
+                        // Get real progress data
+                        const { data: progress } = await this.supabase
+                            .from('student_progress')
+                            .select('*')
+                            .eq('student_id', childId);
+                        
                         const overviewDiv = document.getElementById('children-overview');
                         if (overviewDiv) {
+                            let progressHtml = '';
+                            const subjects = ['Math Skills', 'Reading Comprehension', 'Science'];
+                            
+                            for (const subject of subjects) {
+                                const subjectProgress = progress?.find(p => p.subject === subject);
+                                const percentage = subjectProgress?.progress_percentage || 0;
+                                progressHtml += `
+                                    <p>${subject}</p>
+                                    <div class="progress-bar">
+                                        <div class="progress-fill" style="width: ${percentage}%"></div>
+                                    </div>
+                                    <small style="color: #666;">${percentage}% Complete</small>
+                                `;
+                            }
+                            
                             overviewDiv.innerHTML = `
                                 <h4>${child.first_name} ${child.last_name}</h4>
                                 <p><strong>Grade:</strong> ${child.grade_level || 'Not set'}</p>
                                 <p><strong>Username:</strong> ${child.username}</p>
                                 <hr style="margin: 15px 0;">
                                 <h5>Learning Progress</h5>
-                                <p>Math Skills</p>
-                                <div class="progress-bar">
-                                    <div class="progress-fill" style="width: 65%"></div>
-                                </div>
-                                <p>Reading Comprehension</p>
-                                <div class="progress-bar">
-                                    <div class="progress-fill" style="width: 78%"></div>
-                                </div>
-                                <p style="margin-top: 15px;"><small>More detailed analytics coming soon!</small></p>
+                                ${progressHtml}
                             `;
                         }
                     }
@@ -1413,11 +1426,7 @@
                         .select('child_id')
                         .eq('parent_id', this.currentUser.id);
                     
-                    console.log('Parent child links:', links, 'Error:', linksError);
-                    
-                    if (linksError) {
-                        throw linksError;
-                    }
+                    if (linksError) throw linksError;
                     
                     if (!links || links.length === 0) {
                         childrenSection.innerHTML = `
@@ -1434,58 +1443,85 @@
                     
                     // Get children's profiles
                     const childIds = links.map(link => link.child_id);
-                    console.log('Child IDs:', childIds);
-                    
                     const { data: children, error: childrenError } = await this.supabase
                         .from('user_profiles')
                         .select('*')
                         .in('id', childIds);
                     
-                    console.log('Children profiles:', children, 'Error:', childrenError);
-                    
-                    if (childrenError) {
-                        throw childrenError;
-                    }
+                    if (childrenError) throw childrenError;
                     
                     let htmlContent = '<h2>👨‍👩‍👧‍👦 Your Children</h2><div class="dashboard">';
                     
                     if (children && children.length > 0) {
                         for (const child of children) {
+                            // Get progress data for this child
+                            const { data: progress } = await this.supabase
+                                .from('student_progress')
+                                .select('*')
+                                .eq('student_id', child.id);
+                            
+                            // Get recent grades for this child
+                            const { data: grades } = await this.supabase
+                                .from('student_grades')
+                                .select('*')
+                                .eq('student_id', child.id)
+                                .order('date_received', { ascending: false })
+                                .limit(3);
+                            
+                            // Get game stats
+                            const { data: gameStats } = await this.supabase
+                                .from('game_scores')
+                                .select('*')
+                                .eq('student_id', child.id);
+                            
+                            const totalGamesPlayed = gameStats?.length || 0;
+                            const highScore = gameStats?.reduce((max, game) => Math.max(max, game.score), 0) || 0;
+                            
+                            // Build progress bars from real data
+                            let progressHtml = '';
+                            const subjects = ['Math Skills', 'Reading Comprehension', 'Science'];
+                            
+                            for (const subject of subjects) {
+                                const subjectProgress = progress?.find(p => p.subject === subject);
+                                const percentage = subjectProgress?.progress_percentage || 0;
+                                progressHtml += `
+                                    <p>${subject}</p>
+                                    <div class="progress-bar">
+                                        <div class="progress-fill" style="width: ${percentage}%;"></div>
+                                    </div>
+                                    <small style="color: #666;">${percentage}% Complete</small>
+                                `;
+                            }
+                            
+                            // Build grades from real data
+                            let gradesHtml = '';
+                            if (grades && grades.length > 0) {
+                                gradesHtml = '<div class="stats">';
+                                for (const grade of grades) {
+                                    gradesHtml += `
+                                        <div class="stat">
+                                            <div class="stat-value">${grade.grade}</div>
+                                            <div class="stat-label">${grade.assignment_name}</div>
+                                        </div>
+                                    `;
+                                }
+                                gradesHtml += '</div>';
+                            } else {
+                                gradesHtml = '<p style="color: #666;">No grades recorded yet</p>';
+                            }
+                            
                             htmlContent += `
                                 <div class="card">
                                     <h3>${child.first_name} ${child.last_name}</h3>
                                     <p><strong>Grade:</strong> ${child.grade_level || 'Not set'}</p>
                                     <p><strong>Username:</strong> ${child.username}</p>
+                                    <p><strong>Games Played:</strong> ${totalGamesPlayed} | <strong>High Score:</strong> ${highScore}</p>
                                     <hr style="margin: 15px 0;">
                                     <h4>📊 Progress</h4>
-                                    <p>Math Skills</p>
-                                    <div class="progress-bar">
-                                        <div class="progress-fill" style="width: ${Math.floor(Math.random() * 40) + 60}%;"></div>
-                                    </div>
-                                    <p>Reading Comprehension</p>
-                                    <div class="progress-bar">
-                                        <div class="progress-fill" style="width: ${Math.floor(Math.random() * 40) + 60}%;"></div>
-                                    </div>
-                                    <p>Science</p>
-                                    <div class="progress-bar">
-                                        <div class="progress-fill" style="width: ${Math.floor(Math.random() * 40) + 60}%;"></div>
-                                    </div>
+                                    ${progressHtml}
                                     <hr style="margin: 15px 0;">
                                     <h4>📝 Recent Grades</h4>
-                                    <div class="stats">
-                                        <div class="stat">
-                                            <div class="stat-value">A-</div>
-                                            <div class="stat-label">Math Quiz</div>
-                                        </div>
-                                        <div class="stat">
-                                            <div class="stat-value">B+</div>
-                                            <div class="stat-label">Reading Test</div>
-                                        </div>
-                                        <div class="stat">
-                                            <div class="stat-value">A</div>
-                                            <div class="stat-label">Science Lab</div>
-                                        </div>
-                                    </div>
+                                    ${gradesHtml}
                                 </div>
                             `;
                         }
