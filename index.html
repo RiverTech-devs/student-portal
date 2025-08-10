@@ -1110,27 +1110,53 @@
                 await this.loadLinkedChildren();
             }
             
-            loadStudentDashboard() {
+            async loadStudentDashboard() {
                 // Reset dashboard to student view
                 const dashboardSection = document.getElementById('dashboard-section');
                 if (!dashboardSection) return;
                 
+                const firstName = this.userProfile?.first_name || 'Student';
+                const lastName = this.userProfile?.last_name || '';
+                
+                // Get real data for this student
+                const studentId = this.currentUser.id;
+                
+                // Get progress data
+                const { data: progress } = await this.supabase
+                    .from('student_progress')
+                    .select('*')
+                    .eq('student_id', studentId);
+                
+                // Get game stats
+                const { data: gameStats } = await this.supabase
+                    .from('game_scores')
+                    .select('*')
+                    .eq('student_id', studentId);
+                
+                const totalGamesPlayed = gameStats?.length || 0;
+                const highScore = gameStats?.reduce((max, game) => Math.max(max, game.score), 0) || 0;
+                const achievements = Math.floor(totalGamesPlayed / 2); // Simple achievement calculation
+                
+                // Get progress for display
+                const mathProgress = progress?.find(p => p.subject === 'Math Skills')?.progress_percentage || 0;
+                const readingProgress = progress?.find(p => p.subject === 'Reading Comprehension')?.progress_percentage || 0;
+                
                 dashboardSection.innerHTML = `
-                    <h2>Welcome back, <span id="student-name">${this.userProfile.first_name} ${this.userProfile.last_name}</span>!</h2>
+                    <h2>Welcome back, <span id="student-name">${firstName} ${lastName}</span>!</h2>
                     <div class="dashboard">
                         <div class="card">
                             <h3>📊 Quick Stats</h3>
                             <div class="stats">
                                 <div class="stat">
-                                    <div class="stat-value" id="games-played">0</div>
+                                    <div class="stat-value" id="games-played">${totalGamesPlayed}</div>
                                     <div class="stat-label">Games Played</div>
                                 </div>
                                 <div class="stat">
-                                    <div class="stat-value" id="total-score">0</div>
+                                    <div class="stat-value" id="total-score">${highScore}</div>
                                     <div class="stat-label">High Score</div>
                                 </div>
                                 <div class="stat">
-                                    <div class="stat-value" id="achievements">0</div>
+                                    <div class="stat-value" id="achievements">${achievements}</div>
                                     <div class="stat-label">Achievements</div>
                                 </div>
                             </div>
@@ -1138,7 +1164,9 @@
                         <div class="card">
                             <h3>🎯 Recent Activity</h3>
                             <div id="recent-activity">
-                                <p>No recent activity</p>
+                                ${gameStats && gameStats.length > 0 ? 
+                                    `<p>Last played: ${gameStats[gameStats.length-1].game_name}</p>` : 
+                                    '<p>No recent activity</p>'}
                             </div>
                         </div>
                         <div class="card">
@@ -1146,12 +1174,14 @@
                             <div>
                                 <p>Math Skills</p>
                                 <div class="progress-bar">
-                                    <div class="progress-fill" style="width: 65%"></div>
+                                    <div class="progress-fill" style="width: ${mathProgress}%"></div>
                                 </div>
-                                <p>Reading Comprehension</p>
+                                <small style="color: #666;">${mathProgress}% Complete</small>
+                                <p style="margin-top: 10px;">Reading Comprehension</p>
                                 <div class="progress-bar">
-                                    <div class="progress-fill" style="width: 78%"></div>
+                                    <div class="progress-fill" style="width: ${readingProgress}%"></div>
                                 </div>
+                                <small style="color: #666;">${readingProgress}% Complete</small>
                             </div>
                         </div>
                         <div class="card">
@@ -1546,6 +1576,145 @@
                     `;
                 }
             }
+
+            async showProgressTab() {
+                const progressSection = document.getElementById('progress-section');
+                if (!progressSection) return;
+                
+                try {
+                    const studentId = this.currentUser.id;
+                    
+                    // Get progress data
+                    const { data: progress } = await this.supabase
+                        .from('student_progress')
+                        .select('*')
+                        .eq('student_id', studentId);
+                    
+                    // Get game scores
+                    const { data: gameScores } = await this.supabase
+                        .from('game_scores')
+                        .select('*')
+                        .eq('student_id', studentId)
+                        .order('played_at', { ascending: false });
+                    
+                    let progressHtml = '<h2>📈 Learning Progress</h2><div class="dashboard">';
+                    
+                    // Subject Progress Card
+                    progressHtml += '<div class="card"><h3>Subject Progress</h3>';
+                    const subjects = ['Math Skills', 'Reading Comprehension', 'Science'];
+                    
+                    for (const subject of subjects) {
+                        const subjectProgress = progress?.find(p => p.subject === subject);
+                        const percentage = subjectProgress?.progress_percentage || 0;
+                        progressHtml += `
+                            <div style="margin-bottom: 20px;">
+                                <p><strong>${subject}</strong></p>
+                                <div class="progress-bar">
+                                    <div class="progress-fill" style="width: ${percentage}%;"></div>
+                                </div>
+                                <small style="color: #666;">${percentage}% Complete</small>
+                            </div>
+                        `;
+                    }
+                    progressHtml += '</div>';
+                    
+                    // Achievements Card
+                    progressHtml += '<div class="card"><h3>🏆 Achievements</h3>';
+                    if (gameScores && gameScores.length > 0) {
+                        progressHtml += '<ul style="list-style: none; padding: 0;">';
+                        if (gameScores.length >= 1) progressHtml += '<li>🎮 First Game Played!</li>';
+                        if (gameScores.length >= 5) progressHtml += '<li>⭐ 5 Games Milestone!</li>';
+                        if (gameScores.some(g => g.score > 1000)) progressHtml += '<li>🚀 Score Over 1000!</li>';
+                        if (gameScores.some(g => g.level_reached >= 5)) progressHtml += '<li>🎯 Reached Level 5!</li>';
+                        progressHtml += '</ul>';
+                    } else {
+                        progressHtml += '<p>No achievements yet. Keep playing!</p>';
+                    }
+                    progressHtml += '</div>';
+                    
+                    progressHtml += '</div>';
+                    progressSection.innerHTML = progressHtml;
+                    
+                } catch (error) {
+                    console.error('Error loading progress:', error);
+                    progressSection.innerHTML = '<h2>📈 Progress</h2><p>Error loading progress data.</p>';
+                }
+            }
+            
+            async showGradesTab() {
+                const gradesSection = document.getElementById('grades-section');
+                if (!gradesSection) return;
+                
+                try {
+                    const studentId = this.currentUser.id;
+                    
+                    // Get grades data
+                    const { data: grades } = await this.supabase
+                        .from('student_grades')
+                        .select('*')
+                        .eq('student_id', studentId)
+                        .order('date_received', { ascending: false });
+                    
+                    let gradesHtml = '<h2>📊 Grades & Assignments</h2><div id="grades-content">';
+                    
+                    if (grades && grades.length > 0) {
+                        // Group grades by subject
+                        const gradesBySubject = {};
+                        grades.forEach(grade => {
+                            if (!gradesBySubject[grade.subject]) {
+                                gradesBySubject[grade.subject] = [];
+                            }
+                            gradesBySubject[grade.subject].push(grade);
+                        });
+                        
+                        gradesHtml += '<div class="dashboard">';
+                        
+                        for (const [subject, subjectGrades] of Object.entries(gradesBySubject)) {
+                            gradesHtml += `
+                                <div class="card">
+                                    <h3>${subject}</h3>
+                                    <table style="width: 100%; border-collapse: collapse;">
+                                        <thead>
+                                            <tr style="border-bottom: 2px solid #dee2e6;">
+                                                <th style="text-align: left; padding: 8px;">Assignment</th>
+                                                <th style="text-align: center; padding: 8px;">Grade</th>
+                                                <th style="text-align: right; padding: 8px;">Date</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                            `;
+                            
+                            subjectGrades.forEach(grade => {
+                                const date = new Date(grade.date_received).toLocaleDateString();
+                                gradesHtml += `
+                                    <tr style="border-bottom: 1px solid #dee2e6;">
+                                        <td style="padding: 8px;">${grade.assignment_name}</td>
+                                        <td style="text-align: center; padding: 8px; font-weight: bold; color: #4facfe;">
+                                            ${grade.grade}
+                                        </td>
+                                        <td style="text-align: right; padding: 8px; color: #666;">
+                                            ${date}
+                                        </td>
+                                    </tr>
+                                `;
+                            });
+                            
+                            gradesHtml += '</tbody></table></div>';
+                        }
+                        
+                        gradesHtml += '</div>';
+                    } else {
+                        gradesHtml += '<p>No grades available yet</p>';
+                    }
+                    
+                    gradesHtml += '</div>';
+                    gradesSection.innerHTML = gradesHtml;
+                    
+                } catch (error) {
+                    console.error('Error loading grades:', error);
+                    gradesSection.innerHTML = '<h2>📊 Grades</h2><p>Error loading grades data.</p>';
+                }
+            }
             
             showAddChildForm() {
                 const childrenListDiv = document.getElementById('children-list');
@@ -1636,8 +1805,11 @@
 
                 // Special handling for children tab
                 if (tabName === 'children') {
-                    console.log('Loading children tab...');
                     this.showChildrenTab();
+                } else if (tabName === 'progress') {
+                    this.showProgressTab();
+                } else if (tabName === 'grades') {
+                    this.showGradesTab();
                 }
             }
 
