@@ -438,6 +438,81 @@
                 this.init();
             }
 
+            // Enhanced loadSkillTree method
+            async loadSkillTree(subject) {
+                const container = document.getElementById('skill-tree-container');
+                if (!container) return;
+                
+                try {
+                    // Show loading state
+                    container.innerHTML = `
+                        <div style="display: flex; align-items: center; justify-content: center; height: 100%; background: #0a0a2e;">
+                            <div style="text-align: center; color: #d4af37;">
+                                <div style="margin-bottom: 20px;">🌟</div>
+                                <div>Loading ${subject} Skill Tree...</div>
+                            </div>
+                        </div>
+                    `;
+                    
+                    // Get skill tree structure from database
+                    const { data: skillTreeData, error: treeError } = await this.supabase
+                        .rpc('get_skill_tree', { subject_name: subject });
+                    
+                    if (treeError) throw treeError;
+                    
+                    // Get student's current progress
+                    const { data: progressData, error: progressError } = await this.supabase
+                        .rpc('get_student_skill_progress', { subject_name: subject });
+                    
+                    if (progressError) throw progressError;
+                    
+                    // Initialize skills if this is first time
+                    if (!progressData || Object.keys(progressData).length === 0) {
+                        await this.supabase.rpc('initialize_student_skills', { subject_name: subject });
+                        
+                        // Retry getting progress
+                        const { data: newProgress } = await this.supabase
+                            .rpc('get_student_skill_progress', { subject_name: subject });
+                        progressData = newProgress || {};
+                    }
+                    
+                    // Create iframe with subject parameter
+                    container.innerHTML = `
+                        <iframe 
+                            id="skill-tree-frame"
+                            src="ArtSkillTree.html?subject=${encodeURIComponent(subject)}"
+                            style="width: 100%; height: 100%; border: none;"
+                            frameborder="0"
+                        ></iframe>
+                    `;
+                    
+                    const iframe = document.getElementById('skill-tree-frame');
+                    iframe.onload = () => {
+                        // Send initial data to skill tree
+                        setTimeout(() => {
+                            iframe.contentWindow.postMessage({
+                                type: 'LOAD_SKILL_TREE',
+                                subject: subject,
+                                skillTreeData: skillTreeData,
+                                progress: progressData
+                            }, '*');
+                        }, 100);
+                    };
+                    
+                } catch (error) {
+                    console.error('Error loading skill tree:', error);
+                    container.innerHTML = `
+                        <div style="text-align: center; padding: 50px; color: #dc3545;">
+                            <h3>Error Loading Skill Tree</h3>
+                            <p>${error.message}</p>
+                            <button class="btn btn-primary" onclick="portal.loadSkillTree('${subject}')">
+                                Try Again
+                            </button>
+                        </div>
+                    `;
+                }
+            }
+
            init() {
                 // Check for auth callback in URL hash
                 this.handleAuthCallback();
@@ -488,6 +563,15 @@
                         }
                     });
                 }
+
+               // Set up message listener for skill tree communication
+                window.addEventListener('message', async (event) => {
+                    if (event.data.type === 'SKILL_UNLOCKED') {
+                        await this.handleSkillUnlock(event.data);
+                    } else if (event.data.type === 'REQUEST_SKILL_DATA') {
+                        await this.handleSkillDataRequest(event.data);
+                    }
+                });
             }
 
             showLoginForm() {
@@ -625,6 +709,67 @@
                 document.getElementById('reset-password-form').addEventListener('submit', (e) => this.handlePasswordReset(e));
             }
 
+            async handleSkillUnlock(data) {
+                try {
+                    console.log('Skill unlocked:', data.skillName, 'in', data.subject);
+                    
+                    // Update skill in database
+                    const { data: result, error } = await this.supabase
+                        .rpc('unlock_skill', { 
+                            subject_name: data.subject, 
+                            skill_name: data.skillName 
+                        });
+                    
+                    if (error) throw error;
+                    
+                    if (result.success) {
+                        // Update dashboard stats
+                        await this.refreshDashboardStats();
+                        
+                        // Show success notification
+                        this.showSkillUnlockNotification(data.skillName, data.subject);
+                        
+                        // Send updated progress back to skill tree
+                        const { data: newProgress } = await this.supabase
+                            .rpc('get_student_skill_progress', { subject_name: data.subject });
+                        
+                        const iframe = document.getElementById('skill-tree-frame');
+                        if (iframe) {
+                            iframe.contentWindow.postMessage({
+                                type: 'PROGRESS_UPDATED',
+                                progress: newProgress
+                            }, '*');
+                        }
+                    } else {
+                        console.error('Failed to unlock skill:', result.error);
+                    }
+                    
+                } catch (error) {
+                    console.error('Error handling skill unlock:', error);
+                }
+            }
+        
+            async handleSkillDataRequest(data) {
+                try {
+                    const { data: skillTreeData } = await this.supabase
+                        .rpc('get_skill_tree', { subject_name: data.subject });
+                    
+                    const { data: progressData } = await this.supabase
+                        .rpc('get_student_skill_progress', { subject_name: data.subject });
+                    
+                    const iframe = document.getElementById('skill-tree-frame');
+                    if (iframe) {
+                        iframe.contentWindow.postMessage({
+                            type: 'SKILL_DATA_RESPONSE',
+                            skillTreeData: skillTreeData,
+                            progress: progressData || {}
+                        }, '*');
+                    }
+                } catch (error) {
+                    console.error('Error handling skill data request:', error);
+                }
+            }
+
             async checkAndShowResetForm() {
                 const { data: { session } } = await this.supabase.auth.getSession();
                 if (session) {
@@ -672,6 +817,48 @@
                     this.showAlert(error.message || 'Unable to update password. Please try again.', 'error');
                     resetBtn.disabled = false;
                     resetBtn.textContent = 'Update Password';
+                }
+            }
+
+             showSkillUnlockNotification(skillName, subject) {
+                // Create a beautiful notification
+                const notification = document.createElement('div');
+                notification.style.cssText = `
+                    position: fixed;
+                    top: 20px;
+                    right: 20px;
+                    background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+                    color: white;
+                    padding: 15px 25px;
+                    border-radius: 12px;
+                    box-shadow: 0 4px 20px rgba(79, 172, 254, 0.3);
+                    z-index: 10000;
+                    animation: slideIn 0.3s ease-out;
+                    max-width: 300px;
+                `;
+                
+                notification.innerHTML = `
+                    <div style="display: flex; align-items: center;">
+                        <span style="font-size: 24px; margin-right: 10px;">🌟</span>
+                        <div>
+                            <div style="font-weight: bold;">Skill Unlocked!</div>
+                            <div style="font-size: 14px; opacity: 0.9;">${skillName}</div>
+                        </div>
+                    </div>
+                `;
+                
+                document.body.appendChild(notification);
+                
+                // Remove after 4 seconds
+                setTimeout(() => {
+                    notification.remove();
+                }, 4000);
+            }
+
+            async refreshDashboardStats() {
+                // Refresh the dashboard with updated progress
+                if (this.userProfile && this.userProfile.user_type === 'student') {
+                    await this.loadStudentDashboard();
                 }
             }
             
@@ -1594,60 +1781,55 @@
                 }
             }
 
+            // Enhanced showProgressTab for skill tree integration
             async showProgressTab() {
                 const progressSection = document.getElementById('progress-section');
                 if (!progressSection) return;
                 
                 try {
-                    const studentId = this.currentUser.id;
-                    
-                    // Get progress data
-                    const { data: progress } = await this.supabase
-                        .from('student_progress')
-                        .select('*')
-                        .eq('student_id', studentId);
-                    
-                    // Get game scores
-                    const { data: gameScores } = await this.supabase
-                        .from('game_scores')
-                        .select('*')
-                        .eq('student_id', studentId)
-                        .order('played_at', { ascending: false });
-                    
+                    const subjects = ['Art', 'Math', 'Science', 'Reading'];
                     let progressHtml = '<h2>📈 Learning Progress</h2><div class="dashboard">';
                     
-                    // Subject Progress Card
-                    progressHtml += '<div class="card"><h3>Subject Progress</h3>';
-                    const subjects = ['Math Skills', 'Reading Comprehension', 'Science'];
-                    
+                    // Get skill tree progress for each subject
                     for (const subject of subjects) {
-                        const subjectProgress = progress?.find(p => p.subject === subject);
-                        const percentage = subjectProgress?.progress_percentage || 0;
-                        progressHtml += `
-                            <div style="margin-bottom: 20px;">
-                                <p><strong>${subject}</strong></p>
-                                <div class="progress-bar">
-                                    <div class="progress-fill" style="width: ${percentage}%;"></div>
-                                </div>
-                                <small style="color: #666;">${percentage}% Complete</small>
-                            </div>
-                        `;
+                        try {
+                            const { data: summary } = await this.supabase
+                                .rpc('get_child_skill_summary', { 
+                                    child_id: this.currentUser.id, 
+                                    subject_name: subject 
+                                });
+                            
+                            if (summary && !summary.error) {
+                                progressHtml += `
+                                    <div class="card">
+                                        <h3>${subject} Skills</h3>
+                                        <div class="stats">
+                                            <div class="stat">
+                                                <div class="stat-value">${summary.unlocked_skills}</div>
+                                                <div class="stat-label">Unlocked</div>
+                                            </div>
+                                            <div class="stat">
+                                                <div class="stat-value">${summary.total_skills}</div>
+                                                <div class="stat-label">Total Skills</div>
+                                            </div>
+                                            <div class="stat">
+                                                <div class="stat-value">${summary.progress_percentage}%</div>
+                                                <div class="stat-label">Complete</div>
+                                            </div>
+                                        </div>
+                                        <div class="progress-bar" style="margin: 15px 0;">
+                                            <div class="progress-fill" style="width: ${summary.progress_percentage}%;"></div>
+                                        </div>
+                                        <button class="btn btn-primary" onclick="portal.showTab('skills'); portal.loadSkillTree('${subject}')">
+                                            View ${subject} Skill Tree
+                                        </button>
+                                    </div>
+                                `;
+                            }
+                        } catch (error) {
+                            console.error(`Error loading ${subject} progress:`, error);
+                        }
                     }
-                    progressHtml += '</div>';
-                    
-                    // Achievements Card
-                    progressHtml += '<div class="card"><h3>🏆 Achievements</h3>';
-                    if (gameScores && gameScores.length > 0) {
-                        progressHtml += '<ul style="list-style: none; padding: 0;">';
-                        if (gameScores.length >= 1) progressHtml += '<li>🎮 First Game Played!</li>';
-                        if (gameScores.length >= 5) progressHtml += '<li>⭐ 5 Games Milestone!</li>';
-                        if (gameScores.some(g => g.score > 1000)) progressHtml += '<li>🚀 Score Over 1000!</li>';
-                        if (gameScores.some(g => g.level_reached >= 5)) progressHtml += '<li>🎯 Reached Level 5!</li>';
-                        progressHtml += '</ul>';
-                    } else {
-                        progressHtml += '<p>No achievements yet. Keep playing!</p>';
-                    }
-                    progressHtml += '</div>';
                     
                     progressHtml += '</div>';
                     progressSection.innerHTML = progressHtml;
