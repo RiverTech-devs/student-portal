@@ -177,6 +177,17 @@
             margin: 0 auto;
             text-align: center;
         }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
     </style>
 </head>
 <body>
@@ -419,6 +430,12 @@
                     <p>No grades available yet</p>
                 </div>
             </div>
+            <div id="skills-section" class="hidden">
+                <h2>🌟 Skill Trees</h2>
+                <div id="skills-content">
+                    <p>Loading skills...</p>
+                </div>
+            </div>
             <!-- Children Section (Parents/Teachers only) -->
             <div id="children-section" class="hidden">
                 <h2>👨‍👩‍👧‍👦 Your Children</h2>
@@ -454,29 +471,10 @@
                     </div>
                 `;
                 
-                // Get skill tree structure from database
-                const { data: skillTreeData, error: treeError } = await this.supabase
-                    .rpc('get_skill_tree', { subject_name: subject });
+                // For now, just load the skill tree directly without database calls
+                // (We'll add database integration after we confirm the basic flow works)
                 
-                if (treeError) throw treeError;
-                
-                // Get student's current progress
-                const { data: progressData, error: progressError } = await this.supabase
-                    .rpc('get_student_skill_progress', { subject_name: subject });
-                
-                if (progressError) throw progressError;
-                
-                // Initialize skills if this is first time
-                if (!progressData || Object.keys(progressData).length === 0) {
-                    await this.supabase.rpc('initialize_student_skills', { subject_name: subject });
-                    
-                    // Retry getting progress
-                    const { data: newProgress } = await this.supabase
-                        .rpc('get_student_skill_progress', { subject_name: subject });
-                    progressData = newProgress || {};
-                }
-                
-                // Create iframe with subject parameter - UPDATED FILENAME
+                // Create iframe with CORRECT filename
                 container.innerHTML = `
                     <iframe 
                         id="skill-tree-frame"
@@ -488,13 +486,13 @@
                 
                 const iframe = document.getElementById('skill-tree-frame');
                 iframe.onload = () => {
-                    // Send initial data to skill tree
+                    // Send initial data to skill tree after short delay
                     setTimeout(() => {
                         iframe.contentWindow.postMessage({
                             type: 'LOAD_SKILL_TREE',
                             subject: subject,
-                            skillTreeData: skillTreeData,
-                            progress: progressData
+                            skillTreeData: null, // Will use hardcoded fallback for now
+                            progress: {} // Start with empty progress
                         }, '*');
                     }, 100);
                 };
@@ -512,7 +510,6 @@
                 `;
             }
         }
-
            init() {
                 // Check for auth callback in URL hash
                 this.handleAuthCallback();
@@ -572,6 +569,17 @@
                         await this.handleSkillDataRequest(event.data);
                     }
                 });
+
+               // Set up message listener for skill tree communication
+                window.addEventListener('message', async (event) => {
+                    if (event.data.type === 'SKILL_UNLOCKED') {
+                        await this.handleSkillUnlock(event.data);
+                    } else if (event.data.type === 'REQUEST_SKILL_DATA') {
+                        await this.handleSkillDataRequest(event.data);
+                    }
+                });
+                
+                console.log('StudentPortal initialized with skill tree communication');
             }
 
             showLoginForm() {
@@ -709,67 +717,45 @@
                 document.getElementById('reset-password-form').addEventListener('submit', (e) => this.handlePasswordReset(e));
             }
 
-            async handleSkillUnlock(data) {
-                try {
-                    console.log('Skill unlocked:', data.skillName, 'in', data.subject);
-                    
-                    // Update skill in database
-                    const { data: result, error } = await this.supabase
-                        .rpc('unlock_skill', { 
-                            subject_name: data.subject, 
-                            skill_name: data.skillName 
-                        });
-                    
-                    if (error) throw error;
-                    
-                    if (result.success) {
-                        // Update dashboard stats
-                        await this.refreshDashboardStats();
-                        
-                        // Show success notification
-                        this.showSkillUnlockNotification(data.skillName, data.subject);
-                        
-                        // Send updated progress back to skill tree
-                        const { data: newProgress } = await this.supabase
-                            .rpc('get_student_skill_progress', { subject_name: data.subject });
-                        
-                        const iframe = document.getElementById('skill-tree-frame');
-                        if (iframe) {
-                            iframe.contentWindow.postMessage({
-                                type: 'PROGRESS_UPDATED',
-                                progress: newProgress
-                            }, '*');
-                        }
-                    } else {
-                        console.error('Failed to unlock skill:', result.error);
-                    }
-                    
-                } catch (error) {
-                    console.error('Error handling skill unlock:', error);
+           async handleSkillUnlock(data) {
+            try {
+                console.log('Skill unlocked:', data.skillName, 'in', data.subject);
+                
+                // For now, just show the notification
+                // (We'll add database integration later)
+                this.showSkillUnlockNotification(data.skillName, data.subject);
+                
+                // Send confirmation back to skill tree
+                const iframe = document.getElementById('skill-tree-frame');
+                if (iframe) {
+                    iframe.contentWindow.postMessage({
+                        type: 'PROGRESS_UPDATED',
+                        progress: {} // Will be filled with real data later
+                    }, '*');
                 }
+                
+            } catch (error) {
+                console.error('Error handling skill unlock:', error);
             }
+        }
         
-            async handleSkillDataRequest(data) {
-                try {
-                    const { data: skillTreeData } = await this.supabase
-                        .rpc('get_skill_tree', { subject_name: data.subject });
-                    
-                    const { data: progressData } = await this.supabase
-                        .rpc('get_student_skill_progress', { subject_name: data.subject });
-                    
-                    const iframe = document.getElementById('skill-tree-frame');
-                    if (iframe) {
-                        iframe.contentWindow.postMessage({
-                            type: 'SKILL_DATA_RESPONSE',
-                            skillTreeData: skillTreeData,
-                            progress: progressData || {}
-                        }, '*');
-                    }
-                } catch (error) {
-                    console.error('Error handling skill data request:', error);
+           async handleSkillDataRequest(data) {
+            try {
+                console.log('Skill data requested for:', data.subject);
+                
+                // For now, just send empty data to use hardcoded fallback
+                const iframe = document.getElementById('skill-tree-frame');
+                if (iframe) {
+                    iframe.contentWindow.postMessage({
+                        type: 'SKILL_DATA_RESPONSE',
+                        skillTreeData: null, // Will use hardcoded fallback
+                        progress: {} // Empty progress for now
+                    }, '*');
                 }
+            } catch (error) {
+                console.error('Error handling skill data request:', error);
             }
-
+        }
             async checkAndShowResetForm() {
                 const { data: { session } } = await this.supabase.auth.getSession();
                 if (session) {
@@ -820,7 +806,7 @@
                 }
             }
 
-             showSkillUnlockNotification(skillName, subject) {
+            showSkillUnlockNotification(skillName, subject) {
                 // Create a beautiful notification
                 const notification = document.createElement('div');
                 notification.style.cssText = `
@@ -833,8 +819,8 @@
                     border-radius: 12px;
                     box-shadow: 0 4px 20px rgba(79, 172, 254, 0.3);
                     z-index: 10000;
-                    animation: slideIn 0.3s ease-out;
                     max-width: 300px;
+                    animation: slideIn 0.3s ease-out;
                 `;
                 
                 notification.innerHTML = `
@@ -843,6 +829,7 @@
                         <div>
                             <div style="font-weight: bold;">Skill Unlocked!</div>
                             <div style="font-size: 14px; opacity: 0.9;">${skillName}</div>
+                            <div style="font-size: 12px; opacity: 0.7;">${subject}</div>
                         </div>
                     </div>
                 `;
@@ -851,7 +838,9 @@
                 
                 // Remove after 4 seconds
                 setTimeout(() => {
-                    notification.remove();
+                    if (notification.parentNode) {
+                        notification.remove();
+                    }
                 }, 4000);
             }
 
@@ -1918,24 +1907,33 @@
             // Add Skills tab handling
             async showSkillsTab() {
                 const skillsSection = document.getElementById('skills-section');
-                if (!skillsSection) return;
+                if (!skillsSection) {
+                    console.error('Skills section not found');
+                    return;
+                }
                 
                 const subjects = ['Art', 'Math', 'Science', 'Reading'];
                 
                 skillsSection.innerHTML = `
                     <h2>🌟 Skill Trees</h2>
-                    <div class="subject-tabs" style="display: flex; gap: 10px; margin-bottom: 20px;">
+                    <div class="subject-tabs" style="display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap;">
                         ${subjects.map(subject => `
-                            <button class="btn btn-primary" onclick="portal.loadSkillTree('${subject}')">
+                            <button class="btn btn-primary" onclick="portal.loadSkillTree('${subject}')" style="margin-bottom: 10px;">
                                 ${subject}
                             </button>
                         `).join('')}
                     </div>
-                    <div id="skill-tree-container" style="width: 100%; height: 600px; border: 2px solid #dee2e6; border-radius: 10px; overflow: hidden;">
-                        <p style="text-align: center; margin-top: 50px;">Select a subject to view your skill tree</p>
+                    <div id="skill-tree-container" style="width: 100%; height: 600px; border: 2px solid #dee2e6; border-radius: 10px; overflow: hidden; background: #f8f9fa;">
+                        <div style="display: flex; align-items: center; justify-content: center; height: 100%; color: #666;">
+                            <div style="text-align: center;">
+                                <div style="font-size: 48px; margin-bottom: 20px;">🌟</div>
+                                <h3>Select a Subject</h3>
+                                <p>Choose a subject above to explore your skill tree</p>
+                            </div>
+                        </div>
                     </div>
                 `;
-            }
+            }    
             
             async loadSkillTree(subject) {
                 const container = document.getElementById('skill-tree-container');
