@@ -191,7 +191,7 @@
             <button class="nav-tab" onclick="showTab('login')" id="login-tab" style="display:none;">Login</button>
             <button class="nav-tab" onclick="showTab('dashboard')" id="dashboard-tab" style="display:none;">Dashboard</button>
             <button class="nav-tab" onclick="showTab('games')" id="games-tab" style="display:none;">Games</button>
-            <button class="nav-tab" onclick="showTab('progress')" id="progress-tab" style="display:none;">Progress</button>
+            <button class="nav-tab" onclick="showTab('skills')" id="skills-tab">Skills</button>
             <button class="nav-tab" onclick="showTab('grades')" id="grades-tab" style="display:none;">Grades</button>
         </div>
 
@@ -1137,9 +1137,34 @@
                 const highScore = gameStats?.reduce((max, game) => Math.max(max, game.score), 0) || 0;
                 const achievements = Math.floor(totalGamesPlayed / 2); // Simple achievement calculation
                 
-                // Get progress for display
-                const mathProgress = progress?.find(p => p.subject === 'Math Skills')?.progress_percentage || 0;
-                const readingProgress = progress?.find(p => p.subject === 'Reading Comprehension')?.progress_percentage || 0;
+                // Sort progress by percentage to get top 2
+                const sortedProgress = progress ? 
+                    [...progress].sort((a, b) => b.progress_percentage - a.progress_percentage) : [];
+                const topTwoSubjects = sortedProgress.slice(0, 2);
+                
+                // Build progress HTML for top 2 subjects
+                let progressHtml = '';
+                if (topTwoSubjects.length > 0) {
+                    progressHtml = '<p style="margin-bottom: 10px;"><strong>Top Subjects:</strong></p>';
+                    topTwoSubjects.forEach((subject, index) => {
+                        progressHtml += `
+                            ${index > 0 ? '<p style="margin-top: 15px;">' : '<p>'}${subject.subject}</p>
+                            <div class="progress-bar">
+                                <div class="progress-fill" style="width: ${subject.progress_percentage}%"></div>
+                            </div>
+                            <small style="color: #666;">${subject.progress_percentage}% Complete</small>
+                        `;
+                    });
+                    progressHtml += `
+                        <p style="margin-top: 15px; text-align: center;">
+                            <a href="#" onclick="portal.showTab('progress'); return false;" style="color: #4facfe; text-decoration: none;">
+                                View all subjects →
+                            </a>
+                        </p>
+                    `;
+                } else {
+                    progressHtml = '<p>No progress data yet</p>';
+                }
                 
                 dashboardSection.innerHTML = `
                     <h2>Welcome back, <span id="student-name">${firstName} ${lastName}</span>!</h2>
@@ -1165,23 +1190,15 @@
                             <h3>🎯 Recent Activity</h3>
                             <div id="recent-activity">
                                 ${gameStats && gameStats.length > 0 ? 
-                                    `<p>Last played: ${gameStats[gameStats.length-1].game_name}</p>` : 
+                                    `<p>Last played: ${gameStats[gameStats.length-1].game_name}</p>
+                                     <small style="color: #666;">Score: ${gameStats[gameStats.length-1].score}</small>` : 
                                     '<p>No recent activity</p>'}
                             </div>
                         </div>
                         <div class="card">
                             <h3>📈 Learning Progress</h3>
                             <div>
-                                <p>Math Skills</p>
-                                <div class="progress-bar">
-                                    <div class="progress-fill" style="width: ${mathProgress}%"></div>
-                                </div>
-                                <small style="color: #666;">${mathProgress}% Complete</small>
-                                <p style="margin-top: 10px;">Reading Comprehension</p>
-                                <div class="progress-bar">
-                                    <div class="progress-fill" style="width: ${readingProgress}%"></div>
-                                </div>
-                                <small style="color: #666;">${readingProgress}% Complete</small>
+                                ${progressHtml}
                             </div>
                         </div>
                         <div class="card">
@@ -1715,6 +1732,105 @@
                     gradesSection.innerHTML = '<h2>📊 Grades</h2><p>Error loading grades data.</p>';
                 }
             }
+
+            // Add Skills tab handling
+            async showSkillsTab() {
+                const skillsSection = document.getElementById('skills-section');
+                if (!skillsSection) return;
+                
+                const subjects = ['Art', 'Math', 'Science', 'Reading'];
+                
+                skillsSection.innerHTML = `
+                    <h2>🌟 Skill Trees</h2>
+                    <div class="subject-tabs" style="display: flex; gap: 10px; margin-bottom: 20px;">
+                        ${subjects.map(subject => `
+                            <button class="btn btn-primary" onclick="portal.loadSkillTree('${subject}')">
+                                ${subject}
+                            </button>
+                        `).join('')}
+                    </div>
+                    <div id="skill-tree-container" style="width: 100%; height: 600px; border: 2px solid #dee2e6; border-radius: 10px; overflow: hidden;">
+                        <p style="text-align: center; margin-top: 50px;">Select a subject to view your skill tree</p>
+                    </div>
+                `;
+            }
+            
+            async loadSkillTree(subject) {
+                const container = document.getElementById('skill-tree-container');
+                if (!container) return;
+                
+                try {
+                    // Get student's progress
+                    const { data: progress } = await this.supabase
+                        .from('student_skill_progress')
+                        .select('skill_states')
+                        .eq('student_id', this.currentUser.id)
+                        .eq('subject', subject)
+                        .single();
+                    
+                    let skillStates = {};
+                    if (progress && progress.skill_states) {
+                        skillStates = progress.skill_states;
+                    }
+                    
+                    // Create iframe
+                    container.innerHTML = `
+                        <iframe 
+                            id="skill-tree-frame"
+                            src="ArtSkillTree.html"
+                            style="width: 100%; height: 100%; border: none;"
+                            frameborder="0"
+                        ></iframe>
+                    `;
+                    
+                    // Send data after iframe loads
+                    const iframe = document.getElementById('skill-tree-frame');
+                    iframe.onload = () => {
+                        setTimeout(() => {
+                            iframe.contentWindow.postMessage({
+                                type: 'LOAD_SKILL_TREE',
+                                subject: subject,
+                                progress: skillStates
+                            }, '*');
+                        }, 100);
+                    };
+                    
+                } catch (error) {
+                    console.error('Error loading skill tree:', error);
+                }
+            }
+            
+            // Add message listener in init()
+            setupSkillTreeListener() {
+                window.addEventListener('message', async (event) => {
+                    if (event.data.type === 'SKILL_UNLOCKED') {
+                        console.log('Skill unlocked:', event.data.skillName);
+                        await this.saveSkillProgress(event.data.subject, event.data.progress);
+                    }
+                });
+            }
+            
+            async saveSkillProgress(subject, skillStates) {
+                try {
+                    const totalUnlocked = Object.values(skillStates).filter(s => s === 'activated').length;
+                    
+                    const { error } = await this.supabase
+                        .from('student_skill_progress')
+                        .upsert({
+                            student_id: this.currentUser.id,
+                            subject: subject,
+                            skill_states: skillStates,
+                            total_unlocked: totalUnlocked,
+                            last_updated: new Date()
+                        });
+                    
+                    if (error) throw error;
+                    console.log(`Progress saved: ${totalUnlocked} skills unlocked in ${subject}`);
+                    
+                } catch (error) {
+                    console.error('Error saving progress:', error);
+                }
+            }
             
             showAddChildForm() {
                 const childrenListDiv = document.getElementById('children-list');
@@ -1806,8 +1922,8 @@
                 // Special handling for children tab
                 if (tabName === 'children') {
                     this.showChildrenTab();
-                } else if (tabName === 'progress') {
-                    this.showProgressTab();
+                } else if (tabName === 'skills') {
+                    this.showSkillsTab();
                 } else if (tabName === 'grades') {
                     this.showGradesTab();
                 }
