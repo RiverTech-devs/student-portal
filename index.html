@@ -465,6 +465,11 @@
             }
 
             init() {
+                console.log('Initializing StudentPortal...');
+                
+                // IMMEDIATE: Show login form as fallback to ensure something is always visible
+                this.showLoginForm();
+                
                 // Check for auth callback in URL hash
                 this.handleAuthCallback();
                 
@@ -567,6 +572,9 @@
             }
 
             showLoginForm() {
+                // Show the login section first
+                this.showTab('login');
+                
                 const loginSection = document.getElementById('login-section');
                 if (!loginSection) return;
                 
@@ -589,22 +597,21 @@
                             <p style="margin-top: 15px; text-align: center;">
                                 <a href="#" onclick="portal.showForgotPasswordForm(); return false;" style="color: #4facfe;">Forgot Password?</a>
                             </p>
-                            <p style="margin-top: 10px; text-align: center;">
-                                <small>Just clicked a password reset link? 
-                                    <a href="#" onclick="portal.checkAndShowResetForm(); return false;" style="color: #4facfe;">
-                                        Click here to reset password
-                                    </a>
-                                </small>
-                            </p>
                         </form>
                     </div>
                 `;
                 
-                document.getElementById('login-form').addEventListener('submit', (e) => this.handleLogin(e));
-                document.getElementById('login-form').classList.remove('hidden');
+                // Add event listener for the new form
+                const newLoginForm = document.getElementById('login-form');
+                if (newLoginForm) {
+                    newLoginForm.addEventListener('submit', (e) => this.handleLogin(e));
+                }
                 
+                // Hide any register form that might be visible
                 const registerForm = document.getElementById('register-form');
                 if (registerForm) registerForm.classList.add('hidden');
+                
+                console.log('Login form displayed');
             }
 
             showRegisterForm() {
@@ -794,13 +801,6 @@
                 }, 4000);
             }
 
-            async refreshDashboardStats() {
-                // Refresh the dashboard with updated progress
-                if (this.userProfile && this.userProfile.user_type === 'student') {
-                    await this.loadStudentDashboard();
-                }
-            }
-            
             showForgotPasswordForm() {
                 const loginSection = document.getElementById('login-section');
                 if (!loginSection) return;
@@ -881,44 +881,12 @@
                     if (session) {
                         console.log('Session found:', session.user.email);
                         
-                        // Check if this is a recovery session by looking at the user metadata
-                        const isRecovery = session.user.recovery_sent_at && 
-                            (new Date() - new Date(session.user.last_sign_in_at)) < 60000; // Logged in within last minute
-                        
-                        const hashHasTokens = window.location.hash.includes('access_token');
-                        
-                        console.log('Recovery check 1 - isRecovery:', isRecovery, 'hashHasTokens:', hashHasTokens);
-                        
-                        if (isRecovery || hashHasTokens) {
-                            this.currentUser = session.user;
-                            this.showPasswordResetForm();
-                            
-                            // Clear the URL hash after showing form
-                            if (hashHasTokens) {
-                                window.history.replaceState(null, '', window.location.pathname);
-                            }
-                            return;
-                        }
-
                         // Check for pending password reset
                         const pendingReset = sessionStorage.getItem('pending_password_reset') === 'true';
                         
                         if (pendingReset) {
                             console.log('Processing pending password reset');
                             sessionStorage.removeItem('pending_password_reset');
-                            this.currentUser = session.user;
-                            this.showPasswordResetForm();
-                            return;
-                        }
-                        
-                        // Check if this is a recovery session
-                        // Recovery sessions have specific AMR (Authentication Methods Reference) values
-                        const isRecoverySession = session.user.amr?.find(amr => amr.method === 'recovery');
-                        const isRecentSession = session.user.last_sign_in_at && 
-                            (new Date() - new Date(session.user.last_sign_in_at)) < 60000; // Within last minute
-                        
-                        if (isRecoverySession || (isRecentSession && session.user.recovery_sent_at)) {
-                            console.log('Recovery session detected - showing password reset form');
                             this.currentUser = session.user;
                             this.showPasswordResetForm();
                             return;
@@ -930,7 +898,8 @@
                         await this.loadUserProfile();
                         this.showDashboard();
                     } else {
-                        this.showTab('login');
+                        console.log('No session found - showing login form');
+                        this.showLoginForm();
                     }
             
                     // Listen for auth state changes
@@ -943,13 +912,14 @@
                         } else if (event === 'SIGNED_OUT') {
                             this.currentUser = null;
                             this.userProfile = null;
-                            this.showTab('login');
+                            this.showLoginForm();
                         }
                     });
             
                 } catch (error) {
                     console.error('Supabase connection error:', error);
-                    alert('Unable to connect to backend. Please contact support.');
+                    // Show login form even if Supabase connection fails
+                    this.showLoginForm();
                 }
             }
 
@@ -1113,28 +1083,17 @@
                 const loginSection = document.getElementById('login-section');
                 if (loginSection) loginSection.classList.add('hidden');
             
-                // Hide non-existent setup section safely
-                const setupSection = document.getElementById('setup-section');
-                if (setupSection) setupSection.classList.add('hidden');
-            
-                // Hide/show tabs based on user type - SAFE ACCESS TO ELEMENTS
-                const setupTab = document.getElementById('setup-tab');
-                if (setupTab) setupTab.style.display = 'none';
-                
-                const loginTab = document.getElementById('login-tab');
-                if (loginTab) loginTab.style.display = 'none';
+                // Show appropriate tabs based on user type
+                const dashboardTab = document.getElementById('dashboard-tab');
+                if (dashboardTab) dashboardTab.style.display = 'block';
                 
                 // Check if user is a parent or student
                 const isParent = this.userProfile && this.userProfile.user_type === 'parent';
                 const isTeacher = this.userProfile && this.userProfile.user_type === 'teacher';
                 const isStudent = this.userProfile && this.userProfile.user_type === 'student';
                 
-                // Show appropriate tabs based on user type - SAFE ACCESS
-                const dashboardTab = document.getElementById('dashboard-tab');
-                if (dashboardTab) dashboardTab.style.display = 'block';
-                
                 if (isParent || isTeacher) {
-                    // Parents and teachers don't need games
+                    // Hide student tabs
                     const gamesTab = document.getElementById('games-tab');
                     const skillsTab = document.getElementById('skills-tab');
                     const gradesTab = document.getElementById('grades-tab');
@@ -1142,23 +1101,8 @@
                     if (gamesTab) gamesTab.style.display = 'none';
                     if (skillsTab) skillsTab.style.display = 'none';
                     if (gradesTab) gradesTab.style.display = 'none';
-                    
-                    // Show parent/teacher specific tabs
-                    let childrenTab = document.getElementById('children-tab');
-                    if (!childrenTab) {
-                        // Create children tab if it doesn't exist
-                        childrenTab = document.createElement('button');
-                        childrenTab.id = 'children-tab';
-                        childrenTab.className = 'nav-tab';
-                        childrenTab.textContent = isParent ? 'My Children' : 'My Students';
-                        childrenTab.onclick = () => this.showTab('children');
-                        
-                        const navTabs = document.querySelector('.nav-tabs');
-                        if (navTabs) navTabs.appendChild(childrenTab);
-                    }
-                    if (childrenTab) childrenTab.style.display = 'block';
                 } else {
-                    // Students see their own tabs
+                    // Show student tabs
                     const gamesTab = document.getElementById('games-tab');
                     const skillsTab = document.getElementById('skills-tab');
                     const gradesTab = document.getElementById('grades-tab');
@@ -1166,10 +1110,6 @@
                     if (gamesTab) gamesTab.style.display = 'block';
                     if (skillsTab) skillsTab.style.display = 'block';
                     if (gradesTab) gradesTab.style.display = 'block';
-                    
-                    // Hide parent/teacher tabs if they exist
-                    const childrenTab = document.getElementById('children-tab');
-                    if (childrenTab) childrenTab.style.display = 'none';
                 }
                 
                 const logoutBtn = document.getElementById('logout-btn');
@@ -1205,48 +1145,14 @@
                 if (!dashboardSection) return;
                 
                 dashboardSection.innerHTML = `
-                    <h2>Welcome back, <span id="parent-name">${this.userProfile.first_name} ${this.userProfile.last_name}</span>!</h2>
+                    <h2>Welcome back, ${this.userProfile.first_name} ${this.userProfile.last_name}!</h2>
                     <div class="dashboard">
                         <div class="card">
                             <h3>👨‍👩‍👧‍👦 Your Children</h3>
-                            <div id="children-list">
-                                <p>Loading children...</p>
-                            </div>
-                            <button class="btn btn-primary" onclick="portal.showAddChildForm()" style="margin-top: 15px;">
-                                ➕ Link Child Account
-                            </button>
-                        </div>
-                        <div class="card">
-                            <h3>📊 Overview</h3>
-                            <div id="children-overview">
-                                <p>Select a child to view their progress</p>
-                            </div>
-                        </div>
-                        <div class="card">
-                            <h3>📅 Recent Activity</h3>
-                            <div id="recent-activity">
-                                <p>No recent activity</p>
-                            </div>
-                        </div>
-                        <div class="card">
-                            <h3>⚙️ Account Settings</h3>
-                            <p style="margin-bottom: 15px;">Manage your account</p>
-                            <button class="btn btn-primary" onclick="portal.showPasswordResetForm()" style="margin-bottom: 10px;">
-                                🔐 Change Password
-                            </button>
-                            <br>
-                            <button class="btn" style="background: #dc3545; color: white;" onclick="deleteAccount()" id="delete-account-btn">
-                                🗑️ Delete My Account
-                            </button>
-                            <small style="display: block; color: #666; margin-top: 10px;">
-                                This action cannot be undone
-                            </small>
+                            <p>Parent dashboard features coming soon!</p>
                         </div>
                     </div>
                 `;
-                
-                // Load linked children
-                await this.loadLinkedChildren();
             }
             
             async loadStudentDashboard() {
@@ -1257,54 +1163,6 @@
                 const firstName = this.userProfile?.first_name || 'Student';
                 const lastName = this.userProfile?.last_name || '';
                 
-                // Get real data for this student
-                const studentId = this.currentUser.id;
-                
-                // Get progress data
-                const { data: progress } = await this.supabase
-                    .from('student_progress')
-                    .select('*')
-                    .eq('student_id', studentId);
-                
-                // Get game stats
-                const { data: gameStats } = await this.supabase
-                    .from('game_scores')
-                    .select('*')
-                    .eq('student_id', studentId);
-                
-                const totalGamesPlayed = gameStats?.length || 0;
-                const highScore = gameStats?.reduce((max, game) => Math.max(max, game.score), 0) || 0;
-                const achievements = Math.floor(totalGamesPlayed / 2); // Simple achievement calculation
-                
-                // Sort progress by percentage to get top 2
-                const sortedProgress = progress ? 
-                    [...progress].sort((a, b) => b.progress_percentage - a.progress_percentage) : [];
-                const topTwoSubjects = sortedProgress.slice(0, 2);
-                
-                // Build progress HTML for top 2 subjects
-                let progressHtml = '';
-                if (topTwoSubjects.length > 0) {
-                    progressHtml = '<p style="margin-bottom: 10px;"><strong>Top Subjects:</strong></p>';
-                    topTwoSubjects.forEach((subject, index) => {
-                        progressHtml += `
-                            ${index > 0 ? '<p style="margin-top: 15px;">' : '<p>'}${subject.subject}</p>
-                            <div class="progress-bar">
-                                <div class="progress-fill" style="width: ${subject.progress_percentage}%"></div>
-                            </div>
-                            <small style="color: #666;">${subject.progress_percentage}% Complete</small>
-                        `;
-                    });
-                    progressHtml += `
-                        <p style="margin-top: 15px; text-align: center;">
-                            <a href="#" onclick="portal.showTab('progress'); return false;" style="color: #4facfe; text-decoration: none;">
-                                View all subjects →
-                            </a>
-                        </p>
-                    `;
-                } else {
-                    progressHtml = '<p>No progress data yet</p>';
-                }
-                
                 dashboardSection.innerHTML = `
                     <h2>Welcome back, <span id="student-name">${firstName} ${lastName}</span>!</h2>
                     <div class="dashboard">
@@ -1312,15 +1170,15 @@
                             <h3>📊 Quick Stats</h3>
                             <div class="stats">
                                 <div class="stat">
-                                    <div class="stat-value" id="games-played">${totalGamesPlayed}</div>
+                                    <div class="stat-value">0</div>
                                     <div class="stat-label">Games Played</div>
                                 </div>
                                 <div class="stat">
-                                    <div class="stat-value" id="total-score">${highScore}</div>
+                                    <div class="stat-value">0</div>
                                     <div class="stat-label">High Score</div>
                                 </div>
                                 <div class="stat">
-                                    <div class="stat-value" id="achievements">${achievements}</div>
+                                    <div class="stat-value">0</div>
                                     <div class="stat-label">Achievements</div>
                                 </div>
                             </div>
@@ -1328,542 +1186,24 @@
                         <div class="card">
                             <h3>🎯 Recent Activity</h3>
                             <div id="recent-activity">
-                                ${gameStats && gameStats.length > 0 ? 
-                                    `<p>Last played: ${gameStats[gameStats.length-1].game_name}</p>
-                                     <small style="color: #666;">Score: ${gameStats[gameStats.length-1].score}</small>` : 
-                                    '<p>No recent activity</p>'}
+                                <p>No recent activity</p>
                             </div>
                         </div>
                         <div class="card">
                             <h3>📈 Learning Progress</h3>
                             <div>
-                                ${progressHtml}
+                                <p>Math Skills</p>
+                                <div class="progress-bar">
+                                    <div class="progress-fill" style="width: 65%"></div>
+                                </div>
+                                <p>Reading Comprehension</p>
+                                <div class="progress-bar">
+                                    <div class="progress-fill" style="width: 78%"></div>
+                                </div>
                             </div>
-                        </div>
-                        <div class="card">
-                            <h3>⚙️ Account Settings</h3>
-                            <p style="margin-bottom: 15px;">Manage your account</p>
-                            <button class="btn btn-primary" onclick="portal.showPasswordResetForm()" style="margin-bottom: 10px;">
-                                🔐 Change Password
-                            </button>
-                            <br>
-                            <button class="btn" style="background: #dc3545; color: white;" onclick="deleteAccount()" id="delete-account-btn">
-                                🗑️ Delete My Account
-                            </button>
-                            <small style="display: block; color: #666; margin-top: 10px;">
-                                This action cannot be undone
-                            </small>
                         </div>
                     </div>
                 `;
-            }
-
-            async loadLinkedChildren() {
-                try {
-                    const childrenListDiv = document.getElementById('children-list');
-                    if (!childrenListDiv) return;
-                    
-                    // First, try to get linked children from parent_child_links table
-                    const { data: links, error: linksError } = await this.supabase
-                        .from('parent_child_links')
-                        .select('child_id')
-                        .eq('parent_id', this.currentUser.id);
-                    
-                    // Also check for pending children emails stored during registration
-                    let pendingEmails = [];
-                    if (this.userProfile && this.userProfile.parent_email) {
-                        // We stored children emails in parent_email field
-                        pendingEmails = this.userProfile.parent_email.split(',').map(e => e.trim()).filter(e => e.length > 0);
-                        console.log('Pending emails from registration:', pendingEmails);
-                    }
-                    
-                    let htmlContent = '';
-                    let linkedChildIds = [];
-                    
-                    // Show linked children
-                    if (links && links.length > 0) {
-                        // Get children's profiles
-                        linkedChildIds = links.map(link => link.child_id);
-                        const { data: children, error: childrenError } = await this.supabase
-                            .from('user_profiles')
-                            .select('*')
-                            .in('id', linkedChildIds);
-                        
-                        if (children && children.length > 0) {
-                            htmlContent += '<h5>Linked Children:</h5>';
-                            htmlContent += children.map(child => `
-                                <div style="padding: 10px; border: 1px solid #28a745; background: #d4edda; border-radius: 8px; margin-bottom: 10px; cursor: pointer;"
-                                     onclick="portal.viewChildDetails('${child.id}')">
-                                    <strong>${child.first_name} ${child.last_name}</strong>
-                                    <span style="float: right; color: #155724;">Grade ${child.grade_level || 'N/A'}</span>
-                                    <br>
-                                    <small style="color: #155724;">${child.username} ✓ Linked</small>
-                                </div>
-                            `).join('');
-                        }
-                    }
-                    
-                    // Show pending children (emails entered but not yet linked)
-                    if (pendingEmails.length > 0) {
-                        htmlContent += '<h5 style="margin-top: 15px;">Pending Children (from registration):</h5>';
-                        
-                        // Get ALL student profiles to check against pending emails
-                        const { data: allStudents, error: studentsError } = await this.supabase
-                            .from('user_profiles')
-                            .select('*')
-                            .eq('user_type', 'student');
-                        
-                        console.log('Found students:', allStudents);
-                        
-                        for (const email of pendingEmails) {
-                            // Try to find a matching student profile
-                            let matchingStudent = null;
-                            
-                            if (allStudents) {
-                                // First try exact email match
-                                matchingStudent = allStudents.find(s => s.email && s.email.toLowerCase() === email.toLowerCase());
-                                
-                                // If no email match, try to match by username (sometimes email is used as username)
-                                if (!matchingStudent) {
-                                    const emailUsername = email.split('@')[0];
-                                    matchingStudent = allStudents.find(s => 
-                                        s.username && s.username.toLowerCase() === emailUsername.toLowerCase()
-                                    );
-                                }
-                            }
-                            
-                            // Check if already linked
-                            const isAlreadyLinked = matchingStudent && linkedChildIds.includes(matchingStudent.id);
-                            
-                            if (isAlreadyLinked) {
-                                // Skip if already linked
-                                continue;
-                            } else if (matchingStudent) {
-                                // Account exists but not linked
-                                console.log('Found matching student for', email, matchingStudent);
-                                htmlContent += `
-                                    <div style="padding: 10px; border: 1px solid #ffc107; background: #fff3cd; border-radius: 8px; margin-bottom: 10px;">
-                                        <strong>${matchingStudent.first_name} ${matchingStudent.last_name}</strong>
-                                        <br>
-                                        <small style="color: #856404;">${email} - Account found!</small>
-                                        <button class="btn btn-sm" style="float: right; padding: 4px 8px; font-size: 12px; background: #28a745; color: white;" 
-                                                onclick="portal.autoLinkChild('${matchingStudent.id}', '${email}')">
-                                            Link Now
-                                        </button>
-                                    </div>
-                                `;
-                            } else {
-                                // No account yet
-                                console.log('No matching student found for', email);
-                                htmlContent += `
-                                    <div style="padding: 10px; border: 1px solid #6c757d; background: #e9ecef; border-radius: 8px; margin-bottom: 10px;">
-                                        <small style="color: #495057;">${email} - Waiting for account creation</small>
-                                        <button class="btn btn-sm" style="float: right; padding: 4px 8px; font-size: 12px; background: #6c757d; color: white;" 
-                                                onclick="portal.removePendingEmail('${email}')">
-                                            Remove
-                                        </button>
-                                    </div>
-                                `;
-                            }
-                        }
-                    }
-                    
-                    if (!htmlContent) {
-                        htmlContent = `
-                            <p>No children linked yet.</p>
-                            <small>Click "Link Child Account" to connect your children's accounts.</small>
-                        `;
-                    }
-                    
-                    childrenListDiv.innerHTML = htmlContent;
-                    
-                } catch (error) {
-                    console.error('Error loading children:', error);
-                    childrenListDiv.innerHTML = '<p>Error loading children. Please refresh the page.</p>';
-                }
-            }
-
-            async autoLinkChild(childId, childEmail) {
-                try {
-                    // Create the link in parent_child_links table
-                    const { data, error } = await this.supabase
-                        .from('parent_child_links')
-                        .insert({
-                            parent_id: this.currentUser.id,
-                            child_id: childId
-                        });
-                    
-                    if (error) {
-                        if (error.code === '23505') { // Unique violation
-                            alert('This child is already linked to your account.');
-                        } else {
-                            throw error;
-                        }
-                    } else {
-                        alert('Child account linked successfully!');
-                        
-                        // Remove this email from pending list
-                        await this.removePendingEmail(childEmail, false);
-                        
-                        // Reload the children list
-                        await this.loadLinkedChildren();
-                    }
-                } catch (error) {
-                    console.error('Error linking child:', error);
-                    alert('Unable to link child account. Please try again.');
-                }
-            }
-            
-            async removePendingEmail(email, showConfirm = true) {
-                if (showConfirm && !confirm('Remove this email from pending children?')) {
-                    return;
-                }
-                
-                try {
-                    // Get current pending emails
-                    let pendingEmails = [];
-                    if (this.userProfile && this.userProfile.parent_email) {
-                        pendingEmails = this.userProfile.parent_email.split(',').map(e => e.trim()).filter(e => e.length > 0);
-                    }
-                    
-                    // Remove the specified email
-                    pendingEmails = pendingEmails.filter(e => e !== email);
-                    
-                    // Update the profile
-                    const { error } = await this.supabase
-                        .from('user_profiles')
-                        .update({ 
-                            parent_email: pendingEmails.join(', ')
-                        })
-                        .eq('id', this.currentUser.id);
-                    
-                    if (!error) {
-                        // Update local profile
-                        this.userProfile.parent_email = pendingEmails.join(', ');
-                        
-                        // Reload the children list
-                        await this.loadLinkedChildren();
-                    }
-                } catch (error) {
-                    console.error('Error removing pending email:', error);
-                }
-            }
-            
-            async viewChildDetails(childId) {
-                try {
-                    // Fetch child's complete data
-                    const { data: child, error } = await this.supabase
-                        .from('user_profiles')
-                        .select('*')
-                        .eq('id', childId)
-                        .single();
-                    
-                    if (child) {
-                        // Get real progress data
-                        const { data: progress } = await this.supabase
-                            .from('student_progress')
-                            .select('*')
-                            .eq('student_id', childId);
-                        
-                        const overviewDiv = document.getElementById('children-overview');
-                        if (overviewDiv) {
-                            let progressHtml = '';
-                            const subjects = ['Math Skills', 'Reading Comprehension', 'Science'];
-                            
-                            for (const subject of subjects) {
-                                const subjectProgress = progress?.find(p => p.subject === subject);
-                                const percentage = subjectProgress?.progress_percentage || 0;
-                                progressHtml += `
-                                    <p>${subject}</p>
-                                    <div class="progress-bar">
-                                        <div class="progress-fill" style="width: ${percentage}%"></div>
-                                    </div>
-                                    <small style="color: #666;">${percentage}% Complete</small>
-                                `;
-                            }
-                            
-                            overviewDiv.innerHTML = `
-                                <h4>${child.first_name} ${child.last_name}</h4>
-                                <p><strong>Grade:</strong> ${child.grade_level || 'Not set'}</p>
-                                <p><strong>Username:</strong> ${child.username}</p>
-                                <hr style="margin: 15px 0;">
-                                <h5>Learning Progress</h5>
-                                ${progressHtml}
-                            `;
-                        }
-                    }
-                } catch (error) {
-                    console.error('Error loading child details:', error);
-                }
-            }
-
-            async showChildrenTab() {
-                console.log('showChildrenTab called');
-                const childrenSection = document.getElementById('children-section');
-                if (!childrenSection) {
-                    console.error('Children section not found');
-                    return;
-                }
-                
-                try {
-                    // Get linked children
-                    const { data: links, error: linksError } = await this.supabase
-                        .from('parent_child_links')
-                        .select('child_id')
-                        .eq('parent_id', this.currentUser.id);
-                    
-                    if (linksError) throw linksError;
-                    
-                    if (!links || links.length === 0) {
-                        childrenSection.innerHTML = `
-                            <h2>👨‍👩‍👧‍👦 Your Children</h2>
-                            <div class="dashboard">
-                                <div class="card">
-                                    <p>No children linked yet.</p>
-                                    <button class="btn btn-primary" onclick="portal.showTab('dashboard')">Go to Dashboard</button>
-                                </div>
-                            </div>
-                        `;
-                        return;
-                    }
-                    
-                    // Get children's profiles
-                    const childIds = links.map(link => link.child_id);
-                    const { data: children, error: childrenError } = await this.supabase
-                        .from('user_profiles')
-                        .select('*')
-                        .in('id', childIds);
-                    
-                    if (childrenError) throw childrenError;
-                    
-                    let htmlContent = '<h2>👨‍👩‍👧‍👦 Your Children</h2><div class="dashboard">';
-                    
-                    if (children && children.length > 0) {
-                        for (const child of children) {
-                            // Get progress data for this child
-                            const { data: progress } = await this.supabase
-                                .from('student_progress')
-                                .select('*')
-                                .eq('student_id', child.id);
-                            
-                            // Get recent grades for this child
-                            const { data: grades } = await this.supabase
-                                .from('student_grades')
-                                .select('*')
-                                .eq('student_id', child.id)
-                                .order('date_received', { ascending: false })
-                                .limit(3);
-                            
-                            // Get game stats
-                            const { data: gameStats } = await this.supabase
-                                .from('game_scores')
-                                .select('*')
-                                .eq('student_id', child.id);
-                            
-                            const totalGamesPlayed = gameStats?.length || 0;
-                            const highScore = gameStats?.reduce((max, game) => Math.max(max, game.score), 0) || 0;
-                            
-                            // Build progress bars from real data
-                            let progressHtml = '';
-                            const subjects = ['Math Skills', 'Reading Comprehension', 'Science'];
-                            
-                            for (const subject of subjects) {
-                                const subjectProgress = progress?.find(p => p.subject === subject);
-                                const percentage = subjectProgress?.progress_percentage || 0;
-                                progressHtml += `
-                                    <p>${subject}</p>
-                                    <div class="progress-bar">
-                                        <div class="progress-fill" style="width: ${percentage}%;"></div>
-                                    </div>
-                                    <small style="color: #666;">${percentage}% Complete</small>
-                                `;
-                            }
-                            
-                            // Build grades from real data
-                            let gradesHtml = '';
-                            if (grades && grades.length > 0) {
-                                gradesHtml = '<div class="stats">';
-                                for (const grade of grades) {
-                                    gradesHtml += `
-                                        <div class="stat">
-                                            <div class="stat-value">${grade.grade}</div>
-                                            <div class="stat-label">${grade.assignment_name}</div>
-                                        </div>
-                                    `;
-                                }
-                                gradesHtml += '</div>';
-                            } else {
-                                gradesHtml = '<p style="color: #666;">No grades recorded yet</p>';
-                            }
-                            
-                            htmlContent += `
-                                <div class="card">
-                                    <h3>${child.first_name} ${child.last_name}</h3>
-                                    <p><strong>Grade:</strong> ${child.grade_level || 'Not set'}</p>
-                                    <p><strong>Username:</strong> ${child.username}</p>
-                                    <p><strong>Games Played:</strong> ${totalGamesPlayed} | <strong>High Score:</strong> ${highScore}</p>
-                                    <hr style="margin: 15px 0;">
-                                    <h4>📊 Progress</h4>
-                                    ${progressHtml}
-                                    <hr style="margin: 15px 0;">
-                                    <h4>📝 Recent Grades</h4>
-                                    ${gradesHtml}
-                                </div>
-                            `;
-                        }
-                    } else {
-                        htmlContent += '<div class="card"><p>No children data available.</p></div>';
-                    }
-                    
-                    htmlContent += '</div>';
-                    childrenSection.innerHTML = htmlContent;
-                    
-                } catch (error) {
-                    console.error('Error loading children tab:', error);
-                    childrenSection.innerHTML = `
-                        <h2>👨‍👩‍👧‍👦 Your Children</h2>
-                        <div class="dashboard">
-                            <div class="card">
-                                <p>Error loading children data.</p>
-                                <p style="color: #dc3545;">${error.message}</p>
-                                <button class="btn btn-primary" onclick="portal.showTab('dashboard')">Go to Dashboard</button>
-                            </div>
-                        </div>
-                    `;
-                }
-            }
-
-            async showProgressTab() {
-                const progressSection = document.getElementById('progress-section');
-                if (!progressSection) return;
-                
-                try {
-                    const subjects = ['Art', 'Math', 'Science', 'Reading'];
-                    let progressHtml = '<h2>📈 Learning Progress</h2><div class="dashboard">';
-                    
-                    // Get skill tree progress for each subject
-                    for (const subject of subjects) {
-                        try {
-                            const { data: summary } = await this.supabase
-                                .rpc('get_child_skill_summary', { 
-                                    child_id: this.currentUser.id, 
-                                    subject_name: subject 
-                                });
-                            
-                            if (summary && !summary.error) {
-                                progressHtml += `
-                                    <div class="card">
-                                        <h3>${subject} Skills</h3>
-                                        <div class="stats">
-                                            <div class="stat">
-                                                <div class="stat-value">${summary.unlocked_skills}</div>
-                                                <div class="stat-label">Unlocked</div>
-                                            </div>
-                                            <div class="stat">
-                                                <div class="stat-value">${summary.total_skills}</div>
-                                                <div class="stat-label">Total Skills</div>
-                                            </div>
-                                            <div class="stat">
-                                                <div class="stat-value">${summary.progress_percentage}%</div>
-                                                <div class="stat-label">Complete</div>
-                                            </div>
-                                        </div>
-                                        <div class="progress-bar" style="margin: 15px 0;">
-                                            <div class="progress-fill" style="width: ${summary.progress_percentage}%;"></div>
-                                        </div>
-                                        <button class="btn btn-primary" onclick="portal.showTab('skills'); portal.loadSkillTree('${subject}')">
-                                            View ${subject} Skill Tree
-                                        </button>
-                                    </div>
-                                `;
-                            }
-                        } catch (error) {
-                            console.error(`Error loading ${subject} progress:`, error);
-                        }
-                    }
-                    
-                    progressHtml += '</div>';
-                    progressSection.innerHTML = progressHtml;
-                    
-                } catch (error) {
-                    console.error('Error loading progress:', error);
-                    progressSection.innerHTML = '<h2>📈 Progress</h2><p>Error loading progress data.</p>';
-                }
-            }
-            
-            async showGradesTab() {
-                const gradesSection = document.getElementById('grades-section');
-                if (!gradesSection) return;
-                
-                try {
-                    const studentId = this.currentUser.id;
-                    
-                    // Get grades data
-                    const { data: grades } = await this.supabase
-                        .from('student_grades')
-                        .select('*')
-                        .eq('student_id', studentId)
-                        .order('date_received', { ascending: false });
-                    
-                    let gradesHtml = '<h2>📊 Grades & Assignments</h2><div id="grades-content">';
-                    
-                    if (grades && grades.length > 0) {
-                        // Group grades by subject
-                        const gradesBySubject = {};
-                        grades.forEach(grade => {
-                            if (!gradesBySubject[grade.subject]) {
-                                gradesBySubject[grade.subject] = [];
-                            }
-                            gradesBySubject[grade.subject].push(grade);
-                        });
-                        
-                        gradesHtml += '<div class="dashboard">';
-                        
-                        for (const [subject, subjectGrades] of Object.entries(gradesBySubject)) {
-                            gradesHtml += `
-                                <div class="card">
-                                    <h3>${subject}</h3>
-                                    <table style="width: 100%; border-collapse: collapse;">
-                                        <thead>
-                                            <tr style="border-bottom: 2px solid #dee2e6;">
-                                                <th style="text-align: left; padding: 8px;">Assignment</th>
-                                                <th style="text-align: center; padding: 8px;">Grade</th>
-                                                <th style="text-align: right; padding: 8px;">Date</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                            `;
-                            
-                            subjectGrades.forEach(grade => {
-                                const date = new Date(grade.date_received).toLocaleDateString();
-                                gradesHtml += `
-                                    <tr style="border-bottom: 1px solid #dee2e6;">
-                                        <td style="padding: 8px;">${grade.assignment_name}</td>
-                                        <td style="text-align: center; padding: 8px; font-weight: bold; color: #4facfe;">
-                                            ${grade.grade}
-                                        </td>
-                                        <td style="text-align: right; padding: 8px; color: #666;">
-                                            ${date}
-                                        </td>
-                                    </tr>
-                                `;
-                            });
-                            
-                            gradesHtml += '</tbody></table></div>';
-                        }
-                        
-                        gradesHtml += '</div>';
-                    } else {
-                        gradesHtml += '<p>No grades available yet</p>';
-                    }
-                    
-                    gradesHtml += '</div>';
-                    gradesSection.innerHTML = gradesHtml;
-                    
-                } catch (error) {
-                    console.error('Error loading grades:', error);
-                    gradesSection.innerHTML = '<h2>📊 Grades</h2><p>Error loading grades data.</p>';
-                }
             }
 
             async showSkillsTab() {
@@ -1911,10 +1251,7 @@
                         </div>
                     `;
                     
-                    // For now, skip database calls and just load the skill tree directly
-                    console.log(`Loading skill tree for: ${subject}`);
-                    
-                    // Create iframe with CORRECT filename and subject parameter
+                    // Create iframe with skill tree viewer
                     container.innerHTML = `
                         <iframe 
                             id="skill-tree-frame"
@@ -1931,8 +1268,8 @@
                             iframe.contentWindow.postMessage({
                                 type: 'LOAD_SKILL_TREE',
                                 subject: subject,
-                                skillTreeData: null, // Will use hardcoded fallback for now
-                                progress: {} // Start with empty progress for now
+                                skillTreeData: null,
+                                progress: {}
                             }, '*');
                         }, 100);
                     };
@@ -1948,96 +1285,6 @@
                             </button>
                         </div>
                     `;
-                }
-            }
-            
-            async saveSkillProgress(subject, skillStates) {
-                try {
-                    const totalUnlocked = Object.values(skillStates).filter(s => s === 'activated').length;
-                    
-                    const { error } = await this.supabase
-                        .from('student_skill_progress')
-                        .upsert({
-                            student_id: this.currentUser.id,
-                            subject: subject,
-                            skill_states: skillStates,
-                            total_unlocked: totalUnlocked,
-                            last_updated: new Date()
-                        });
-                    
-                    if (error) throw error;
-                    console.log(`Progress saved: ${totalUnlocked} skills unlocked in ${subject}`);
-                    
-                } catch (error) {
-                    console.error('Error saving progress:', error);
-                }
-            }
-            
-            showAddChildForm() {
-                const childrenListDiv = document.getElementById('children-list');
-                if (!childrenListDiv) return;
-                
-                childrenListDiv.innerHTML = `
-                    <div style="background: #f8f9fa; padding: 15px; border-radius: 8px;">
-                        <h4>Link Child Account</h4>
-                        <p style="margin-bottom: 15px;">Enter your child's account email address:</p>
-                        <input type="email" id="child-email-link" placeholder="child@example.com" 
-                               style="width: 100%; padding: 10px; border: 2px solid #dee2e6; border-radius: 8px; margin-bottom: 10px;">
-                        <button class="btn btn-primary" onclick="portal.linkChildAccount()">Link Account</button>
-                        <button class="btn btn-secondary" onclick="portal.loadLinkedChildren()">Cancel</button>
-                    </div>
-                `;
-            }
-            
-            async linkChildAccount() {
-                const email = document.getElementById('child-email-link').value;
-                if (!email) {
-                    alert('Please enter your child\'s email address');
-                    return;
-                }
-                
-                try {
-                    // Search for the child's account in user_profiles
-                    const { data: profiles, error } = await this.supabase
-                        .from('user_profiles')
-                        .select('*')
-                        .or(`email.eq.${email},username.eq.${email.split('@')[0]}`)
-                        .eq('user_type', 'student')
-                        .single();
-                    
-                    if (profiles) {
-                        // Found the child's account - create the link
-                        await this.autoLinkChild(profiles.id, email);
-                    } else {
-                        // Try adding to pending list
-                        let pendingEmails = [];
-                        if (this.userProfile && this.userProfile.parent_email) {
-                            pendingEmails = this.userProfile.parent_email.split(',').map(e => e.trim());
-                        }
-                        
-                        if (!pendingEmails.includes(email)) {
-                            pendingEmails.push(email);
-                            
-                            const { error: updateError } = await this.supabase
-                                .from('user_profiles')
-                                .update({ 
-                                    parent_email: pendingEmails.join(', ')
-                                })
-                                .eq('id', this.currentUser.id);
-                            
-                            if (!updateError) {
-                                this.userProfile.parent_email = pendingEmails.join(', ');
-                                alert('Email added to pending list. The child needs to create their account first.');
-                            }
-                        } else {
-                            alert('This email is already in your pending list.');
-                        }
-                        
-                        await this.loadLinkedChildren();
-                    }
-                } catch (error) {
-                    console.error('Error linking child account:', error);
-                    alert('Unable to find a student account with that email. Make sure they have registered as a student.');
                 }
             }
 
@@ -2066,12 +1313,8 @@
             
                 // Special handling for specific tabs
                 try {
-                    if (tabName === 'children') {
-                        this.showChildrenTab();
-                    } else if (tabName === 'skills') {
+                    if (tabName === 'skills') {
                         this.showSkillsTab();
-                    } else if (tabName === 'grades') {
-                        this.showGradesTab();
                     }
                 } catch (error) {
                     console.error(`Error loading ${tabName} tab:`, error);
@@ -2097,11 +1340,9 @@
 
             async logout() {
                 try {
-                    // Set a timeout for Supabase logout
-                    const logoutPromise = this.supabase ? this.supabase.auth.signOut() : Promise.resolve();
-                    const timeoutPromise = new Promise((resolve) => setTimeout(resolve, 3000)); // 3 second timeout
-                    
-                    await Promise.race([logoutPromise, timeoutPromise]);
+                    if (this.supabase) {
+                        await this.supabase.auth.signOut();
+                    }
                 } catch (error) {
                     console.log('Logout error (continuing anyway):', error);
                 }
@@ -2110,74 +1351,38 @@
                 this.currentUser = null;
                 this.userProfile = null;
                 
-                // Hide all sections EXCEPT login
-                const setupSection = document.getElementById('setup-section');
-                if (setupSection) setupSection.classList.add('hidden');
+                // Hide all sections
+                document.querySelectorAll('[id$="-section"]').forEach(section => {
+                    if (section) section.classList.add('hidden');
+                });
                 
-                const loginSection = document.getElementById('login-section');
-                if (loginSection) loginSection.classList.remove('hidden');
-                
-                const dashboardSection = document.getElementById('dashboard-section');
-                if (dashboardSection) dashboardSection.classList.add('hidden');
-                
-                const gamesSection = document.getElementById('games-section');
-                if (gamesSection) gamesSection.classList.add('hidden');
-                
-                const skillsSection = document.getElementById('skills-section');
-                if (skillsSection) skillsSection.classList.add('hidden');
-                
-                const gradesSection = document.getElementById('grades-section');
-                if (gradesSection) gradesSection.classList.add('hidden');
-                
-                const childrenSection = document.getElementById('children-section');
-                if (childrenSection) childrenSection.classList.add('hidden');
-                
-                // Hide ALL tabs for logged out users
-                const setupTab = document.getElementById('setup-tab');
-                if (setupTab) setupTab.style.display = 'none';
-                
-                const loginTab = document.getElementById('login-tab');
-                if (loginTab) loginTab.style.display = 'none';
-                
-                const dashboardTab = document.getElementById('dashboard-tab');
-                if (dashboardTab) dashboardTab.style.display = 'none';
-                
-                const gamesTab = document.getElementById('games-tab');
-                if (gamesTab) gamesTab.style.display = 'none';
-                
-                const skillsTab = document.getElementById('skills-tab');
-                if (skillsTab) skillsTab.style.display = 'none';
-                
-                const gradesTab = document.getElementById('grades-tab');
-                if (gradesTab) gradesTab.style.display = 'none';
-                
-                const childrenTab = document.getElementById('children-tab');
-                if (childrenTab) childrenTab.style.display = 'none';
+                // Hide all tabs
+                document.querySelectorAll('.nav-tab').forEach(tab => {
+                    if (tab) tab.style.display = 'none';
+                });
                 
                 // Hide logout button
                 const logoutBtn = document.getElementById('logout-btn');
                 if (logoutBtn) logoutBtn.classList.add('hidden');
                 
-                // Reset welcome message to generic
+                // Reset welcome message
                 const welcomeMessage = document.getElementById('welcome-message');
                 if (welcomeMessage) welcomeMessage.textContent = 'Welcome to your learning dashboard';
                 
-                // Clear any active tab styling
-                document.querySelectorAll('.nav-tab').forEach(tab => {
-                    if (tab) tab.classList.remove('active');
-                });
-                
-                // Clear form fields safely
+                // Clear form fields
                 const emailField = document.getElementById('email');
                 const passwordField = document.getElementById('password');
                 if (emailField) emailField.value = '';
                 if (passwordField) passwordField.value = '';
                 
-                console.log('Logout completed - all tabs hidden');
+                // Show login form
+                this.showLoginForm();
+                
+                console.log('Logout completed');
             }
-        } // END OF CLASS
+        }
 
-        // Global helper functions outside the class
+        // Global helper functions
         function showTab(tabName) {
             portal.showTab(tabName);
         }
@@ -2233,8 +1438,10 @@
             
             try {
                 const deleteBtn = document.getElementById('delete-account-btn');
-                deleteBtn.disabled = true;
-                deleteBtn.textContent = 'Deleting...';
+                if (deleteBtn) {
+                    deleteBtn.disabled = true;
+                    deleteBtn.textContent = 'Deleting...';
+                }
                 
                 // Call the server-side delete function
                 const { data, error } = await portal.supabase.rpc('delete_user_account');
@@ -2272,3 +1479,6 @@
 
         // Initialize the portal
         const portal = new StudentPortal();
+    </script>
+</body>
+</html>
