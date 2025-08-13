@@ -238,434 +238,332 @@ async function Classes(app) {
 
 /* Class Detail (robust) */
 async function ClassDetail(app) {
+    /* ---------- Threads (Class scope) + collapsible messages ---------- */
+  const threadsCard = h('div', { class: 'card' }, [ h('h3', {}, 'Class Threads') ]);
+  wrap.append(threadsCard);
+  
+  // New thread (teacher only)
+  if (prof.role === 'teacher' && cls.teacher_id === prof.id) {
+    threadsCard.append(
+      h('div', { class: 'row' }, [
+        h('input', { id: 'thrTitle', placeholder: 'Thread title (optional)' }),
+        h('button', {
+          class: 'btn',
+          onclick: async () => {
+            const title = document.getElementById('thrTitle').value.trim() || null;
+            const { error } = await sb.from('threads').insert({
+              scope: 'class', class_id: cls.id, title, created_by: prof.id
+            });
+            if (error) return alert(error.message);
+            renderRoute();
+          }
+        }, 'New Thread')
+      ])
+    );
+  }
+  
   try {
-    const prof = await currentProfile();
-    if (!prof) { app.innerHTML = `<div class="card">Please sign in.</div>`; return; }
-
-    const classId = (location.hash.split('?')[0]).split('/')[2]; // strip ?query
-    if (!classId) { app.innerHTML = `<div class="card">Invalid class ID.</div>`; return; }
-
-    // Load class row
-    const { data: cls, error: clsErr } = await sb.from('classes').select('*').eq('id', classId).single();
-    if (clsErr || !cls) { app.innerHTML = `<div class="card">Class not found.</div>`; return; }
-
-    // Mount base shell first so we don't sit on "Loading..." forever
-    const wrap = h('div');
-    wrap.append(h('div', { class: 'card' }, [ h('h2', {}, cls.name) ]));
-    app.innerHTML = '';
-    app.append(wrap);
-
-    /* ---------- Roster (teacher only) ---------- */
-    if (prof.role === 'teacher' && cls.teacher_id === prof.id) {
-      const rosterCard = h('div', { class: 'card' }, [ h('h3', {}, 'Roster'), h('small', { class: 'muted' }, 'Loading roster…') ]);
-      wrap.append(rosterCard);
-
-      try {
-        // 2-step fetch (avoid join recursion issues)
-        const { data: links, error: lerr } = await sb.from('class_students').select('student_id').eq('class_id', cls.id);
-        if (lerr) throw lerr;
-        const ids = (links || []).map(r => r.student_id);
-        let students = [];
-        if (ids.length) {
-          const { data: names, error: nerr } = await sb.from('profiles')
-            .select('id, first_name, last_name')
-            .in('id', ids);
-          if (nerr) throw nerr;
-          students = names || [];
-        }
-        const allStudents = await listStudents();
-
-        rosterCard.innerHTML = '';
-        rosterCard.append(
-          h('h3', {}, 'Roster'),
-          students.length
-            ? h('div', {}, students.map(s => h('div', {}, `${s.first_name} ${s.last_name}`)))
-            : h('small', { class: 'muted' }, 'No students yet.'),
-          h('details', {}, [
-            h('summary', {}, 'Add students'),
-            h('div', { class: 'row' }, [
-              (() => {
-                const sel = h('select', { id: 'selStudent' }, [ h('option', { value: '' }, '-- choose student --') ]);
-                (allStudents || []).forEach(s => sel.append(h('option', { value: s.id }, `${s.first_name} ${s.last_name}`)));
-                return sel;
-              })(),
-              h('button', {
-                class: 'btn',
-                onclick: async () => {
-                  const student_id = document.getElementById('selStudent').value;
-                  if (!student_id) return;
-                  const { error } = await sb.from('class_students').insert({ class_id: cls.id, student_id });
-                  if (error) return alert(error.message);
-                  renderRoute();
-                }
-              }, 'Add')
-            ])
-          ])
-        );
-      } catch (e) {
-        rosterCard.innerHTML = '';
-        rosterCard.append(h('h3', {}, 'Roster'), h('small', { class: 'muted' }, `Error: ${e.message || e}`));
-      }
-    }
-
-    /* ---------- Assignments ---------- */
-    const asgCard = h('div', { class: 'card' }, [ h('h3', {}, 'Assignments') ]);
-    wrap.append(asgCard);
-
-    // Creator (teacher only) — with Start/Finish labels
-    if (prof.role === 'teacher' && cls.teacher_id === prof.id) {
-      const create = h('details', {}, [
-        h('summary', {}, 'Create assignment'),
-        h('div', { class: 'row' }, [
-          h('input', { id: 'aTitle', placeholder: 'Title' }),
-          h('div', { class: 'col' }, [
-            h('label', { for: 'aStart' }, 'Start (optional)'),
-            h('input', { id: 'aStart', type: 'datetime-local', placeholder: 'Start (optional)' })
-          ]),
-          h('div', { class: 'col' }, [
-            h('label', { for: 'aDue' }, 'Finish (optional)'),
-            h('input', { id: 'aDue', type: 'datetime-local', placeholder: 'Finish (optional)' })
-          ]),
-        ]),
-        h('div', { class: 'col' }, [
-          h('textarea', { id: 'aDesc', placeholder: 'Description (optional)' }),
-          h('textarea', { id: 'aSyllabus', placeholder: 'Syllabus JSON (optional)' }),
-        ]),
-        h('div', { class: 'row' }, [
-          h('label', {}, [h('input', { type: 'checkbox', id: 'aAll', checked: true }), ' Assign to all students']),
-          h('button', {
-            class: 'btn',
-            onclick: async () => {
-              try {
-                const title = document.getElementById('aTitle').value.trim();
-                if (!title) return alert('Title required');
-
-                const description = document.getElementById('aDesc').value.trim() || null;
-                const startRaw = document.getElementById('aStart').value || null;
-                const dueRaw   = document.getElementById('aDue').value || null;
-                const start_at = startRaw ? new Date(startRaw).toISOString() : null;
-                const due_at   = dueRaw   ? new Date(dueRaw).toISOString()   : null;
-                if (start_at && due_at && new Date(start_at) > new Date(due_at)) {
-                  return alert('Start must be before Finish.');
-                }
-                const assign_all = document.getElementById('aAll').checked;
-
-                let syllabus = null;
-                const syllabusTxt = document.getElementById('aSyllabus').value.trim();
-                if (syllabusTxt) {
-                  try { syllabus = JSON.parse(syllabusTxt); }
-                  catch { return alert('Syllabus must be valid JSON (or leave it blank).'); }
-                }
-
-                const { data, error } = await sb.from('assignments').insert({
-                  class_id: cls.id, title, description, syllabus, due_at, start_at, assign_all, created_by: prof.id
-                }).select('id').single();
-                if (error) throw error;
-
-                if (!assign_all) {
-                  const emails = prompt('Enter student emails (comma separated) to assign:') || '';
-                  const arr = emails.split(',').map(e => e.trim()).filter(Boolean);
-                  if (arr.length) {
-                    const { data: stu } = await sb.from('profiles').select('id, email').in('email', arr).eq('role', 'student');
-                    const rows = (stu || []).map(s => ({ assignment_id: data.id, student_id: s.id }));
-                    if (rows.length) await sb.from('assignment_assignees').insert(rows);
-                  }
-                }
-                alert('Assignment created.');
-                renderRoute();
-              } catch (e) {
-                alert('Error: ' + (e?.message || e));
+    const { data: threads, error: terr } = await sb
+      .from('threads')
+      .select('*')
+      .eq('class_id', cls.id)
+      .eq('scope', 'class')
+      .order('created_at', { ascending: false });
+  
+    if (terr) throw terr;
+  
+    if (!threads?.length) {
+      threadsCard.append(h('small', { class: 'muted' }, 'No threads yet.'));
+    } else {
+      for (const t of threads) {
+        const threadBoxId = `msgs-${t.id}`;
+  
+        // Collapsible thread container
+        const sum = h('summary', {}, t.title || '(no title)');
+        const details = h('details', { open: true }, [
+          sum,
+          h('div', { id: threadBoxId }, h('small', { class: 'muted' }, 'Loading...')),
+          h('div', { class: 'row' }, [
+            h('input', { id: `msg-${t.id}`, placeholder: 'Write a message...' }),
+            h('button', {
+              class: 'btn',
+              onclick: async () => {
+                const input = document.getElementById(`msg-${t.id}`);
+                const content = input?.value.trim();
+                if (!content) return;
+                const { error } = await sb.from('messages').insert({
+                  thread_id: t.id, content, user_id: prof.id
+                });
+                if (error) return alert(error.message);
+                input.value = '';
+                await loadThread(t.id, threadBoxId, sum);
               }
-            }
-          }, 'Create')
-        ])
-      ]);
-      asgCard.append(create);
-    }
-
-    // List assignments
-    try {
-      const { data: assignments, error: aerr } = await sb
-        .from('assignments')
-        .select('*')
-        .eq('class_id', cls.id)
-        .order('created_at', { ascending: false });
-      if (aerr) throw aerr;
-
-      if (!assignments?.length) {
-        asgCard.append(h('small', { class: 'muted' }, 'No assignments.'));
-      } else {
-        const table = h('table', {}, [
-          h('thead', {}, h('tr', {}, [ 'Title', 'Finish', 'Start', 'Actions' ].map(c => h('th', {}, c)))),
-          h('tbody', {}, assignments.map(a => {
-            const actionsTd = h('td', {});
-            // Teacher: file upload button
-            if (prof.role === 'teacher' && cls.teacher_id === prof.id) {
-              actionsTd.append(
-                h('button', { class: 'btn secondary', onclick: () => uploadClassFile(a.id) }, 'Upload file')
-              );
-            }
-            return h('tr', {}, [
-              h('td', {}, a.title),
-              h('td', {}, fmtDate(a.due_at)),
-              h('td', {}, fmtDate(a.start_at || a.created_at)),
-              actionsTd
-            ]);
-          }))
+            }, 'Send')
+          ])
         ]);
-        asgCard.append(table);
+  
+        threadsCard.append(h('div', { class: 'thread' }, [ details ]));
+        setTimeout(() => loadThread(t.id, threadBoxId, sum), 0);
       }
-    } catch (e) {
-      asgCard.append(h('small', { class: 'muted' }, `Error loading assignments: ${e.message || e}`));
-    }
-
-    /* ---------- Threads (Class scope) + subthreads ---------- */
-    const threadsCard = h('div', { class: 'card' }, [ h('h3', {}, 'Class Threads') ]);
-    wrap.append(threadsCard);
-
-    if (prof.role === 'teacher' && cls.teacher_id === prof.id) {
-      threadsCard.append(
-        h('div', { class: 'row' }, [
-          h('input', { id: 'thrTitle', placeholder: 'Thread title (optional)' }),
-          h('button', {
-            class: 'btn',
-            onclick: async () => {
-              const title = document.getElementById('thrTitle').value.trim() || null;
-              const { error } = await sb.from('threads').insert({ scope: 'class', class_id: cls.id, title, created_by: prof.id });
-              if (error) return alert(error.message);
-              renderRoute();
-            }
-          }, 'New Thread')
-        ])
-      );
-    }
-
-    try {
-      const { data: threads, error: terr } = await sb
-        .from('threads')
-        .select('*')
-        .eq('class_id', cls.id)
-        .eq('scope', 'class')
-        .order('created_at', { ascending: false });
-
-      if (terr) throw terr;
-
-      if (!threads?.length) {
-        threadsCard.append(h('small', { class: 'muted' }, 'No threads yet.'));
-      } else {
-        for (const t of threads) {
-          const boxId = `msgs-${t.id}`;
-          const threadEl = h('div', { class: 'thread' }, [
-            h('strong', {}, t.title || '(no title)'),
-            h('div', { id: boxId }, h('small', { class: 'muted' }, 'Loading...')),
-            h('div', { class: 'row' }, [
-              h('input', { id: `msg-${t.id}`, placeholder: 'Write a message...' }),
-              h('button', {
-                class: 'btn',
-                onclick: async () => {
-                  const input = document.getElementById(`msg-${t.id}`);
-                  const content = input?.value.trim();
-                  if (!content) return;
-                  const { error } = await sb.from('messages').insert({ thread_id: t.id, content, user_id: prof.id });
-                  if (error) return alert(error.message);
-                  await loadMessages(t.id);
-                  if (input) input.value = '';
-                }
-              }, 'Send')
-            ])
-          ]);
-          threadsCard.append(threadEl);
-          setTimeout(() => loadMessages(t.id), 0); // ensure container exists
-        }
-      }
-    } catch (e) {
-      threadsCard.append(h('small', { class: 'muted' }, `Error loading threads: ${e.message || e}`));
-    }
-
-    // Safe message renderer
-    async function loadMessages(threadId) {
-      const box = document.getElementById(`msgs-${threadId}`);
-      if (!box) return;
-      const { data: msgs, error } = await sb
-        .from('messages')
-        .select('*')
-        .eq('thread_id', threadId)
-        .order('created_at', { ascending: true });
-      if (!box || !box.isConnected) return;
-      if (error) { box.innerHTML = `<small class="muted">Error: ${error.message}</small>`; return; }
-      if (!msgs?.length) { box.innerHTML = '<small class="muted">No messages yet.</small>'; return; }
-
-      box.innerHTML = '';
-      const byParent = new Map();
-      msgs.forEach(m => {
-        const k = m.parent_id || 'root';
-        if (!byParent.has(k)) byParent.set(k, []);
-        byParent.get(k).push(m);
-      });
-
-      function renderThread(parentId, depth = 0) {
-        const arr = byParent.get(parentId || 'root') || [];
-        for (const m of arr) {
-          const msgEl = h('div', { style: `margin-left:${depth * 16}px` }, [
-            h('p', {}, m.content),
-            h('small', { class: 'muted' }, fmtDate(m.created_at)),
-            h('div', { class: 'row' }, [
-              h('input', { id: `reply-${m.id}`, placeholder: 'Reply...' }),
-              h('button', {
-                class: 'btn secondary',
-                onclick: async () => {
-                  const input = document.getElementById(`reply-${m.id}`);
-                  const content = input?.value.trim();
-                  if (!content) return;
-                  const { error } = await sb.from('messages').insert({
-                    thread_id: threadId, content, user_id: prof.id, parent_id: m.id
-                  });
-                  if (error) return alert(error.message);
-                  await loadMessages(threadId);
-                }
-              }, 'Reply')
-            ])
-          ]);
-          box.append(msgEl);
-          renderThread(m.id, depth + 1);
-        }
-      }
-      renderThread(null, 0);
-    }
-
-    // File upload helper (teacher uploads to class-files)
-    async function uploadClassFile(assignmentId) {
-      const file = await pickFile();
-      if (!file) return;
-      const path = `${assignmentId}/${Date.now()}-${file.name}`;
-      const { data, error } = await sb.storage.from('class-files').upload(path, file);
-      if (error) return alert(error.message);
-      await sb.from('assignment_files').insert({ assignment_id: assignmentId, file_path: data.path, uploaded_by: prof.id });
-      alert('File uploaded.');
     }
   } catch (e) {
-    console.error('ClassDetail failed:', e);
-    app.innerHTML = `<div class="card">Error loading class: ${e.message || e}</div>`;
+    threadsCard.append(h('small', { class: 'muted' }, `Error loading threads: ${e.message || e}`));
+  }
+  
+  /* Helpers for threads */
+  async function loadThread(threadId, boxId, summaryEl) {
+    const box = document.getElementById(boxId);
+    if (!box) return;
+  
+    const { data: msgs, error } = await sb
+      .from('messages')
+      .select('id, content, user_id, parent_id, created_at')
+      .eq('thread_id', threadId)
+      .order('created_at', { ascending: true });
+  
+    if (!box || !box.isConnected) return;
+  
+    if (error) { box.innerHTML = `<small class="muted">Error: ${error.message}</small>`; return; }
+    if (!msgs?.length) { box.innerHTML = '<small class="muted">No messages yet.</small>'; summaryEl.textContent = updateSummary(summaryEl.textContent, 0); return; }
+  
+    // Build name map (id -> "First Last" or email)
+    const ids = [...new Set(msgs.map(m => m.user_id))];
+    const nameMap = await fetchNameMap(ids);
+  
+    // Group by parent (threaded)
+    box.innerHTML = '';
+    const byParent = new Map();
+    msgs.forEach(m => {
+      const k = m.parent_id || 'root';
+      if (!byParent.has(k)) byParent.set(k, []);
+      byParent.get(k).push(m);
+    });
+  
+    // Render root messages; each root is collapsible, replies nested
+    function renderBranch(parentId, depth = 0) {
+      const arr = byParent.get(parentId || 'root') || [];
+      for (const m of arr) {
+        const who = nameMap.get(m.user_id) || 'Unknown';
+        const header = `${who} • ${fmtDate(m.created_at)}`;
+  
+        const content = h('div', {}, [
+          h('p', {}, m.content),
+          h('div', { class: 'row' }, [
+            h('input', { id: `reply-${m.id}`, placeholder: 'Reply…' }),
+            h('button', {
+              class: 'btn secondary',
+              onclick: async () => {
+                const inp = document.getElementById(`reply-${m.id}`);
+                const content = inp?.value.trim();
+                if (!content) return;
+                const { error } = await sb.from('messages').insert({
+                  thread_id: threadId, content, user_id: prof.id, parent_id: m.id
+                });
+                if (error) return alert(error.message);
+                if (inp) inp.value = '';
+                await loadThread(threadId, boxId, summaryEl);
+              }
+            }, 'Reply')
+          ])
+        ]);
+  
+        // Collapsible for each message (root open by default)
+        const msgNode = depth === 0
+          ? h('details', { open: true, style: `margin-left:${depth * 16}px` }, [ h('summary', {}, header), content ])
+          : h('details', { style: `margin-left:${depth * 16}px` }, [ h('summary', {}, header), content ]);
+  
+        box.append(msgNode);
+        renderBranch(m.id, depth + 1);
+      }
+    }
+    renderBranch(null, 0);
+    summaryEl.textContent = updateSummary(summaryEl.textContent, msgs.length);
+  }
+  
+  async function fetchNameMap(ids) {
+    if (!ids?.length) return new Map();
+    const { data } = await sb
+      .from('profiles')
+      .select('id, first_name, last_name, email')
+      .in('id', ids);
+    const map = new Map();
+    (data || []).forEach(p => {
+      const name = [p.first_name, p.last_name].filter(Boolean).join(' ') || p.email || 'Unknown';
+      map.set(p.id, name);
+    });
+    return map;
+  }
+  
+  function updateSummary(base, count) {
+    // e.g., "Algebra Thread" -> "Algebra Thread (3)"
+    const b = base.replace(/\s\(\d+\)$/, '');
+    return `${b} (${count})`;
   }
 }
 
-/* Messaging: DMs between teacher and student/parent */
-  async function Messaging(app) {
-    const prof = await currentProfile();
-    if (!prof) { app.innerHTML = `<div class="card">Please sign in.</div>`; return; }
-  
-    const container = h('div', { class: 'card' }, [ h('h2', {}, 'Direct Messages') ]);
-  
-    if (prof.role === 'teacher') {
-      container.append(h('p', {}, 'Start a DM with a student or parent.'));
-      const { data: people } = await sb
-        .from('profiles')
-        .select('id, first_name, last_name, role')
-        .in('role', ['student','parent'])
-        .order('last_name');
-  
-      const sel = h('select', { id: 'selDM' }, [
-        h('option', { value: '' }, '-- choose recipient --')
-      ]);
-  
-      // Hide yourself from the list (defense-in-depth)
-      (people || [])
-        .filter(p => p.id !== prof.id)
-        .forEach(p => sel.append(
-          h('option', { value: p.id }, `${p.first_name} ${p.last_name} (${p.role})`)
-        ));
-  
-      container.append(h('div', { class: 'row' }, [
-        sel,
-        h('button', {
-          class: 'btn',
-          onclick: async () => {
-            const userId = sel.value;
-            if (!userId) return;
-            // Use RPC to find-or-create the DM thread under RLS safely
-            const { data: threadId, error } = await sb.rpc('get_or_create_dm_thread', { other_user: userId });
-            if (error) return alert(error.message);
-            location.hash = `#/messaging?thread=${threadId}`;
-            setTimeout(renderRoute, 0);
-          }
-        }, 'Open DM')
-      ]));
-  
-    } else {
-      // Students/Parents can only DM teachers
-      const { data: teachers } = await sb
-        .from('profiles')
-        .select('id, first_name, last_name, role')
-        .eq('role', 'teacher')
-        .order('last_name');
-  
-      const sel = h('select', { id: 'selDM' }, [
-        h('option', { value: '' }, '-- choose teacher --')
-      ]);
-  
-      // Hide yourself from the list (defense-in-depth)
-      (teachers || [])
-        .filter(p => p.id !== prof.id)
-        .forEach(p => sel.append(
-          h('option', { value: p.id }, `${p.first_name} ${p.last_name}`)
-        ));
-  
-      container.append(h('div', { class: 'row' }, [
-        sel,
-        h('button', {
-          class: 'btn',
-          onclick: async () => {
-            const userId = sel.value;
-            if (!userId) return;
-            // Use RPC to find-or-create the DM thread under RLS safely
-            const { data: threadId, error } = await sb.rpc('get_or_create_dm_thread', { other_user: userId });
-            if (error) return alert(error.message);
-            location.hash = `#/messaging?thread=${threadId}`;
-            setTimeout(renderRoute, 0);
-          }
-        }, 'Open DM')
-      ]));
-    }
-
-  // If thread specified, render it
-  const params = new URLSearchParams(location.hash.split('?')[1] || '');
-  const threadId = params.get('thread');
-  if (threadId) {
-    const box = h('div', { class: 'card' }, [ h('h3', {}, 'Conversation') ]);
-    const msgs = h('div', { id: 'dmBox' }, h('small', { class: 'muted' }, 'Loading...'));
-    const row = h('div', { class: 'row' }, [
-      h('input', { id: 'dmText', placeholder: 'Type a message...' }),
-      h('button', { class: 'btn', onclick: async () => {
-        const content = document.getElementById('dmText').value.trim();
-        if (!content) return;
-        const { error } = await sb.from('messages').insert({ thread_id: threadId, content, user_id: prof.id });
-        if (error) return alert(error.message);
-        await loadDm();
-        document.getElementById('dmText').value = '';
-      }}, 'Send')
-    ]);
-    box.append(msgs, row);
-    container.append(box);
-
-    await loadDm();
-
-    async function loadDm() {
-      const { data: t } = await sb.from('threads').select('*').eq('id', threadId).single();
-      if (!t || t.scope !== 'dm') { msgs.innerHTML = '<small class="muted">Thread not found.</small>'; return; }
-      const { data: m } = await sb.from('messages').select('*').eq('thread_id', threadId).order('created_at', { ascending: true });
-      msgs.innerHTML = '';
-      (m || []).forEach(msg => {
-        msgs.append(h('div', { class: 'thread' }, [
-          h('p', {}, msg.content),
-          h('small', { class: 'muted' }, fmtDate(msg.created_at))
+/* Messaging: DMs between teacher and student/parent  — collapsible, with names */
+    async function Messaging(app) {
+      const prof = await currentProfile();
+      if (!prof) { app.innerHTML = `<div class="card">Please sign in.</div>`; return; }
+    
+      const container = h('div', { class: 'card' }, [ h('h2', {}, 'Direct Messages') ]);
+      app.innerHTML = ''; app.append(container);
+    
+      // Recipient picker
+      if (prof.role === 'teacher') {
+        container.append(h('p', {}, 'Start a DM with a student or parent.'));
+        const { data: people } = await sb
+          .from('profiles')
+          .select('id, first_name, last_name, role')
+          .in('role', ['student','parent'])
+          .order('last_name');
+    
+        const sel = h('select', { id: 'selDM' }, [
+          h('option', { value: '' }, '-- choose recipient --')
+        ]);
+        (people || [])
+          .filter(p => p.id !== prof.id)
+          .forEach(p => sel.append(h('option', { value: p.id }, `${p.first_name} ${p.last_name} (${p.role})`)));
+    
+        container.append(h('div', { class: 'row' }, [
+          sel,
+          h('button', {
+            class: 'btn',
+            onclick: async () => {
+              const userId = sel.value; if (!userId) return;
+              const { data: threadId, error } = await sb.rpc('get_or_create_dm_thread', { other_user: userId });
+              if (error) return alert(error.message);
+              location.hash = `#/messaging?thread=${threadId}`;
+              setTimeout(renderRoute, 0);
+            }
+          }, 'Open DM')
         ]));
-      });
+    
+      } else {
+        container.append(h('p', {}, 'Start a DM with a teacher.'));
+        const { data: teachers } = await sb
+          .from('profiles')
+          .select('id, first_name, last_name, role')
+          .eq('role', 'teacher')
+          .order('last_name');
+    
+        const sel = h('select', { id: 'selDM' }, [
+          h('option', { value: '' }, '-- choose teacher --')
+        ]);
+        (teachers || [])
+          .filter(p => p.id !== prof.id)
+          .forEach(p => sel.append(h('option', { value: p.id }, `${p.first_name} ${p.last_name}`)));
+    
+        container.append(h('div', { class: 'row' }, [
+          sel,
+          h('button', {
+            class: 'btn',
+            onclick: async () => {
+              const userId = sel.value; if (!userId) return;
+              const { data: threadId, error } = await sb.rpc('get_or_create_dm_thread', { other_user: userId });
+              if (error) return alert(error.message);
+              location.hash = `#/messaging?thread=${threadId}`;
+              setTimeout(renderRoute, 0);
+            }
+          }, 'Open DM')
+        ]));
+      }
+    
+      // If a thread is selected via hash, render it (collapsible)
+      const qs = new URLSearchParams((location.hash.split('?')[1] || ''));
+      const threadId = qs.get('thread');
+      if (!threadId) return;
+    
+      const convoId = `dm-${threadId}`;
+      const header = h('summary', {}, 'Conversation');
+      const convo = h('details', { open: true }, [
+        header,
+        h('div', { id: convoId }, h('small', { class: 'muted' }, 'Loading…')),
+        h('div', { class: 'row' }, [
+          h('input', { id: 'dmInput', placeholder: 'Write a message…' }),
+          h('button', {
+            class: 'btn',
+            onclick: async () => {
+              const inp = document.getElementById('dmInput');
+              const content = inp?.value.trim(); if (!content) return;
+              const { error } = await sb.from('messages').insert({
+                thread_id: threadId, content, user_id: prof.id
+              });
+              if (error) return alert(error.message);
+              inp.value = '';
+              await loadDm(threadId, convoId, header);
+            }
+          }, 'Send')
+        ])
+      ]);
+      container.append(convo);
+      setTimeout(() => loadDm(threadId, convoId, header), 0);
+    
+      async function loadDm(threadId, boxId, summaryEl) {
+        const box = document.getElementById(boxId);
+        if (!box) return;
+    
+        const { data: msgs, error } = await sb
+          .from('messages')
+          .select('id, content, user_id, parent_id, created_at')
+          .eq('thread_id', threadId)
+          .order('created_at', { ascending: true });
+    
+        if (!box || !box.isConnected) return;
+    
+        if (error) { box.innerHTML = `<small class="muted">Error: ${error.message}</small>`; return; }
+        if (!msgs?.length) { box.innerHTML = '<small class="muted">No messages yet.</small>'; summaryEl.textContent = updateSummary('Conversation', 0); return; }
+    
+        const ids = [...new Set(msgs.map(m => m.user_id))];
+        const nameMap = await fetchNameMap(ids);
+    
+        // DM: also collapsible per root message
+        box.innerHTML = '';
+        const byParent = new Map();
+        msgs.forEach(m => {
+          const k = m.parent_id || 'root';
+          if (!byParent.has(k)) byParent.set(k, []);
+          byParent.get(k).push(m);
+        });
+    
+        function renderBranch(parentId, depth = 0) {
+          const arr = byParent.get(parentId || 'root') || [];
+          for (const m of arr) {
+            const who = nameMap.get(m.user_id) || 'Unknown';
+            const header = `${who} • ${fmtDate(m.created_at)}`;
+    
+            const content = h('div', {}, [
+              h('p', {}, m.content),
+              h('div', { class: 'row' }, [
+                h('input', { id: `dm-reply-${m.id}`, placeholder: 'Reply…' }),
+                h('button', {
+                  class: 'btn secondary',
+                  onclick: async () => {
+                    const inp = document.getElementById(`dm-reply-${m.id}`);
+                    const text = inp?.value.trim(); if (!text) return;
+                    const { error } = await sb.from('messages').insert({
+                      thread_id: threadId, content: text, user_id: prof.id, parent_id: m.id
+                    });
+                    if (error) return alert(error.message);
+                    if (inp) inp.value = '';
+                    await loadDm(threadId, boxId, summaryEl);
+                  }
+                }, 'Reply')
+              ])
+            ]);
+    
+            const node = depth === 0
+              ? h('details', { open: true, style: `margin-left:${depth * 16}px` }, [ h('summary', {}, header), content ])
+              : h('details', { style: `margin-left:${depth * 16}px` }, [ h('summary', {}, header), content ]);
+    
+            box.append(node);
+            renderBranch(m.id, depth + 1);
+          }
+        }
+        renderBranch(null, 0);
+        summaryEl.textContent = updateSummary('Conversation', msgs.length);
+      }
     }
-  }
-
-  app.innerHTML = '';
-  app.append(container);
-}
 
 async function ensureDmThread(userIds) {
   // Expect exactly 2 users: me + other
