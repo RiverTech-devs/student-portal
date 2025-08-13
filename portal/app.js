@@ -547,42 +547,82 @@ async function ClassDetail(app) {
   }
 }
 
+
 /* Messaging: DMs between teacher and student/parent */
-async function Messaging(app) {
-  const prof = await currentProfile();
-  if (!prof) { app.innerHTML = `<div class="card">Please sign in.</div>`; return; }
-
-  const container = h('div', { class: 'card' }, [ h('h2', {}, 'Direct Messages') ]);
-
-  if (prof.role === 'teacher') {
-    container.append(h('p', {}, 'Start a DM with a student or parent.'));
-    const { data: people } = await sb.from('profiles').select('id, first_name, last_name, role').in('role', ['student','parent']).order('last_name');
-    const sel = h('select', { id: 'selDM' }, [ h('option', { value: '' }, '-- choose recipient --') ]);
-    (people || []).forEach(p => sel.append(h('option', { value: p.id }, `${p.first_name} ${p.last_name} (${p.role})`)));
-    container.append(h('div', { class: 'row' }, [
-      sel,
-      h('button', { class: 'btn', onclick: async () => {
-        const userId = sel.value;
-        if (!userId) return;
-        // Create or find DM thread with both users
-        let threadId = await ensureDmThread([prof.id, userId]);
-        location.hash = `#/messaging?thread=${threadId}`;
-      }}, 'Open DM')
-    ]));
-  } else {
-    // Students/Parents can only DM teachers
-    const { data: teachers } = await sb.from('profiles').select('id, first_name, last_name, role').eq('role', 'teacher').order('last_name');
-    const sel = h('select', { id: 'selDM' }, [ h('option', { value: '' }, '-- choose teacher --') ]);
-    (teachers || []).forEach(p => sel.append(h('option', { value: p.id }, `${p.first_name} ${p.last_name}`)));
-    container.append(h('div', { class: 'row' }, [
-      sel,
-      h('button', { class: 'btn', onclick: async () => {
-        const userId = sel.value;
-        if (!userId) return;
-        const threadId = await ensureDmThread([prof.id, userId]);
-        location.hash = `#/messaging?thread=${threadId}`;
-      }}, 'Open DM')
-    ]));
+  async function Messaging(app) {
+    const prof = await currentProfile();
+    if (!prof) { app.innerHTML = `<div class="card">Please sign in.</div>`; return; }
+  
+    const container = h('div', { class: 'card' }, [ h('h2', {}, 'Direct Messages') ]);
+  
+    if (prof.role === 'teacher') {
+      container.append(h('p', {}, 'Start a DM with a student or parent.'));
+      const { data: people } = await sb
+        .from('profiles')
+        .select('id, first_name, last_name, role')
+        .in('role', ['student','parent'])
+        .order('last_name');
+  
+      const sel = h('select', { id: 'selDM' }, [
+        h('option', { value: '' }, '-- choose recipient --')
+      ]);
+  
+      // Hide yourself from the list (defense-in-depth)
+      (people || [])
+        .filter(p => p.id !== prof.id)
+        .forEach(p => sel.append(
+          h('option', { value: p.id }, `${p.first_name} ${p.last_name} (${p.role})`)
+        ));
+  
+      container.append(h('div', { class: 'row' }, [
+        sel,
+        h('button', {
+          class: 'btn',
+          onclick: async () => {
+            const userId = sel.value;
+            if (!userId) return;
+            // Use RPC to find-or-create the DM thread under RLS safely
+            const { data: threadId, error } = await sb.rpc('get_or_create_dm_thread', { other_user: userId });
+            if (error) return alert(error.message);
+            location.hash = `#/messaging?thread=${threadId}`;
+          }
+        }, 'Open DM')
+      ]));
+  
+    } else {
+      // Students/Parents can only DM teachers
+      const { data: teachers } = await sb
+        .from('profiles')
+        .select('id, first_name, last_name, role')
+        .eq('role', 'teacher')
+        .order('last_name');
+  
+      const sel = h('select', { id: 'selDM' }, [
+        h('option', { value: '' }, '-- choose teacher --')
+      ]);
+  
+      // Hide yourself from the list (defense-in-depth)
+      (teachers || [])
+        .filter(p => p.id !== prof.id)
+        .forEach(p => sel.append(
+          h('option', { value: p.id }, `${p.first_name} ${p.last_name}`)
+        ));
+  
+      container.append(h('div', { class: 'row' }, [
+        sel,
+        h('button', {
+          class: 'btn',
+          onclick: async () => {
+            const userId = sel.value;
+            if (!userId) return;
+            // Use RPC to find-or-create the DM thread under RLS safely
+            const { data: threadId, error } = await sb.rpc('get_or_create_dm_thread', { other_user: userId });
+            if (error) return alert(error.message);
+            location.hash = `#/messaging?thread=${threadId}`;
+          }
+        }, 'Open DM')
+      ]));
+    }
   }
 
   // If thread specified, render it
@@ -626,22 +666,18 @@ async function Messaging(app) {
 }
 
 async function ensureDmThread(userIds) {
-  // Find existing DM thread with same participant set (size 2 only in this scaffold)
-  const { data: threads } = await sb.from('threads').select('id').eq('scope', 'dm');
-  if (threads && threads.length) {
-    for (const t of threads) {
-      const { data: parts } = await sb.from('thread_participants').select('user_id').eq('thread_id', t.id);
-      const ids = (parts || []).map(p => p.user_id).sort();
-      const want = [...userIds].sort();
-      if (ids.length === want.length && ids.every((v, i) => v === want[i])) return t.id;
-    }
+  // Expect exactly 2 users: me + other
+  const me = (await currentProfile())?.id;
+  if (!me || !Array.isArray(userIds) || userIds.length !== 2) {
+    throw new Error('Invalid participants.');
   }
-  // Create
-  const { data: created, error } = await sb.from('threads').insert({ scope: 'dm', created_by: (await currentProfile()).id }).select('id').single();
+  const other = userIds.find(id => id !== me);
+  if (!other) throw new Error('Missing recipient.');
+
+  // Ask Postgres to find or create the DM safely
+  const { data, error } = await sb.rpc('get_or_create_dm_thread', { other_user: other });
   if (error) throw error;
-  const rows = userIds.map(uid => ({ thread_id: created.id, user_id: uid }));
-  await sb.from('thread_participants').insert(rows);
-  return created.id;
+  return data; // thread id
 }
 
 /* Analytics: per-class */
