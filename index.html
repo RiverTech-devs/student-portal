@@ -974,6 +974,7 @@
                             detectSessionInUrl: true
                         }
                     });
+                    window.supabase = this.supabase;
             
                     // Test connection with timeout
                     const timeoutPromise = new Promise((_, reject) => 
@@ -1567,24 +1568,43 @@
     <script>
         (function () {
           const tab = document.getElementById('portal-tab');
-          if (!tab) return; // nothing to show/hide
+          if (!tab) return;
         
-          const ALLOWED = ['teacher','student','parent']; // change to ['teacher'] if you want teacher-only
+          const ALLOWED = ['teacher','student','parent'];
         
           async function getRole(sb, userId) {
-            const { data, error } = await sb
-              .from('profiles')
-              .select('role')
-              .eq('id', userId)
-              .maybeSingle();          // avoids throwing if no row yet
-            if (error) return null;
-            return data?.role ?? null;
+            // Try our new public.profiles first
+            try {
+              const { data } = await sb.from('profiles')
+                .select('role')
+                .eq('id', userId)
+                .maybeSingle();
+              if (data?.role) return data.role;
+            } catch {}
+        
+            // Fall back to your existing user_profiles (try user_id, then id)
+            try {
+              let r = await sb.from('user_profiles')
+                .select('role')
+                .eq('user_id', userId)
+                .maybeSingle();
+              if (r?.data?.role) return r.data.role;
+        
+              r = await sb.from('user_profiles')
+                .select('role')
+                .eq('id', userId)
+                .maybeSingle();
+              if (r?.data?.role) return r.data.role;
+            } catch {}
+        
+            return null;
           }
         
           async function render() {
             const sb = window.supabase;
-            if (!sb) { tab.style.display = 'none'; return; }
-        
+            if (!sb || !sb.auth || typeof sb.auth.getUser !== 'function') {
+              tab.style.display = 'none'; return;
+            }
             const { data: { user } } = await sb.auth.getUser();
             if (!user) { tab.style.display = 'none'; return; }
         
@@ -1592,14 +1612,12 @@
             tab.style.display = (role && ALLOWED.includes(role)) ? '' : 'none';
           }
         
-          // Initial paint
+          // initial + auth changes
           if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', render);
           } else {
             render();
           }
-        
-          // Repaint on auth changes
           window.supabase?.auth?.onAuthStateChange?.(() => { render(); });
         })();
         </script>
