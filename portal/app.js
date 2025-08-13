@@ -413,50 +413,87 @@ async function ClassDetail(app) {
 
   // Threads (Class scope) + subthreads
   const threadsCard = h('div', { class: 'card' }, [ h('h3', {}, 'Class Threads') ]);
+  
   if (prof.role === 'teacher' && cls.teacher_id === prof.id) {
-    threadsCard.append(h('div', { class: 'row' }, [
-      h('input', { id: 'thrTitle', placeholder: 'Thread title (optional)' }),
-      h('button', { class: 'btn', onclick: async () => {
-        const title = document.getElementById('thrTitle').value.trim() || null;
-        const { error } = await sb.from('threads').insert({ scope: 'class', class_id: cls.id, title, created_by: prof.id });
-        if (error) return alert(error.message);
-        renderRoute();
-      }}, 'New Thread')
-    ]));
+    threadsCard.append(
+      h('div', { class: 'row' }, [
+        h('input', { id: 'thrTitle', placeholder: 'Thread title (optional)' }),
+        h('button', {
+          class: 'btn',
+          onclick: async () => {
+            const title = document.getElementById('thrTitle').value.trim() || null;
+            const { error } = await sb.from('threads').insert({ scope: 'class', class_id: cls.id, title, created_by: prof.id });
+            if (error) return alert(error.message);
+            renderRoute(); // re-render the page with the new thread
+          }
+        }, 'New Thread')
+      ])
+    );
   }
-
-  const { data: threads } = await sb.from('threads').select('*').eq('class_id', cls.id).eq('scope','class').order('created_at', { ascending: false });
-  if (!threads || !threads.length) {
+  
+  const { data: threads, error: thrErr } = await sb
+    .from('threads')
+    .select('*')
+    .eq('class_id', cls.id)
+    .eq('scope', 'class')
+    .order('created_at', { ascending: false });
+  
+  if (thrErr) {
+    threadsCard.append(h('small', { class: 'muted' }, `Error loading threads: ${thrErr.message}`));
+  } else if (!threads || !threads.length) {
     threadsCard.append(h('small', { class: 'muted' }, 'No threads yet.'));
   } else {
     for (const t of threads) {
+      const boxId = `msgs-${t.id}`;
       const threadEl = h('div', { class: 'thread' }, [
         h('strong', {}, t.title || '(no title)'),
-        h('div', { id: `msgs-${t.id}` }, h('small', { class: 'muted' }, 'Loading...')),
+        h('div', { id: boxId }, h('small', { class: 'muted' }, 'Loading...')),
         h('div', { class: 'row' }, [
           h('input', { id: `msg-${t.id}`, placeholder: 'Write a message...' }),
-          h('button', { class: 'btn', onclick: async () => {
-            const content = document.getElementById(`msg-${t.id}`).value.trim();
-            if (!content) return;
-            const { error } = await sb.from('messages').insert({ thread_id: t.id, content, user_id: prof.id });
-            if (error) return alert(error.message);
-            loadMessages(t.id);
-          }}, 'Send')
+          h('button', {
+            class: 'btn',
+            onclick: async () => {
+              const content = document.getElementById(`msg-${t.id}`).value.trim();
+              if (!content) return;
+              const { error } = await sb.from('messages').insert({ thread_id: t.id, content, user_id: prof.id });
+              if (error) return alert(error.message);
+              await loadMessages(t.id); // refresh, but only if box still exists
+              const inp = document.getElementById(`msg-${t.id}`); if (inp) inp.value = '';
+            }
+          }, 'Send')
         ])
       ]);
       threadsCard.append(threadEl);
-      loadMessages(t.id);
+  
+      // Defer so the element is definitely in the DOM when we query it
+      setTimeout(() => { loadMessages(t.id); }, 0);
     }
   }
   wrap.append(threadsCard);
-
-  app.innerHTML = '';
-  app.append(wrap);
-
+  
+  // Safe loader (bails if container disappeared due to navigation/rerender)
   async function loadMessages(threadId) {
     const box = document.getElementById(`msgs-${threadId}`);
-    const { data: msgs } = await sb.from('messages').select('*').eq('thread_id', threadId).order('created_at', { ascending: true });
-    if (!msgs || !msgs.length) { box.innerHTML = '<small class="muted">No messages yet.</small>'; return; }
+    if (!box) return; // container not in DOM
+  
+    const { data: msgs, error } = await sb
+      .from('messages')
+      .select('*')
+      .eq('thread_id', threadId)
+      .order('created_at', { ascending: true });
+  
+    // The user may have navigated away while the query ran
+    if (!box || !box.isConnected) return;
+  
+    if (error) {
+      box.innerHTML = `<small class="muted">Error: ${error.message}</small>`;
+      return;
+    }
+    if (!msgs || !msgs.length) {
+      box.innerHTML = '<small class="muted">No messages yet.</small>';
+      return;
+    }
+  
     box.innerHTML = '';
     const byParent = new Map();
     msgs.forEach(m => {
@@ -464,26 +501,35 @@ async function ClassDetail(app) {
       if (!byParent.has(key)) byParent.set(key, []);
       byParent.get(key).push(m);
     });
-
-    function renderThread(parentId, depth=0) {
+  
+    function renderThread(parentId, depth = 0) {
       const arr = byParent.get(parentId || 'root') || [];
       for (const m of arr) {
-        const msgEl = h('div', { style: `margin-left:${depth*16}px` }, [
+        const msgEl = h('div', { style: `margin-left:${depth * 16}px` }, [
           h('p', {}, m.content),
           h('small', { class: 'muted' }, fmtDate(m.created_at)),
           h('div', { class: 'row' }, [
             h('input', { id: `reply-${m.id}`, placeholder: 'Reply...' }),
-            h('button', { class: 'btn secondary', onclick: async () => {
-              const content = document.getElementById(`reply-${m.id}`).value.trim();
-              if (!content) return;
-              const { error } = await sb.from('messages').insert({ thread_id: threadId, content, user_id: (await currentProfile()).id, parent_id: m.id });
-              if (error) return alert(error.message);
-              loadMessages(threadId);
-            }}, 'Reply')
+            h('button', {
+              class: 'btn secondary',
+              onclick: async () => {
+                const input = document.getElementById(`reply-${m.id}`);
+                const content = input?.value.trim();
+                if (!content) return;
+                const { error } = await sb.from('messages').insert({
+                  thread_id: threadId,
+                  content,
+                  user_id: prof.id,
+                  parent_id: m.id
+                });
+                if (error) return alert(error.message);
+                await loadMessages(threadId); // reload safely
+              }
+            }, 'Reply')
           ])
         ]);
         box.append(msgEl);
-        renderThread(m.id, depth+1);
+        renderThread(m.id, depth + 1);
       }
     }
     renderThread(null, 0);
