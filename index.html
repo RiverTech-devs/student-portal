@@ -535,18 +535,21 @@
 
             async handleSkillUnlock(data) {
                 try {
-                    console.log('Skill unlocked:', data.skillName, 'in', data.subject);
-                    console.log('Received data:', data);
+                    console.log('🔥 SKILL UNLOCK EVENT RECEIVED:');
+                    console.log('  - Skill Name:', data.skillName);
+                    console.log('  - Subject:', data.subject);
+                    console.log('  - Full Data:', data);
                     
                     // Initialize subject progress if it doesn't exist
                     if (!this.skillProgress[data.subject]) {
                         this.skillProgress[data.subject] = {};
+                        console.log('  - Initialized new subject progress for:', data.subject);
                     }
                     
                     // Update the specific skill to activated
                     this.skillProgress[data.subject][data.skillName] = 'activated';
-                    
-                    console.log('Updated skill progress:', this.skillProgress);
+                    console.log('  - Updated skill to activated:', data.skillName);
+                    console.log('  - Current progress for', data.subject + ':', this.skillProgress[data.subject]);
                     
                     // Show the notification
                     this.showSkillUnlockNotification(data.skillName, data.subject);
@@ -558,18 +561,36 @@
                             type: 'PROGRESS_UPDATED',
                             subject: data.subject,
                             progress: this.skillProgress[data.subject],
-                            unlockedSkill: data.skillName
+                            unlockedSkill: data.skillName,
+                            timestamp: Date.now()
                         };
                         
-                        console.log('Sending progress update:', progressUpdate);
+                        console.log('📤 SENDING PROGRESS UPDATE TO SKILL TREE:');
+                        console.log('  - Message:', progressUpdate);
+                        
                         iframe.contentWindow.postMessage(progressUpdate, '*');
+                        
+                        // Also send a more direct update format in case the skill tree expects it differently
+                        setTimeout(() => {
+                            const alternateUpdate = {
+                                type: 'UPDATE_PROGRESS',
+                                skillStates: this.skillProgress[data.subject],
+                                subject: data.subject
+                            };
+                            console.log('📤 SENDING ALTERNATE UPDATE FORMAT:');
+                            console.log('  - Message:', alternateUpdate);
+                            iframe.contentWindow.postMessage(alternateUpdate, '*');
+                        }, 100);
+                        
+                    } else {
+                        console.error('❌ No iframe found with id "skill-tree-frame"');
                     }
                     
                     // Also save to database if possible
                     await this.saveSkillProgress(data.subject, this.skillProgress[data.subject]);
                     
                 } catch (error) {
-                    console.error('Error handling skill unlock:', error);
+                    console.error('❌ Error handling skill unlock:', error);
                 }
             }
 
@@ -597,6 +618,41 @@
                     }
                 } catch (error) {
                     console.error('Error handling skill data request:', error);
+                }
+            }
+
+            async saveSkillProgress(subject, skillStates) {
+                try {
+                    if (!this.currentUser || !this.supabase) {
+                        console.log('💾 No user or supabase connection, progress saved locally only');
+                        return;
+                    }
+                    
+                    const totalUnlocked = Object.values(skillStates).filter(s => s === 'activated').length;
+                    
+                    console.log(`💾 SAVING PROGRESS TO DATABASE:`);
+                    console.log(`  - Subject: ${subject}`);
+                    console.log(`  - Total Unlocked: ${totalUnlocked}`);
+                    console.log(`  - Skill States:`, skillStates);
+                    
+                    const { error } = await this.supabase
+                        .from('student_skill_progress')
+                        .upsert({
+                            student_id: this.currentUser.id,
+                            subject: subject,
+                            skill_states: skillStates,
+                            total_unlocked: totalUnlocked,
+                            last_updated: new Date()
+                        });
+                    
+                    if (error) {
+                        console.log('❌ Could not save to database:', error.message);
+                    } else {
+                        console.log(`✅ Progress saved: ${totalUnlocked} skills unlocked in ${subject}`);
+                    }
+                    
+                } catch (error) {
+                    console.log('❌ Error saving progress:', error.message);
                 }
             }
 
@@ -1280,11 +1336,12 @@
                         </div>
                     `;
                     
-                    console.log(`Loading skill tree for: ${subject}`);
+                    console.log(`🌟 LOADING SKILL TREE FOR: ${subject}`);
                     
                     // Initialize progress for this subject if it doesn't exist
                     if (!this.skillProgress[subject]) {
                         this.skillProgress[subject] = {};
+                        console.log(`  - Initialized empty progress for ${subject}`);
                     }
                     
                     // Try to load any existing progress from database
@@ -1299,11 +1356,13 @@
                             
                             if (data && data.skill_states) {
                                 this.skillProgress[subject] = data.skill_states;
-                                console.log(`Loaded skill progress for ${subject}:`, data.skill_states);
+                                console.log(`  - Loaded existing progress:`, data.skill_states);
+                            } else {
+                                console.log(`  - No existing progress in database`);
                             }
                         }
                     } catch (dbError) {
-                        console.log(`Could not load skill progress for ${subject}:`, dbError.message);
+                        console.log(`  - Database load failed:`, dbError.message);
                     }
                     
                     // Create iframe with skill tree viewer
@@ -1318,6 +1377,8 @@
                     
                     const iframe = document.getElementById('skill-tree-frame');
                     iframe.onload = () => {
+                        console.log(`📡 IFRAME LOADED FOR ${subject}`);
+                        
                         // Send initial data to skill tree after short delay
                         setTimeout(() => {
                             const subjectProgress = this.skillProgress[subject] || {};
@@ -1329,13 +1390,30 @@
                                 progress: subjectProgress // Send any existing progress
                             };
                             
-                            console.log('Sending initial skill tree data:', initialData);
+                            console.log('📤 SENDING INITIAL DATA TO SKILL TREE:');
+                            console.log('  - Message:', initialData);
+                            
                             iframe.contentWindow.postMessage(initialData, '*');
+                            
+                            // Also send a test message to verify communication
+                            setTimeout(() => {
+                                console.log('📤 SENDING TEST MESSAGE...');
+                                iframe.contentWindow.postMessage({
+                                    type: 'TEST_COMMUNICATION',
+                                    message: 'Communication test from portal',
+                                    timestamp: Date.now()
+                                }, '*');
+                            }, 500);
+                            
                         }, 100);
                     };
                     
+                    iframe.onerror = (error) => {
+                        console.error('❌ IFRAME ERROR:', error);
+                    };
+                    
                 } catch (error) {
-                    console.error('Error loading skill tree:', error);
+                    console.error('❌ Error loading skill tree:', error);
                     container.innerHTML = `
                         <div style="text-align: center; padding: 50px; color: #dc3545;">
                             <h3>Error Loading Skill Tree</h3>
@@ -1348,34 +1426,46 @@
                 }
             }
 
-            async saveSkillProgress(subject, skillStates) {
-                try {
-                    if (!this.currentUser || !this.supabase) {
-                        console.log('No user or supabase connection, progress saved locally only');
-                        return;
-                    }
-                    
-                    const totalUnlocked = Object.values(skillStates).filter(s => s === 'activated').length;
-                    
-                    const { error } = await this.supabase
-                        .from('student_skill_progress')
-                        .upsert({
-                            student_id: this.currentUser.id,
-                            subject: subject,
-                            skill_states: skillStates,
-                            total_unlocked: totalUnlocked,
-                            last_updated: new Date()
-                        });
-                    
-                    if (error) {
-                        console.log('Could not save to database:', error.message);
-                    } else {
-                        console.log(`Progress saved: ${totalUnlocked} skills unlocked in ${subject}`);
-                    }
-                    
-                } catch (error) {
-                    console.log('Error saving progress:', error.message);
+            // Add a test function to manually verify communication
+            testSkillTreeCommunication() {
+                console.log('🧪 TESTING SKILL TREE COMMUNICATION...');
+                
+                const iframe = document.getElementById('skill-tree-frame');
+                if (!iframe) {
+                    console.error('❌ No skill tree iframe found');
+                    return;
                 }
+                
+                console.log('📤 Sending test unlock message...');
+                
+                // Simulate a skill unlock
+                const testData = {
+                    type: 'PROGRESS_UPDATED',
+                    subject: 'Art',
+                    progress: {
+                        'Color Theory': 'activated',
+                        'Basic Shapes': 'activated'
+                    },
+                    unlockedSkill: 'Color Theory',
+                    timestamp: Date.now()
+                };
+                
+                iframe.contentWindow.postMessage(testData, '*');
+                
+                // Also try the alternate format
+                setTimeout(() => {
+                    const altData = {
+                        type: 'UPDATE_PROGRESS',
+                        skillStates: {
+                            'Color Theory': 'activated',
+                            'Basic Shapes': 'activated'
+                        },
+                        subject: 'Art'
+                    };
+                    
+                    console.log('📤 Sending alternate format test...');
+                    iframe.contentWindow.postMessage(altData, '*');
+                }, 1000);
             }
 
             showTab(tabName) {
@@ -1483,6 +1573,11 @@
 
         function showRegisterForm() {
             portal.showRegisterForm();
+        }
+
+        // Add global test function for debugging
+        function testSkillTree() {
+            portal.testSkillTreeCommunication();
         }
 
         function playGame(gameId) {
