@@ -1282,8 +1282,29 @@
                     
                     console.log(`Loading skill tree for: ${subject}`);
                     
-                    // Load any existing progress from database
-                    await this.loadSkillProgressFromDB(subject);
+                    // Initialize progress for this subject if it doesn't exist
+                    if (!this.skillProgress[subject]) {
+                        this.skillProgress[subject] = {};
+                    }
+                    
+                    // Try to load any existing progress from database
+                    try {
+                        if (this.currentUser && this.supabase) {
+                            const { data, error } = await this.supabase
+                                .from('student_skill_progress')
+                                .select('skill_states')
+                                .eq('student_id', this.currentUser.id)
+                                .eq('subject', subject)
+                                .single();
+                            
+                            if (data && data.skill_states) {
+                                this.skillProgress[subject] = data.skill_states;
+                                console.log(`Loaded skill progress for ${subject}:`, data.skill_states);
+                            }
+                        }
+                    } catch (dbError) {
+                        console.log(`Could not load skill progress for ${subject}:`, dbError.message);
+                    }
                     
                     // Create iframe with skill tree viewer
                     container.innerHTML = `
@@ -1324,6 +1345,36 @@
                             </button>
                         </div>
                     `;
+                }
+            }
+
+            async saveSkillProgress(subject, skillStates) {
+                try {
+                    if (!this.currentUser || !this.supabase) {
+                        console.log('No user or supabase connection, progress saved locally only');
+                        return;
+                    }
+                    
+                    const totalUnlocked = Object.values(skillStates).filter(s => s === 'activated').length;
+                    
+                    const { error } = await this.supabase
+                        .from('student_skill_progress')
+                        .upsert({
+                            student_id: this.currentUser.id,
+                            subject: subject,
+                            skill_states: skillStates,
+                            total_unlocked: totalUnlocked,
+                            last_updated: new Date()
+                        });
+                    
+                    if (error) {
+                        console.log('Could not save to database:', error.message);
+                    } else {
+                        console.log(`Progress saved: ${totalUnlocked} skills unlocked in ${subject}`);
+                    }
+                    
+                } catch (error) {
+                    console.log('Error saving progress:', error.message);
                 }
             }
 
