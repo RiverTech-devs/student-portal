@@ -623,7 +623,6 @@ async function ClassDetail(app) {
         }, 'Open DM')
       ]));
     }
-  }
 
   // If thread specified, render it
   const params = new URLSearchParams(location.hash.split('?')[1] || '');
