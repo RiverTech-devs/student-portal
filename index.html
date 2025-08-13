@@ -461,6 +461,7 @@
                 this.supabase = null;
                 this.currentUser = null;
                 this.userProfile = null;
+                this.skillProgress = {}; // Track skill progress in memory
                 this.init();
             }
 
@@ -535,18 +536,37 @@
             async handleSkillUnlock(data) {
                 try {
                     console.log('Skill unlocked:', data.skillName, 'in', data.subject);
+                    console.log('Received data:', data);
                     
-                    // For now, just show the notification without database calls
+                    // Initialize subject progress if it doesn't exist
+                    if (!this.skillProgress[data.subject]) {
+                        this.skillProgress[data.subject] = {};
+                    }
+                    
+                    // Update the specific skill to activated
+                    this.skillProgress[data.subject][data.skillName] = 'activated';
+                    
+                    console.log('Updated skill progress:', this.skillProgress);
+                    
+                    // Show the notification
                     this.showSkillUnlockNotification(data.skillName, data.subject);
                     
-                    // Send simple confirmation back to skill tree
+                    // Send the updated progress back to skill tree
                     const iframe = document.getElementById('skill-tree-frame');
                     if (iframe) {
-                        iframe.contentWindow.postMessage({
+                        const progressUpdate = {
                             type: 'PROGRESS_UPDATED',
-                            progress: {} // Empty for now - will work with hardcoded data
-                        }, '*');
+                            subject: data.subject,
+                            progress: this.skillProgress[data.subject],
+                            unlockedSkill: data.skillName
+                        };
+                        
+                        console.log('Sending progress update:', progressUpdate);
+                        iframe.contentWindow.postMessage(progressUpdate, '*');
                     }
+                    
+                    // Also save to database if possible
+                    await this.saveSkillProgress(data.subject, this.skillProgress[data.subject]);
                     
                 } catch (error) {
                     console.error('Error handling skill unlock:', error);
@@ -557,14 +577,23 @@
                 try {
                     console.log('Skill data requested for:', data.subject);
                     
-                    // For now, just send empty data to trigger hardcoded fallback
+                    // Get any existing progress for this subject
+                    const subjectProgress = this.skillProgress[data.subject] || {};
+                    
+                    console.log('Sending existing progress:', subjectProgress);
+                    
+                    // Send the data back to skill tree
                     const iframe = document.getElementById('skill-tree-frame');
                     if (iframe) {
-                        iframe.contentWindow.postMessage({
+                        const response = {
                             type: 'SKILL_DATA_RESPONSE',
-                            skillTreeData: null, // This will trigger hardcoded fallback
-                            progress: {} // Empty progress - will use defaults
-                        }, '*');
+                            subject: data.subject,
+                            skillTreeData: null, // Let skill tree use its hardcoded data
+                            progress: subjectProgress // Send any existing progress
+                        };
+                        
+                        console.log('Sending skill data response:', response);
+                        iframe.contentWindow.postMessage(response, '*');
                     }
                 } catch (error) {
                     console.error('Error handling skill data request:', error);
@@ -1251,6 +1280,11 @@
                         </div>
                     `;
                     
+                    console.log(`Loading skill tree for: ${subject}`);
+                    
+                    // Load any existing progress from database
+                    await this.loadSkillProgressFromDB(subject);
+                    
                     // Create iframe with skill tree viewer
                     container.innerHTML = `
                         <iframe 
@@ -1265,12 +1299,17 @@
                     iframe.onload = () => {
                         // Send initial data to skill tree after short delay
                         setTimeout(() => {
-                            iframe.contentWindow.postMessage({
+                            const subjectProgress = this.skillProgress[subject] || {};
+                            
+                            const initialData = {
                                 type: 'LOAD_SKILL_TREE',
                                 subject: subject,
-                                skillTreeData: null,
-                                progress: {}
-                            }, '*');
+                                skillTreeData: null, // Will use hardcoded fallback
+                                progress: subjectProgress // Send any existing progress
+                            };
+                            
+                            console.log('Sending initial skill tree data:', initialData);
+                            iframe.contentWindow.postMessage(initialData, '*');
                         }, 100);
                     };
                     
