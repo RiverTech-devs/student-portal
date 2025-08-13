@@ -287,8 +287,13 @@ async function ClassDetail(app) {
       h('summary', {}, 'Create assignment'),
       h('div', { class: 'row' }, [
         h('input', { id: 'aTitle', placeholder: 'Title' }),
-        h('input', { id: 'aDue', type: 'datetime-local', placeholder: 'Due (optional)' }),
-        h('input', { id: 'aStart', type: 'datetime-local', placeholder: 'Start (optional)' }),
+      h('div', { class: 'col' }, [
+        h('label', { for: 'aStart' }, 'Start (optional)'),
+        h('input', { id: 'aStart', type: 'datetime-local', placeholder: 'Start (optional)' })
+      ]),
+      h('div', { class: 'col' }, [
+        h('label', { for: 'aDue' }, 'Finish (optional)'),
+        h('input', { id: 'aDue', type: 'datetime-local', placeholder: 'Finish (optional)' })
       ]),
       h('div', { class: 'col' }, [
         h('textarea', { id: 'aDesc', placeholder: 'Description (optional)' }),
@@ -336,7 +341,7 @@ async function ClassDetail(app) {
     asgCard.append(h('small', { class: 'muted' }, 'No assignments.'));
   } else {
     const table = h('table', {}, [
-      h('thead', {}, h('tr', {}, [ 'Title', 'Due', 'Start', 'Actions' ].map(c => h('th', {}, c)))),
+      h('thead', {}, h('tr', {}, [ 'Title', 'Finish', 'Start', 'Actions' ].map(c => h('th', {}, c)))),
       h('tbody', {}, assignments.map(a => h('tr', {}, [
         h('td', {}, a.title),
         h('td', {}, fmtDate(a.due_at)),
