@@ -975,6 +975,7 @@
                         }
                     });
                     window.supabase = this.supabase;
+                    window.dispatchEvent(new CustomEvent('supabase-ready')); 
             
                     // Test connection with timeout
                     const timeoutPromise = new Promise((_, reject) => 
@@ -1573,28 +1574,22 @@
           const ALLOWED = ['teacher','student','parent'];
         
           async function getRole(sb, userId) {
-            // Try our new public.profiles first
+            // Primary: your existing table/column
+            try {
+              const { data } = await sb.from('user_profiles')
+                .select('user_type')
+                .eq('id', userId)
+                .maybeSingle();
+              if (data?.user_type) return data.user_type;
+            } catch {}
+        
+            // Fallback: the new profiles table (if you use it later)
             try {
               const { data } = await sb.from('profiles')
                 .select('role')
                 .eq('id', userId)
                 .maybeSingle();
               if (data?.role) return data.role;
-            } catch {}
-        
-            // Fall back to your existing user_profiles (try user_id, then id)
-            try {
-              let r = await sb.from('user_profiles')
-                .select('role')
-                .eq('user_id', userId)
-                .maybeSingle();
-              if (r?.data?.role) return r.data.role;
-        
-              r = await sb.from('user_profiles')
-                .select('role')
-                .eq('id', userId)
-                .maybeSingle();
-              if (r?.data?.role) return r.data.role;
             } catch {}
         
             return null;
@@ -1612,12 +1607,22 @@
             tab.style.display = (role && ALLOWED.includes(role)) ? '' : 'none';
           }
         
-          // initial + auth changes
+          // Try now…
           if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', render);
           } else {
             render();
           }
+        
+          // …and re-try shortly until Supabase is ready (handles your 300ms init delay)
+          let tries = 0;
+          const iv = setInterval(() => {
+            if (window.supabase?.auth?.getUser) { clearInterval(iv); render(); }
+            if (++tries > 15) clearInterval(iv); // stop after ~3s
+          }, 200);
+        
+          // Repaint on auth changes and custom ready event
+          window.addEventListener('supabase-ready', render);
           window.supabase?.auth?.onAuthStateChange?.(() => { render(); });
         })();
         </script>
