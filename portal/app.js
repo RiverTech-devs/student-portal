@@ -283,10 +283,11 @@ async function ClassDetail(app) {
   const asgCard = h('div', { class: 'card' }, [ h('h3', {}, 'Assignments') ]);
 
   if (prof.role === 'teacher' && cls.teacher_id === prof.id) {
-    const create = h('details', {}, [
-      h('summary', {}, 'Create assignment'),
-      h('div', { class: 'row' }, [
-        h('input', { id: 'aTitle', placeholder: 'Title' }),
+  const create = h('details', {}, [
+    h('summary', {}, 'Create assignment'),
+    // Title + Start/Finish row
+    h('div', { class: 'row' }, [
+      h('input', { id: 'aTitle', placeholder: 'Title' }),
       h('div', { class: 'col' }, [
         h('label', { for: 'aStart' }, 'Start (optional)'),
         h('input', { id: 'aStart', type: 'datetime-local', placeholder: 'Start (optional)' })
@@ -295,23 +296,66 @@ async function ClassDetail(app) {
         h('label', { for: 'aDue' }, 'Finish (optional)'),
         h('input', { id: 'aDue', type: 'datetime-local', placeholder: 'Finish (optional)' })
       ]),
-      h('div', { class: 'col' }, [
-        h('textarea', { id: 'aDesc', placeholder: 'Description (optional)' }),
-        h('textarea', { id: 'aSyllabus', placeholder: 'Syllabus JSON (optional)' }),
+    ]),
+    // Description + Syllabus JSON
+    h('div', { class: 'col' }, [
+      h('textarea', { id: 'aDesc', placeholder: 'Description (optional)' }),
+      h('textarea', { id: 'aSyllabus', placeholder: 'Syllabus JSON (optional)' }),
+    ]),
+    // Assign-to-all + Create button
+    h('div', { class: 'row' }, [
+      h('label', {}, [
+        h('input', { type: 'checkbox', id: 'aAll', checked: true }),
+        ' Assign to all students'
       ]),
-      h('div', { class: 'row' }, [
-        h('label', {}, [h('input', { type: 'checkbox', id: 'aAll', checked: true }), ' Assign to all students']),
-        h('button', { class: 'btn', onclick: async () => {
+      h('button', {
+        class: 'btn',
+        onclick: async () => {
           try {
             const title = document.getElementById('aTitle').value.trim();
             if (!title) return alert('Title required');
+
             const description = document.getElementById('aDesc').value.trim() || null;
-            const due_at = document.getElementById('aDue').value || null;
-            const start_at = document.getElementById('aStart').value || null;
+
+            // Convert datetime-local (no timezone) to ISO if provided
+            const startRaw = document.getElementById('aStart').value || null;
+            const dueRaw   = document.getElementById('aDue').value || null;
+            const start_at = startRaw ? new Date(startRaw).toISOString() : null;
+            const due_at   = dueRaw   ? new Date(dueRaw).toISOString()   : null;
+
+            // Basic sanity: if both provided, Start should be <= Finish
+            if (start_at && due_at && new Date(start_at) > new Date(due_at)) {
+              return alert('Start must be before Finish.');
+            }
+
             const assign_all = document.getElementById('aAll').checked;
-            let syllabus = document.getElementById('aSyllabus').value.trim();
-            syllabus = syllabus ? JSON.parse(syllabus) : null;
-            const { data, error } = await sb.from('assignments').insert({ class_id: cls.id, title, description, syllabus, due_at, start_at, assign_all, created_by: prof.id }).select('id').single();
+
+            // Syllabus JSON is optional but must be valid JSON if provided
+            let syllabusTxt = document.getElementById('aSyllabus').value.trim();
+            let syllabus = null;
+            if (syllabusTxt) {
+              try {
+                syllabus = JSON.parse(syllabusTxt);
+              } catch {
+                return alert('Syllabus must be valid JSON (or leave it blank).');
+              }
+            }
+
+            const { data, error } = await sb
+              .from('assignments')
+              .insert({
+                class_id: cls.id,
+                title,
+                description,
+                syllabus,
+                due_at,
+                start_at,
+                assign_all,
+                created_by: prof.id
+              })
+              .select('id')
+              .single();
+
             if (error) throw error;
 
             if (!assign_all) {
@@ -319,21 +363,32 @@ async function ClassDetail(app) {
               const emails = prompt('Enter student emails (comma separated) to assign:') || '';
               const arr = emails.split(',').map(e => e.trim()).filter(Boolean);
               if (arr.length) {
-                const { data: stu } = await sb.from('profiles').select('id, email').in('email', arr).eq('role', 'student');
+                const { data: stu, error: e1 } = await sb
+                  .from('profiles')
+                  .select('id, email')
+                  .in('email', arr)
+                  .eq('role', 'student');
+                if (e1) throw e1;
+
                 const rows = (stu || []).map(s => ({ assignment_id: data.id, student_id: s.id }));
-                if (rows.length) await sb.from('assignment_assignees').insert(rows);
+                if (rows.length) {
+                  const { error: e2 } = await sb.from('assignment_assignees').insert(rows);
+                  if (e2) throw e2;
+                }
               }
             }
+
             alert('Assignment created.');
             renderRoute();
           } catch (e) {
-            alert('Error: ' + e.message);
+            alert('Error: ' + (e?.message || e));
           }
-        }}, 'Create')
-      ])
-    ]);
-    asgCard.append(create);
-  }
+        }
+      }, 'Create')
+    ])
+  ]);
+  asgCard.append(create);
+}
 
   // List assignments
   const { data: assignments } = await sb.from('assignments').select('*').eq('class_id', cls.id).order('created_at', { ascending: false });
