@@ -236,318 +236,318 @@ async function Classes(app) {
   app.append(container);
 }
 
-/* Class Detail */
+/* Class Detail (robust) */
 async function ClassDetail(app) {
-  const prof = await currentProfile();
-  if (!prof) { app.innerHTML = `<div class="card">Please sign in.</div>`; return; }
-  const classId = (location.hash.split('?')[0]).split('/')[2]; 
-  if (!classId) { app.innerHTML = `<div class="card">Invalid class ID.</div>`; return; }
+  try {
+    const prof = await currentProfile();
+    if (!prof) { app.innerHTML = `<div class="card">Please sign in.</div>`; return; }
 
-  // Load class
-  const { data: cls, error } = await sb.from('classes').select('*').eq('id', classId).single();
-  if (error || !cls) { app.innerHTML = `<div class="card">Class not found.</div>`; return; }
+    const classId = (location.hash.split('?')[0]).split('/')[2]; // strip ?query
+    if (!classId) { app.innerHTML = `<div class="card">Invalid class ID.</div>`; return; }
 
-  const wrap = h('div');
-  wrap.append(h('div', { class: 'card' }, [ h('h2', {}, cls.name) ]));
+    // Load class row
+    const { data: cls, error: clsErr } = await sb.from('classes').select('*').eq('id', classId).single();
+    if (clsErr || !cls) { app.innerHTML = `<div class="card">Class not found.</div>`; return; }
 
-  // Roster management (Teacher only)
-  if (prof.role === 'teacher' && cls.teacher_id === prof.id) {
-    const { data: roster } = await sb.from('class_students').select('student_id, profiles!inner(id, first_name, last_name)').eq('class_id', cls.id);
-    const students = (roster || []).map(r => r.profiles);
-    const allStudents = await listStudents();
+    // Mount base shell first so we don't sit on "Loading..." forever
+    const wrap = h('div');
+    wrap.append(h('div', { class: 'card' }, [ h('h2', {}, cls.name) ]));
+    app.innerHTML = '';
+    app.append(wrap);
 
-    const rosterCard = h('div', { class: 'card' }, [
-      h('h3', {}, 'Roster'),
-      h('div', {}, students.length ? students.map(s => h('div', {}, `${s.first_name} ${s.last_name}`)) : h('small', { class: 'muted' }, 'No students yet.')),
-      h('details', {}, [
-        h('summary', {}, 'Add students'),
-        h('div', { class: 'row' }, [
-          (() => {
-            const sel = h('select', { id: 'selStudent' }, [ h('option', { value: '' }, '-- choose student --') ]);
-            allStudents.forEach(s => sel.append(h('option', { value: s.id }, `${s.first_name} ${s.last_name}`)));
-            return sel;
-          })(),
-          h('button', { class: 'btn', onclick: async () => {
-            const student_id = document.getElementById('selStudent').value;
-            if (!student_id) return;
-            const { error } = await sb.from('class_students').insert({ class_id: cls.id, student_id });
-            if (error) return alert(error.message);
-            renderRoute();
-          }}, 'Add')
-        ])
-      ])
-    ]);
-    wrap.append(rosterCard);
-  }
+    /* ---------- Roster (teacher only) ---------- */
+    if (prof.role === 'teacher' && cls.teacher_id === prof.id) {
+      const rosterCard = h('div', { class: 'card' }, [ h('h3', {}, 'Roster'), h('small', { class: 'muted' }, 'Loading roster…') ]);
+      wrap.append(rosterCard);
 
-  // Assignments section (Teacher can create)
-  const asgCard = h('div', { class: 'card' }, [ h('h3', {}, 'Assignments') ]);
-
-  if (prof.role === 'teacher' && cls.teacher_id === prof.id) {
-  const create = h('details', {}, [
-    h('summary', {}, 'Create assignment'),
-    // Title + Start/Finish row
-    h('div', { class: 'row' }, [
-      h('input', { id: 'aTitle', placeholder: 'Title' }),
-      h('div', { class: 'col' }, [
-        h('label', { for: 'aStart' }, 'Start (optional)'),
-        h('input', { id: 'aStart', type: 'datetime-local', placeholder: 'Start (optional)' })
-      ]),
-      h('div', { class: 'col' }, [
-        h('label', { for: 'aDue' }, 'Finish (optional)'),
-        h('input', { id: 'aDue', type: 'datetime-local', placeholder: 'Finish (optional)' })
-      ]),
-    ]),
-    // Description + Syllabus JSON
-    h('div', { class: 'col' }, [
-      h('textarea', { id: 'aDesc', placeholder: 'Description (optional)' }),
-      h('textarea', { id: 'aSyllabus', placeholder: 'Syllabus JSON (optional)' }),
-    ]),
-    // Assign-to-all + Create button
-    h('div', { class: 'row' }, [
-      h('label', {}, [
-        h('input', { type: 'checkbox', id: 'aAll', checked: true }),
-        ' Assign to all students'
-      ]),
-      h('button', {
-        class: 'btn',
-        onclick: async () => {
-          try {
-            const title = document.getElementById('aTitle').value.trim();
-            if (!title) return alert('Title required');
-
-            const description = document.getElementById('aDesc').value.trim() || null;
-
-            // Convert datetime-local (no timezone) to ISO if provided
-            const startRaw = document.getElementById('aStart').value || null;
-            const dueRaw   = document.getElementById('aDue').value || null;
-            const start_at = startRaw ? new Date(startRaw).toISOString() : null;
-            const due_at   = dueRaw   ? new Date(dueRaw).toISOString()   : null;
-
-            // Basic sanity: if both provided, Start should be <= Finish
-            if (start_at && due_at && new Date(start_at) > new Date(due_at)) {
-              return alert('Start must be before Finish.');
-            }
-
-            const assign_all = document.getElementById('aAll').checked;
-
-            // Syllabus JSON is optional but must be valid JSON if provided
-            let syllabusTxt = document.getElementById('aSyllabus').value.trim();
-            let syllabus = null;
-            if (syllabusTxt) {
-              try {
-                syllabus = JSON.parse(syllabusTxt);
-              } catch {
-                return alert('Syllabus must be valid JSON (or leave it blank).');
-              }
-            }
-
-            const { data, error } = await sb
-              .from('assignments')
-              .insert({
-                class_id: cls.id,
-                title,
-                description,
-                syllabus,
-                due_at,
-                start_at,
-                assign_all,
-                created_by: prof.id
-              })
-              .select('id')
-              .single();
-
-            if (error) throw error;
-
-            if (!assign_all) {
-              // Prompt for custom students (comma-separated emails)
-              const emails = prompt('Enter student emails (comma separated) to assign:') || '';
-              const arr = emails.split(',').map(e => e.trim()).filter(Boolean);
-              if (arr.length) {
-                const { data: stu, error: e1 } = await sb
-                  .from('profiles')
-                  .select('id, email')
-                  .in('email', arr)
-                  .eq('role', 'student');
-                if (e1) throw e1;
-
-                const rows = (stu || []).map(s => ({ assignment_id: data.id, student_id: s.id }));
-                if (rows.length) {
-                  const { error: e2 } = await sb.from('assignment_assignees').insert(rows);
-                  if (e2) throw e2;
-                }
-              }
-            }
-
-            alert('Assignment created.');
-            renderRoute();
-          } catch (e) {
-            alert('Error: ' + (e?.message || e));
-          }
+      try {
+        // 2-step fetch (avoid join recursion issues)
+        const { data: links, error: lerr } = await sb.from('class_students').select('student_id').eq('class_id', cls.id);
+        if (lerr) throw lerr;
+        const ids = (links || []).map(r => r.student_id);
+        let students = [];
+        if (ids.length) {
+          const { data: names, error: nerr } = await sb.from('profiles')
+            .select('id, first_name, last_name')
+            .in('id', ids);
+          if (nerr) throw nerr;
+          students = names || [];
         }
-      }, 'Create')
-    ])
-  ]);
-  asgCard.append(create);
-}
+        const allStudents = await listStudents();
 
-  // List assignments
-  const { data: assignments } = await sb.from('assignments').select('*').eq('class_id', cls.id).order('created_at', { ascending: false });
-  if (!assignments || !assignments.length) {
-    asgCard.append(h('small', { class: 'muted' }, 'No assignments.'));
-  } else {
-    const table = h('table', {}, [
-      h('thead', {}, h('tr', {}, [ 'Title', 'Finish', 'Start', 'Actions' ].map(c => h('th', {}, c)))),
-      h('tbody', {}, assignments.map(a => h('tr', {}, [
-        h('td', {}, a.title),
-        h('td', {}, fmtDate(a.due_at)),
-        h('td', {}, fmtDate(a.start_at || a.created_at)),
-        h('td', {}, [
-          prof.role === 'teacher' ? h('button', { class: 'btn secondary', onclick: () => uploadClassFile(a.id) }, 'Upload file') : null,
-          h('a', { class: 'btn', style: 'margin-left:8px', href: `#/analytics/${cls.id}` }, 'Analytics')
-        ])
-      ])))
-    ]);
-    asgCard.append(table);
-  }
-  wrap.append(asgCard);
+        rosterCard.innerHTML = '';
+        rosterCard.append(
+          h('h3', {}, 'Roster'),
+          students.length
+            ? h('div', {}, students.map(s => h('div', {}, `${s.first_name} ${s.last_name}`)))
+            : h('small', { class: 'muted' }, 'No students yet.'),
+          h('details', {}, [
+            h('summary', {}, 'Add students'),
+            h('div', { class: 'row' }, [
+              (() => {
+                const sel = h('select', { id: 'selStudent' }, [ h('option', { value: '' }, '-- choose student --') ]);
+                (allStudents || []).forEach(s => sel.append(h('option', { value: s.id }, `${s.first_name} ${s.last_name}`)));
+                return sel;
+              })(),
+              h('button', {
+                class: 'btn',
+                onclick: async () => {
+                  const student_id = document.getElementById('selStudent').value;
+                  if (!student_id) return;
+                  const { error } = await sb.from('class_students').insert({ class_id: cls.id, student_id });
+                  if (error) return alert(error.message);
+                  renderRoute();
+                }
+              }, 'Add')
+            ])
+          ])
+        );
+      } catch (e) {
+        rosterCard.innerHTML = '';
+        rosterCard.append(h('h3', {}, 'Roster'), h('small', { class: 'muted' }, `Error: ${e.message || e}`));
+      }
+    }
 
-  // Threads (Class scope) + subthreads
-  const threadsCard = h('div', { class: 'card' }, [ h('h3', {}, 'Class Threads') ]);
-  
-  if (prof.role === 'teacher' && cls.teacher_id === prof.id) {
-    threadsCard.append(
-      h('div', { class: 'row' }, [
-        h('input', { id: 'thrTitle', placeholder: 'Thread title (optional)' }),
-        h('button', {
-          class: 'btn',
-          onclick: async () => {
-            const title = document.getElementById('thrTitle').value.trim() || null;
-            const { error } = await sb.from('threads').insert({ scope: 'class', class_id: cls.id, title, created_by: prof.id });
-            if (error) return alert(error.message);
-            renderRoute(); // re-render the page with the new thread
-          }
-        }, 'New Thread')
-      ])
-    );
-  }
-  
-  const { data: threads, error: thrErr } = await sb
-    .from('threads')
-    .select('*')
-    .eq('class_id', cls.id)
-    .eq('scope', 'class')
-    .order('created_at', { ascending: false });
-  
-  if (thrErr) {
-    threadsCard.append(h('small', { class: 'muted' }, `Error loading threads: ${thrErr.message}`));
-  } else if (!threads || !threads.length) {
-    threadsCard.append(h('small', { class: 'muted' }, 'No threads yet.'));
-  } else {
-    for (const t of threads) {
-      const boxId = `msgs-${t.id}`;
-      const threadEl = h('div', { class: 'thread' }, [
-        h('strong', {}, t.title || '(no title)'),
-        h('div', { id: boxId }, h('small', { class: 'muted' }, 'Loading...')),
+    /* ---------- Assignments ---------- */
+    const asgCard = h('div', { class: 'card' }, [ h('h3', {}, 'Assignments') ]);
+    wrap.append(asgCard);
+
+    // Creator (teacher only) — with Start/Finish labels
+    if (prof.role === 'teacher' && cls.teacher_id === prof.id) {
+      const create = h('details', {}, [
+        h('summary', {}, 'Create assignment'),
         h('div', { class: 'row' }, [
-          h('input', { id: `msg-${t.id}`, placeholder: 'Write a message...' }),
+          h('input', { id: 'aTitle', placeholder: 'Title' }),
+          h('div', { class: 'col' }, [
+            h('label', { for: 'aStart' }, 'Start (optional)'),
+            h('input', { id: 'aStart', type: 'datetime-local', placeholder: 'Start (optional)' })
+          ]),
+          h('div', { class: 'col' }, [
+            h('label', { for: 'aDue' }, 'Finish (optional)'),
+            h('input', { id: 'aDue', type: 'datetime-local', placeholder: 'Finish (optional)' })
+          ]),
+        ]),
+        h('div', { class: 'col' }, [
+          h('textarea', { id: 'aDesc', placeholder: 'Description (optional)' }),
+          h('textarea', { id: 'aSyllabus', placeholder: 'Syllabus JSON (optional)' }),
+        ]),
+        h('div', { class: 'row' }, [
+          h('label', {}, [h('input', { type: 'checkbox', id: 'aAll', checked: true }), ' Assign to all students']),
           h('button', {
             class: 'btn',
             onclick: async () => {
-              const content = document.getElementById(`msg-${t.id}`).value.trim();
-              if (!content) return;
-              const { error } = await sb.from('messages').insert({ thread_id: t.id, content, user_id: prof.id });
-              if (error) return alert(error.message);
-              await loadMessages(t.id); // refresh, but only if box still exists
-              const inp = document.getElementById(`msg-${t.id}`); if (inp) inp.value = '';
+              try {
+                const title = document.getElementById('aTitle').value.trim();
+                if (!title) return alert('Title required');
+
+                const description = document.getElementById('aDesc').value.trim() || null;
+                const startRaw = document.getElementById('aStart').value || null;
+                const dueRaw   = document.getElementById('aDue').value || null;
+                const start_at = startRaw ? new Date(startRaw).toISOString() : null;
+                const due_at   = dueRaw   ? new Date(dueRaw).toISOString()   : null;
+                if (start_at && due_at && new Date(start_at) > new Date(due_at)) {
+                  return alert('Start must be before Finish.');
+                }
+                const assign_all = document.getElementById('aAll').checked;
+
+                let syllabus = null;
+                const syllabusTxt = document.getElementById('aSyllabus').value.trim();
+                if (syllabusTxt) {
+                  try { syllabus = JSON.parse(syllabusTxt); }
+                  catch { return alert('Syllabus must be valid JSON (or leave it blank).'); }
+                }
+
+                const { data, error } = await sb.from('assignments').insert({
+                  class_id: cls.id, title, description, syllabus, due_at, start_at, assign_all, created_by: prof.id
+                }).select('id').single();
+                if (error) throw error;
+
+                if (!assign_all) {
+                  const emails = prompt('Enter student emails (comma separated) to assign:') || '';
+                  const arr = emails.split(',').map(e => e.trim()).filter(Boolean);
+                  if (arr.length) {
+                    const { data: stu } = await sb.from('profiles').select('id, email').in('email', arr).eq('role', 'student');
+                    const rows = (stu || []).map(s => ({ assignment_id: data.id, student_id: s.id }));
+                    if (rows.length) await sb.from('assignment_assignees').insert(rows);
+                  }
+                }
+                alert('Assignment created.');
+                renderRoute();
+              } catch (e) {
+                alert('Error: ' + (e?.message || e));
+              }
             }
-          }, 'Send')
+          }, 'Create')
         ])
       ]);
-      threadsCard.append(threadEl);
-  
-      // Defer so the element is definitely in the DOM when we query it
-      setTimeout(() => { loadMessages(t.id); }, 0);
+      asgCard.append(create);
     }
-  }
-  wrap.append(threadsCard);
-  
-  // Safe loader (bails if container disappeared due to navigation/rerender)
-  async function loadMessages(threadId) {
-    const box = document.getElementById(`msgs-${threadId}`);
-    if (!box) return; // container not in DOM
-  
-    const { data: msgs, error } = await sb
-      .from('messages')
-      .select('*')
-      .eq('thread_id', threadId)
-      .order('created_at', { ascending: true });
-  
-    // The user may have navigated away while the query ran
-    if (!box || !box.isConnected) return;
-  
-    if (error) {
-      box.innerHTML = `<small class="muted">Error: ${error.message}</small>`;
-      return;
-    }
-    if (!msgs || !msgs.length) {
-      box.innerHTML = '<small class="muted">No messages yet.</small>';
-      return;
-    }
-  
-    box.innerHTML = '';
-    const byParent = new Map();
-    msgs.forEach(m => {
-      const key = m.parent_id || 'root';
-      if (!byParent.has(key)) byParent.set(key, []);
-      byParent.get(key).push(m);
-    });
-  
-    function renderThread(parentId, depth = 0) {
-      const arr = byParent.get(parentId || 'root') || [];
-      for (const m of arr) {
-        const msgEl = h('div', { style: `margin-left:${depth * 16}px` }, [
-          h('p', {}, m.content),
-          h('small', { class: 'muted' }, fmtDate(m.created_at)),
-          h('div', { class: 'row' }, [
-            h('input', { id: `reply-${m.id}`, placeholder: 'Reply...' }),
-            h('button', {
-              class: 'btn secondary',
-              onclick: async () => {
-                const input = document.getElementById(`reply-${m.id}`);
-                const content = input?.value.trim();
-                if (!content) return;
-                const { error } = await sb.from('messages').insert({
-                  thread_id: threadId,
-                  content,
-                  user_id: prof.id,
-                  parent_id: m.id
-                });
-                if (error) return alert(error.message);
-                await loadMessages(threadId); // reload safely
-              }
-            }, 'Reply')
-          ])
-        ]);
-        box.append(msgEl);
-        renderThread(m.id, depth + 1);
-      }
-    }
-    renderThread(null, 0);
-  }
 
-  async function uploadClassFile(assignmentId) {
-    // Teachers upload to 'class-files'
-    const file = await pickFile();
-    if (!file) return;
-    const path = `${assignmentId}/${Date.now()}-${file.name}`;
-    const { data, error } = await sb.storage.from('class-files').upload(path, file);
-    if (error) return alert(error.message);
-    await sb.from('assignment_files').insert({ assignment_id: assignmentId, file_path: data.path, uploaded_by: (await currentProfile()).id });
-    alert('File uploaded.');
+    // List assignments
+    try {
+      const { data: assignments, error: aerr } = await sb
+        .from('assignments')
+        .select('*')
+        .eq('class_id', cls.id)
+        .order('created_at', { ascending: false });
+      if (aerr) throw aerr;
+
+      if (!assignments?.length) {
+        asgCard.append(h('small', { class: 'muted' }, 'No assignments.'));
+      } else {
+        const table = h('table', {}, [
+          h('thead', {}, h('tr', {}, [ 'Title', 'Finish', 'Start', 'Actions' ].map(c => h('th', {}, c)))),
+          h('tbody', {}, assignments.map(a => {
+            const actionsTd = h('td', {});
+            // Teacher: file upload button
+            if (prof.role === 'teacher' && cls.teacher_id === prof.id) {
+              actionsTd.append(
+                h('button', { class: 'btn secondary', onclick: () => uploadClassFile(a.id) }, 'Upload file')
+              );
+            }
+            return h('tr', {}, [
+              h('td', {}, a.title),
+              h('td', {}, fmtDate(a.due_at)),
+              h('td', {}, fmtDate(a.start_at || a.created_at)),
+              actionsTd
+            ]);
+          }))
+        ]);
+        asgCard.append(table);
+      }
+    } catch (e) {
+      asgCard.append(h('small', { class: 'muted' }, `Error loading assignments: ${e.message || e}`));
+    }
+
+    /* ---------- Threads (Class scope) + subthreads ---------- */
+    const threadsCard = h('div', { class: 'card' }, [ h('h3', {}, 'Class Threads') ]);
+    wrap.append(threadsCard);
+
+    if (prof.role === 'teacher' && cls.teacher_id === prof.id) {
+      threadsCard.append(
+        h('div', { class: 'row' }, [
+          h('input', { id: 'thrTitle', placeholder: 'Thread title (optional)' }),
+          h('button', {
+            class: 'btn',
+            onclick: async () => {
+              const title = document.getElementById('thrTitle').value.trim() || null;
+              const { error } = await sb.from('threads').insert({ scope: 'class', class_id: cls.id, title, created_by: prof.id });
+              if (error) return alert(error.message);
+              renderRoute();
+            }
+          }, 'New Thread')
+        ])
+      );
+    }
+
+    try {
+      const { data: threads, error: terr } = await sb
+        .from('threads')
+        .select('*')
+        .eq('class_id', cls.id)
+        .eq('scope', 'class')
+        .order('created_at', { ascending: false });
+
+      if (terr) throw terr;
+
+      if (!threads?.length) {
+        threadsCard.append(h('small', { class: 'muted' }, 'No threads yet.'));
+      } else {
+        for (const t of threads) {
+          const boxId = `msgs-${t.id}`;
+          const threadEl = h('div', { class: 'thread' }, [
+            h('strong', {}, t.title || '(no title)'),
+            h('div', { id: boxId }, h('small', { class: 'muted' }, 'Loading...')),
+            h('div', { class: 'row' }, [
+              h('input', { id: `msg-${t.id}`, placeholder: 'Write a message...' }),
+              h('button', {
+                class: 'btn',
+                onclick: async () => {
+                  const input = document.getElementById(`msg-${t.id}`);
+                  const content = input?.value.trim();
+                  if (!content) return;
+                  const { error } = await sb.from('messages').insert({ thread_id: t.id, content, user_id: prof.id });
+                  if (error) return alert(error.message);
+                  await loadMessages(t.id);
+                  if (input) input.value = '';
+                }
+              }, 'Send')
+            ])
+          ]);
+          threadsCard.append(threadEl);
+          setTimeout(() => loadMessages(t.id), 0); // ensure container exists
+        }
+      }
+    } catch (e) {
+      threadsCard.append(h('small', { class: 'muted' }, `Error loading threads: ${e.message || e}`));
+    }
+
+    // Safe message renderer
+    async function loadMessages(threadId) {
+      const box = document.getElementById(`msgs-${threadId}`);
+      if (!box) return;
+      const { data: msgs, error } = await sb
+        .from('messages')
+        .select('*')
+        .eq('thread_id', threadId)
+        .order('created_at', { ascending: true });
+      if (!box || !box.isConnected) return;
+      if (error) { box.innerHTML = `<small class="muted">Error: ${error.message}</small>`; return; }
+      if (!msgs?.length) { box.innerHTML = '<small class="muted">No messages yet.</small>'; return; }
+
+      box.innerHTML = '';
+      const byParent = new Map();
+      msgs.forEach(m => {
+        const k = m.parent_id || 'root';
+        if (!byParent.has(k)) byParent.set(k, []);
+        byParent.get(k).push(m);
+      });
+
+      function renderThread(parentId, depth = 0) {
+        const arr = byParent.get(parentId || 'root') || [];
+        for (const m of arr) {
+          const msgEl = h('div', { style: `margin-left:${depth * 16}px` }, [
+            h('p', {}, m.content),
+            h('small', { class: 'muted' }, fmtDate(m.created_at)),
+            h('div', { class: 'row' }, [
+              h('input', { id: `reply-${m.id}`, placeholder: 'Reply...' }),
+              h('button', {
+                class: 'btn secondary',
+                onclick: async () => {
+                  const input = document.getElementById(`reply-${m.id}`);
+                  const content = input?.value.trim();
+                  if (!content) return;
+                  const { error } = await sb.from('messages').insert({
+                    thread_id: threadId, content, user_id: prof.id, parent_id: m.id
+                  });
+                  if (error) return alert(error.message);
+                  await loadMessages(threadId);
+                }
+              }, 'Reply')
+            ])
+          ]);
+          box.append(msgEl);
+          renderThread(m.id, depth + 1);
+        }
+      }
+      renderThread(null, 0);
+    }
+
+    // File upload helper (teacher uploads to class-files)
+    async function uploadClassFile(assignmentId) {
+      const file = await pickFile();
+      if (!file) return;
+      const path = `${assignmentId}/${Date.now()}-${file.name}`;
+      const { data, error } = await sb.storage.from('class-files').upload(path, file);
+      if (error) return alert(error.message);
+      await sb.from('assignment_files').insert({ assignment_id: assignmentId, file_path: data.path, uploaded_by: prof.id });
+      alert('File uploaded.');
+    }
+  } catch (e) {
+    console.error('ClassDetail failed:', e);
+    app.innerHTML = `<div class="card">Error loading class: ${e.message || e}</div>`;
   }
 }
-
 
 /* Messaging: DMs between teacher and student/parent */
   async function Messaging(app) {
