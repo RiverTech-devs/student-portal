@@ -64,12 +64,53 @@ function h(tag, attrs = {}, children = []) {
 function fmtDate(dt) { if (!dt) return '-'; const d = new Date(dt); return d.toLocaleString(); }
 
 async function currentProfile() {
+  // Get the signed-in user
   const { data } = await sb.auth.getUser();
   const user = data?.user;
   if (!user) return null;
-  const { data: prof } = await sb.from('profiles').select('*').eq('id', user.id).single();
-  return prof || null;
+
+  // 1) Try the portal's profiles table first
+  let profRes = await sb
+    .from('profiles')
+    .select('id, email, role, first_name, last_name')
+    .eq('id', user.id)
+    .maybeSingle();
+
+  if (profRes?.data) return profRes.data;
+
+  // 2) Fall back to your OG table (user_profiles → user_type)
+  const upRes = await sb
+    .from('user_profiles')
+    .select('id, email, user_type, first_name, last_name')
+    .eq('id', user.id)
+    .maybeSingle();
+
+  if (!upRes?.data) {
+    // Still nothing: keep the UI message, but log the reason for you
+    console.warn('No profile found in profiles or user_profiles for', user.id, upRes?.error);
+    return null;
+  }
+
+  // 3) Map and upsert into profiles so portal works going forward
+  const mapped = {
+    id: upRes.data.id,
+    email: upRes.data.email,
+    role: upRes.data.user_type,                 // teacher | student | parent
+    first_name: upRes.data.first_name || '',
+    last_name:  upRes.data.last_name  || ''
+  };
+
+  // RLS policy in policies.sql allows users to upsert their own profile
+  const upsert = await sb.from('profiles').upsert(mapped);
+  if (upsert.error) {
+    console.warn('profiles upsert failed (RLS?)', upsert.error);
+    // Even if upsert fails, return the mapped profile so the UI can continue
+    return mapped;
+  }
+
+  return mapped;
 }
+
 
 async function listStudents() {
   const { data, error } = await sb.from('profiles').select('id, first_name, last_name, email').eq('role', 'student').order('last_name');
