@@ -29,10 +29,11 @@ window.addEventListener('hashchange', renderRoute);
 window.addEventListener('load', renderRoute);
 
 function routeKey() {
-  const h = location.hash || '#/';
-  const parts = h.split('/');
+  const raw = location.hash || '#/';
+  const h = raw.split('?')[0];                 // ← strip query string
   if (h.startsWith('#/class/')) return '#/class';
   if (h.startsWith('#/analytics/')) return '#/analytics';
+  const parts = h.split('/');
   return parts.length <= 2 ? h : `#/${parts[1]}`;
 }
 
@@ -239,7 +240,7 @@ async function Classes(app) {
 async function ClassDetail(app) {
   const prof = await currentProfile();
   if (!prof) { app.innerHTML = `<div class="card">Please sign in.</div>`; return; }
-  const classId = location.hash.split('/')[2];
+  const classId = (location.hash.split('?')[0]).split('/')[2]; 
   if (!classId) { app.innerHTML = `<div class="card">Invalid class ID.</div>`; return; }
 
   // Load class
@@ -585,6 +586,7 @@ async function ClassDetail(app) {
             const { data: threadId, error } = await sb.rpc('get_or_create_dm_thread', { other_user: userId });
             if (error) return alert(error.message);
             location.hash = `#/messaging?thread=${threadId}`;
+            setTimeout(renderRoute, 0);
           }
         }, 'Open DM')
       ]));
@@ -619,6 +621,7 @@ async function ClassDetail(app) {
             const { data: threadId, error } = await sb.rpc('get_or_create_dm_thread', { other_user: userId });
             if (error) return alert(error.message);
             location.hash = `#/messaging?thread=${threadId}`;
+            setTimeout(renderRoute, 0);
           }
         }, 'Open DM')
       ]));
@@ -683,7 +686,7 @@ async function ensureDmThread(userIds) {
 async function Analytics(app) {
   const prof = await currentProfile();
   if (!prof) { app.innerHTML = `<div class="card">Please sign in.</div>`; return; }
-  const classId = location.hash.split('/')[2];
+  const classId = (location.hash.split('?')[0]).split('/')[2];
   if (!classId) { app.innerHTML = `<div class="card">Missing class ID.</div>`; return; }
 
   // Verify access
