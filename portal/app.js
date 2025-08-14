@@ -56,6 +56,53 @@ async function renderRoute() {
   await page(app);
 }
 
+// Ensure header controls exist + are wired
+(function ensureHeader() {
+  const nav = document.getElementById('nav');
+  if (!nav) return; // header not in DOM yet
+
+  // Spacer
+  if (!nav.querySelector('.nav-spacer')) {
+    const spacer = document.createElement('span');
+    spacer.className = 'nav-spacer';
+    nav.appendChild(spacer);
+  }
+
+  // User badge
+  let badge = document.getElementById('userBadge');
+  if (!badge) {
+    badge = document.createElement('span');
+    badge.id = 'userBadge';
+    badge.className = 'user-badge';
+    nav.appendChild(badge);
+  }
+
+  // Dashboard button
+  let mainBtn = document.getElementById('btnMain');
+  if (!mainBtn) {
+    mainBtn = document.createElement('button');
+    mainBtn.id = 'btnMain';
+    mainBtn.className = 'btn link small';
+    mainBtn.textContent = 'Dashboard';
+    nav.appendChild(mainBtn);
+  }
+  mainBtn.onclick = () => { window.location.href = '../'; };
+
+  // Logout button (cyber-danger style)
+  let outBtn = document.getElementById('btnLogout');
+  if (!outBtn) {
+    outBtn = document.createElement('button');
+    outBtn.id = 'btnLogout';
+    outBtn.className = 'btn link danger small';
+    outBtn.textContent = 'Logout';
+    nav.appendChild(outBtn);
+  }
+  outBtn.onclick = async () => {
+    try { await sb.auth.signOut(); } finally { location.hash = '#/'; setTimeout(renderRoute, 0); }
+  };
+})();
+
+
 // Hook up Main App + Logout controls once the DOM is ready
 (function wireNav() {
   const mainBtn = document.getElementById('btnMain');
