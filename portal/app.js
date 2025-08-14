@@ -73,6 +73,70 @@ async function renderRoute() {
   });
 })();
 
+// --- User badge in header ---
+async function renderUserBadge() {
+  const el = document.getElementById('userBadge');
+  if (!el) return;
+
+  try {
+    const { data: { user } } = await sb.auth.getUser();
+    if (!user) {
+      el.textContent = 'Guest';
+      el.title = '';
+      return;
+    }
+
+    // Try profiles first
+    let prof = (await sb
+      .from('profiles')
+      .select('first_name,last_name,role,email')
+      .eq('id', user.id)
+      .maybeSingle()
+    ).data;
+
+    // Fallback to user_profiles (your OG table)
+    if (!prof) {
+      const up = (await sb
+        .from('user_profiles')
+        .select('first_name,last_name,user_type,email')
+        .eq('id', user.id)
+        .maybeSingle()
+      ).data;
+      if (up) prof = { first_name: up.first_name, last_name: up.last_name, role: up.user_type, email: up.email };
+    }
+
+    const name = [prof?.first_name, prof?.last_name].filter(Boolean).join(' ') || user.email || 'User';
+    const role = (prof?.role || '').toUpperCase();
+
+    el.innerHTML = ''; // clear
+    const nameSpan = document.createElement('span');
+    nameSpan.textContent = name;
+    el.appendChild(nameSpan);
+
+    if (role) {
+      const r = document.createElement('span');
+      r.className = 'role';
+      r.textContent = role;
+      el.appendChild(r);
+    }
+
+    el.title = user.email || '';
+  } catch (e) {
+    // keep it quiet; just show guest
+    const el = document.getElementById('userBadge');
+    if (el) { el.textContent = 'Guest'; el.title = ''; }
+  }
+}
+
+// Run once now, and on auth changes
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', renderUserBadge);
+} else {
+  renderUserBadge();
+}
+sb.auth.onAuthStateChange?.(() => { renderUserBadge(); });
+
+
 /* Utilities */
 function h(tag, attrs = {}, children = []) {
   const el = document.createElement(tag);
