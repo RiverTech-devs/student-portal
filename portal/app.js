@@ -409,10 +409,13 @@ async function ClassDetail(app) {
       asgCard.append(h('small', { class: 'muted' }, `Error loading assignments: ${e.message || e}`));
     }
 
-    /* ---------- Threads (Class scope) — collapsible with names ---------- */
+    /* ---------- Threads (Class scope) — collapsible, flat lines with Reply/Delete ---------- */
     const threadsCard = h('div', { class: 'card' }, [ h('h3', {}, 'Class Threads') ]);
     wrap.append(threadsCard);
-
+    
+    // Reply target per thread (so the bottom input can reply to a specific message)
+    const replyTarget = new Map(); // threadId -> { id, label }
+    
     if (prof.role === 'teacher' && cls.teacher_id === prof.id) {
       threadsCard.append(
         h('div', { class: 'row' }, [
@@ -431,7 +434,7 @@ async function ClassDetail(app) {
         ])
       );
     }
-
+    
     try {
       const { data: threads, error: terr } = await sb
         .from('threads')
@@ -439,43 +442,138 @@ async function ClassDetail(app) {
         .eq('class_id', cls.id)
         .eq('scope', 'class')
         .order('created_at', { ascending: false });
-
+    
       if (terr) throw terr;
+    
       if (!threads?.length) {
         threadsCard.append(h('small', { class: 'muted' }, 'No threads yet.'));
       } else {
         for (const t of threads) {
-          const boxId = `msgs-${t.id}`;
-          const sum = h('summary', {}, t.title || '(no title)');
-          const details = h('details', { open: true }, [
-            sum,
+          const boxId   = `msgs-${t.id}`;
+          const inputId = `input-${t.id}`;
+          const indId   = `replyind-${t.id}`;
+    
+          const summary = h('summary', {}, t.title || '(no title)');
+          const convo = h('details', { open: true }, [
+            summary,
             h('div', { id: boxId }, h('small', { class: 'muted' }, 'Loading…')),
+            // Reply indicator + composer at the bottom (like your mock)
+            h('div', { class: 'row', style: 'margin-top:8px' }, [
+              h('small', { id: indId, class: 'muted', style: 'flex:1' }, ''), // "Replying to Name: … [cancel]"
+            ]),
             h('div', { class: 'row' }, [
-              h('input', { id: `msg-${t.id}`, placeholder: 'Write a message…' }),
+              h('input', { id: inputId, placeholder: 'Write a message…', style: 'flex:1' }),
               h('button', {
                 class: 'btn',
                 onclick: async () => {
-                  const input = document.getElementById(`msg-${t.id}`);
-                  const content = input?.value.trim();
-                  if (!content) return;
+                  const el = document.getElementById(inputId);
+                  const text = el?.value.trim(); if (!text) return;
+    
+                  const parent = replyTarget.get(t.id)?.id || null;
                   const { error } = await sb.from('messages').insert({
-                    thread_id: t.id, content, user_id: prof.id
+                    thread_id: t.id, content: text, user_id: prof.id, parent_id: parent
                   });
                   if (error) return alert(error.message);
-                  input.value = '';
-                  await loadMessages(t.id, boxId, sum);
+                  if (el) el.value = '';
+                  replyTarget.delete(t.id);
+                  updateReplyIndicator(indId, null);
+                  await loadFlatThread(t.id, boxId, summary);
                 }
               }, 'Send')
             ])
           ]);
-          threadsCard.append(h('div', { class: 'thread' }, [ details ]));
-          setTimeout(() => loadMessages(t.id, boxId, sum), 0);
+    
+          threadsCard.append(h('div', { class: 'thread' }, [ convo ]));
+          setTimeout(() => loadFlatThread(t.id, boxId, summary), 0);
         }
       }
     } catch (e) {
       threadsCard.append(h('small', { class: 'muted' }, `Error loading threads: ${e.message || e}`));
     }
-
+    
+    /* helper: render a thread with flat lines + names, Reply/Delete */
+    async function loadFlatThread(threadId, boxId, summaryEl) {
+      const box = document.getElementById(boxId); if (!box) return;
+    
+      const { data: msgs, error } = await sb
+        .from('messages')
+        .select('id, content, user_id, parent_id, created_at')
+        .eq('thread_id', threadId)
+        .order('created_at', { ascending: true });
+    
+      if (!box || !box.isConnected) return;
+      if (error) { box.innerHTML = `<small class="muted">Error: ${error.message}</small>`; return; }
+    
+      // Names (First Last or email) + role
+      const ids = [...new Set((msgs || []).map(m => m.user_id))];
+      const userMap = await fetchUserInfoMap(ids);
+    
+      if (!msgs?.length) {
+        box.innerHTML = '<small class="muted">No messages yet.</small>';
+        summaryEl.textContent = updateSummary(summaryEl.textContent, 0);
+        return;
+      }
+    
+      // Group by parent for indentation
+      box.innerHTML = '';
+      const byParent = new Map();
+      msgs.forEach(m => {
+        const k = m.parent_id || 'root';
+        if (!byParent.has(k)) byParent.set(k, []);
+        byParent.get(k).push(m);
+      });
+    
+      const renderBranch = (parentId, depth = 0) => {
+        const arr = byParent.get(parentId || 'root') || [];
+        for (const m of arr) {
+          const info = userMap.get(m.user_id) || { name: 'Unknown', role: '' };
+          const label = info.role ? `${info.role}:` : `${info.name}:`;
+          const line = h('div', { style: `margin-left:${depth * 16}px; display:flex; gap:8px; align-items:center;` }, [
+            h('span', { style: 'font-weight:600' }, label),
+            h('span', {}, m.content),
+            h('button', {
+              class: 'btn link',
+              onclick: () => {
+                replyTarget.set(threadId, { id: m.id, label: `${info.name}: ${short(m.content)}` });
+                updateReplyIndicator(`replyind-${threadId}`, replyTarget.get(threadId));
+                const inp = document.getElementById(`input-${threadId}`); if (inp) inp.focus();
+              }
+            }, 'Reply'),
+            ...(m.user_id === prof.id ? [
+              h('button', {
+                class: 'btn link danger',
+                onclick: async () => {
+                  if (!confirm('Delete this message?')) return;
+                  const { error } = await sb.from('messages').delete().eq('id', m.id);
+                  if (error) return alert(error.message);
+                  // If we were replying to this, clear target
+                  if (replyTarget.get(threadId)?.id === m.id) {
+                    replyTarget.delete(threadId);
+                    updateReplyIndicator(`replyind-${threadId}`, null);
+                  }
+                  await loadFlatThread(threadId, boxId, summaryEl);
+                }
+              }, 'Delete')
+            ] : [])
+          ]);
+    
+          box.append(line);
+          renderBranch(m.id, depth + 1);
+        }
+      };
+      renderBranch(null, 0);
+      summaryEl.textContent = updateSummary(summaryEl.textContent, msgs.length);
+    }
+    
+    // tiny helpers for reply indicator + name maps
+    function updateReplyIndicator(indId, target) {
+      const el = document.getElementById(indId);
+      if (!el) return;
+      if (!target) { el.textContent = ''; return; }
+      el.innerHTML = `Replying to <b>${escapeHtml(target.label)}</b> &nbsp;`;
+      const cancel = h('button', { class: 'btn link', onclick: () => { el.textContent = ''; } }, '[cancel]');
+      el.append(cancel);
+    }
     // Message renderer (safe + collapsible)
     async function loadMessages(threadId, boxId, summaryEl) {
       const box = document.getElementById(boxId);
@@ -559,168 +657,205 @@ async function ClassDetail(app) {
 }
 
 /* Messaging: DMs between teacher and student/parent  — collapsible, with names */
-    async function Messaging(app) {
-      const prof = await currentProfile();
-      if (!prof) { app.innerHTML = `<div class="card">Please sign in.</div>`; return; }
-    
-      const container = h('div', { class: 'card' }, [ h('h2', {}, 'Direct Messages') ]);
-      app.innerHTML = ''; app.append(container);
-    
-      // Recipient picker
-      if (prof.role === 'teacher') {
-        container.append(h('p', {}, 'Start a DM with a student or parent.'));
-        const { data: people } = await sb
-          .from('profiles')
-          .select('id, first_name, last_name, role')
-          .in('role', ['student','parent'])
-          .order('last_name');
-    
-        const sel = h('select', { id: 'selDM' }, [
-          h('option', { value: '' }, '-- choose recipient --')
-        ]);
-        (people || [])
-          .filter(p => p.id !== prof.id)
-          .forEach(p => sel.append(h('option', { value: p.id }, `${p.first_name} ${p.last_name} (${p.role})`)));
-    
-        container.append(h('div', { class: 'row' }, [
-          sel,
-          h('button', {
-            class: 'btn',
-            onclick: async () => {
-              const userId = sel.value; if (!userId) return;
-              const { data: threadId, error } = await sb.rpc('get_or_create_dm_thread', { other_user: userId });
-              if (error) return alert(error.message);
-              location.hash = `#/messaging?thread=${threadId}`;
-              setTimeout(renderRoute, 0);
-            }
-          }, 'Open DM')
-        ]));
-    
-      } else {
-        container.append(h('p', {}, 'Start a DM with a teacher.'));
-        const { data: teachers } = await sb
-          .from('profiles')
-          .select('id, first_name, last_name, role')
-          .eq('role', 'teacher')
-          .order('last_name');
-    
-        const sel = h('select', { id: 'selDM' }, [
-          h('option', { value: '' }, '-- choose teacher --')
-        ]);
-        (teachers || [])
-          .filter(p => p.id !== prof.id)
-          .forEach(p => sel.append(h('option', { value: p.id }, `${p.first_name} ${p.last_name}`)));
-    
-        container.append(h('div', { class: 'row' }, [
-          sel,
-          h('button', {
-            class: 'btn',
-            onclick: async () => {
-              const userId = sel.value; if (!userId) return;
-              const { data: threadId, error } = await sb.rpc('get_or_create_dm_thread', { other_user: userId });
-              if (error) return alert(error.message);
-              location.hash = `#/messaging?thread=${threadId}`;
-              setTimeout(renderRoute, 0);
-            }
-          }, 'Open DM')
-        ]));
-      }
-    
-      // If a thread is selected via hash, render it (collapsible)
-      const qs = new URLSearchParams((location.hash.split('?')[1] || ''));
-      const threadId = qs.get('thread');
-      if (!threadId) return;
-    
-      const convoId = `dm-${threadId}`;
-      const header = h('summary', {}, 'Conversation');
-      const convo = h('details', { open: true }, [
-        header,
-        h('div', { id: convoId }, h('small', { class: 'muted' }, 'Loading…')),
-        h('div', { class: 'row' }, [
-          h('input', { id: 'dmInput', placeholder: 'Write a message…' }),
-          h('button', {
-            class: 'btn',
-            onclick: async () => {
-              const inp = document.getElementById('dmInput');
-              const content = inp?.value.trim(); if (!content) return;
-              const { error } = await sb.from('messages').insert({
-                thread_id: threadId, content, user_id: prof.id
-              });
-              if (error) return alert(error.message);
-              inp.value = '';
-              await loadDm(threadId, convoId, header);
-            }
-          }, 'Send')
-        ])
+    /* Messaging: DM inbox + flat conversation with names, Reply/Delete */
+async function Messaging(app) {
+  const prof = await currentProfile();
+  if (!prof) { app.innerHTML = `<div class="card">Please sign in.</div>`; return; }
+  app.innerHTML = '';
+
+  const page = h('div', { class: 'col' });
+  app.append(page);
+
+  /* ---- A) DM Inbox (list all DM threads for me) ---- */
+  const inbox = h('div', { class: 'card' }, [ h('h2', {}, 'Conversations') ]);
+  page.append(inbox);
+
+  // threads I'm in
+  const { data: links } = await sb
+    .from('thread_participants')
+    .select('thread_id')
+    .eq('user_id', prof.id);
+  const tIds = [...new Set((links || []).map(x => x.thread_id))];
+
+  if (!tIds.length) {
+    inbox.append(h('small', { class: 'muted' }, 'No conversations yet.'));
+  } else {
+    // fetch the threads + latest messages + participants (2-step)
+    const { data: th } = await sb.from('threads').select('id, created_at').in('id', tIds).eq('scope', 'dm');
+
+    const { data: parts } = await sb
+      .from('thread_participants')
+      .select('thread_id, user_id')
+      .in('thread_id', tIds);
+
+    const { data: msgs } = await sb
+      .from('messages')
+      .select('id, thread_id, content, user_id, created_at')
+      .in('thread_id', tIds)
+      .order('created_at', { ascending: false });
+
+    const latestByThread = new Map();
+    const secondByThread = new Map();
+    (msgs || []).forEach(m => {
+      if (!latestByThread.has(m.thread_id)) latestByThread.set(m.thread_id, m);
+      else if (!secondByThread.has(m.thread_id)) secondByThread.set(m.thread_id, m);
+    });
+
+    // name map for all participant ids
+    const allUserIds = [...new Set((parts || []).map(p => p.user_id).concat((msgs || []).map(m => m.user_id)))];
+    const userMap = await fetchUserInfoMap(allUserIds);
+
+    (th || []).forEach(t => {
+      const p = (parts || []).filter(x => x.thread_id === t.id);
+      const others = p.map(x => x.user_id).filter(id => id !== prof.id);
+      const otherName = userMap.get(others[0])?.name || 'Unknown';
+
+      const top = latestByThread.get(t.id);
+      const prev = secondByThread.get(t.id);
+
+      // Row: "Other: preview...   [Open]"
+      const row = h('div', { class: 'row', style: 'align-items:center; gap:12px; margin:6px 0;' }, [
+        h('div', { style: 'flex:1;' }, [
+          h('div', { style: 'font-weight:600' }, `${otherName}: ${short(top?.content || '')}`),
+          prev ? h('div', { class: 'muted', style: 'margin-left:12px' }, `${userMap.get(prev.user_id)?.role || userMap.get(prev.user_id)?.name || 'User'}: ${short(prev.content)}`) : null
+        ]),
+        h('button', { class: 'btn', onclick: () => { location.hash = `#/messaging?thread=${t.id}`; setTimeout(renderRoute, 0); } }, 'Open')
       ]);
-      container.append(convo);
-      setTimeout(() => loadDm(threadId, convoId, header), 0);
-    
-      async function loadDm(threadId, boxId, summaryEl) {
-        const box = document.getElementById(boxId);
-        if (!box) return;
-    
-        const { data: msgs, error } = await sb
-          .from('messages')
-          .select('id, content, user_id, parent_id, created_at')
-          .eq('thread_id', threadId)
-          .order('created_at', { ascending: true });
-    
-        if (!box || !box.isConnected) return;
-    
-        if (error) { box.innerHTML = `<small class="muted">Error: ${error.message}</small>`; return; }
-        if (!msgs?.length) { box.innerHTML = '<small class="muted">No messages yet.</small>'; summaryEl.textContent = updateSummary('Conversation', 0); return; }
-    
-        const ids = [...new Set(msgs.map(m => m.user_id))];
-        const nameMap = await fetchNameMap(ids);
-    
-        // DM: also collapsible per root message
-        box.innerHTML = '';
-        const byParent = new Map();
-        msgs.forEach(m => {
-          const k = m.parent_id || 'root';
-          if (!byParent.has(k)) byParent.set(k, []);
-          byParent.get(k).push(m);
-        });
-    
-        function renderBranch(parentId, depth = 0) {
-          const arr = byParent.get(parentId || 'root') || [];
-          for (const m of arr) {
-            const who = nameMap.get(m.user_id) || 'Unknown';
-            const header = `${who} • ${fmtDate(m.created_at)}`;
-    
-            const content = h('div', {}, [
-              h('p', {}, m.content),
-              h('div', { class: 'row' }, [
-                h('input', { id: `dm-reply-${m.id}`, placeholder: 'Reply…' }),
-                h('button', {
-                  class: 'btn secondary',
-                  onclick: async () => {
-                    const inp = document.getElementById(`dm-reply-${m.id}`);
-                    const text = inp?.value.trim(); if (!text) return;
-                    const { error } = await sb.from('messages').insert({
-                      thread_id: threadId, content: text, user_id: prof.id, parent_id: m.id
-                    });
-                    if (error) return alert(error.message);
-                    if (inp) inp.value = '';
-                    await loadDm(threadId, boxId, summaryEl);
-                  }
-                }, 'Reply')
-              ])
-            ]);
-    
-            const node = depth === 0
-              ? h('details', { open: true, style: `margin-left:${depth * 16}px` }, [ h('summary', {}, header), content ])
-              : h('details', { style: `margin-left:${depth * 16}px` }, [ h('summary', {}, header), content ]);
-    
-            box.append(node);
-            renderBranch(m.id, depth + 1);
-          }
-        }
-        renderBranch(null, 0);
-        summaryEl.textContent = updateSummary('Conversation', msgs.length);
+      inbox.append(row);
+    });
+  }
+
+  /* ---- B) Start a new conversation ---- */
+  const picker = h('div', { class: 'card' }, [ h('h3', {}, 'Start a new DM') ]);
+  page.append(picker);
+
+  if (prof.role === 'teacher') {
+    const { data: people } = await sb
+      .from('profiles')
+      .select('id, first_name, last_name, role')
+      .in('role', ['student','parent'])
+      .order('last_name');
+    const sel = h('select', { id: 'selDM' }, [ h('option', { value: '' }, '-- choose recipient --') ]);
+    (people || []).filter(p => p.id !== prof.id).forEach(p => sel.append(h('option', { value: p.id }, `${p.first_name} ${p.last_name} (${p.role})`)));
+    picker.append(h('div', { class: 'row' }, [
+      sel,
+      h('button', { class: 'btn', onclick: async () => {
+        const id = sel.value; if (!id) return;
+        const { data, error } = await sb.rpc('get_or_create_dm_thread', { other_user: id });
+        if (error) return alert(error.message);
+        location.hash = `#/messaging?thread=${data}`; setTimeout(renderRoute, 0);
+      }}, 'Open DM')
+    ]));
+  } else {
+    const { data: teachers } = await sb.from('profiles').select('id, first_name, last_name').eq('role','teacher').order('last_name');
+    const sel = h('select', { id: 'selDM' }, [ h('option', { value: '' }, '-- choose teacher --') ]);
+    (teachers || []).filter(p => p.id !== prof.id).forEach(p => sel.append(h('option', { value: p.id }, `${p.first_name} ${p.last_name}`)));
+    picker.append(h('div', { class: 'row' }, [
+      sel,
+      h('button', { class: 'btn', onclick: async () => {
+        const id = sel.value; if (!id) return;
+        const { data, error } = await sb.rpc('get_or_create_dm_thread', { other_user: id });
+        if (error) return alert(error.message);
+        location.hash = `#/messaging?thread=${data}`; setTimeout(renderRoute, 0);
+      }}, 'Open DM')
+    ]));
+  }
+
+  /* ---- C) If a DM is selected, show it (flat lines) ---- */
+  const qs = new URLSearchParams((location.hash.split('?')[1] || ''));
+  const threadId = qs.get('thread');
+  if (!threadId) return;
+
+  const convoCard = h('div', { class: 'card' }, [ h('h3', {}, 'Conversation') ]);
+  page.append(convoCard);
+
+  const boxId   = `dm-${threadId}`;
+  const inputId = `dmInput-${threadId}`;
+  const indId   = `dm-replyind-${threadId}`;
+  const summary = h('summary', {}, 'Conversation');
+
+  const replyTarget = { id: null, label: null }; // DM-scoped
+
+  const details = h('details', { open: true }, [
+    summary,
+    h('div', { id: boxId }, h('small', { class: 'muted' }, 'Loading…')),
+    h('div', { class: 'row', style: 'margin-top:8px' }, [
+      h('small', { id: indId, class: 'muted', style: 'flex:1' }, '')
+    ]),
+    h('div', { class: 'row' }, [
+      h('input', { id: inputId, placeholder: 'Write a message…', style: 'flex:1' }),
+      h('button', { class: 'btn', onclick: sendDm }, 'Send')
+    ])
+  ]);
+  convoCard.append(details);
+  setTimeout(loadDm, 0);
+
+  async function loadDm() {
+    const box = document.getElementById(boxId); if (!box) return;
+    const { data: msgs, error } = await sb
+      .from('messages')
+      .select('id, content, user_id, parent_id, created_at')
+      .eq('thread_id', threadId)
+      .order('created_at', { ascending: true });
+    if (!box || !box.isConnected) return;
+
+    if (error) { box.innerHTML = `<small class="muted">Error: ${error.message}</small>`; return; }
+    if (!msgs?.length) { box.innerHTML = '<small class="muted">No messages yet.</small>'; summary.textContent = updateSummary('Conversation', 0); return; }
+
+    const ids = [...new Set(msgs.map(m => m.user_id))];
+    const map = await fetchUserInfoMap(ids);
+
+    box.innerHTML = '';
+    const byParent = new Map();
+    msgs.forEach(m => {
+      const k = m.parent_id || 'root';
+      if (!byParent.has(k)) byParent.set(k, []);
+      byParent.get(k).push(m);
+    });
+
+    const renderBranch = (parentId, depth = 0) => {
+      const arr = byParent.get(parentId || 'root') || [];
+      for (const m of arr) {
+        const info = map.get(m.user_id) || { name:'Unknown', role:'' };
+        const label = info.role ? `${info.role}:` : `${info.name}:`;
+        const row = h('div', { style: `margin-left:${depth * 16}px; display:flex; gap:8px; align-items:center;` }, [
+          h('span', { style: 'font-weight:600' }, label),
+          h('span', {}, m.content),
+          h('button', { class: 'btn link', onclick: () => {
+            replyTarget.id = m.id; replyTarget.label = `${info.name}: ${short(m.content)}`;
+            updateReplyIndicator(indId, replyTarget);
+            const inp = document.getElementById(inputId); if (inp) inp.focus();
+          }}, 'Reply'),
+          ...(m.user_id === prof.id ? [
+            h('button', { class: 'btn link danger', onclick: async () => {
+              if (!confirm('Delete this message?')) return;
+              const { error } = await sb.from('messages').delete().eq('id', m.id);
+              if (error) return alert(error.message);
+              if (replyTarget.id === m.id) { replyTarget.id = null; updateReplyIndicator(indId, null); }
+              await loadDm();
+            } }, 'Delete')
+          ] : [])
+        ]);
+        box.append(row);
+        renderBranch(m.id, depth + 1);
       }
-    }
+    };
+    renderBranch(null, 0);
+    summary.textContent = updateSummary('Conversation', msgs.length);
+  }
+
+  async function sendDm() {
+    const inp = document.getElementById(inputId);
+    const text = inp?.value.trim(); if (!text) return;
+    const { error } = await sb.from('messages').insert({
+      thread_id: threadId, content: text, user_id: prof.id, parent_id: replyTarget.id || null
+    });
+    if (error) return alert(error.message);
+    if (inp) inp.value = '';
+    replyTarget.id = null; updateReplyIndicator(indId, null);
+    await loadDm();
+  }
+}
 
 async function ensureDmThread(userIds) {
   // Expect exactly 2 users: me + other
@@ -774,6 +909,33 @@ async function Analytics(app) {
 }
 
 /* Helpers */
+async function fetchUserInfoMap(ids) {
+  if (!ids?.length) return new Map();
+  const { data } = await sb.from('profiles').select('id, first_name, last_name, email, role').in('id', ids);
+  const map = new Map();
+  (data || []).forEach(p => {
+    const name = [p.first_name, p.last_name].filter(Boolean).join(' ') || p.email || 'User';
+    const role = p.role ? (p.role[0].toUpperCase() + p.role.slice(1)) : '';
+    map.set(p.id, { name, role });
+  });
+  return map;
+}
+
+function updateSummary(base, count) {
+  const b = String(base).replace(/\s\(\d+\)$/, '');
+  return `${b} (${count})`;
+}
+
+function short(s, n = 60) {
+  s = s || '';
+  return s.length > n ? s.slice(0, n - 1) + '…' : s;
+}
+
+// tiny HTML escape for reply indicators
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
 async function fetchNameMap(ids) {
   if (!ids?.length) return new Map();
   const { data } = await sb.from('profiles').select('id, first_name, last_name, email').in('id', ids);
