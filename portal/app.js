@@ -640,7 +640,8 @@ try {
 
 /* Teacher helper: upload supplemental file for an assignment */
 async function uploadClassFile(assignmentId) {
-  const file = await pickFile(); if (!file) return;
+  const file = await pickFile(); 
+  if (!file) return;
   const path = `${assignmentId}/supp-${Date.now()}-${file.name}`;
   const { data, error } = await sb.storage.from('class-files').upload(path, file);
   if (error) return alert(error.message);
@@ -943,17 +944,6 @@ async function submitAssignmentText(assignmentId, studentId) {
       }
       renderBranch(null, 0);
       summaryEl.textContent = updateSummary(summaryEl.textContent, msgs.length);
-    }
-
-    // File upload helper (teacher uploads to class-files)
-    async function uploadClassFile(assignmentId) {
-      const file = await pickFile();
-      if (!file) return;
-      const path = `${assignmentId}/${Date.now()}-${file.name}`;
-      const { data, error } = await sb.storage.from('class-files').upload(path, file);
-      if (error) return alert(error.message);
-      await sb.from('assignment_files').insert({ assignment_id: assignmentId, file_path: data.path, uploaded_by: prof.id });
-      alert('File uploaded.');
     }
   } catch (e) {
     console.error('ClassDetail failed:', e);
