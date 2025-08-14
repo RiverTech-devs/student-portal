@@ -4,7 +4,15 @@
 // Here we assume supabase is globally available (loaded in index.html via script tag on your site).
 // In this generated scaffold, we import supabase via the global created in supabaseClient.js.
 
-import { sb } from './supabaseClient.js';
+// --- Supabase client (ESM) ---
+import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
+import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
+
+export const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+// Optional: expose for quick console testing
+window.sb = sb;
+
+//import { sb } from './supabaseClient.js';
 
 // Simple hash router
 const routes = {
