@@ -318,58 +318,102 @@ async function Profile(app) {
   app.append(card);
 }
 
-/* Classes */
+/* Classes: teacher list + student/parent list (no "null" labels) */
 async function Classes(app) {
   const prof = await currentProfile();
   if (!prof) { app.innerHTML = `<div class="card">Please sign in.</div>`; return; }
 
-  const container = h('div', { class: 'card' });
-  container.append(h('h2', {}, 'Classes'));
-
-  // Teacher tools
-  if (prof.role === 'teacher') {
-    const createCard = h('div', { class: 'card' }, [
-      h('h3', {}, 'Create Class'),
-      h('div', { class: 'row' }, [
-        h('input', { id: 'clsName', placeholder: 'Class name' }),
-        h('button', { class: 'btn', onclick: async () => {
-          const name = document.getElementById('clsName').value.trim();
-          if (!name) return;
-          const { error } = await sb.from('classes').insert({ name, teacher_id: prof.id });
-          if (error) return alert(error.message);
-          renderRoute();
-        }}, 'Create')
-      ])
-    ]);
-    container.append(createCard);
-  }
-
-  // List classes
-  const classes = await listMyClasses(prof.role, prof.id);
-  if (!classes.length) {
-    container.append(h('p', {}, 'No classes yet.'));
-  } else {
-    const list = h('div');
-    for (const c of classes) {
-      const row = h('div', { class: 'card' }, [
-        h('div', { class: 'row' }, [
-          h('div', { class: 'col' }, [
-            h('strong', {}, c.name),
-            h('small', { class: 'muted' }, `Created ${fmtDate(c.created_at)}`)
-          ]),
-          h('div', { style: 'margin-left:auto' }, [
-            h('a', { class: 'btn secondary', href: `#/class/${c.id}` }, 'Open'),
-            prof.role === 'teacher' ? h('a', { class: 'btn', href: `#/analytics/${c.id}`, style: 'margin-left:8px' }, 'Analytics') : null
-          ])
-        ])
-      ]);
-      list.append(row);
-    }
-    container.append(list);
-  }
-
   app.innerHTML = '';
-  app.append(container);
+  const wrap = h('div', { class: 'col' });
+  app.append(h('div', { class: 'card' }, [ h('h2', {}, 'Classes') ]));
+  app.append(wrap);
+
+  // Helper: make safe text (never "null"/"undefined")
+  const txt = (v) => (v === null || v === undefined) ? '' : String(v);
+
+  if (prof.role === 'teacher') {
+    // Teacher: list classes I teach
+    const card = h('div', { class: 'card' }, []);
+    wrap.append(card);
+
+    const { data: classes, error } = await sb
+      .from('classes')
+      .select('*')
+      .eq('teacher_id', prof.id)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      card.append(h('small', { class: 'muted' }, `Error: ${error.message}`));
+      return;
+    }
+    if (!classes?.length) {
+      card.append(h('small', { class: 'muted' }, 'No classes yet.'));
+      return;
+    }
+
+    classes.forEach(c => {
+      const row = h('div', { class: 'row', style: 'align-items:center; gap:12px; margin:6px 0;' }, [
+        h('div', { style: 'flex:1;' }, [
+          h('div', { style: 'font-weight:600' }, txt(c.name)),
+          c.section ? h('div', { class: 'muted' }, txt(c.section)) : null
+        ]),
+        h('button', { class: 'btn', onclick: () => { location.hash = `#/class/${c.id}`; setTimeout(renderRoute,0); } }, 'Open')
+      ]);
+      card.append(row);
+    });
+
+  } else {
+    // Student/Parent: list classes I'm enrolled in (no "null" tag to the right of Open)
+    const card = h('div', { class: 'card' }, []);
+    wrap.append(card);
+
+    // 1) Find my class IDs
+    const { data: links, error: lerr } = await sb
+      .from('class_students')
+      .select('class_id')
+      .eq('student_id', prof.id);
+    if (lerr) {
+      card.append(h('small', { class: 'muted' }, `Error: ${lerr.message}`));
+      return;
+    }
+    const ids = [...new Set((links || []).map(r => r.class_id))];
+    if (!ids.length) {
+      card.append(h('small', { class: 'muted' }, 'No classes yet.'));
+      return;
+    }
+
+    // 2) Load classes
+    const { data: classes, error: cerr } = await sb
+      .from('classes')
+      .select('*')
+      .in('id', ids)
+      .order('created_at', { ascending: false });
+    if (cerr) {
+      card.append(h('small', { class: 'muted' }, `Error: ${cerr.message}`));
+      return;
+    }
+
+    // 3) Map teacher names (optional label)
+    const teacherIds = [...new Set(classes.map(c => c.teacher_id).filter(Boolean))];
+    let teacherMap = new Map();
+    if (teacherIds.length) {
+      const infoMap = await fetchUserInfoMap(teacherIds); // returns id -> {name, role}
+      teacherMap = infoMap;
+    }
+
+    classes.forEach(c => {
+      const teacherName = teacherMap.get(c.teacher_id)?.name || ''; // <-- never "null"
+      const row = h('div', { class: 'row', style: 'align-items:center; gap:12px; margin:6px 0;' }, [
+        h('div', { style: 'flex:1;' }, [
+          h('div', { style: 'font-weight:600' }, txt(c.name)),
+          teacherName ? h('div', { class: 'muted' }, teacherName) : null
+        ]),
+        // Right side: ONLY the Open button — no trailing label that could show "null"
+        h('button', { class: 'btn', onclick: () => { location.hash = `#/class/${c.id}`; setTimeout(renderRoute,0); } }, 'Open')
+      ]);
+      card.append(row);
+    });
+  }
 }
 
 /* Class Detail (robust) */
