@@ -504,9 +504,9 @@ async function ClassDetail(app) {
       if (!box || !box.isConnected) return;
       if (error) { box.innerHTML = `<small class="muted">Error: ${error.message}</small>`; return; }
     
-      // Names (First Last or email) + role
+      // Names only (no role labels)
       const ids = [...new Set((msgs || []).map(m => m.user_id))];
-      const userMap = await fetchUserInfoMap(ids);
+      const userMap = await fetchUserInfoMap(ids); // returns { name, role } but we’ll use .name only
     
       if (!msgs?.length) {
         box.innerHTML = '<small class="muted">No messages yet.</small>';
@@ -526,37 +526,38 @@ async function ClassDetail(app) {
       const renderBranch = (parentId, depth = 0) => {
         const arr = byParent.get(parentId || 'root') || [];
         for (const m of arr) {
-          const info = userMap.get(m.user_id) || { name: 'Unknown', role: '' };
-          const label = info.role ? `${info.role}:` : `${info.name}:`;
-          const line = h('div', { style: `margin-left:${depth * 16}px; display:flex; gap:8px; align-items:center;` }, [
-            h('span', { style: 'font-weight:600' }, label),
-            h('span', {}, m.content),
-            h('button', {
-              class: 'btn link',
-              onclick: () => {
-                replyTarget.set(threadId, { id: m.id, label: `${info.name}: ${short(m.content)}` });
-                updateReplyIndicator(`replyind-${threadId}`, replyTarget.get(threadId));
-                const inp = document.getElementById(`input-${threadId}`); if (inp) inp.focus();
-              }
-            }, 'Reply'),
-            ...(m.user_id === prof.id ? [
+          const info = userMap.get(m.user_id) || { name: 'Unknown' };
+          const line = h(
+            'div',
+            { style: `margin-left:${depth * 16}px; display:flex; gap:8px; align-items:center;` },
+            [
+              h('span', { style: 'font-weight:600' }, `${info.name}:`),
+              h('span', {}, m.content),
               h('button', {
-                class: 'btn link danger',
-                onclick: async () => {
-                  if (!confirm('Delete this message?')) return;
-                  const { error } = await sb.from('messages').delete().eq('id', m.id);
-                  if (error) return alert(error.message);
-                  // If we were replying to this, clear target
-                  if (replyTarget.get(threadId)?.id === m.id) {
-                    replyTarget.delete(threadId);
-                    updateReplyIndicator(`replyind-${threadId}`, null);
-                  }
-                  await loadFlatThread(threadId, boxId, summaryEl);
+                class: 'btn link small',
+                onclick: () => {
+                  replyTarget.set(threadId, { id: m.id, label: `${info.name}: ${short(m.content)}` });
+                  updateReplyIndicator(`replyind-${threadId}`, replyTarget.get(threadId), () => { replyTarget.delete(threadId); });
+                  const inp = document.getElementById(`input-${threadId}`); if (inp) inp.focus();
                 }
-              }, 'Delete')
-            ] : [])
-          ]);
-    
+              }, 'Reply'),
+              ...(m.user_id === prof.id ? [
+                h('button', {
+                  class: 'btn link danger small',
+                  onclick: async () => {
+                    if (!confirm('Delete this message?')) return;
+                    const { error } = await sb.from('messages').delete().eq('id', m.id);
+                    if (error) return alert(error.message);
+                    if (replyTarget.get(threadId)?.id === m.id) {
+                      replyTarget.delete(threadId);
+                      updateReplyIndicator(`replyind-${threadId}`, null);
+                    }
+                    await loadFlatThread(threadId, boxId, summaryEl);
+                  }
+                }, 'Delete')
+              ] : [])
+            ]
+          );
           box.append(line);
           renderBranch(m.id, depth + 1);
         }
@@ -792,19 +793,21 @@ async function Messaging(app) {
 
   async function loadDm() {
     const box = document.getElementById(boxId); if (!box) return;
+  
     const { data: msgs, error } = await sb
       .from('messages')
       .select('id, content, user_id, parent_id, created_at')
       .eq('thread_id', threadId)
       .order('created_at', { ascending: true });
+  
     if (!box || !box.isConnected) return;
-
+  
     if (error) { box.innerHTML = `<small class="muted">Error: ${error.message}</small>`; return; }
     if (!msgs?.length) { box.innerHTML = '<small class="muted">No messages yet.</small>'; summary.textContent = updateSummary('Conversation', 0); return; }
-
+  
     const ids = [...new Set(msgs.map(m => m.user_id))];
     const map = await fetchUserInfoMap(ids);
-
+  
     box.innerHTML = '';
     const byParent = new Map();
     msgs.forEach(m => {
@@ -812,30 +815,39 @@ async function Messaging(app) {
       if (!byParent.has(k)) byParent.set(k, []);
       byParent.get(k).push(m);
     });
-
+  
     const renderBranch = (parentId, depth = 0) => {
       const arr = byParent.get(parentId || 'root') || [];
       for (const m of arr) {
-        const info = map.get(m.user_id) || { name:'Unknown', role:'' };
-        const label = info.role ? `${info.role}:` : `${info.name}:`;
-        const row = h('div', { style: `margin-left:${depth * 16}px; display:flex; gap:8px; align-items:center;` }, [
-          h('span', { style: 'font-weight:600' }, label),
-          h('span', {}, m.content),
-          h('button', { class: 'btn link', onclick: () => {
-            replyTarget.id = m.id; replyTarget.label = `${info.name}: ${short(m.content)}`;
-            updateReplyIndicator(indId, replyTarget);
-            const inp = document.getElementById(inputId); if (inp) inp.focus();
-          }}, 'Reply'),
-          ...(m.user_id === prof.id ? [
-            h('button', { class: 'btn link danger', onclick: async () => {
-              if (!confirm('Delete this message?')) return;
-              const { error } = await sb.from('messages').delete().eq('id', m.id);
-              if (error) return alert(error.message);
-              if (replyTarget.id === m.id) { replyTarget.id = null; updateReplyIndicator(indId, null); }
-              await loadDm();
-            } }, 'Delete')
-          ] : [])
-        ]);
+        const info = map.get(m.user_id) || { name:'Unknown' };
+        const row = h(
+          'div',
+          { style: `margin-left:${depth * 16}px; display:flex; gap:8px; align-items:center;` },
+          [
+            h('span', { style: 'font-weight:600' }, `${info.name}:`),
+            h('span', {}, m.content),
+            h('button', {
+              class: 'btn link small',
+              onclick: () => {
+                replyTarget.id = m.id; replyTarget.label = `${info.name}: ${short(m.content)}`;
+                updateReplyIndicator(indId, replyTarget, () => { replyTarget.id = null; replyTarget.label = null; });
+                const inp = document.getElementById(inputId); if (inp) inp.focus();
+              }
+            }, 'Reply'),
+            ...(m.user_id === prof.id ? [
+              h('button', {
+                class: 'btn link danger small',
+                onclick: async () => {
+                  if (!confirm('Delete this message?')) return;
+                  const { error } = await sb.from('messages').delete().eq('id', m.id);
+                  if (error) return alert(error.message);
+                  if (replyTarget.id === m.id) { replyTarget.id = null; updateReplyIndicator(indId, null); }
+                  await loadDm();
+                }
+              }, 'Delete')
+            ] : [])
+          ]
+        );
         box.append(row);
         renderBranch(m.id, depth + 1);
       }
@@ -909,6 +921,26 @@ async function Analytics(app) {
 }
 
 /* Helpers */
+// Shows "Replying to … [cancel]" in the indicator row.
+function updateReplyIndicator(indId, target, onCancel) {
+  const el = document.getElementById(indId);
+  if (!el) return;
+
+  if (!target || !target.id) {
+    el.textContent = '';
+    return;
+  }
+  el.innerHTML = `Replying to <b>${escapeHtml(target.label)}</b> `;
+  const cancelBtn = h('button', {
+    class: 'btn link small',   // cyber style
+    onclick: () => {
+      el.textContent = '';
+      if (typeof onCancel === 'function') onCancel();
+    }
+  }, '[Cancel]');
+  el.append(cancelBtn);
+}
+
 async function fetchUserInfoMap(ids) {
   if (!ids?.length) return new Map();
   const { data } = await sb.from('profiles').select('id, first_name, last_name, email, role').in('id', ids);
