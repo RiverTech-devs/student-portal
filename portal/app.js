@@ -30,7 +30,7 @@ window.addEventListener('load', renderRoute);
 
 function routeKey() {
   const raw = location.hash || '#/';
-  const h = raw.split('?')[0];                 // ← strip query string
+  const h = raw.split('?')[0]; // strip query string
   if (h.startsWith('#/class/')) return '#/class';
   if (h.startsWith('#/analytics/')) return '#/analytics';
   const parts = h.split('/');
@@ -47,6 +47,23 @@ async function renderRoute() {
   app.innerHTML = `<div class="card"><small class="muted">Loading...</small></div>`;
   await page(app);
 }
+
+// Hook up Main App + Logout controls once the DOM is ready
+(function wireNav() {
+  const mainBtn = document.getElementById('btnMain');
+  const outBtn  = document.getElementById('btnLogout');
+  if (!mainBtn || !outBtn) return;
+
+  // Go back to OG app (one level above /portal/)
+  mainBtn.addEventListener('click', () => { window.location.href = '../'; });
+
+  // Sign out then return to portal Home (or change to '../' if you prefer)
+  outBtn.addEventListener('click', async () => {
+    try { await sb.auth.signOut(); } catch {}
+    location.hash = '#/';
+    setTimeout(renderRoute, 0);
+  });
+})();
 
 /* Utilities */
 function h(tag, attrs = {}, children = []) {
