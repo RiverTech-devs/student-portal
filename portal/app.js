@@ -947,11 +947,6 @@ async function fetchNameMap(ids) {
   return map;
 }
 
-function updateSummary(base, count) {
-  const b = String(base).replace(/\s\(\d+\)$/, '');
-  return `${b} (${count})`;
-}
-
 async function pickFile() {
   return new Promise(resolve => {
     const input = document.createElement('input');
