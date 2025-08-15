@@ -800,32 +800,91 @@ if (prof.role === 'teacher' && cls.teacher_id === prof.id) {
       ]);
       gbCard.append(tools);
 
-      // Table
-      // headers
+     // Teacher owner?
+      const isTeacherOwner = (prof.role === 'teacher' && cls.teacher_id === prof.id);
+      
+      // Table header
       const thead = h('thead', {}, h('tr', {}, [
         h('th', {}, 'Title'),
-        h('th', {}, 'Finish'),
-        h('th', {}, 'Start'),
-        h('th', {}, 'Status')
+        h('th', {}, 'Finish'),  // due_at
+        h('th', {}, 'Start'),   // start_at
+        h('th', {}, isTeacherOwner ? 'Actions' : 'Status')
       ]));
       
-      // rows
+      // Rows
       const tbody = h('tbody', {}, asg.map(a => {
-        const statusTd = /* your existing status cell builder (student/teacher variants) */;
-      
         const finishCell = h('td', {}, a.due_at ? fmtDate(a.due_at) : '-');     // Finish = due_at
         const startCell  = h('td', {}, a.start_at ? fmtDate(a.start_at) : '-'); // Start  = start_at
+      
+        // Build the last cell per role
+        const lastTd = h('td', {});
+      
+        if (isTeacherOwner) {
+          // Teacher: actions
+          lastTd.append(
+            // If you added the submissions modal earlier, this will open it:
+            h('button', { class: 'btn small', onclick: () => openSubmissionsModal?.(a.id, a.title) }, 'View submissions')
+          );
+          // (Optional) more actions here...
+          // lastTd.append(h('button', { class: 'btn link small', style: 'margin-left:8px', onclick: () => uploadClassFile(a.id) }, 'Upload file'));
+        } else if (prof.role === 'student') {
+          // Student: grade (if published) + submission controls
+          lastTd.append(h('small', { class: 'muted' }, 'Loading…'));
+      
+          (async () => {
+            const [{ data: sub }, { data: grade }] = await Promise.all([
+              sb.from('assignment_submissions')
+                .select('*').eq('assignment_id', a.id).eq('student_id', prof.id).maybeSingle(),
+              sb.from('assignment_grades')
+                .select('points, comment, published')
+                .eq('assignment_id', a.id).eq('student_id', prof.id).maybeSingle()
+            ]);
+      
+            lastTd.innerHTML = '';
+      
+            // Published grade (if any)
+            if (grade?.published) {
+              lastTd.append(
+                h('div', {}, `Score: ${grade.points ?? 0}${a.points_possible ? ` / ${a.points_possible}` : ''}`)
+              );
+              if (grade.comment) lastTd.append(h('div', { class: 'muted' }, `Feedback: ${grade.comment}`));
+            }
+      
+            // Submission status + actions
+            if (sub) {
+              lastTd.append(h('div', {}, `Submitted ${fmtDate(sub.submitted_at)}`));
+              if (sub.file_path) lastTd.append(await downloadLink('class-files', sub.file_path, 'View file'));
+              lastTd.append(
+                h('div', { class: 'row', style: 'margin-top:6px' }, [
+                  h('button', { class: 'btn small', onclick: () => submitAssignmentFile(a.id, prof.id) }, 'Resubmit file'),
+                  h('button', { class: 'btn link small', onclick: () => submitAssignmentText(a.id, prof.id) }, 'Add/Update text')
+                ])
+              );
+            } else {
+              lastTd.append(
+                h('div', { class: 'row' }, [
+                  h('button', { class: 'btn small', onclick: () => submitAssignmentFile(a.id, prof.id) }, 'Submit file'),
+                  h('button', { class: 'btn link small', onclick: () => submitAssignmentText(a.id, prof.id) }, 'Submit text')
+                ])
+              );
+            }
+          })();
+      
+        } else {
+          // Parent / other: read-only
+          lastTd.append(h('small', { class: 'muted' }, '—'));
+        }
       
         return h('tr', {}, [
           h('td', {}, a.title || '(untitled)'),
           finishCell,
           startCell,
-          statusTd
+          lastTd
         ]);
       }));
-
-      const table = h('table', {}, [ thead, tbody ]);
-      gbCard.append(table);
+      
+      const table = h('table', {}, [thead, tbody]);
+      asgCard.append(table);
     }
   } catch (e) {
     gbCard.append(h('small', { class: 'muted' }, `Error: ${e.message || e}`));
