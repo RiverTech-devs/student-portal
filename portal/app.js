@@ -283,6 +283,41 @@ async function Profile(app) {
     app.innerHTML = `<div class="card">Please sign in.</div>`;
     return;
   }
+
+  if (prof.role === 'parent') {
+    const card = h('div', { class: 'card' }, [ h('h3', {}, 'Notifications') ]);
+    app.append(card);
+  
+    const { data: set } = await sb
+      .from('notification_settings')
+      .select('*')
+      .eq('user_id', prof.id)
+      .maybeSingle();
+  
+    const missChk = h('input', { type: 'checkbox', id: 'missEmail', checked: !!set?.miss_assignment_email });
+    const emailOverride = h('input', { type: 'email', id: 'emailOverride', placeholder: 'Send to different email (optional)', value: set?.email_override || '' });
+  
+    card.append(
+      h('label', { class: 'checkline' }, [ missChk, ' Email me when my student misses an assignment' ]),
+      emailOverride,
+      h('div', { class: 'row', style: 'margin-top:8px' }, [
+        h('button', {
+          class: 'btn',
+          onclick: async () => {
+            const row = {
+              user_id: prof.id,
+              miss_assignment_email: !!document.getElementById('missEmail').checked,
+              email_override: (document.getElementById('emailOverride').value || '').trim() || null
+            };
+            const { error } = await sb.from('notification_settings').upsert(row);
+            if (error) return alert(error.message);
+            alert('Saved.');
+          }
+        }, 'Save')
+      ])
+    );
+  }
+  
   const { data: prefs } = await sb.from('notification_prefs').select('*').eq('user_id', prof.id).maybeSingle();
   const p = prefs || { user_id: prof.id, email_reports: false, email_missed_assignments: false };
 
