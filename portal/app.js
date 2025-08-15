@@ -584,7 +584,7 @@ try {
           const act = h('td', {});
           act.append(h('button', { class: 'btn link small', onclick: () => uploadClassFile(a.id) }, 'Upload file'));
           // View submissions (open simple list dialog)
-          act.append(h('button', { class: 'btn small', style: 'margin-left:8px', onclick: () => viewSubmissions(a.id) }, 'View submissions'));
+          act.append(h('button', { class: 'btn small', style: 'margin-left:8px', onclick: () =>  openSubmissionsModal(a.id, a.title) }, 'View submissions'));
           cells.push(act);
         } else if (prof.role === 'student') {
           // Student status + submit/resubmit
@@ -649,24 +649,90 @@ async function uploadClassFile(assignmentId) {
   alert('File uploaded.');
 }
 
-/* Teacher helper: quick submissions viewer */
-async function viewSubmissions(assignmentId) {
-  const { data: subs } = await sb
+/* ===== Submissions Modal (teacher) ===== */
+function openSubmissionsModal(assignmentId, title = 'Submissions') {
+  let modal = document.getElementById('subsModal');
+  if (!modal) {
+    modal = h('div', { id: 'subsModal', class: 'modal-overlay', tabindex: '-1' }, [
+      h('div', { class: 'modal' }, [
+        h('div', { class: 'modal-head' }, [
+          h('h3', { id: 'subsTitle' }, ''),
+          h('span', { class: 'spacer' }),
+          h('button', { class: 'btn link small', onclick: () => renderSubmissionsModal(assignmentId, title) }, 'Refresh'),
+          h('button', { class: 'btn link danger small', onclick: closeSubmissionsModal }, 'Close')
+        ]),
+        h('div', { id: 'subsBody', class: 'modal-body' }, 'Loading…')
+      ])
+    ]);
+    document.body.appendChild(modal);
+
+    // close on overlay click or ESC
+    modal.addEventListener('click', (e) => { if (e.target === modal) closeSubmissionsModal(); });
+    window.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSubmissionsModal(); });
+  }
+
+  document.getElementById('subsTitle').textContent = `Submissions — ${title || ''}`;
+  document.getElementById('subsBody').innerHTML = 'Loading…';
+  modal.style.display = 'flex';
+  renderSubmissionsModal(assignmentId, title);
+}
+
+function closeSubmissionsModal() {
+  const m = document.getElementById('subsModal');
+  if (m) m.style.display = 'none';
+}
+
+async function renderSubmissionsModal(assignmentId) {
+  const body = document.getElementById('subsBody');
+  if (!body) return;
+
+  const { data: subs, error } = await sb
     .from('assignment_submissions')
-    .select('student_id, submitted_at, file_path, text_response')
+    .select('id, student_id, submitted_at, text_response, file_path')
     .eq('assignment_id', assignmentId)
     .order('submitted_at', { ascending: false });
 
-  if (!subs?.length) return alert('No submissions yet.');
+  if (error) { body.innerHTML = `<small class="muted">Error: ${error.message}</small>`; return; }
+  if (!subs?.length) { body.innerHTML = '<small class="muted">No submissions yet.</small>'; return; }
 
   const ids = [...new Set(subs.map(s => s.student_id))];
-  const nameMap = await fetchUserInfoMap(ids);
-  const lines = await Promise.all(subs.map(async s => {
+  const nameMap = await fetchUserInfoMap(ids); // id -> { name, role }
+
+  const list   = h('div', { class: 'subs-list' });
+  const detail = h('div', { class: 'subs-detail' }, [ h('div', { class: 'muted' }, 'Select a submission') ]);
+  const split  = h('div', { class: 'subs-split' }, [ list, detail ]);
+  body.innerHTML = ''; body.append(split);
+
+  for (const s of subs) {
     const nm = nameMap.get(s.student_id)?.name || 'Student';
-    const file = s.file_path ? '(file)' : '';
-    return `${nm} — ${fmtDate(s.submitted_at)} ${file}${s.text_response ? ' + text' : ''}`;
-  }));
-  alert(lines.join('\n'));
+    const row = h('div', { class: 'subs-row' }, [
+      h('div', { class: 'subs-primary' }, [
+        h('div', { class: 'subs-name' }, nm),
+        h('div', { class: 'subs-time muted' }, fmtDate(s.submitted_at))
+      ]),
+      h('div', { class: 'subs-actions' }, [
+        h('button', {
+          class: 'btn small',
+          onclick: async () => {
+            const nodes = [];
+            nodes.push(h('h4', {}, nm));
+            nodes.push(h('div', { class: 'muted' }, fmtDate(s.submitted_at)));
+
+            if (s.text_response) {
+              nodes.push(h('h5', {}, 'Text response'));
+              nodes.push(h('pre', { class: 'subs-pre' }, s.text_response));
+            }
+            if (s.file_path) {
+              nodes.push(h('h5', {}, 'File'));
+              nodes.push(await downloadLink('class-files', s.file_path, 'Open file'));
+            }
+            detail.innerHTML = ''; detail.append(...nodes);
+          }
+        }, 'Open')
+      ])
+    ]);
+    list.append(row);
+  }
 }
 
 /* Student helpers: Submit file / Submit text */
