@@ -1,9 +1,3 @@
-// web/app.js
-// Minimal SPA: Dashboard, Classes, Class Detail, Messaging, Analytics
-// Requires: <script src="https://esm.sh/@supabase/supabase-js@2"></script> in hosting page OR use an import map.
-// Here we assume supabase is globally available (loaded in index.html via script tag on your site).
-// In this generated scaffold, we import supabase via the global created in supabaseClient.js.
-
 // --- Supabase client (ESM) ---
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
