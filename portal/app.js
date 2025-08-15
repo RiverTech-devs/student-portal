@@ -114,6 +114,19 @@ async function renderRoute() {
   });
 })();
 
+// Convert a <input type="datetime-local"> value to ISO (UTC) safely
+function dtLocalToISOById(inputId) {
+  const el = document.getElementById(inputId);
+  if (!el || !el.value) return null;             // nothing selected
+  // value looks like "2025-08-15T10:13" (local time)
+  const [ymd, hm = "00:00"] = el.value.split("T");
+  const [y, m, d] = ymd.split("-").map(Number);
+  const [hh, mm]  = hm.split(":").map(Number);
+  // Create a local Date to avoid Safari/UTC quirks, then convert to ISO
+  const dt = new Date(y, (m - 1), d, hh || 0, mm || 0, 0);
+  return dt.toISOString();
+}
+
 // --- User badge in header ---
 async function renderUserBadge() {
   const el = document.getElementById('userBadge');
@@ -597,12 +610,11 @@ wrap.append(asgCard);
               if (!title) return alert('Title required');
   
               const description = document.getElementById('aDesc').value.trim() || null;
-              const startRaw = document.getElementById('aStart').value || null;
-              const dueRaw   = document.getElementById('aDue').value || null;
               const pointsRaw = document.getElementById('aPoints').value || null;
   
-              const start_at = startRaw ? new Date(startRaw).toISOString() : null;
-              const due_at   = dueRaw   ? new Date(dueRaw).toISOString()   : null;
+              const start_at = dtLocalToISOById('aStart');   // null if empty
+              const due_at   = dtLocalToISOById('aDue');     // null if empty
+
               if (start_at && due_at && new Date(start_at) > new Date(due_at)) {
                 return alert('Start must be before Finish.');
               }
