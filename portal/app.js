@@ -789,39 +789,27 @@ if (prof.role === 'teacher' && cls.teacher_id === prof.id) {
       gbCard.append(tools);
 
       // Table
+      // headers
       const thead = h('thead', {}, h('tr', {}, [
-        h('th', {}, 'Student'),
-        ...cols.map(c => h('th', {}, `${c.title}${c.pts ? ` (${c.pts})` : ''}`))
+        h('th', {}, 'Title'),
+        h('th', {}, 'Finish'),
+        h('th', {}, 'Start'),
+        h('th', {}, 'Status')
       ]));
-      const tbody = h('tbody', {}, students.map(st => {
-        const tds = [ h('td', {}, st.name) ];
-        for (const c of cols) {
-          const r = cell.get(key(c.id, st.id));
-          let content;
-          if (!r) {
-            content = h('small', { class: 'muted' }, '—'); // not assigned
-          } else if (r.is_graded) {
-            content = h('div', {}, [
-              h('div', {}, `${r.points ?? 0}${c.pts ? ` / ${c.pts}` : ''}`),
-              h('small', { class: 'muted' }, 'Graded')
-            ]);
-          } else if (r.is_submitted) {
-            const label = 'Submitted' + (r.is_late ? ' (Late)' : '');
-            content = h('div', {}, h('small', {}, label));
-          } else {
-            content = h('small', { class: 'muted' }, 'Missing');
-          }
-
-          const td = h('td', {}, [
-            content,
-            h('div', {}, h('button', {
-              class: 'btn link small',
-              onclick: () => openGradeDrawer(c, st, r) // pass assignment col, student, and row (may be undefined)
-            }, 'Grade'))
-          ]);
-          tds.push(td);
-        }
-        return h('tr', {}, tds);
+      
+      // rows
+      const tbody = h('tbody', {}, asg.map(a => {
+        const statusTd = /* your existing status cell builder (student/teacher variants) */;
+      
+        const finishCell = h('td', {}, a.due_at ? fmtDate(a.due_at) : '-');     // Finish = due_at
+        const startCell  = h('td', {}, a.start_at ? fmtDate(a.start_at) : '-'); // Start  = start_at
+      
+        return h('tr', {}, [
+          h('td', {}, a.title || '(untitled)'),
+          finishCell,
+          startCell,
+          statusTd
+        ]);
       }));
 
       const table = h('table', {}, [ thead, tbody ]);
