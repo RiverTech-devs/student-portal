@@ -487,74 +487,135 @@ async function ClassDetail(app) {
 const asgCard = h('div', { class: 'card' }, [ h('h3', {}, 'Assignments') ]);
 wrap.append(asgCard);
 
-/* Teacher: creator with Start/Finish (keep your existing form if you already have it) */
-if (prof.role === 'teacher' && cls.teacher_id === prof.id) {
-  const create = h('details', {}, [
-    h('summary', {}, 'Create assignment'),
-    h('div', { class: 'row' }, [
-      h('input', { id: 'aTitle', placeholder: 'Title' }),
-      h('div', { class: 'col' }, [
-        h('label', { for: 'aStart' }, 'Start (optional)'),
-        h('input', { id: 'aStart', type: 'datetime-local', placeholder: 'Start (optional)' })
+  /* Teacher: creator with Start/Finish + Points + roster checkboxes */
+  if (prof.role === 'teacher' && cls.teacher_id === prof.id) {
+    // fetch roster for THIS class
+    let roster = [];
+    try {
+      const { data: links } = await sb
+        .from('class_students')
+        .select('student_id')
+        .eq('class_id', cls.id);
+  
+      const ids = [...new Set((links || []).map(r => r.student_id))];
+      if (ids.length) {
+        const { data: people } = await sb
+          .from('profiles')
+          .select('id, first_name, last_name, email')
+          .in('id', ids)
+          .order('last_name');
+        roster = people || [];
+      }
+    } catch {}
+  
+    const create = h('details', {}, [
+      h('summary', {}, 'Create assignment'),
+      h('div', { class: 'row' }, [
+        h('input', { id: 'aTitle', placeholder: 'Title' }),
+        h('div', { class: 'col' }, [
+          h('label', { for: 'aStart' }, 'Start (optional)'),
+          h('input', { id: 'aStart', type: 'datetime-local', placeholder: 'Start (optional)' })
+        ]),
+        h('div', { class: 'col' }, [
+          h('label', { for: 'aDue' }, 'Finish (optional)'),
+          h('input', { id: 'aDue', type: 'datetime-local', placeholder: 'Finish (optional)' })
+        ]),
+        h('div', { class: 'col' }, [
+          h('label', { for: 'aPoints' }, 'Points (optional)'),
+          h('input', { id: 'aPoints', type: 'number', step: '0.01', placeholder: 'Points possible' })
+        ])
       ]),
       h('div', { class: 'col' }, [
-        h('label', { for: 'aDue' }, 'Finish (optional)'),
-        h('input', { id: 'aDue', type: 'datetime-local', placeholder: 'Finish (optional)' })
+        h('textarea', { id: 'aDesc', placeholder: 'Description (optional)' }),
+        h('textarea', { id: 'aSyllabus', placeholder: 'Syllabus JSON (optional)' })
       ]),
-    ]),
-    h('div', { class: 'col' }, [
-      h('textarea', { id: 'aDesc', placeholder: 'Description (optional)' }),
-      h('textarea', { id: 'aSyllabus', placeholder: 'Syllabus JSON (optional)' }),
-    ]),
-    h('div', { class: 'row' }, [
-      h('label', {}, [ h('input', { type: 'checkbox', id: 'aAll', checked: true }), ' Assign to all students' ]),
-      h('button', {
-        class: 'btn',
-        onclick: async () => {
-          try {
-            const title = document.getElementById('aTitle').value.trim();
-            if (!title) return alert('Title required');
-            const description = document.getElementById('aDesc').value.trim() || null;
-
-            const startRaw = document.getElementById('aStart').value || null;
-            const dueRaw   = document.getElementById('aDue').value || null;
-            const start_at = startRaw ? new Date(startRaw).toISOString() : null;
-            const due_at   = dueRaw   ? new Date(dueRaw).toISOString()   : null;
-            if (start_at && due_at && new Date(start_at) > new Date(due_at)) {
-              return alert('Start must be before Finish.');
-            }
-
-            const assign_all = document.getElementById('aAll').checked;
-
-            let syllabus = null;
-            const sTxt = document.getElementById('aSyllabus').value.trim();
-            if (sTxt) { try { syllabus = JSON.parse(sTxt); } catch { return alert('Syllabus must be valid JSON.'); } }
-
-            const { data, error } = await sb.from('assignments').insert({
-              class_id: cls.id, title, description, syllabus, due_at, start_at, assign_all, created_by: prof.id
-            }).select('id').single();
-            if (error) throw error;
-
-            if (!assign_all) {
-              const emails = prompt('Enter student emails (comma separated) to assign:') || '';
-              const arr = emails.split(',').map(e => e.trim()).filter(Boolean);
-              if (arr.length) {
-                const { data: stu } = await sb.from('profiles').select('id, email').in('email', arr).eq('role', 'student');
-                const rows = (stu || []).map(s => ({ assignment_id: data.id, student_id: s.id }));
-                if (rows.length) await sb.from('assignment_assignees').insert(rows);
-              }
-            }
-            alert('Assignment created.');
-            renderRoute();
-          } catch (e) {
-            alert('Error: ' + (e?.message || e));
-          }
+  
+      // Assign controls
+      (() => {
+        const wrap = h('div', { class: 'col' });
+        const allChk = h('input', { type: 'checkbox', id: 'aAll', checked: true });
+        const allLbl = h('label', {}, [ allChk, ' Assign to all students' ]);
+        wrap.append(allLbl);
+  
+        // checkbox list (hidden when Assign to all is checked)
+        const listWrap = h('div', { id: 'aSelectWrap', style: 'display:none; margin-top:8px' });
+        if (roster.length) {
+          listWrap.append(h('div', { class: 'muted' }, 'Select students:'));
+          const grid = h('div', { class: 'col' });
+          roster.forEach(s => {
+            grid.append(
+              h('label', { class: 'checkline' }, [
+                h('input', { type: 'checkbox', value: s.id, class: 'aStu' }),
+                ` ${s.first_name} ${s.last_name} (${s.email})`
+              ])
+            );
+          });
+          listWrap.append(grid);
+        } else {
+          listWrap.append(h('small', { class: 'muted' }, 'No students in this class yet.'));
         }
-      }, 'Create')
-    ])
-  ]);
-  asgCard.append(create);
-}
+        allChk.onchange = (e) => { listWrap.style.display = e.target.checked ? 'none' : ''; };
+        wrap.append(listWrap);
+        return wrap;
+      })(),
+  
+      h('div', { class: 'row' }, [
+        h('button', {
+          class: 'btn',
+          onclick: async () => {
+            try {
+              const title = document.getElementById('aTitle').value.trim();
+              if (!title) return alert('Title required');
+  
+              const description = document.getElementById('aDesc').value.trim() || null;
+              const startRaw = document.getElementById('aStart').value || null;
+              const dueRaw   = document.getElementById('aDue').value || null;
+              const pointsRaw = document.getElementById('aPoints').value || null;
+  
+              const start_at = startRaw ? new Date(startRaw).toISOString() : null;
+              const due_at   = dueRaw   ? new Date(dueRaw).toISOString()   : null;
+              if (start_at && due_at && new Date(start_at) > new Date(due_at)) {
+                return alert('Start must be before Finish.');
+              }
+  
+              const points_possible = pointsRaw === '' ? null : Number(pointsRaw);
+              const assign_all = document.getElementById('aAll').checked;
+  
+              let syllabus = null;
+              const txt = document.getElementById('aSyllabus').value.trim();
+              if (txt) { try { syllabus = JSON.parse(txt); } catch { return alert('Syllabus must be valid JSON.'); } }
+  
+              // If custom selection, collect student IDs
+              let selectedIds = [];
+              if (!assign_all) {
+                selectedIds = Array.from(document.querySelectorAll('.aStu:checked')).map(el => el.value);
+                if (!selectedIds.length) return alert('Select at least one student or choose "Assign to all".');
+              }
+  
+              const { data, error } = await sb.from('assignments').insert({
+                class_id: cls.id, title, description, syllabus, due_at, start_at,
+                assign_all, points_possible, created_by: prof.id
+              }).select('id').single();
+              if (error) throw error;
+  
+              if (!assign_all && selectedIds.length) {
+                const rows = selectedIds.map(id => ({ assignment_id: data.id, student_id: id }));
+                const { error: aerr } = await sb.from('assignment_assignees').insert(rows);
+                if (aerr) throw aerr;
+              }
+  
+              alert('Assignment created.');
+              renderRoute();
+            } catch (e) {
+              alert('Error: ' + (e?.message || e));
+            }
+          }
+        }, 'Create')
+      ])
+    ]);
+  
+    asgCard.append(create);
+  }
 
 /* List assignments */
 try {
@@ -588,58 +649,55 @@ try {
           cells.push(act);
         } else if (prof.role === 'student') {
         // Student status + submit/resubmit + grade view
-        const statusTd = h('td', {}, h('small', { class: 'muted' }, 'Loading…'));
-      
-        (async () => {
-          // load my submission
-          const [{ data: sub }, { data: grade }] = await Promise.all([
-            sb.from('assignment_submissions')
-              .select('*')
-              .eq('assignment_id', a.id)
-              .eq('student_id', prof.id)
-              .maybeSingle(),
-            sb.from('assignment_grades')
-              .select('points, comment, published')
-              .eq('assignment_id', a.id)
-              .eq('student_id', prof.id)
-              .maybeSingle()
-          ]);
-      
-          statusTd.innerHTML = '';
-      
-          // Show grade if published
-          if (grade?.published) {
-            const top = h('div', {}, [
-              h('div', {}, `Score: ${grade.points ?? 0}${(a.points_possible ? ` / ${a.points_possible}` : '')}`),
-              grade.comment ? h('div', { class: 'muted' }, `Feedback: ${grade.comment}`) : null
+          const statusTd = h('td', {}, h('small', { class: 'muted' }, 'Loading…'));
+        
+          (async () => {
+            const [{ data: sub }, { data: grade }] = await Promise.all([
+              sb.from('assignment_submissions')
+                .select('*').eq('assignment_id', a.id).eq('student_id', prof.id).maybeSingle(),
+              sb.from('assignment_grades')
+                .select('points, comment, published')
+                .eq('assignment_id', a.id).eq('student_id', prof.id).maybeSingle()
             ]);
-            statusTd.append(top);
-          }
-      
-          // Show submission status + controls
-          if (sub) {
-            const row = h('div', {}, [
-              h('div', {}, `Submitted ${fmtDate(sub.submitted_at)}`),
-              sub.file_path ? await downloadLink('class-files', sub.file_path, 'View file') : null
-            ]);
-            statusTd.append(row);
-            statusTd.append(
-              h('div', { class: 'row', style: 'margin-top:6px' }, [
+        
+            statusTd.innerHTML = '';
+        
+            if (grade?.published) {
+              const top = h('div', {});
+              top.append(
+                h('div', {}, `Score: ${grade.points ?? 0}${a.points_possible ? ` / ${a.points_possible}` : ''}`)
+              );
+              if (grade.comment) {
+                top.append(h('div', { class: 'muted' }, `Feedback: ${grade.comment}`));
+              }
+              statusTd.append(top);
+            }
+        
+            if (sub) {
+              const row = h('div', {});
+              row.append(h('div', {}, `Submitted ${fmtDate(sub.submitted_at)}`));
+              if (sub.file_path) {
+                row.append(await downloadLink('class-files', sub.file_path, 'View file'));
+              }
+              statusTd.append(row);
+        
+              const actions = h('div', { class: 'row', style: 'margin-top:6px' });
+              actions.append(
                 h('button', { class: 'btn small', onclick: () => submitAssignmentFile(a.id, prof.id) }, 'Resubmit file'),
                 h('button', { class: 'btn link small', onclick: () => submitAssignmentText(a.id, prof.id) }, 'Add/Update text')
-              ])
-            );
-          } else {
-            statusTd.append(
-              h('div', { class: 'row' }, [
+              );
+              statusTd.append(actions);
+            } else {
+              const actions = h('div', { class: 'row' });
+              actions.append(
                 h('button', { class: 'btn small', onclick: () => submitAssignmentFile(a.id, prof.id) }, 'Submit file'),
                 h('button', { class: 'btn link small', onclick: () => submitAssignmentText(a.id, prof.id) }, 'Submit text')
-              ])
-            );
-          }
-        })();
-      
-        cells.push(statusTd);
+              );
+              statusTd.append(actions);
+            }
+          })();
+        
+          cells.push(statusTd);
         } else {
           // Parent (read-only)
           cells.push(h('td', {}, h('small', { class: 'muted' }, '—')));
@@ -719,10 +777,8 @@ if (prof.role === 'teacher' && cls.teacher_id === prof.id) {
               h('small', { class: 'muted' }, 'Graded')
             ]);
           } else if (r.is_submitted) {
-            content = h('div', {}, [
-              h('small', {}, 'Submitted'),
-              r.is_late ? h('small', { class: 'muted' }, ' (Late)') : null
-            ]);
+            const label = 'Submitted' + (r.is_late ? ' (Late)' : '');
+            content = h('div', {}, h('small', {}, label));
           } else {
             content = h('small', { class: 'muted' }, 'Missing');
           }
