@@ -857,7 +857,7 @@ if (prof.role === 'teacher' && cls.teacher_id === prof.id) {
   
       nodes.push(h('h4', {}, 'Grade'));
       const ptsInput = h('input', { type: 'number', id: 'gradePoints', placeholder: 'points', value: (g?.points ?? '') });
-      if (ptsMax != null) { ptsInput.min = 0; ptsInput.max = ptsMax; step='0.01'; }
+      if (ptsMax != null) { ptsInput.min = 0; ptsInput.max = ptsMax; ptsInput.step='0.01'; }
       const cmtInput = h('textarea', { id: 'gradeComment', placeholder: 'Comment (optional)' }, g?.comment || '');
       const pubChk   = h('label', {}, [
         h('input', { type: 'checkbox', id: 'gradePublished', checked: !!g?.published }),
@@ -1021,7 +1021,7 @@ async function renderSubmissionsModal(assignmentId) {
 
             nodes.push(h('h5', {}, `Grade ${aRow.points_possible ? `(max ${aRow.points_possible})` : ''}`));
             const pts = h('input', { type: 'number', id: 'gPts', value: (g?.points ?? ''), placeholder: 'points' });
-            if (aRow.points_possible != null) { pts.min = 0; pts.max = aRow.points_possible; step='0.01'; }
+            if (aRow.points_possible != null) { pts.min = 0; pts.max = aRow.points_possible; pts.step='0.01'; }
             const cmt = h('textarea', { id: 'gCmt', placeholder: 'Comment (optional)' }, g?.comment || '');
             const pub = h('label', {}, [
               h('input', { type: 'checkbox', id: 'gPub', checked: !!g?.published }),
@@ -1031,6 +1031,7 @@ async function renderSubmissionsModal(assignmentId) {
               class: 'btn',
               onclick: async () => {
                 const points = pts.value === '' ? null : Number(pts.value);
+                if (points != null && Number.isNaN(points)) return alert('Points must be a number.');
                 const comment = (cmt.value || '').trim() || null;
                 const published = !!document.getElementById('gPub').checked;
                 const { error } = await sb.rpc('upsert_grade', {
