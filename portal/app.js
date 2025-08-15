@@ -587,43 +587,59 @@ try {
           act.append(h('button', { class: 'btn small', style: 'margin-left:8px', onclick: () =>  openSubmissionsModal(a.id, a.title) }, 'View submissions'));
           cells.push(act);
         } else if (prof.role === 'student') {
-          // Student status + submit/resubmit
-          const statusTd = h('td', {}, h('small', { class: 'muted' }, 'Loading…'));
-
-          // Load my submission row (if any)
-          (async () => {
-            const { data: sub } = await sb
-              .from('assignment_submissions')
+        // Student status + submit/resubmit + grade view
+        const statusTd = h('td', {}, h('small', { class: 'muted' }, 'Loading…'));
+      
+        (async () => {
+          // load my submission
+          const [{ data: sub }, { data: grade }] = await Promise.all([
+            sb.from('assignment_submissions')
               .select('*')
               .eq('assignment_id', a.id)
               .eq('student_id', prof.id)
-              .maybeSingle();
-
-            // Build controls
-            statusTd.innerHTML = '';
-            if (sub) {
-              const row = h('div', {}, [
-                h('div', {}, `Submitted ${fmtDate(sub.submitted_at)}`),
-                sub.file_path ? await downloadLink('class-files', sub.file_path, 'View file') : null,
-              ]);
-              statusTd.append(row);
-              statusTd.append(
-                h('div', { class: 'row', style: 'margin-top:6px' }, [
-                  h('button', { class: 'btn small', onclick: () => submitAssignmentFile(a.id, prof.id) }, 'Resubmit file'),
-                  h('button', { class: 'btn link small', onclick: () => submitAssignmentText(a.id, prof.id) }, 'Add/Update text')
-                ])
-              );
-            } else {
-              statusTd.append(
-                h('div', { class: 'row' }, [
-                  h('button', { class: 'btn small', onclick: () => submitAssignmentFile(a.id, prof.id) }, 'Submit file'),
-                  h('button', { class: 'btn link small', onclick: () => submitAssignmentText(a.id, prof.id) }, 'Submit text')
-                ])
-              );
-            }
-          })();
-
-          cells.push(statusTd);
+              .maybeSingle(),
+            sb.from('assignment_grades')
+              .select('points, comment, published')
+              .eq('assignment_id', a.id)
+              .eq('student_id', prof.id)
+              .maybeSingle()
+          ]);
+      
+          statusTd.innerHTML = '';
+      
+          // Show grade if published
+          if (grade?.published) {
+            const top = h('div', {}, [
+              h('div', {}, `Score: ${grade.points ?? 0}${(a.points_possible ? ` / ${a.points_possible}` : '')}`),
+              grade.comment ? h('div', { class: 'muted' }, `Feedback: ${grade.comment}`) : null
+            ]);
+            statusTd.append(top);
+          }
+      
+          // Show submission status + controls
+          if (sub) {
+            const row = h('div', {}, [
+              h('div', {}, `Submitted ${fmtDate(sub.submitted_at)}`),
+              sub.file_path ? await downloadLink('class-files', sub.file_path, 'View file') : null
+            ]);
+            statusTd.append(row);
+            statusTd.append(
+              h('div', { class: 'row', style: 'margin-top:6px' }, [
+                h('button', { class: 'btn small', onclick: () => submitAssignmentFile(a.id, prof.id) }, 'Resubmit file'),
+                h('button', { class: 'btn link small', onclick: () => submitAssignmentText(a.id, prof.id) }, 'Add/Update text')
+              ])
+            );
+          } else {
+            statusTd.append(
+              h('div', { class: 'row' }, [
+                h('button', { class: 'btn small', onclick: () => submitAssignmentFile(a.id, prof.id) }, 'Submit file'),
+                h('button', { class: 'btn link small', onclick: () => submitAssignmentText(a.id, prof.id) }, 'Submit text')
+              ])
+            );
+          }
+        })();
+      
+        cells.push(statusTd);
         } else {
           // Parent (read-only)
           cells.push(h('td', {}, h('small', { class: 'muted' }, '—')));
@@ -633,6 +649,224 @@ try {
       })))
     ]);
     asgCard.append(table);
+  }
+
+  /* ---------- Gradebook (teacher only) ---------- */
+if (prof.role === 'teacher' && cls.teacher_id === prof.id) {
+  const gbCard = h('div', { class: 'card' }, [ h('h3', {}, 'Gradebook') ]);
+  wrap.append(gbCard);
+
+  try {
+    // Pull the full gradebook view for this class (created in SQL)
+    const { data: gb, error } = await sb
+      .from('assignment_gradebook')
+      .select('*')
+      .eq('class_id', cls.id);
+    if (error) throw error;
+
+    if (!gb?.length) {
+      gbCard.append(h('small', { class: 'muted' }, 'No data yet — create an assignment and/or add students.'));
+    } else {
+      // Columns: distinct assignments (keep creation order stable via due_at, then title)
+      const seenA = new Set();
+      const cols = [];
+      gb.sort((x,y) => (new Date(x.due_at||0)) - (new Date(y.due_at||0)) || String(x.title).localeCompare(String(y.title)));
+      for (const r of gb) {
+        if (!seenA.has(r.assignment_id)) {
+          seenA.add(r.assignment_id);
+          cols.push({ id: r.assignment_id, title: r.title, pts: r.points_possible ?? null, due_at: r.due_at });
+        }
+      }
+
+      // Rows: distinct students (name map)
+      const studentIds = [...new Set(gb.map(r => r.student_id))];
+      const nameMap = await fetchUserInfoMap(studentIds); // id -> { name, role }
+      const students = studentIds
+        .map(id => ({ id, name: nameMap.get(id)?.name || 'Student' }))
+        .sort((a,b) => a.name.localeCompare(b.name));
+
+      // Index for quick cell lookup
+      const key = (aid, sid) => `${aid}|${sid}`;
+      const cell = new Map();
+      gb.forEach(r => cell.set(key(r.assignment_id, r.student_id), r));
+
+      // Toolbar
+      const tools = h('div', { class: 'row', style: 'margin-bottom:8px; align-items:center; gap:8px;' }, [
+        h('button', {
+          class: 'btn small',
+          onclick: async () => {
+            await exportGradebookCSV(cols, students, cell);
+          }
+        }, 'Export CSV')
+      ]);
+      gbCard.append(tools);
+
+      // Table
+      const thead = h('thead', {}, h('tr', {}, [
+        h('th', {}, 'Student'),
+        ...cols.map(c => h('th', {}, `${c.title}${c.pts ? ` (${c.pts})` : ''}`))
+      ]));
+      const tbody = h('tbody', {}, students.map(st => {
+        const tds = [ h('td', {}, st.name) ];
+        for (const c of cols) {
+          const r = cell.get(key(c.id, st.id));
+          let content;
+          if (!r) {
+            content = h('small', { class: 'muted' }, '—'); // not assigned
+          } else if (r.is_graded) {
+            content = h('div', {}, [
+              h('div', {}, `${r.points ?? 0}${c.pts ? ` / ${c.pts}` : ''}`),
+              h('small', { class: 'muted' }, 'Graded')
+            ]);
+          } else if (r.is_submitted) {
+            content = h('div', {}, [
+              h('small', {}, 'Submitted'),
+              r.is_late ? h('small', { class: 'muted' }, ' (Late)') : null
+            ]);
+          } else {
+            content = h('small', { class: 'muted' }, 'Missing');
+          }
+
+          const td = h('td', {}, [
+            content,
+            h('div', {}, h('button', {
+              class: 'btn link small',
+              onclick: () => openGradeDrawer(c, st, r) // pass assignment col, student, and row (may be undefined)
+            }, 'Grade'))
+          ]);
+          tds.push(td);
+        }
+        return h('tr', {}, tds);
+      }));
+
+      const table = h('table', {}, [ thead, tbody ]);
+      gbCard.append(table);
+    }
+  } catch (e) {
+    gbCard.append(h('small', { class: 'muted' }, `Error: ${e.message || e}`));
+  }
+
+    // ---- Grade drawer (modal) ----
+    function openGradeDrawer(assignCol, student, row) {
+      let modal = document.getElementById('gradeDrawer');
+      if (!modal) {
+        modal = h('div', { id: 'gradeDrawer', class: 'modal-overlay' }, [
+          h('div', { class: 'modal', style: 'max-width:560px' }, [
+            h('div', { class: 'modal-head' }, [
+              h('h3', { id: 'gradeTitle' }, 'Grade'),
+              h('span', { class: 'spacer' }),
+              h('button', { class: 'btn link danger small', onclick: closeGradeDrawer }, 'Close')
+            ]),
+            h('div', { id: 'gradeBody', class: 'modal-body' }, 'Loading…')
+          ])
+        ]);
+        modal.addEventListener('click', (e) => { if (e.target === modal) closeGradeDrawer(); });
+        window.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeGradeDrawer(); });
+        document.body.appendChild(modal);
+      }
+      document.getElementById('gradeTitle').textContent = `Grade — ${assignCol.title} • ${student.name}`;
+      document.getElementById('gradeBody').innerHTML = 'Loading…';
+      modal.style.display = 'flex';
+      renderGradeDrawer(assignCol, student);
+    }
+  
+    function closeGradeDrawer() {
+      const m = document.getElementById('gradeDrawer');
+      if (m) m.style.display = 'none';
+    }
+  
+    async function renderGradeDrawer(assignCol, student) {
+      const body = document.getElementById('gradeBody');
+      if (!body) return;
+  
+      // Pull latest submission + grade
+      const [{ data: sub }, { data: g }, { data: aRow }] = await Promise.all([
+        sb.from('assignment_submissions').select('submitted_at, file_path, text_response')
+          .eq('assignment_id', assignCol.id).eq('student_id', student.id).maybeSingle(),
+        sb.from('assignment_grades').select('points, comment, published')
+          .eq('assignment_id', assignCol.id).eq('student_id', student.id).maybeSingle(),
+        sb.from('assignments').select('points_possible, due_at').eq('id', assignCol.id).single()
+      ]);
+  
+      const ptsMax = aRow?.points_possible ?? null;
+  
+      const nodes = [];
+      nodes.push(h('div', { class: 'muted' }, `Student: ${student.name}`));
+      nodes.push(h('div', { class: 'muted' }, `Assignment: ${assignCol.title}${ptsMax ? ` (${ptsMax})` : ''}`));
+      nodes.push(h('div', { class: 'muted' }, `Due: ${fmtDate(aRow?.due_at)}`));
+  
+      if (sub?.submitted_at || sub?.file_path || sub?.text_response) {
+        nodes.push(h('h4', {}, 'Submission'));
+        nodes.push(h('div', {}, sub?.submitted_at ? `Submitted ${fmtDate(sub.submitted_at)}` : '—'));
+        if (sub?.file_path) nodes.push(await downloadLink('class-files', sub.file_path, 'Open file'));
+        if (sub?.text_response) nodes.push(h('pre', { class: 'subs-pre' }, sub.text_response));
+      } else {
+        nodes.push(h('h4', {}, 'Submission'));
+        nodes.push(h('div', { class: 'muted' }, 'No submission'));
+      }
+  
+      nodes.push(h('h4', {}, 'Grade'));
+      const ptsInput = h('input', { type: 'number', id: 'gradePoints', placeholder: 'points', value: (g?.points ?? '') });
+      if (ptsMax != null) { ptsInput.min = 0; ptsInput.max = ptsMax; step='0.01'; }
+      const cmtInput = h('textarea', { id: 'gradeComment', placeholder: 'Comment (optional)' }, g?.comment || '');
+      const pubChk   = h('label', {}, [
+        h('input', { type: 'checkbox', id: 'gradePublished', checked: !!g?.published }),
+        ' Published'
+      ]);
+      const saveBtn  = h('button', {
+        class: 'btn',
+        onclick: async () => {
+          const points = ptsInput.value === '' ? null : Number(ptsInput.value);
+          const comment = (cmtInput.value || '').trim() || null;
+          const published = !!document.getElementById('gradePublished').checked;
+          const { error } = await sb.rpc('upsert_grade', {
+            p_assignment: assignCol.id,
+            p_student: student.id,
+            p_points: points,
+            p_comment: comment,
+            p_published: published
+          });
+          if (error) return alert(error.message);
+          alert('Saved.');
+          closeGradeDrawer();
+          renderRoute(); // refresh grid
+        }
+      }, 'Save');
+  
+      nodes.push(h('div', { class: 'col', style: 'gap:6px' }, [ ptsInput, cmtInput, pubChk, saveBtn ]));
+  
+      body.innerHTML = ''; body.append(...nodes);
+    }
+  
+    // CSV export helper (teacher)
+    async function exportGradebookCSV(cols, students, cell) {
+      const ids = students.map(s => s.id);
+      const nameMap = new Map(students.map(s => [s.id, s.name]));
+      const header = ['Student', ...cols.map(c => c.title)];
+      const rows = [header];
+  
+      for (const st of students) {
+        const line = [nameMap.get(st.id)];
+        for (const c of cols) {
+          const r = cell.get(`${c.id}|${st.id}`);
+          if (!r) { line.push(''); continue; }
+          if (r.is_graded) line.push(String(r.points ?? 0));
+          else if (r.is_submitted) line.push('Submitted');
+          else line.push('Missing');
+        }
+        rows.push(line);
+      }
+  
+      const csv = rows.map(r =>
+        r.map(x => /[",\n]/.test(x) ? `"${String(x).replace(/"/g,'""')}"` : String(x)).join(',')
+      ).join('\n');
+  
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'gradebook.csv'; a.click();
+      URL.revokeObjectURL(url);
+    }
   }
 } catch (e) {
   asgCard.append(h('small', { class: 'muted' }, `Error loading assignments: ${e.message || e}`));
@@ -696,7 +930,8 @@ async function renderSubmissionsModal(assignmentId) {
   if (!subs?.length) { body.innerHTML = '<small class="muted">No submissions yet.</small>'; return; }
 
   const ids = [...new Set(subs.map(s => s.student_id))];
-  const nameMap = await fetchUserInfoMap(ids); // id -> { name, role }
+  const nameMap = await fetchUserInfoMap(ids);
+  const { data: aRow } = await sb.from('assignments').select('title, points_possible, due_at').eq('id', assignmentId).single();
 
   const list   = h('div', { class: 'subs-list' });
   const detail = h('div', { class: 'subs-detail' }, [ h('div', { class: 'muted' }, 'Select a submission') ]);
@@ -716,7 +951,7 @@ async function renderSubmissionsModal(assignmentId) {
           onclick: async () => {
             const nodes = [];
             nodes.push(h('h4', {}, nm));
-            nodes.push(h('div', { class: 'muted' }, fmtDate(s.submitted_at)));
+            nodes.push(h('div', { class: 'muted' }, `Submitted ${fmtDate(s.submitted_at)}`));
 
             if (s.text_response) {
               nodes.push(h('h5', {}, 'Text response'));
@@ -726,6 +961,42 @@ async function renderSubmissionsModal(assignmentId) {
               nodes.push(h('h5', {}, 'File'));
               nodes.push(await downloadLink('class-files', s.file_path, 'Open file'));
             }
+
+            // Current grade (if any)
+            const { data: g } = await sb.from('assignment_grades')
+              .select('points, comment, published')
+              .eq('assignment_id', assignmentId)
+              .eq('student_id', s.student_id)
+              .maybeSingle();
+
+            nodes.push(h('h5', {}, `Grade ${aRow.points_possible ? `(max ${aRow.points_possible})` : ''}`));
+            const pts = h('input', { type: 'number', id: 'gPts', value: (g?.points ?? ''), placeholder: 'points' });
+            if (aRow.points_possible != null) { pts.min = 0; pts.max = aRow.points_possible; step='0.01'; }
+            const cmt = h('textarea', { id: 'gCmt', placeholder: 'Comment (optional)' }, g?.comment || '');
+            const pub = h('label', {}, [
+              h('input', { type: 'checkbox', id: 'gPub', checked: !!g?.published }),
+              ' Published'
+            ]);
+            const save = h('button', {
+              class: 'btn',
+              onclick: async () => {
+                const points = pts.value === '' ? null : Number(pts.value);
+                const comment = (cmt.value || '').trim() || null;
+                const published = !!document.getElementById('gPub').checked;
+                const { error } = await sb.rpc('upsert_grade', {
+                  p_assignment: assignmentId,
+                  p_student: s.student_id,
+                  p_points: points,
+                  p_comment: comment,
+                  p_published: published
+                });
+                if (error) return alert(error.message);
+                alert('Saved.');
+              }
+            }, 'Save grade');
+
+            nodes.push(h('div', { class: 'col', style: 'gap:6px; margin-top:8px' }, [ pts, cmt, pub, save ]));
+
             detail.innerHTML = ''; detail.append(...nodes);
           }
         }, 'Open')
