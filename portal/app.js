@@ -848,7 +848,29 @@ async function ClassDetail(app) {
       renderBranch(null, 0);
       summaryEl.textContent = `Conversation (${msgs.length})`;
     }
-  
+  }catch (e) {
+    console.error('[ClassDetail] Unhandled error:', e);
+    const msg = (e && e.message) ? e.message : String(e || 'Unknown error');
+
+    app.innerHTML = '';
+    app.append(
+      h('div', { class: 'card' }, [
+        h('h3', {}, 'Something went wrong'),
+        h('p', { class: 'muted' }, msg),
+        h('div', { class: 'row' }, [
+          h('button', {
+            class: 'btn',
+            onclick: () => renderRoute()  // rerun current route
+          }, 'Try again'),
+          h('button', {
+            class: 'btn btn-link',
+            onclick: () => { location.hash = '#/classes'; }
+          }, 'Back to Classes')
+        ])
+      ])
+    );
+  }
+}
 
 /* Helper used by ClassDetail to render the Assignments table */
 function buildAssignmentsTable(asg, prof, cls) {
