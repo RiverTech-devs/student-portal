@@ -848,7 +848,7 @@ async function ClassDetail(app) {
       renderBranch(null, 0);
       summaryEl.textContent = `Conversation (${msgs.length})`;
     }
-  } 
+  
 
 /* Helper used by ClassDetail to render the Assignments table */
 function buildAssignmentsTable(asg, prof, cls) {
