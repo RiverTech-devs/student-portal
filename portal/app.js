@@ -459,20 +459,19 @@ async function Classes(app) {
 }
 
 /* Class Detail (robust) */
-/* Class Detail (robust, single source of truth) */
 async function ClassDetail(app) {
   try {
     const prof = await currentProfile();
     if (!prof) { app.innerHTML = `<div class="card">Please sign in.</div>`; return; }
 
-    const classId = (location.hash.split('?')[0]).split('/')[2];
+    const classId = (location.hash.split('?')[0]).split('/')[2]; // strip ?query
     if (!classId) { app.innerHTML = `<div class="card">Invalid class ID.</div>`; return; }
 
-    // Load class
+    // Load class row
     const { data: cls, error: clsErr } = await sb.from('classes').select('*').eq('id', classId).single();
     if (clsErr || !cls) { app.innerHTML = `<div class="card">Class not found.</div>`; return; }
 
-    // Shell
+    // Mount shell first
     const wrap = h('div');
     wrap.append(h('div', { class: 'card' }, [ h('h2', {}, cls.name) ]));
     app.innerHTML = '';
@@ -480,10 +479,7 @@ async function ClassDetail(app) {
 
     /* ---------- Roster (teacher only) ---------- */
     if (prof.role === 'teacher' && cls.teacher_id === prof.id) {
-      const rosterCard = h('div', { class: 'card' }, [
-        h('h3', {}, 'Roster'),
-        h('small', { class: 'muted' }, 'Loading roster…')
-      ]);
+      const rosterCard = h('div', { class: 'card' }, [ h('h3', {}, 'Roster'), h('small', { class: 'muted' }, 'Loading roster…') ]);
       wrap.append(rosterCard);
 
       try {
@@ -491,8 +487,7 @@ async function ClassDetail(app) {
         const ids = (links || []).map(r => r.student_id);
         let students = [];
         if (ids.length) {
-          const { data: names } = await sb.from('profiles')
-            .select('id, first_name, last_name').in('id', ids).order('last_name');
+          const { data: names } = await sb.from('profiles').select('id, first_name, last_name').in('id', ids);
           students = names || [];
         }
         const allStudents = await listStudents();
@@ -507,12 +502,8 @@ async function ClassDetail(app) {
             h('summary', {}, 'Add students'),
             h('div', { class: 'row' }, [
               (() => {
-                const sel = h('select', { id: 'selStudent' }, [
-                  h('option', { value: '' }, '-- choose student --')
-                ]);
-                (allStudents || []).forEach(s =>
-                  sel.append(h('option', { value: s.id }, `${s.first_name} ${s.last_name}`))
-                );
+                const sel = h('select', { id: 'selStudent' }, [ h('option', { value: '' }, '-- choose student --') ]);
+                (allStudents || []).forEach(s => sel.append(h('option', { value: s.id }, `${s.first_name} ${s.last_name}`)));
                 return sel;
               })(),
               h('button', {
@@ -530,442 +521,509 @@ async function ClassDetail(app) {
         );
       } catch (e) {
         rosterCard.innerHTML = '';
-        rosterCard.append(
-          h('h3', {}, 'Roster'),
-          h('small', { class: 'muted' }, `Error: ${e.message || e}`)
-        );
+        rosterCard.append(h('h3', {}, 'Roster'), h('small', { class: 'muted' }, `Error: ${e.message || e}`));
       }
     }
 
     /* ---------- Assignments ---------- */
-    const asgCard = h('div', { class: 'card' }, [ h('h3', {}, 'Assignments') ]);
-    wrap.append(asgCard);
+const asgCard = h('div', { class: 'card' }, [ h('h3', {}, 'Assignments') ]);
+wrap.append(asgCard);
 
-    // Teacher: creation UI
-    if (prof.role === 'teacher' && cls.teacher_id === prof.id) {
-      // fetch roster for this class (for targeted assign)
-      let roster = [];
-      try {
-        const { data: links } = await sb.from('class_students').select('student_id').eq('class_id', cls.id);
-        const ids = [...new Set((links || []).map(r => r.student_id))];
-        if (ids.length) {
-          const { data: people } = await sb.from('profiles')
-            .select('id, first_name, last_name, email').in('id', ids).order('last_name');
-          roster = people || [];
-        }
-      } catch {}
-
-      const create = h('details', {}, [
-        h('summary', {}, 'Create assignment'),
-        h('div', { class: 'row' }, [
-          h('input', { id: 'aTitle', placeholder: 'Title' }),
-          h('div', { class: 'col' }, [
-            h('label', { for: 'aStart' }, 'Start (optional)'),
-            h('input', { id: 'aStart', type: 'datetime-local' })
-          ]),
-          h('div', { class: 'col' }, [
-            h('label', { for: 'aDue' }, 'Finish (optional)'),
-            h('input', { id: 'aDue', type: 'datetime-local' })
-          ]),
-          h('div', { class: 'col' }, [
-            h('label', { for: 'aPoints' }, 'Points (optional)'),
-            h('input', { id: 'aPoints', type: 'number', step: '0.01', placeholder: 'Points possible' })
-          ])
+  /* Teacher: creator with Start/Finish + Points + roster checkboxes */
+  if (prof.role === 'teacher' && cls.teacher_id === prof.id) {
+    // fetch roster for THIS class
+    let roster = [];
+    try {
+      const { data: links } = await sb
+        .from('class_students')
+        .select('student_id')
+        .eq('class_id', cls.id);
+  
+      const ids = [...new Set((links || []).map(r => r.student_id))];
+      if (ids.length) {
+        const { data: people } = await sb
+          .from('profiles')
+          .select('id, first_name, last_name, email')
+          .in('id', ids)
+          .order('last_name');
+        roster = people || [];
+      }
+    } catch {}
+  
+    const create = h('details', {}, [
+      h('summary', {}, 'Create assignment'),
+      h('div', { class: 'row' }, [
+        h('input', { id: 'aTitle', placeholder: 'Title' }),
+        h('div', { class: 'col' }, [
+          h('label', { for: 'aStart' }, 'Start (optional)'),
+          h('input', { id: 'aStart', type: 'datetime-local', placeholder: 'Start (optional)' })
         ]),
         h('div', { class: 'col' }, [
-          h('textarea', { id: 'aDesc', placeholder: 'Description (optional)' }),
-          h('textarea', { id: 'aSyllabus', placeholder: 'Syllabus JSON (optional)' })
+          h('label', { for: 'aDue' }, 'Finish (optional)'),
+          h('input', { id: 'aDue', type: 'datetime-local', placeholder: 'Finish (optional)' })
         ]),
-        // assign controls
-        (() => {
-          const wrap = h('div', { class: 'col' });
-          const allChk = h('input', { type: 'checkbox', id: 'aAll', checked: true });
-          wrap.append(h('label', {}, [allChk, ' Assign to all students']));
-
-          const listWrap = h('div', { id: 'aSelectWrap', style: 'display:none; margin-top:8px' });
-          if (roster.length) {
-            listWrap.append(h('div', { class: 'muted' }, 'Select students:'));
-            const grid = h('div', { class: 'col' });
-            roster.forEach(s => {
-              grid.append(h('label', { class: 'checkline' }, [
+        h('div', { class: 'col' }, [
+          h('label', { for: 'aPoints' }, 'Points (optional)'),
+          h('input', { id: 'aPoints', type: 'number', step: '0.01', placeholder: 'Points possible' })
+        ])
+      ]),
+      h('div', { class: 'col' }, [
+        h('textarea', { id: 'aDesc', placeholder: 'Description (optional)' }),
+        h('textarea', { id: 'aSyllabus', placeholder: 'Syllabus JSON (optional)' })
+      ]),
+  
+      // Assign controls
+      (() => {
+        const wrap = h('div', { class: 'col' });
+        const allChk = h('input', { type: 'checkbox', id: 'aAll', checked: true });
+        const allLbl = h('label', {}, [ allChk, ' Assign to all students' ]);
+        wrap.append(allLbl);
+  
+        // checkbox list (hidden when Assign to all is checked)
+        const listWrap = h('div', { id: 'aSelectWrap', style: 'display:none; margin-top:8px' });
+        if (roster.length) {
+          listWrap.append(h('div', { class: 'muted' }, 'Select students:'));
+          const grid = h('div', { class: 'col' });
+          roster.forEach(s => {
+            grid.append(
+              h('label', { class: 'checkline' }, [
                 h('input', { type: 'checkbox', value: s.id, class: 'aStu' }),
                 ` ${s.first_name} ${s.last_name} (${s.email})`
-              ]));
-            });
-            listWrap.append(grid);
-          } else {
-            listWrap.append(h('small', { class: 'muted' }, 'No students in this class yet.'));
-          }
-          allChk.onchange = (e) => { listWrap.style.display = e.target.checked ? 'none' : ''; };
-          wrap.append(listWrap);
-          return wrap;
-        })(),
-        h('div', { class: 'row' }, [
-          h('button', {
-            class: 'btn',
-            onclick: async () => {
-              try {
-                const title = document.getElementById('aTitle').value.trim();
-                if (!title) return alert('Title required');
-
-                const description = document.getElementById('aDesc').value.trim() || null;
-                const pointsRaw   = document.getElementById('aPoints').value || null;
-
-                const start_at = document.getElementById('aStart').value
-                  ? new Date(document.getElementById('aStart').value).toISOString() : null;
-                const due_at   = document.getElementById('aDue').value
-                  ? new Date(document.getElementById('aDue').value).toISOString() : null;
-
-                if (start_at && due_at && new Date(start_at) > new Date(due_at)) {
-                  return alert('Start must be before Finish.');
-                }
-
-                const points_possible = pointsRaw === '' ? null : Number(pointsRaw);
-                const assign_all = document.getElementById('aAll').checked;
-
-                let syllabus = null;
-                const txt = document.getElementById('aSyllabus').value.trim();
-                if (txt) { try { syllabus = JSON.parse(txt); } catch { return alert('Syllabus must be valid JSON.'); } }
-
-                // targeted selection
-                let selectedIds = [];
-                if (!assign_all) {
-                  selectedIds = Array.from(document.querySelectorAll('.aStu:checked')).map(el => el.value);
-                  if (!selectedIds.length) return alert('Select at least one student or choose "Assign to all".');
-                }
-
-                const { data, error } = await sb.from('assignments').insert({
-                  class_id: cls.id, title, description, syllabus, due_at, start_at,
-                  assign_all, points_possible, created_by: prof.id
-                }).select('id').single();
-                if (error) throw error;
-
-                if (!assign_all && selectedIds.length) {
-                  const rows = selectedIds.map(id => ({ assignment_id: data.id, student_id: id }));
-                  const { error: aerr } = await sb.from('assignment_assignees').insert(rows);
-                  if (aerr) throw aerr;
-                }
-
-                alert('Assignment created.');
-                renderRoute();
-              } catch (e) {
-                alert('Error: ' + (e?.message || e));
-              }
-            }
-          }, 'Create')
-        ])
-      ]);
-
-      asgCard.append(create);
-    }
-
-    // List assignments
-    const { data: assignments, error: aerr } = await sb
-      .from('assignments')
-      .select('*')
-      .eq('class_id', cls.id)
-      .order('created_at', { ascending: false });
-    if (aerr) throw aerr;
-
-    asgCard.append(buildAssignmentsTable(assignments, prof, cls));
-
-    /* ---------- Gradebook (teacher only) ---------- */
-    if (prof.role === 'teacher' && cls.teacher_id === prof.id) {
-      const gbCard = h('div', { class: 'card' }, [ h('h3', {}, 'Gradebook') ]);
-      wrap.append(gbCard);
-
-      try {
-        const { data: gb, error } = await sb
-          .from('assignment_gradebook')
-          .select('*')
-          .eq('class_id', cls.id);
-        if (error) throw error;
-
-        if (!gb?.length) {
-          gbCard.append(h('small', { class: 'muted' }, 'No data yet.'));
-        } else {
-          // naive render: group by student → columns per assignment title
-          const titles = [...new Set(gb.map(r => r.assignment_title))];
-          const thead = h('thead', {}, h('tr', {}, [
-            h('th', {}, 'Student'),
-            ...titles.map(t => h('th', {}, t))
-          ]));
-          const byStudent = new Map();
-          gb.forEach(r => {
-            const key = r.student_id;
-            if (!byStudent.has(key)) byStudent.set(key, new Map());
-            byStudent.get(key).set(r.assignment_title, r.points ?? (r.submitted_at ? 'Submitted' : 'Missing'));
+              ])
+            );
           });
-          // load names for pretty labels
-          const ids = [...byStudent.keys()];
-          const nameMap = ids.length
-            ? new Map(((await sb.from('profile_names').select('*').in('id', ids)).data || [])
-                .map(n => [n.id, n.full_name]))
-            : new Map();
-
-          const tbody = h('tbody', {}, [...byStudent.entries()].map(([sid, m]) => {
-            return h('tr', {}, [
-              h('td', {}, nameMap.get(sid) || sid),
-              ...titles.map(t => h('td', {}, m.get(t) ?? '—'))
-            ]);
-          }));
-          gbCard.append(h('table', {}, [thead, tbody]),
-            h('div', { style: 'margin-top:8px' },
-              h('button', { class: 'btn small', onclick: () => exportGradebookCSV?.(cls.id) }, 'Export CSV')
-            )
-          );
+          listWrap.append(grid);
+        } else {
+          listWrap.append(h('small', { class: 'muted' }, 'No students in this class yet.'));
         }
-      } catch (e) {
-        gbCard.append(h('small', { class: 'muted' }, `Error loading gradebook: ${e?.message || e}`));
-      }
-    }
-
-    /* ---------- Threads (collapsible) ---------- */
-    const threadsCard = h('div', { class: 'card' }, [ h('h3', {}, 'Class Threads') ]);
-    wrap.append(threadsCard);
-
-    // New thread (teacher only)
-    if (prof.role === 'teacher' && cls.teacher_id === prof.id) {
-      threadsCard.append(h('div', { class: 'row' }, [
-        h('input', { id: 'thrTitle', placeholder: 'Thread title (optional)' }),
+        allChk.onchange = (e) => { listWrap.style.display = e.target.checked ? 'none' : ''; };
+        wrap.append(listWrap);
+        return wrap;
+      })(),
+  
+      h('div', { class: 'row' }, [
         h('button', {
           class: 'btn',
           onclick: async () => {
-            const title = document.getElementById('thrTitle').value.trim() || null;
-            const { error } = await sb.from('threads').insert({
-              scope: 'class', class_id: cls.id, title, created_by: prof.id
-            });
-            if (error) return alert(error.message);
-            renderRoute();
+            try {
+              const title = document.getElementById('aTitle').value.trim();
+              if (!title) return alert('Title required');
+  
+              const description = document.getElementById('aDesc').value.trim() || null;
+              const pointsRaw = document.getElementById('aPoints').value || null;
+  
+              const start_at = dtLocalToISOById('aStart');   // null if empty
+              const due_at   = dtLocalToISOById('aDue');     // null if empty
+
+              if (start_at && due_at && new Date(start_at) > new Date(due_at)) {
+                return alert('Start must be before Finish.');
+              }
+  
+              const points_possible = pointsRaw === '' ? null : Number(pointsRaw);
+              const assign_all = document.getElementById('aAll').checked;
+  
+              let syllabus = null;
+              const txt = document.getElementById('aSyllabus').value.trim();
+              if (txt) { try { syllabus = JSON.parse(txt); } catch { return alert('Syllabus must be valid JSON.'); } }
+  
+              // If custom selection, collect student IDs
+              let selectedIds = [];
+              if (!assign_all) {
+                selectedIds = Array.from(document.querySelectorAll('.aStu:checked')).map(el => el.value);
+                if (!selectedIds.length) return alert('Select at least one student or choose "Assign to all".');
+              }
+  
+              const { data, error } = await sb.from('assignments').insert({
+                class_id: cls.id, title, description, syllabus, due_at, start_at,
+                assign_all, points_possible, created_by: prof.id
+              }).select('id').single();
+              if (error) throw error;
+  
+              if (!assign_all && selectedIds.length) {
+                const rows = selectedIds.map(id => ({ assignment_id: data.id, student_id: id }));
+                const { error: aerr } = await sb.from('assignment_assignees').insert(rows);
+                if (aerr) throw aerr;
+              }
+  
+              alert('Assignment created.');
+              renderRoute();
+            } catch (e) {
+              alert('Error: ' + (e?.message || e));
+            }
           }
-        }, 'New Thread')
-      ]));
-    }
-
-    try {
-      const { data: threads, error: terr } = await sb
-        .from('threads').select('*')
-        .eq('class_id', cls.id)
-        .eq('scope', 'class')
-        .order('created_at', { ascending: false });
-      if (terr) throw terr;
-
-      if (!threads?.length) {
-        threadsCard.append(h('small', { class: 'muted' }, 'No threads yet.'));
-      } else {
-        for (const t of threads) {
-          const boxId = `msgs-${t.id}`;
-          const sum = h('summary', {}, t.title || '(no title)');
-          const details = h('details', { open: true }, [
-            sum,
-            h('div', { id: boxId }, h('small', { class: 'muted' }, 'Loading…')),
-            h('div', { class: 'row' }, [
-              h('input', { id: `msg-${t.id}`, placeholder: 'Write a message.' }),
-              h('button', {
-                class: 'btn',
-                onclick: async () => {
-                  const input = document.getElementById(`msg-${t.id}`);
-                  const content = input?.value.trim();
-                  if (!content) return;
-                  const { error } = await sb.from('messages').insert({
-                    thread_id: t.id, content, user_id: prof.id
-                  });
-                  if (error) return alert(error.message);
-                  input.value = '';
-                  await loadThread(t.id, boxId, sum);
-                }
-              }, 'Send')
-            ])
-          ]);
-          threadsCard.append(h('div', { class: 'thread' }, [details]));
-          setTimeout(() => loadThread(t.id, boxId, sum), 0);
-        }
-      }
-    } catch (e) {
-      threadsCard.append(h('small', { class: 'muted' }, `Error loading threads: ${e.message || e}`));
-    }
-
-    // helper inside ClassDetail
-    async function loadThread(threadId, boxId, summaryEl) {
-      const box = document.getElementById(boxId);
-      if (!box) return;
-      const { data: msgs, error } = await sb
-        .from('messages')
-        .select('id, content, user_id, parent_id, created_at')
-        .eq('thread_id', threadId)
-        .order('created_at', { ascending: true });
-
-      if (!box || !box.isConnected) return;
-      if (error) { box.innerHTML = `<small class="muted">Error: ${error.message}</small>`; return; }
-      if (!msgs?.length) { box.innerHTML = '<small class="muted">No messages yet.</small>'; summaryEl.textContent = 'Conversation (0)'; return; }
-
-      const ids = [...new Set(msgs.map(m => m.user_id))];
-      const nameMap = await fetchNameMap(ids);
-
-      box.innerHTML = '';
-      const byParent = new Map();
-      msgs.forEach(m => {
-        const k = m.parent_id || 'root';
-        if (!byParent.has(k)) byParent.set(k, []);
-        byParent.get(k).push(m);
-      });
-
-      function renderBranch(parentId, depth = 0) {
-        const arr = byParent.get(parentId || 'root') || [];
-        for (const m of arr) {
-          const who = nameMap.get(m.user_id) || 'Unknown';
-          const header = `${who} • ${fmtDate(m.created_at)}`;
-
-          const content = h('div', {}, [
-            h('p', {}, m.content),
-            h('div', { class: 'row' }, [
-              h('input', { id: `reply-${m.id}`, placeholder: 'Reply…' }),
-              h('button', {
-                class: 'btn secondary',
-                onclick: async () => {
-                  const inp = document.getElementById(`reply-${m.id}`);
-                  const text = inp?.value.trim();
-                  if (!text) return;
-                  const { error } = await sb.from('messages').insert({
-                    thread_id: threadId, content: text, user_id: prof.id, parent_id: m.id
-                  });
-                  if (error) return alert(error.message);
-                  if (inp) inp.value = '';
-                  await loadThread(threadId, boxId, summaryEl);
-                }
-              }, 'Reply')
-            ])
-          ]);
-
-          const node = depth === 0
-            ? h('details', { open: true, style: `margin-left:${depth * 16}px` }, [ h('summary', {}, header), content ])
-            : h('details', { style: `margin-left:${depth * 16}px` }, [ h('summary', {}, header), content ]);
-
-          box.append(node);
-          renderBranch(m.id, depth + 1);
-        }
-      }
-      renderBranch(null, 0);
-      summaryEl.textContent = `Conversation (${msgs.length})`;
-    }
-  }catch (e) {
-    console.error('[ClassDetail] Unhandled error:', e);
-    const msg = (e && e.message) ? e.message : String(e || 'Unknown error');
-
-    app.innerHTML = '';
-    app.append(
-      h('div', { class: 'card' }, [
-        h('h3', {}, 'Something went wrong'),
-        h('p', { class: 'muted' }, msg),
-        h('div', { class: 'row' }, [
-          h('button', {
-            class: 'btn',
-            onclick: () => renderRoute()  // rerun current route
-          }, 'Try again'),
-          h('button', {
-            class: 'btn btn-link',
-            onclick: () => { location.hash = '#/classes'; }
-          }, 'Back to Classes')
-        ])
+        }, 'Create')
       ])
-    );
+    ]);
+  
+    asgCard.append(create);
   }
-}
 
-/* Helper used by ClassDetail to render the Assignments table */
-function buildAssignmentsTable(asg, prof, cls) {
-  const isTeacherOwner = (prof.role === 'teacher' && cls.teacher_id === prof.id);
+/* List assignments */
+try {
+  const { data: assignments, error: aerr } = await sb
+    .from('assignments')
+    .select('*')
+    .eq('class_id', cls.id)
+    .order('created_at', { ascending: false });
+  if (aerr) throw aerr;
 
-  const thead = h('thead', {}, h('tr', {}, [
-    h('th', {}, 'Title'),
-    h('th', {}, 'Finish'),  // due_at
-    h('th', {}, 'Start'),   // start_at
-    h('th', {}, isTeacherOwner ? 'Actions' : 'Status')
-  ]));
+  if (!assignments?.length) {
+    asgCard.append(h('small', { class: 'muted' }, 'No assignments.'));
+  } else {
+    const table = h('table', {}, [
+      h('thead', {}, h('tr', {}, [
+        'Title', 'Finish', 'Start', (prof.role === 'teacher' && cls.teacher_id === prof.id) ? 'Actions' : 'Status'
+      ].map(c => h('th', {}, c)))),
+      h('tbody', {}, await Promise.all(assignments.map(async (a) => {
+        const cells = [
+          h('td', {}, a.title),
+          h('td', {}, fmtDate(a.due_at)),
+          h('td', {}, fmtDate(a.start_at || a.created_at))
+        ];
 
-  const tbody = h('tbody', {}, asg.map(a => {
-    const finishCell = h('td', {}, a.due_at ? fmtDate(a.due_at) : '-');
-    const startCell  = h('td', {}, a.start_at ? fmtDate(a.start_at) : '-');
-
-    const cells = [ h('td', {}, a.title || '(untitled)'), finishCell, startCell ];
-
-    if (isTeacherOwner) {
-      // teacher actions
-      const actions = h('td', {}, h('div', { class: 'row' }, [
-        h('a', { class: 'btn small', href: `#/class/${cls.id}?view=subs&aid=${a.id}` }, 'View submissions')
-      ]));
-      cells.push(actions);
-    } else if (prof.role === 'student') {
-      // student status/actions
-      const statusTd = h('td', {}, h('small', { class: 'muted' }, 'Loading…'));
-      (async () => {
-        const [{ data: sub }, { data: grade }] = await Promise.all([
-          sb.from('assignment_submissions')
-            .select('submitted_at, file_path, text_response')
-            .eq('assignment_id', a.id).eq('student_id', prof.id).maybeSingle(),
-          sb.from('assignment_grades')
-            .select('points, comment, published')
-            .eq('assignment_id', a.id).eq('student_id', prof.id).maybeSingle()
-        ]);
-
-        statusTd.innerHTML = '';
-
-        if (grade?.published) {
-          const top = h('div', {});
-          top.append(h('div', {}, `Score: ${grade.points ?? 0}${a.points_possible ? ` / ${a.points_possible}` : ''}`));
-          if (grade.comment) top.append(h('div', { class: 'muted' }, `Feedback: ${grade.comment}`));
-          statusTd.append(top);
-        }
-
-        if (sub) {
-          const row = h('div', {});
-          row.append(h('div', {}, `Submitted ${fmtDate(sub.submitted_at)}`));
-          if (sub.file_path) row.append(await downloadLink('class-files', sub.file_path, 'View file'));
-          statusTd.append(row);
-
-          const actions = h('div', { class: 'row', style: 'margin-top:6px' });
-          actions.append(
-            h('button', { class: 'btn small', onclick: () => submitAssignmentFile(a.id, prof.id) }, 'Resubmit file'),
-            h('button', { class: 'btn link small', onclick: () => submitAssignmentText(a.id, prof.id) }, 'Add/Update text')
-          );
-          statusTd.append(actions);
+        if (prof.role === 'teacher' && cls.teacher_id === prof.id) {
+          // Teacher actions (upload supplemental files, later: view submissions)
+          const act = h('td', {});
+          act.append(h('button', { class: 'btn link small', onclick: () => uploadClassFile(a.id) }, 'Upload file'));
+          // View submissions (open simple list dialog)
+          act.append(h('button', { class: 'btn small', style: 'margin-left:8px', onclick: () =>  openSubmissionsModal(a.id, a.title) }, 'View submissions'));
+          cells.push(act);
+        } else if (prof.role === 'student') {
+        // Student status + submit/resubmit + grade view
+          const statusTd = h('td', {}, h('small', { class: 'muted' }, 'Loading…'));
+        
+          (async () => {
+            const [{ data: sub }, { data: grade }] = await Promise.all([
+              sb.from('assignment_submissions')
+                .select('*').eq('assignment_id', a.id).eq('student_id', prof.id).maybeSingle(),
+              sb.from('assignment_grades')
+                .select('points, comment, published')
+                .eq('assignment_id', a.id).eq('student_id', prof.id).maybeSingle()
+            ]);
+        
+            statusTd.innerHTML = '';
+        
+            if (grade?.published) {
+              const top = h('div', {});
+              top.append(
+                h('div', {}, `Score: ${grade.points ?? 0}${a.points_possible ? ` / ${a.points_possible}` : ''}`)
+              );
+              if (grade.comment) {
+                top.append(h('div', { class: 'muted' }, `Feedback: ${grade.comment}`));
+              }
+              statusTd.append(top);
+            }
+        
+            if (sub) {
+              const row = h('div', {});
+              row.append(h('div', {}, `Submitted ${fmtDate(sub.submitted_at)}`));
+              if (sub.file_path) {
+                row.append(await downloadLink('class-files', sub.file_path, 'View file'));
+              }
+              statusTd.append(row);
+        
+              const actions = h('div', { class: 'row', style: 'margin-top:6px' });
+              actions.append(
+                h('button', { class: 'btn small', onclick: () => submitAssignmentFile(a.id, prof.id) }, 'Resubmit file'),
+                h('button', { class: 'btn link small', onclick: () => submitAssignmentText(a.id, prof.id) }, 'Add/Update text')
+              );
+              statusTd.append(actions);
+            } else {
+              const actions = h('div', { class: 'row' });
+              actions.append(
+                h('button', { class: 'btn small', onclick: () => submitAssignmentFile(a.id, prof.id) }, 'Submit file'),
+                h('button', { class: 'btn link small', onclick: () => submitAssignmentText(a.id, prof.id) }, 'Submit text')
+              );
+              statusTd.append(actions);
+            }
+          })();
+        
+          cells.push(statusTd);
         } else {
-          const actions = h('div', { class: 'row' });
-          actions.append(
-            h('button', { class: 'btn small', onclick: () => submitAssignmentFile(a.id, prof.id) }, 'Submit file'),
-            h('button', { class: 'btn link small', onclick: () => submitAssignmentText(a.id, prof.id) }, 'Submit text')
-          );
-          statusTd.append(actions);
+          // Parent (read-only)
+          cells.push(h('td', {}, h('small', { class: 'muted' }, '—')));
         }
-      })();
-      cells.push(statusTd);
+
+        return h('tr', {}, cells);
+      })))
+    ]);
+    asgCard.append(table);
+  }
+
+  /* ---------- Gradebook (teacher only) ---------- */
+if (prof.role === 'teacher' && cls.teacher_id === prof.id) {
+  const gbCard = h('div', { class: 'card' }, [ h('h3', {}, 'Gradebook') ]);
+  wrap.append(gbCard);
+
+  try {
+    // Pull the full gradebook view for this class (created in SQL)
+    const { data: gb, error } = await sb
+      .from('assignment_gradebook')
+      .select('*')
+      .eq('class_id', cls.id);
+    if (error) throw error;
+
+    if (!gb?.length) {
+      gbCard.append(h('small', { class: 'muted' }, 'No data yet — create an assignment and/or add students.'));
     } else {
-      // parent view
-      cells.push(h('td', {}, h('small', { class: 'muted' }, '—')));
+      // Columns: distinct assignments (keep creation order stable via due_at, then title)
+      const seenA = new Set();
+      const cols = [];
+      gb.sort((x,y) => (new Date(x.due_at||0)) - (new Date(y.due_at||0)) || String(x.title).localeCompare(String(y.title)));
+      for (const r of gb) {
+        if (!seenA.has(r.assignment_id)) {
+          seenA.add(r.assignment_id);
+          cols.push({ id: r.assignment_id, title: r.title, pts: r.points_possible ?? null, due_at: r.due_at });
+        }
+      }
+
+      // Rows: distinct students (name map)
+      const studentIds = [...new Set(gb.map(r => r.student_id))];
+      const nameMap = await fetchUserInfoMap(studentIds); // id -> { name, role }
+      const students = studentIds
+        .map(id => ({ id, name: nameMap.get(id)?.name || 'Student' }))
+        .sort((a,b) => a.name.localeCompare(b.name));
+
+      // Index for quick cell lookup
+      const key = (aid, sid) => `${aid}|${sid}`;
+      const cell = new Map();
+      gb.forEach(r => cell.set(key(r.assignment_id, r.student_id), r));
+
+      // Toolbar
+      const tools = h('div', { class: 'row', style: 'margin-bottom:8px; align-items:center; gap:8px;' }, [
+        h('button', {
+          class: 'btn small',
+          onclick: async () => {
+            await exportGradebookCSV(cols, students, cell);
+          }
+        }, 'Export CSV')
+      ]);
+      gbCard.append(tools);
+
+     // Teacher owner?
+      const isTeacherOwner = (prof.role === 'teacher' && cls.teacher_id === prof.id);
+      
+      // Table header
+      const thead = h('thead', {}, h('tr', {}, [
+        h('th', {}, 'Title'),
+        h('th', {}, 'Finish'),  // due_at
+        h('th', {}, 'Start'),   // start_at
+        h('th', {}, isTeacherOwner ? 'Actions' : 'Status')
+      ]));
+      
+      // Rows
+      const tbody = h('tbody', {}, asg.map(a => {
+        const finishCell = h('td', {}, a.due_at ? fmtDate(a.due_at) : '-');     // Finish = due_at
+        const startCell  = h('td', {}, a.start_at ? fmtDate(a.start_at) : '-'); // Start  = start_at
+      
+        // Build the last cell per role
+        const lastTd = h('td', {});
+      
+        if (isTeacherOwner) {
+          // Teacher: actions
+          lastTd.append(
+            // If you added the submissions modal earlier, this will open it:
+            h('button', { class: 'btn small', onclick: () => openSubmissionsModal?.(a.id, a.title) }, 'View submissions')
+          );
+          // (Optional) more actions here...
+          // lastTd.append(h('button', { class: 'btn link small', style: 'margin-left:8px', onclick: () => uploadClassFile(a.id) }, 'Upload file'));
+        } else if (prof.role === 'student') {
+          // Student: grade (if published) + submission controls
+          lastTd.append(h('small', { class: 'muted' }, 'Loading…'));
+      
+          (async () => {
+            const [{ data: sub }, { data: grade }] = await Promise.all([
+              sb.from('assignment_submissions')
+                .select('*').eq('assignment_id', a.id).eq('student_id', prof.id).maybeSingle(),
+              sb.from('assignment_grades')
+                .select('points, comment, published')
+                .eq('assignment_id', a.id).eq('student_id', prof.id).maybeSingle()
+            ]);
+      
+            lastTd.innerHTML = '';
+      
+            // Published grade (if any)
+            if (grade?.published) {
+              lastTd.append(
+                h('div', {}, `Score: ${grade.points ?? 0}${a.points_possible ? ` / ${a.points_possible}` : ''}`)
+              );
+              if (grade.comment) lastTd.append(h('div', { class: 'muted' }, `Feedback: ${grade.comment}`));
+            }
+      
+            // Submission status + actions
+            if (sub) {
+              lastTd.append(h('div', {}, `Submitted ${fmtDate(sub.submitted_at)}`));
+              if (sub.file_path) lastTd.append(await downloadLink('class-files', sub.file_path, 'View file'));
+              lastTd.append(
+                h('div', { class: 'row', style: 'margin-top:6px' }, [
+                  h('button', { class: 'btn small', onclick: () => submitAssignmentFile(a.id, prof.id) }, 'Resubmit file'),
+                  h('button', { class: 'btn link small', onclick: () => submitAssignmentText(a.id, prof.id) }, 'Add/Update text')
+                ])
+              );
+            } else {
+              lastTd.append(
+                h('div', { class: 'row' }, [
+                  h('button', { class: 'btn small', onclick: () => submitAssignmentFile(a.id, prof.id) }, 'Submit file'),
+                  h('button', { class: 'btn link small', onclick: () => submitAssignmentText(a.id, prof.id) }, 'Submit text')
+                ])
+              );
+            }
+          })();
+      
+        } else {
+          // Parent / other: read-only
+          lastTd.append(h('small', { class: 'muted' }, '—'));
+        }
+      
+        return h('tr', {}, [
+          h('td', {}, a.title || '(untitled)'),
+          finishCell,
+          startCell,
+          lastTd
+        ]);
+      }));
+      
+      const table = h('table', {}, [thead, tbody]);
+      asgCard.append(table);
     }
+  } catch (e) {
+    gbCard.append(h('small', { class: 'muted' }, `Error: ${e.message || e}`));
+  }
 
-    return h('tr', {}, cells);
-  }));
-
-  return h('table', {}, [thead, tbody]);
+    // ---- Grade drawer (modal) ----
+    function openGradeDrawer(assignCol, student, row) {
+      let modal = document.getElementById('gradeDrawer');
+      if (!modal) {
+        modal = h('div', { id: 'gradeDrawer', class: 'modal-overlay' }, [
+          h('div', { class: 'modal', style: 'max-width:560px' }, [
+            h('div', { class: 'modal-head' }, [
+              h('h3', { id: 'gradeTitle' }, 'Grade'),
+              h('span', { class: 'spacer' }),
+              h('button', { class: 'btn link danger small', onclick: closeGradeDrawer }, 'Close')
+            ]),
+            h('div', { id: 'gradeBody', class: 'modal-body' }, 'Loading…')
+          ])
+        ]);
+        modal.addEventListener('click', (e) => { if (e.target === modal) closeGradeDrawer(); });
+        window.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeGradeDrawer(); });
+        document.body.appendChild(modal);
+      }
+      document.getElementById('gradeTitle').textContent = `Grade — ${assignCol.title} • ${student.name}`;
+      document.getElementById('gradeBody').innerHTML = 'Loading…';
+      modal.style.display = 'flex';
+      renderGradeDrawer(assignCol, student);
+    }
+  
+    function closeGradeDrawer() {
+      const m = document.getElementById('gradeDrawer');
+      if (m) m.style.display = 'none';
+    }
+  
+    async function renderGradeDrawer(assignCol, student) {
+      const body = document.getElementById('gradeBody');
+      if (!body) return;
+  
+      // Pull latest submission + grade
+      const [{ data: sub }, { data: g }, { data: aRow }] = await Promise.all([
+        sb.from('assignment_submissions').select('submitted_at, file_path, text_response')
+          .eq('assignment_id', assignCol.id).eq('student_id', student.id).maybeSingle(),
+        sb.from('assignment_grades').select('points, comment, published')
+          .eq('assignment_id', assignCol.id).eq('student_id', student.id).maybeSingle(),
+        sb.from('assignments').select('points_possible, due_at').eq('id', assignCol.id).single()
+      ]);
+  
+      const ptsMax = aRow?.points_possible ?? null;
+  
+      const nodes = [];
+      nodes.push(h('div', { class: 'muted' }, `Student: ${student.name}`));
+      nodes.push(h('div', { class: 'muted' }, `Assignment: ${assignCol.title}${ptsMax ? ` (${ptsMax})` : ''}`));
+      nodes.push(h('div', { class: 'muted' }, `Due: ${fmtDate(aRow?.due_at)}`));
+  
+      if (sub?.submitted_at || sub?.file_path || sub?.text_response) {
+        nodes.push(h('h4', {}, 'Submission'));
+        nodes.push(h('div', {}, sub?.submitted_at ? `Submitted ${fmtDate(sub.submitted_at)}` : '—'));
+        if (sub?.file_path) nodes.push(await downloadLink('class-files', sub.file_path, 'Open file'));
+        if (sub?.text_response) nodes.push(h('pre', { class: 'subs-pre' }, sub.text_response));
+      } else {
+        nodes.push(h('h4', {}, 'Submission'));
+        nodes.push(h('div', { class: 'muted' }, 'No submission'));
+      }
+  
+      nodes.push(h('h4', {}, 'Grade'));
+      const ptsInput = h('input', { type: 'number', id: 'gradePoints', placeholder: 'points', value: (g?.points ?? '') });
+      if (ptsMax != null) { ptsInput.min = 0; ptsInput.max = ptsMax; ptsInput.step='0.01'; }
+      const cmtInput = h('textarea', { id: 'gradeComment', placeholder: 'Comment (optional)' }, g?.comment || '');
+      const pubChk   = h('label', {}, [
+        h('input', { type: 'checkbox', id: 'gradePublished', checked: !!g?.published }),
+        ' Published'
+      ]);
+      const saveBtn  = h('button', {
+        class: 'btn',
+        onclick: async () => {
+          const points = ptsInput.value === '' ? null : Number(ptsInput.value);
+          const comment = (cmtInput.value || '').trim() || null;
+          const published = !!document.getElementById('gradePublished').checked;
+          const { error } = await sb.rpc('upsert_grade', {
+            p_assignment: assignCol.id,
+            p_student: student.id,
+            p_points: points,
+            p_comment: comment,
+            p_published: published
+          });
+          if (error) return alert(error.message);
+          alert('Saved.');
+          closeGradeDrawer();
+          renderRoute(); // refresh grid
+        }
+      }, 'Save');
+  
+      nodes.push(h('div', { class: 'col', style: 'gap:6px' }, [ ptsInput, cmtInput, pubChk, saveBtn ]));
+  
+      body.innerHTML = ''; body.append(...nodes);
+    }
+  
+    // CSV export helper (teacher)
+    async function exportGradebookCSV(cols, students, cell) {
+      const ids = students.map(s => s.id);
+      const nameMap = new Map(students.map(s => [s.id, s.name]));
+      const header = ['Student', ...cols.map(c => c.title)];
+      const rows = [header];
+  
+      for (const st of students) {
+        const line = [nameMap.get(st.id)];
+        for (const c of cols) {
+          const r = cell.get(`${c.id}|${st.id}`);
+          if (!r) { line.push(''); continue; }
+          if (r.is_graded) line.push(String(r.points ?? 0));
+          else if (r.is_submitted) line.push('Submitted');
+          else line.push('Missing');
+        }
+        rows.push(line);
+      }
+  
+      const csv = rows.map(r =>
+        r.map(x => /[",\n]/.test(x) ? `"${String(x).replace(/"/g,'""')}"` : String(x)).join(',')
+      ).join('\n');
+  
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'gradebook.csv'; a.click();
+      URL.revokeObjectURL(url);
+    }
+  }
+} catch (e) {
+  asgCard.append(h('small', { class: 'muted' }, `Error loading assignments: ${e.message || e}`));
 }
 
 /* Teacher helper: upload supplemental file for an assignment */
 async function uploadClassFile(assignmentId) {
-  const file = await pickFile();
+  const file = await pickFile(); 
   if (!file) return;
-
   const path = `${assignmentId}/supp-${Date.now()}-${file.name}`;
-  const up = await sb.storage.from('class-files').upload(path, file);
-  if (up.error) return alert(up.error.message);
-
-  const me = await currentProfile();
-  await sb.from('assignment_files').insert({
-    assignment_id: assignmentId,
-    file_path: up.data.path,
-    uploaded_by: me?.id || null
-  });
-
+  const { data, error } = await sb.storage.from('class-files').upload(path, file);
+  if (error) return alert(error.message);
+  await sb.from('assignment_files').insert({ assignment_id: assignmentId, file_path: data.path, uploaded_by: prof.id });
   alert('File uploaded.');
 }
 
@@ -1137,6 +1195,88 @@ async function submitAssignmentText(assignmentId, studentId) {
   alert('Submitted.');
   renderRoute();
 }
+   
+    /* ---------- Threads (Class scope) — collapsible, flat lines with Reply/Delete ---------- */
+    const threadsCard = h('div', { class: 'card' }, [ h('h3', {}, 'Class Threads') ]);
+    wrap.append(threadsCard);
+    
+    // Reply target per thread (so the bottom input can reply to a specific message)
+    const replyTarget = new Map(); // threadId -> { id, label }
+    
+    if (prof.role === 'teacher' && cls.teacher_id === prof.id) {
+      threadsCard.append(
+        h('div', { class: 'row' }, [
+          h('input', { id: 'thrTitle', placeholder: 'Thread title (optional)' }),
+          h('button', {
+            class: 'btn',
+            onclick: async () => {
+              const title = document.getElementById('thrTitle').value.trim() || null;
+              const { error } = await sb.from('threads').insert({
+                scope: 'class', class_id: cls.id, title, created_by: prof.id
+              });
+              if (error) return alert(error.message);
+              renderRoute();
+            }
+          }, 'New Thread')
+        ])
+      );
+    }
+    
+    try {
+      const { data: threads, error: terr } = await sb
+        .from('threads')
+        .select('*')
+        .eq('class_id', cls.id)
+        .eq('scope', 'class')
+        .order('created_at', { ascending: false });
+    
+      if (terr) throw terr;
+    
+      if (!threads?.length) {
+        threadsCard.append(h('small', { class: 'muted' }, 'No threads yet.'));
+      } else {
+        for (const t of threads) {
+          const boxId   = `msgs-${t.id}`;
+          const inputId = `input-${t.id}`;
+          const indId   = `replyind-${t.id}`;
+    
+          const summary = h('summary', {}, t.title || '(no title)');
+          const convo = h('details', { open: true }, [
+            summary,
+            h('div', { id: boxId }, h('small', { class: 'muted' }, 'Loading…')),
+            // Reply indicator + composer at the bottom (like your mock)
+            h('div', { class: 'row', style: 'margin-top:8px' }, [
+              h('small', { id: indId, class: 'muted', style: 'flex:1' }, ''), // "Replying to Name: … [cancel]"
+            ]),
+            h('div', { class: 'row' }, [
+              h('input', { id: inputId, placeholder: 'Write a message…', style: 'flex:1' }),
+              h('button', {
+                class: 'btn',
+                onclick: async () => {
+                  const el = document.getElementById(inputId);
+                  const text = el?.value.trim(); if (!text) return;
+    
+                  const parent = replyTarget.get(t.id)?.id || null;
+                  const { error } = await sb.from('messages').insert({
+                    thread_id: t.id, content: text, user_id: prof.id, parent_id: parent
+                  });
+                  if (error) return alert(error.message);
+                  if (el) el.value = '';
+                  replyTarget.delete(t.id);
+                  updateReplyIndicator(indId, null);
+                  await loadFlatThread(t.id, boxId, summary);
+                }
+              }, 'Send')
+            ])
+          ]);
+    
+          threadsCard.append(h('div', { class: 'thread' }, [ convo ]));
+          setTimeout(() => loadFlatThread(t.id, boxId, summary), 0);
+        }
+      }
+    } catch (e) {
+      threadsCard.append(h('small', { class: 'muted' }, `Error loading threads: ${e.message || e}`));
+    }
     
     /* helper: render a thread with flat lines + names, Reply/Delete */
     async function loadFlatThread(threadId, boxId, summaryEl) {
@@ -1153,7 +1293,7 @@ async function submitAssignmentText(assignmentId, studentId) {
     
       // Names only (no role labels)
       const ids = [...new Set((msgs || []).map(m => m.user_id))];
-      const userMap = await fetchUserInfoMap(ids); // { id -> {name, role} }
+      const userMap = await fetchUserInfoMap(ids); // returns { name, role } but we’ll use .name only
     
       if (!msgs?.length) {
         box.innerHTML = '<small class="muted">No messages yet.</small>';
@@ -1286,9 +1426,11 @@ async function submitAssignmentText(assignmentId, studentId) {
       }
       renderBranch(null, 0);
       summaryEl.textContent = updateSummary(summaryEl.textContent, msgs.length);
-    }} catch (e) {
+    }
+  } catch (e) {
     console.error('ClassDetail failed:', e);
     app.innerHTML = `<div class="card">Error loading class: ${e.message || e}</div>`;
+  }
 }
 
 /* Messaging: DMs between teacher and student/parent  — collapsible, with names */
@@ -1555,94 +1697,6 @@ async function Analytics(app) {
 }
 
 /* Helpers */
-// Builds the Assignments table for ClassDetail
-function buildAssignmentsTable(asg, prof, cls) {
-  const isTeacherOwner = (prof.role === 'teacher' && cls.teacher_id === prof.id);
-
-  // Header
-  const thead = h('thead', {}, h('tr', {}, [
-    h('th', {}, 'Title'),
-    h('th', {}, 'Finish'),  // = due_at
-    h('th', {}, 'Start'),   // = start_at
-    h('th', {}, isTeacherOwner ? 'Actions' : 'Status')
-  ]));
-
-  // Rows
-  const rows = asg.map(a => {
-    const finishCell = h('td', {}, a.due_at ? fmtDate(a.due_at) : '-');      // Finish = due_at
-    const startCell  = h('td', {}, a.start_at ? fmtDate(a.start_at) : '-');  // Start  = start_at
-
-    const lastTd = h('td', {});
-
-    if (isTeacherOwner) {
-      // Teacher: action buttons
-      const btns = [];
-      if (typeof uploadClassFile === 'function') {
-        btns.push(
-          h('button', { class: 'btn small', onclick: () => uploadClassFile(a.id) }, 'Upload file')
-        );
-      }
-      btns.push(
-        h('button', { class: 'btn small', onclick: () => openSubmissionsModal?.(a.id, a.title) }, 'View submissions')
-      );
-      lastTd.append(...btns);
-    } else if (prof.role === 'student') {
-      // Student: grade + submit/resubmit UI
-      lastTd.append(h('small', { class: 'muted' }, 'Loading…'));
-      (async () => {
-        const [{ data: sub }, { data: grade }] = await Promise.all([
-          sb.from('assignment_submissions')
-            .select('*').eq('assignment_id', a.id).eq('student_id', prof.id).maybeSingle(),
-          sb.from('assignment_grades')
-            .select('points, comment, published')
-            .eq('assignment_id', a.id).eq('student_id', prof.id).maybeSingle()
-        ]);
-
-        lastTd.innerHTML = '';
-
-        if (grade?.published) {
-          lastTd.append(
-            h('div', {}, `Score: ${grade.points ?? 0}${a.points_possible ? ` / ${a.points_possible}` : ''}`)
-          );
-          if (grade.comment) lastTd.append(h('div', { class: 'muted' }, `Feedback: ${grade.comment}`));
-        }
-
-        if (sub) {
-          lastTd.append(h('div', {}, `Submitted ${fmtDate(sub.submitted_at)}`));
-          if (sub.file_path && typeof downloadLink === 'function') {
-            lastTd.append(await downloadLink('class-files', sub.file_path, 'View file'));
-          }
-          lastTd.append(
-            h('div', { class: 'row', style: 'margin-top:6px' }, [
-              h('button', { class: 'btn small', onclick: () => submitAssignmentFile(a.id, prof.id) }, 'Resubmit file'),
-              h('button', { class: 'btn link small', onclick: () => submitAssignmentText(a.id, prof.id) }, 'Add/Update text')
-            ])
-          );
-        } else {
-          lastTd.append(
-            h('div', { class: 'row' }, [
-              h('button', { class: 'btn small', onclick: () => submitAssignmentFile(a.id, prof.id) }, 'Submit file'),
-              h('button', { class: 'btn link small', onclick: () => submitAssignmentText(a.id, prof.id) }, 'Submit text')
-            ])
-          );
-        }
-      })();
-    } else {
-      // Parent/other
-      lastTd.append(h('small', { class: 'muted' }, '—'));
-    }
-
-    return h('tr', {}, [
-      h('td', {}, a.title || '(untitled)'),
-      finishCell,
-      startCell,
-      lastTd
-    ]);
-  });
-
-  return h('table', {}, [thead, h('tbody', {}, rows)]);
-}
-
 // Shows "Replying to … [cancel]" in the indicator row.
 function updateReplyIndicator(indId, target, onCancel) {
   const el = document.getElementById(indId);
