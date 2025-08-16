@@ -848,11 +848,7 @@ async function ClassDetail(app) {
       renderBranch(null, 0);
       summaryEl.textContent = `Conversation (${msgs.length})`;
     }
-  } catch (e) {
-    console.error('ClassDetail failed:', e);
-    app.innerHTML = `<div class="card">Error loading class: ${e.message || e}</div>`;
-  }
-}
+  } 
 
 /* Helper used by ClassDetail to render the Assignments table */
 function buildAssignmentsTable(asg, prof, cls) {
@@ -1119,88 +1115,6 @@ async function submitAssignmentText(assignmentId, studentId) {
   alert('Submitted.');
   renderRoute();
 }
-   
-    /* ---------- Threads (Class scope) — collapsible, flat lines with Reply/Delete ---------- */
-    const threadsCard = h('div', { class: 'card' }, [ h('h3', {}, 'Class Threads') ]);
-    wrap.append(threadsCard);
-    
-    // Reply target per thread (so the bottom input can reply to a specific message)
-    const replyTarget = new Map(); // threadId -> { id, label }
-    
-    if (prof.role === 'teacher' && cls.teacher_id === prof.id) {
-      threadsCard.append(
-        h('div', { class: 'row' }, [
-          h('input', { id: 'thrTitle', placeholder: 'Thread title (optional)' }),
-          h('button', {
-            class: 'btn',
-            onclick: async () => {
-              const title = document.getElementById('thrTitle').value.trim() || null;
-              const { error } = await sb.from('threads').insert({
-                scope: 'class', class_id: cls.id, title, created_by: prof.id
-              });
-              if (error) return alert(error.message);
-              renderRoute();
-            }
-          }, 'New Thread')
-        ])
-      );
-    }
-    
-    try {
-      const { data: threads, error: terr } = await sb
-        .from('threads')
-        .select('*')
-        .eq('class_id', cls.id)
-        .eq('scope', 'class')
-        .order('created_at', { ascending: false });
-    
-      if (terr) throw terr;
-    
-      if (!threads?.length) {
-        threadsCard.append(h('small', { class: 'muted' }, 'No threads yet.'));
-      } else {
-        for (const t of threads) {
-          const boxId   = `msgs-${t.id}`;
-          const inputId = `input-${t.id}`;
-          const indId   = `replyind-${t.id}`;
-    
-          const summary = h('summary', {}, t.title || '(no title)');
-          const convo = h('details', { open: true }, [
-            summary,
-            h('div', { id: boxId }, h('small', { class: 'muted' }, 'Loading…')),
-            // Reply indicator + composer at the bottom (like your mock)
-            h('div', { class: 'row', style: 'margin-top:8px' }, [
-              h('small', { id: indId, class: 'muted', style: 'flex:1' }, ''), // "Replying to Name: … [cancel]"
-            ]),
-            h('div', { class: 'row' }, [
-              h('input', { id: inputId, placeholder: 'Write a message…', style: 'flex:1' }),
-              h('button', {
-                class: 'btn',
-                onclick: async () => {
-                  const el = document.getElementById(inputId);
-                  const text = el?.value.trim(); if (!text) return;
-    
-                  const parent = replyTarget.get(t.id)?.id || null;
-                  const { error } = await sb.from('messages').insert({
-                    thread_id: t.id, content: text, user_id: prof.id, parent_id: parent
-                  });
-                  if (error) return alert(error.message);
-                  if (el) el.value = '';
-                  replyTarget.delete(t.id);
-                  updateReplyIndicator(indId, null);
-                  await loadFlatThread(t.id, boxId, summary);
-                }
-              }, 'Send')
-            ])
-          ]);
-    
-          threadsCard.append(h('div', { class: 'thread' }, [ convo ]));
-          setTimeout(() => loadFlatThread(t.id, boxId, summary), 0);
-        }
-      }
-    } catch (e) {
-      threadsCard.append(h('small', { class: 'muted' }, `Error loading threads: ${e.message || e}`));
-    }
     
     /* helper: render a thread with flat lines + names, Reply/Delete */
     async function loadFlatThread(threadId, boxId, summaryEl) {
@@ -1217,7 +1131,7 @@ async function submitAssignmentText(assignmentId, studentId) {
     
       // Names only (no role labels)
       const ids = [...new Set((msgs || []).map(m => m.user_id))];
-      const userMap = await fetchUserInfoMap(ids); // returns { name, role } but we’ll use .name only
+      const userMap = await fetchUserInfoMap(ids); // { id -> {name, role} }
     
       if (!msgs?.length) {
         box.innerHTML = '<small class="muted">No messages yet.</small>';
@@ -1350,10 +1264,9 @@ async function submitAssignmentText(assignmentId, studentId) {
       }
       renderBranch(null, 0);
       summaryEl.textContent = updateSummary(summaryEl.textContent, msgs.length);
-    } catch (e) {
+    }} catch (e) {
     console.error('ClassDetail failed:', e);
     app.innerHTML = `<div class="card">Error loading class: ${e.message || e}</div>`;
-  }
 }
 
 /* Messaging: DMs between teacher and student/parent  — collapsible, with names */
