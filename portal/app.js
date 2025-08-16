@@ -1350,8 +1350,7 @@ async function submitAssignmentText(assignmentId, studentId) {
       }
       renderBranch(null, 0);
       summaryEl.textContent = updateSummary(summaryEl.textContent, msgs.length);
-    }
-  } catch (e) {
+    } catch (e) {
     console.error('ClassDetail failed:', e);
     app.innerHTML = `<div class="card">Error loading class: ${e.message || e}</div>`;
   }
