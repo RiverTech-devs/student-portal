@@ -459,13 +459,19 @@
             }
         
             async initialize() {
-                // Load all skill progress from database
+                // Set up message listener first
+                this.setupMessageListener();
+                
+                // Only try to load skill progress if we have an authenticated user
                 if (this.portal.currentUser && this.portal.supabase) {
                     await this.loadAllSkillProgress();
+                } else {
+                    // Initialize empty progress for all subjects
+                    console.log('📊 Initializing empty skill progress (no authenticated user yet)');
+                    Object.keys(this.subjects).forEach(subject => {
+                        this.skillProgress[subject] = {};
+                    });
                 }
-                
-                // Set up message listener
-                this.setupMessageListener();
             }
 
             setupMessageListener() {
@@ -499,12 +505,33 @@
         
             async loadAllSkillProgress() {
                 try {
+                    // Check if we have an authenticated user
+                    if (!this.portal.currentUser || !this.portal.supabase) {
+                        console.log('📊 No authenticated user - initializing empty progress');
+                        Object.keys(this.subjects).forEach(subject => {
+                            this.skillProgress[subject] = {};
+                        });
+                        return;
+                    }
+                    
                     const { data, error } = await this.portal.supabase
                         .from('student_skill_progress')
                         .select('subject, skill_states, total_unlocked')
                         .eq('student_id', this.portal.currentUser.id);
                     
-                    if (error) throw error;
+                    if (error) {
+                        // Don't throw on 401 or other errors, just initialize empty
+                        if (error.code === 'PGRST301' || error.status === 401) {
+                            console.log('📊 Not authenticated yet - will load progress after login');
+                        } else {
+                            console.warn('Error loading skill progress:', error.message);
+                        }
+                        // Initialize empty progress as fallback
+                        Object.keys(this.subjects).forEach(subject => {
+                            this.skillProgress[subject] = {};
+                        });
+                        return;
+                    }
                     
                     // Initialize all subjects with empty progress
                     Object.keys(this.subjects).forEach(subject => {
@@ -609,7 +636,16 @@
                         .eq('subject', subject)
                         .maybeSingle();
                     
-                    if (error) throw error;
+                    if (error) {
+                        // Handle 401 gracefully
+                        if (error.code === 'PGRST301' || error.status === 401) {
+                            console.log(`📝 Not authenticated - starting with empty progress for ${subject}`);
+                        } else {
+                            console.warn(`Error loading ${subject} progress:`, error.message);
+                        }
+                        this.skillProgress[subject] = {};
+                        return;
+                    }
                     
                     if (data && data.skill_states) {
                         this.skillProgress[subject] = data.skill_states;
@@ -716,8 +752,13 @@
                         });
                     
                     if (error) {
-                        console.error('Supabase upsert error:', error);
-                        throw error;
+                        // Handle 401 gracefully
+                        if (error.code === 'PGRST301' || error.status === 401) {
+                            console.warn('Not authenticated - progress saved locally only');
+                        } else {
+                            console.error('Supabase upsert error:', error.message);
+                        }
+                        return;
                     }
                     
                     console.log(`💾 Saved progress: ${totalUnlocked}/${this.subjects[subject]?.totalSkills || '?'} skills in ${subject}`);
@@ -1260,34 +1301,18 @@
                     // Dispatch event without the Supabase object
                     window.dispatchEvent(new CustomEvent('supabase-ready')); 
             
-                    // Skip connection test if we're in an iframe or have postMessage issues
-                    let connectionTestPassed = false;
+                    // Skip connection test - we'll know it works when user logs in
+                    // The user_profiles table has RLS enabled, so it returns 401 when not authenticated
+                    console.log('🔌 Supabase client initialized');
+                    
+                    // Optional: Test with a public endpoint instead
                     try {
-                        // Only test if we're not in an iframe
-                        if (window === window.parent) {
-                            // Simple async test without complex objects
-                            await new Promise((resolve) => {
-                                this.supabase
-                                    .from('user_profiles')
-                                    .select('count')
-                                    .limit(1)
-                                    .single()
-                                    .then(() => {
-                                        connectionTestPassed = true;
-                                        console.log('✅ Connected to Supabase successfully');
-                                        resolve();
-                                    })
-                                    .catch((err) => {
-                                        console.warn('Database connection test failed:', err?.message || 'Unknown error');
-                                        resolve();
-                                    });
-                            });
-                        } else {
-                            console.log('Running in iframe - skipping connection test');
+                        // Just verify the client was created successfully
+                        if (this.supabase && this.supabase.auth) {
+                            console.log('✅ Supabase client ready');
                         }
                     } catch (testError) {
-                        // Silently handle any errors from the connection test
-                        console.warn('Connection test skipped due to error');
+                        console.warn('Supabase client verification failed');
                     }
                     
                     // Check for existing session (wrap in try-catch to handle any serialization issues)
@@ -1542,6 +1567,15 @@
                     if (studentName) {
                         studentName.textContent = this.userProfile.first_name + ' ' + this.userProfile.last_name;
                     }
+                }
+            
+                // Load skill progress now that user is authenticated
+                if (this.currentUser && this.skillTreeIntegration) {
+                    this.skillTreeIntegration.loadAllSkillProgress().then(() => {
+                        console.log('📊 Skill progress loaded after login');
+                    }).catch(err => {
+                        console.warn('Could not load skill progress:', err.message);
+                    });
                 }
             
                 if (isParent || isTeacher) {
