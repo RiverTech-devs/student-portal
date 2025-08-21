@@ -7,7 +7,6 @@
   
   <!-- Load shared configuration -->
   <script src="../shared/config.js"></script>
-  <script src="../shared/components.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   
   <style>
@@ -424,6 +423,10 @@
         padding: 10px 8px;
         font-size: 12px;
       }
+      
+      .class-actions {
+        opacity: 1 !important;
+      }
     }
   </style>
 </head>
@@ -471,10 +474,6 @@
           <button class="nav-item" data-section="messaging">
             <span>💬</span>
             <span>Messages</span>
-          </button>
-          <button class="nav-item" data-section="assignments">
-            <span>📝</span>
-            <span>Assignments</span>
           </button>
           <button class="nav-item" data-section="profile">
             <span>👤</span>
@@ -555,25 +554,6 @@
             </div>
           </section>
 
-          <!-- Assignments Section -->
-          <section id="assignments-section" class="hidden">
-            <div class="card">
-              <div style="display: flex; justify-content: space-between; align-items: center;">
-                <div>
-                  <h2>📝 Assignments</h2>
-                  <p id="assignments-description">View and manage assignments.</p>
-                </div>
-                <div id="assignments-actions">
-                  <!-- Actions will be populated based on user type -->
-                </div>
-              </div>
-            </div>
-
-            <div id="assignments-content">
-              <!-- Assignments will be loaded here -->
-            </div>
-          </section>
-
           <!-- Profile Section -->
           <section id="profile-section" class="hidden">
             <div class="card">
@@ -594,9 +574,6 @@
                 <div style="display: grid; gap: 10px;">
                   <button class="btn btn-secondary" onclick="window.portalAuth?.goToMainPortal()">
                     🏠 Back to Main Portal
-                  </button>
-                  <button class="btn btn-secondary">
-                    🔔 Notification Settings
                   </button>
                   <button class="btn danger" onclick="window.portalAuth?.logout()">
                     🚪 Logout
@@ -619,7 +596,6 @@
         this.initialized = false;
         this.classes = [];
         this.messages = [];
-        this.assignments = [];
         
         this.init();
       }
@@ -707,15 +683,11 @@
 
       async loadInitialData() {
         try {
-          window.portalLoading?.show('initial', 'Loading your data...');
-          
           // Load data based on user type
           if (this.userInfo.profile.user_type === 'teacher') {
             await this.loadTeacherData();
           } else if (this.userInfo.profile.user_type === 'student') {
             await this.loadStudentData();
-          } else if (this.userInfo.profile.user_type === 'parent') {
-            await this.loadParentData();
           }
           
           // Load common data
@@ -726,20 +698,17 @@
           
         } catch (error) {
           console.error('Error loading initial data:', error);
-          window.PortalUI?.showNotification('Error loading data: ' + error.message, 'error');
-        } finally {
-          window.portalLoading?.hide('initial');
+          this.showNotification('Error loading data: ' + error.message, 'error');
         }
       }
 
       async loadTeacherData() {
-        // Load classes taught by this teacher
+        console.log('Loading teacher data...');
         const { data: classes, error } = await this.auth.supabase
           .from('classes')
           .select(`
             *,
-            enrollments:class_enrollments(count),
-            assignments(count)
+            enrollments:class_enrollments(count)
           `)
           .eq('teacher_id', this.userInfo.user.id)
           .eq('is_active', true)
@@ -747,38 +716,33 @@
 
         if (error) {
           console.error('Error loading teacher classes:', error);
+          this.showNotification('Error loading classes: ' + error.message, 'error');
           return;
         }
 
         this.classes = classes || [];
+        console.log('Loaded', this.classes.length, 'classes for teacher');
       }
 
       async loadStudentData() {
-        // Load classes student is enrolled in
+        console.log('Loading student data...');
         const { data: enrollments, error } = await this.auth.supabase
           .from('class_enrollments')
           .select(`
             *,
-            class:classes(
-              *,
-              teacher:user_profiles!classes_teacher_id_fkey(first_name, last_name)
-            )
+            class:classes(*)
           `)
           .eq('student_id', this.userInfo.user.id)
           .eq('status', 'active');
 
         if (error) {
           console.error('Error loading student classes:', error);
+          this.showNotification('Error loading classes: ' + error.message, 'error');
           return;
         }
 
         this.classes = enrollments?.map(e => e.class) || [];
-      }
-
-      async loadParentData() {
-        // For now, parents see the same view as students
-        // In a full implementation, you'd load their children's classes
-        this.classes = [];
+        console.log('Loaded', this.classes.length, 'classes for student');
       }
 
       async loadMessages() {
@@ -816,7 +780,6 @@
 
       getTeacherHomeContent() {
         const totalStudents = this.classes.reduce((sum, cls) => sum + (cls.enrollments?.[0]?.count || 0), 0);
-        const totalAssignments = this.classes.reduce((sum, cls) => sum + (cls.assignments?.[0]?.count || 0), 0);
         
         return `
           <div class="grid grid-2">
@@ -828,9 +791,6 @@
                 </button>
                 <button class="btn btn-primary" onclick="app.showSection('classes')">
                   📚 Manage Classes
-                </button>
-                <button class="btn btn-secondary" onclick="app.showSection('assignments')">
-                  📝 Create Assignment
                 </button>
                 <button class="btn btn-secondary" onclick="app.showSection('messaging')">
                   💬 Send Message
@@ -857,10 +817,10 @@
                 </div>
                 <div class="list-item">
                   <div class="list-item-content">
-                    <div class="list-item-title">Total Assignments</div>
-                    <div class="list-item-meta">Created this semester</div>
+                    <div class="list-item-title">Unread Messages</div>
+                    <div class="list-item-meta">New notifications</div>
                   </div>
-                  <div style="font-size: 20px; font-weight: 700; color: var(--warning);">${totalAssignments}</div>
+                  <div style="font-size: 20px; font-weight: 700; color: var(--warning);">0</div>
                 </div>
               </div>
             </div>
@@ -877,11 +837,8 @@
                 <button class="btn btn-primary" onclick="app.showSection('classes')">
                   📚 View Classes
                 </button>
-                <button class="btn btn-primary" onclick="app.showSection('assignments')">
-                  📝 Check Assignments
-                </button>
-                <button class="btn btn-secondary" onclick="app.showSection('messaging')">
-                  💬 Message Teachers
+                <button class="btn btn-primary" onclick="app.showSection('messaging')">
+                  💬 Check Messages
                 </button>
                 <button class="btn btn-secondary" onclick="app.enrollInClass()">
                   ➕ Join Class
@@ -905,13 +862,6 @@
                     <div class="list-item-meta">New notifications</div>
                   </div>
                   <div style="font-size: 20px; font-weight: 700; color: var(--accent-2);">0</div>
-                </div>
-                <div class="list-item">
-                  <div class="list-item-content">
-                    <div class="list-item-title">Pending Assignments</div>
-                    <div class="list-item-meta">Due soon</div>
-                  </div>
-                  <div style="font-size: 20px; font-weight: 700; color: var(--warning);">0</div>
                 </div>
               </div>
             </div>
@@ -940,13 +890,6 @@
                   </div>
                   <div style="font-size: 20px; font-weight: 700; color: var(--accent);">0</div>
                 </div>
-                <div class="list-item">
-                  <div class="list-item-content">
-                    <div class="list-item-title">New Messages</div>
-                    <div class="list-item-meta">From teachers</div>
-                  </div>
-                  <div style="font-size: 20px; font-weight: 700; color: var(--accent-2);">0</div>
-                </div>
               </div>
             </div>
           </div>
@@ -955,7 +898,7 @@
 
       handleHashNavigation() {
         const hash = window.location.hash.substring(1);
-        const validSections = ['home', 'classes', 'messaging', 'assignments', 'profile'];
+        const validSections = ['home', 'classes', 'messaging', 'profile'];
         
         if (hash && validSections.includes(hash)) {
           this.showSection(hash);
@@ -1008,9 +951,6 @@
             break;
           case 'messaging':
             this.renderMessages();
-            break;
-          case 'assignments':
-            this.renderAssignments();
             break;
           case 'profile':
             this.renderProfile();
@@ -1075,8 +1015,8 @@
             </div>
             ${isTeacher ? `
               <div class="class-stats" style="margin-top: 8px;">
-                <span>👥 ${cls.enrollments?.[0]?.count || 0} students</span>
-                <span>📝 Code: ${cls.class_code}</span>
+                <span>👥 ${cls.enrollments?.[0]?.count || 0}/${cls.max_students || 30}</span>
+                <span>📝 ${cls.class_code}</span>
               </div>
             ` : ''}
           </div>
@@ -1119,17 +1059,6 @@
         }
       }
 
-      renderAssignments() {
-        const assignmentsContent = document.getElementById('assignments-content');
-        
-        assignmentsContent.innerHTML = `
-          <div class="empty-state">
-            <h3>📝 Assignments Feature</h3>
-            <p>Assignment management is coming soon!</p>
-          </div>
-        `;
-      }
-
       renderProfile() {
         const profileInfo = document.getElementById('profile-info');
         if (!this.userInfo) return;
@@ -1169,7 +1098,7 @@
 
       // Class management methods
       createNewClass() {
-        const modalContent = `
+        this.showModal('create-class', '➕ Create New Class', `
           <form id="create-class-form">
             <div class="form-group">
               <label for="class-name">Class Name *</label>
@@ -1217,24 +1146,20 @@
               <label for="max-students">Maximum Students</label>
               <input type="number" id="max-students" min="1" max="100" value="30">
             </div>
+            <div style="display: flex; gap: 10px; margin-top: 20px;">
+              <button type="button" class="btn btn-secondary" onclick="app.closeModal()">Cancel</button>
+              <button type="submit" class="btn btn-primary">Create Class</button>
+            </div>
           </form>
-        `;
+        `);
 
-        const modal = window.portalModal.create('create-class', {
-          title: '➕ Create New Class',
-          content: modalContent,
-          size: 'medium',
-          footer: `
-            <button class="btn btn-secondary" onclick="window.portalModal.close('create-class')">Cancel</button>
-            <button class="btn btn-primary" onclick="app.submitCreateClass()">Create Class</button>
-          `
+        document.getElementById('create-class-form').addEventListener('submit', (e) => {
+          e.preventDefault();
+          this.submitCreateClass();
         });
       }
 
       async submitCreateClass() {
-        const form = document.getElementById('create-class-form');
-        const formData = new FormData(form);
-        
         const classData = {
           name: document.getElementById('class-name').value,
           subject: document.getElementById('class-subject').value,
@@ -1245,13 +1170,11 @@
         };
 
         if (!classData.name || !classData.subject) {
-          window.PortalUI?.showNotification('Please fill in required fields', 'error');
+          this.showNotification('Please fill in required fields', 'error');
           return;
         }
 
         try {
-          window.portalLoading?.show('create-class', 'Creating class...');
-          
           const { data, error } = await this.auth.supabase
             .from('classes')
             .insert([classData])
@@ -1260,8 +1183,8 @@
 
           if (error) throw error;
 
-          window.PortalUI?.showNotification('Class created successfully!', 'success');
-          window.portalModal.close('create-class');
+          this.showNotification('Class created successfully!', 'success');
+          this.closeModal();
           
           // Refresh classes
           await this.loadTeacherData();
@@ -1269,9 +1192,7 @@
 
         } catch (error) {
           console.error('Error creating class:', error);
-          window.PortalUI?.showNotification('Error creating class: ' + error.message, 'error');
-        } finally {
-          window.portalLoading?.hide('create-class');
+          this.showNotification('Error creating class: ' + error.message, 'error');
         }
       }
 
@@ -1279,7 +1200,7 @@
         const classData = this.classes.find(c => c.id === classId);
         if (!classData) return;
 
-        const modalContent = `
+        this.showModal('edit-class', '✏️ Edit Class', `
           <form id="edit-class-form">
             <div class="form-group">
               <label for="edit-class-name">Class Name *</label>
@@ -1332,17 +1253,16 @@
               <input type="text" value="${classData.class_code}" readonly style="background: #2a3140; opacity: 0.7;">
               <small style="color: var(--muted); font-size: 12px;">Students use this code to enroll</small>
             </div>
+            <div style="display: flex; gap: 10px; margin-top: 20px;">
+              <button type="button" class="btn btn-secondary" onclick="app.closeModal()">Cancel</button>
+              <button type="submit" class="btn btn-primary">Save Changes</button>
+            </div>
           </form>
-        `;
+        `);
 
-        window.portalModal.create('edit-class', {
-          title: '✏️ Edit Class',
-          content: modalContent,
-          size: 'medium',
-          footer: `
-            <button class="btn btn-secondary" onclick="window.portalModal.close('edit-class')">Cancel</button>
-            <button class="btn btn-primary" onclick="app.submitEditClass('${classId}')">Save Changes</button>
-          `
+        document.getElementById('edit-class-form').addEventListener('submit', (e) => {
+          e.preventDefault();
+          this.submitEditClass(classId);
         });
       }
 
@@ -1357,13 +1277,11 @@
         };
 
         if (!updatedData.name || !updatedData.subject) {
-          window.PortalUI?.showNotification('Please fill in required fields', 'error');
+          this.showNotification('Please fill in required fields', 'error');
           return;
         }
 
         try {
-          window.portalLoading?.show('edit-class', 'Updating class...');
-          
           const { error } = await this.auth.supabase
             .from('classes')
             .update(updatedData)
@@ -1371,8 +1289,8 @@
 
           if (error) throw error;
 
-          window.PortalUI?.showNotification('Class updated successfully!', 'success');
-          window.portalModal.close('edit-class');
+          this.showNotification('Class updated successfully!', 'success');
+          this.closeModal();
           
           // Refresh classes
           await this.loadTeacherData();
@@ -1380,9 +1298,7 @@
 
         } catch (error) {
           console.error('Error updating class:', error);
-          window.PortalUI?.showNotification('Error updating class: ' + error.message, 'error');
-        } finally {
-          window.portalLoading?.hide('edit-class');
+          this.showNotification('Error updating class: ' + error.message, 'error');
         }
       }
 
@@ -1390,43 +1306,15 @@
         const classData = this.classes.find(c => c.id === classId);
         if (!classData) return;
 
-        const modalContent = `
-          <div style="text-align: center; padding: 20px;">
-            <div style="font-size: 48px; margin-bottom: 16px;">⚠️</div>
-            <h3 style="color: var(--danger); margin-bottom: 16px;">Delete Class</h3>
-            <p style="margin-bottom: 20px;">
-              Are you sure you want to delete <strong>"${classData.name}"</strong>?
-            </p>
-            <p style="color: var(--muted); font-size: 14px; margin-bottom: 20px;">
-              This will permanently delete:
-            </p>
-            <ul style="text-align: left; color: var(--muted); font-size: 14px; margin-bottom: 20px;">
-              <li>All student enrollments</li>
-              <li>All assignments and submissions</li>
-              <li>All class-related messages</li>
-              <li>All class data and history</li>
-            </ul>
-            <p style="color: var(--danger); font-weight: 600; font-size: 14px;">
-              This action cannot be undone!
-            </p>
-          </div>
-        `;
+        if (!confirm(`Are you sure you want to delete "${classData.name}"?\n\nThis will permanently delete all class data, enrollments, and assignments. This action cannot be undone!`)) {
+          return;
+        }
 
-        window.portalModal.create('delete-class', {
-          title: '🗑️ Delete Class',
-          content: modalContent,
-          size: 'medium',
-          footer: `
-            <button class="btn btn-secondary" onclick="window.portalModal.close('delete-class')">Cancel</button>
-            <button class="btn danger" onclick="app.confirmDeleteClass('${classId}')">Delete Class</button>
-          `
-        });
+        this.confirmDeleteClass(classId);
       }
 
       async confirmDeleteClass(classId) {
         try {
-          window.portalLoading?.show('delete-class', 'Deleting class...');
-          
           const { error } = await this.auth.supabase
             .from('classes')
             .delete()
@@ -1434,8 +1322,7 @@
 
           if (error) throw error;
 
-          window.PortalUI?.showNotification('Class deleted successfully', 'success');
-          window.portalModal.close('delete-class');
+          this.showNotification('Class deleted successfully', 'success');
           
           // Refresh classes
           await this.loadTeacherData();
@@ -1443,14 +1330,12 @@
 
         } catch (error) {
           console.error('Error deleting class:', error);
-          window.PortalUI?.showNotification('Error deleting class: ' + error.message, 'error');
-        } finally {
-          window.portalLoading?.hide('delete-class');
+          this.showNotification('Error deleting class: ' + error.message, 'error');
         }
       }
 
       enrollInClass() {
-        const modalContent = `
+        this.showModal('enroll-class', '➕ Join Class', `
           <form id="enroll-class-form">
             <div class="form-group">
               <label for="class-code">Class Code</label>
@@ -1459,22 +1344,21 @@
                 Ask your teacher for the class code
               </small>
             </div>
+            <div style="display: flex; gap: 10px; margin-top: 20px;">
+              <button type="button" class="btn btn-secondary" onclick="app.closeModal()">Cancel</button>
+              <button type="submit" class="btn btn-primary">Join Class</button>
+            </div>
           </form>
-        `;
-
-        window.portalModal.create('enroll-class', {
-          title: '➕ Join Class',
-          content: modalContent,
-          size: 'small',
-          footer: `
-            <button class="btn btn-secondary" onclick="window.portalModal.close('enroll-class')">Cancel</button>
-            <button class="btn btn-primary" onclick="app.submitEnrollClass()">Join Class</button>
-          `
-        });
+        `);
 
         // Auto-uppercase class code input
         document.getElementById('class-code').addEventListener('input', (e) => {
           e.target.value = e.target.value.toUpperCase();
+        });
+
+        document.getElementById('enroll-class-form').addEventListener('submit', (e) => {
+          e.preventDefault();
+          this.submitEnrollClass();
         });
       }
 
@@ -1482,13 +1366,11 @@
         const classCode = document.getElementById('class-code').value.trim().toUpperCase();
         
         if (!classCode) {
-          window.PortalUI?.showNotification('Please enter a class code', 'error');
+          this.showNotification('Please enter a class code', 'error');
           return;
         }
 
         try {
-          window.portalLoading?.show('enroll-class', 'Joining class...');
-          
           // First, find the class by code
           const { data: classData, error: classError } = await this.auth.supabase
             .from('classes')
@@ -1524,8 +1406,8 @@
 
           if (enrollError) throw enrollError;
 
-          window.PortalUI?.showNotification(`Successfully joined "${classData.name}"!`, 'success');
-          window.portalModal.close('enroll-class');
+          this.showNotification(`Successfully joined "${classData.name}"!`, 'success');
+          this.closeModal();
           
           // Refresh classes
           await this.loadStudentData();
@@ -1533,14 +1415,12 @@
 
         } catch (error) {
           console.error('Error enrolling in class:', error);
-          window.PortalUI?.showNotification('Error joining class: ' + error.message, 'error');
-        } finally {
-          window.portalLoading?.hide('enroll-class');
+          this.showNotification('Error joining class: ' + error.message, 'error');
         }
       }
 
       openClass(classId) {
-        window.PortalUI?.showNotification(`Opening class details...`, 'info');
+        this.showNotification(`Opening class details...`, 'info');
         // Here you would implement class detail view
         // For now, just show a notification
       }
@@ -1551,7 +1431,7 @@
         const content = document.getElementById('message-content')?.value;
         
         if (!recipient || !subject || !content) {
-          window.PortalUI?.showNotification('Please fill in all fields', 'error');
+          this.showNotification('Please fill in all fields', 'error');
           return;
         }
         
@@ -1567,7 +1447,7 @@
 
           if (error) throw error;
 
-          window.PortalUI?.showNotification('Message sent successfully!', 'success');
+          this.showNotification('Message sent successfully!', 'success');
           
           // Clear form
           document.getElementById('new-message-form')?.reset();
@@ -1578,7 +1458,7 @@
 
         } catch (error) {
           console.error('Error sending message:', error);
-          window.PortalUI?.showNotification('Error sending message: ' + error.message, 'error');
+          this.showNotification('Error sending message: ' + error.message, 'error');
         }
       }
 
@@ -1586,7 +1466,7 @@
         const message = this.messages.find(m => m.id === messageId);
         if (!message) return;
 
-        const modalContent = `
+        this.showModal('view-message', '📧 Message', `
           <div style="margin-bottom: 20px;">
             <div style="padding-bottom: 10px; border-bottom: 1px solid var(--border); margin-bottom: 15px;">
               <h4 style="margin-bottom: 5px;">${message.subject}</h4>
@@ -1599,24 +1479,18 @@
               ${message.content.replace(/\n/g, '<br>')}
             </div>
           </div>
-        `;
-
-        window.portalModal.create('view-message', {
-          title: '📧 Message',
-          content: modalContent,
-          size: 'medium',
-          footer: `
-            <button class="btn btn-secondary" onclick="window.portalModal.close('view-message')">Close</button>
+          <div style="display: flex; gap: 10px; margin-top: 20px;">
+            <button class="btn btn-secondary" onclick="app.closeModal()">Close</button>
             <button class="btn btn-primary" onclick="app.replyToMessage('${messageId}')">Reply</button>
-          `
-        });
+          </div>
+        `);
       }
 
       replyToMessage(messageId) {
         const message = this.messages.find(m => m.id === messageId);
         if (!message) return;
 
-        window.portalModal.close('view-message');
+        this.closeModal();
         
         // Pre-fill reply form
         document.getElementById('message-recipient').value = message.sender_id;
@@ -1626,7 +1500,104 @@
         // Switch to messaging section
         this.showSection('messaging');
       }
+
+      // Utility methods
+      showModal(id, title, content) {
+        // Remove existing modal
+        const existingModal = document.getElementById('portal-modal');
+        if (existingModal) existingModal.remove();
+
+        // Create modal
+        const modal = document.createElement('div');
+        modal.id = 'portal-modal';
+        modal.style.cssText = `
+          position: fixed;
+          top: 0;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          background: rgba(0, 0, 0, 0.7);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          z-index: 10000;
+        `;
+
+        modal.innerHTML = `
+          <div style="
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+            max-width: 500px;
+            width: 90%;
+            max-height: 90vh;
+            overflow-y: auto;
+          ">
+            <h3 style="margin-bottom: 20px; color: var(--text);">${title}</h3>
+            ${content}
+          </div>
+        `;
+
+        // Close modal when clicking outside
+        modal.addEventListener('click', (e) => {
+          if (e.target === modal) {
+            this.closeModal();
+          }
+        });
+
+        document.body.appendChild(modal);
+      }
+
+      closeModal() {
+        const modal = document.getElementById('portal-modal');
+        if (modal) modal.remove();
+      }
+
+      showNotification(message, type = 'info') {
+        // Create notification
+        const notification = document.createElement('div');
+        notification.style.cssText = `
+          position: fixed;
+          top: 20px;
+          right: 20px;
+          padding: 16px 20px;
+          border-radius: 8px;
+          color: white;
+          z-index: 10001;
+          max-width: 350px;
+          font-size: 14px;
+          background: ${type === 'success' ? '#4caf50' : type === 'error' ? '#f44336' : '#2196f3'};
+          box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+          animation: slideIn 0.3s ease;
+        `;
+        
+        notification.textContent = message;
+        document.body.appendChild(notification);
+        
+        // Remove after 5 seconds
+        setTimeout(() => {
+          if (notification.parentNode) {
+            notification.style.animation = 'slideOut 0.3s ease';
+            setTimeout(() => notification.remove(), 300);
+          }
+        }, 5000);
+      }
     }
+
+    // Add CSS animations
+    const style = document.createElement('style');
+    style.textContent = `
+      @keyframes slideIn {
+        from { transform: translateX(100%); opacity: 0; }
+        to { transform: translateX(0); opacity: 1; }
+      }
+      @keyframes slideOut {
+        from { transform: translateX(0); opacity: 1; }
+        to { transform: translateX(100%); opacity: 0; }
+      }
+    `;
+    document.head.appendChild(style);
 
     // Initialize the app
     window.app = new ClassesPortalApp();
