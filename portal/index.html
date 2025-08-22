@@ -672,7 +672,6 @@
           });
         });
 
-        // New message form
         const messageForm = document.getElementById('new-message-form');
         if (messageForm) {
           messageForm.addEventListener('submit', (e) => {
@@ -2328,6 +2327,608 @@ async submitGrade(submissionId, maxPoints) {
         this.showSection('messaging');
       }
     }
+
+    // =============================================================================
+      // MISSING METHODS - Add these to your ClassesPortalApp class
+      // =============================================================================
+      
+      // Add these helper functions for profile actions
+      goToMainPortal() {
+        if (window.portalAuth?.goToMainPortal) {
+          window.portalAuth.goToMainPortal();
+        } else {
+          window.location.href = '../index.html';
+        }
+      }
+      
+      async logout() {
+        try {
+          if (window.portalAuth?.logout) {
+            await window.portalAuth.logout();
+          } else if (this.auth?.supabase) {
+            await this.auth.supabase.auth.signOut();
+            window.location.href = '../index.html';
+          } else {
+            window.location.href = '../index.html';
+          }
+        } catch (error) {
+          console.error('Error logging out:', error);
+          window.location.href = '../index.html';
+        }
+      }
+      
+      // Utility methods for modals and notifications
+      showModal(id, title, content) {
+        // Remove existing modal
+        const existingModal = document.getElementById('portal-modal');
+        if (existingModal) existingModal.remove();
+      
+        // Create modal
+        const modal = document.createElement('div');
+        modal.id = 'portal-modal';
+        modal.style.cssText = `
+          position: fixed;
+          top: 0;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          background: rgba(0, 0, 0, 0.7);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          z-index: 10000;
+        `;
+      
+        modal.innerHTML = `
+          <div style="
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+            max-width: 600px;
+            width: 90%;
+            max-height: 90vh;
+            overflow-y: auto;
+          ">
+            <h3 style="margin-bottom: 20px; color: var(--text);">${title}</h3>
+            ${content}
+          </div>
+        `;
+      
+        // Close modal when clicking outside
+        modal.addEventListener('click', (e) => {
+          if (e.target === modal) {
+            this.closeModal();
+          }
+        });
+      
+        document.body.appendChild(modal);
+      }
+      
+      closeModal() {
+        const modal = document.getElementById('portal-modal');
+        if (modal) modal.remove();
+      }
+      
+      showNotification(message, type = 'info') {
+        // Create notification
+        const notification = document.createElement('div');
+        notification.style.cssText = `
+          position: fixed;
+          top: 20px;
+          right: 20px;
+          padding: 16px 20px;
+          border-radius: 8px;
+          color: white;
+          z-index: 10001;
+          max-width: 350px;
+          font-size: 14px;
+          background: ${type === 'success' ? '#4caf50' : type === 'error' ? '#f44336' : '#2196f3'};
+          box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+          animation: slideIn 0.3s ease;
+        `;
+        
+        notification.textContent = message;
+        document.body.appendChild(notification);
+        
+        // Remove after 5 seconds
+        setTimeout(() => {
+          if (notification.parentNode) {
+            notification.style.animation = 'slideOut 0.3s ease';
+            setTimeout(() => notification.remove(), 300);
+          }
+        }, 5000);
+      }
+      
+      // Assignment-related methods
+      async viewAssignments(classId) {
+        this.closeModal();
+        
+        try {
+          // Load assignments for this class
+          const { data: assignments, error } = await this.auth.supabase
+            .from('assignments')
+            .select('*')
+            .eq('class_id', classId)
+            .order('created_at', { ascending: false });
+      
+          if (error) throw error;
+      
+          const classData = this.classes.find(c => c.id === classId);
+          const isTeacher = this.userInfo.profile.user_type === 'teacher';
+          
+          let content = `
+            <div style="margin-bottom: 20px;">
+              <h3>📝 Assignments for ${classData?.name}</h3>
+              ${isTeacher ? `
+                <button class="btn btn-primary" onclick="app.createAssignment('${classId}')" style="margin-top: 10px;">
+                  ➕ Create New Assignment
+                </button>
+              ` : ''}
+            </div>
+          `;
+      
+          if (!assignments || assignments.length === 0) {
+            content += `
+              <div class="empty-state">
+                <h3>📝 No Assignments Yet</h3>
+                <p>${isTeacher ? 'Create your first assignment to get started.' : 'No assignments have been posted yet.'}</p>
+              </div>
+            `;
+          } else {
+            content += `
+              <div style="display: grid; gap: 15px;">
+                ${assignments.map(assignment => this.renderAssignmentCard(assignment, isTeacher)).join('')}
+              </div>
+            `;
+          }
+      
+          content += `
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal()">Close</button>
+            </div>
+          `;
+      
+          this.showModal('assignments', `📝 Assignments - ${classData?.name}`, content);
+      
+        } catch (error) {
+          console.error('Error loading assignments:', error);
+          this.showNotification('Error loading assignments: ' + error.message, 'error');
+        }
+      }
+      
+      renderAssignmentCard(assignment, isTeacher) {
+        const dueDate = assignment.due_date ? new Date(assignment.due_date).toLocaleDateString() : 'No due date';
+        const isPublished = assignment.is_published;
+        
+        return `
+          <div class="card" style="margin: 0;">
+            <div style="display: flex; justify-content: between; align-items: start;">
+              <div style="flex: 1;">
+                <h4 style="margin-bottom: 8px; color: var(--text);">
+                  ${assignment.title}
+                  ${!isPublished ? '<span style="background: var(--warning); color: black; padding: 2px 6px; border-radius: 4px; font-size: 10px; margin-left: 8px;">DRAFT</span>' : ''}
+                </h4>
+                <p style="margin-bottom: 10px; color: var(--muted);">${assignment.description || 'No description'}</p>
+                <div style="font-size: 12px; color: var(--muted);">
+                  <span>📅 Due: ${dueDate}</span> • 
+                  <span>📊 ${assignment.points_possible} points</span> • 
+                  <span>📋 ${assignment.assignment_type}</span>
+                </div>
+              </div>
+              <div style="display: flex; gap: 8px; margin-left: 15px;">
+                ${isTeacher ? `
+                  <button class="btn btn-secondary small" onclick="app.editAssignment('${assignment.id}')">✏️</button>
+                  <button class="btn btn-secondary small" onclick="app.gradeAssignment('${assignment.id}')">📊</button>
+                  <button class="btn danger small" onclick="app.deleteAssignment('${assignment.id}')">🗑️</button>
+                ` : `
+                  ${isPublished ? `<button class="btn btn-primary small" onclick="app.submitAssignment('${assignment.id}')">📝 Submit</button>` : ''}
+                `}
+              </div>
+            </div>
+          </div>
+        `;
+      }
+      
+      // Create new assignment (teachers only)
+      createAssignment(classId) {
+        this.closeModal();
+        
+        const modalContent = `
+          <form id="create-assignment-form">
+            <div class="form-group">
+              <label for="assignment-title">Assignment Title *</label>
+              <input type="text" id="assignment-title" required>
+            </div>
+            <div class="form-group">
+              <label for="assignment-description">Description</label>
+              <textarea id="assignment-description" rows="3"></textarea>
+            </div>
+            <div class="form-group">
+              <label for="assignment-type">Assignment Type</label>
+              <select id="assignment-type">
+                <option value="homework">Homework</option>
+                <option value="quiz">Quiz</option>
+                <option value="test">Test</option>
+                <option value="project">Project</option>
+                <option value="lab">Lab</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="assignment-points">Points Possible</label>
+              <input type="number" id="assignment-points" min="0" max="1000" value="100">
+            </div>
+            <div class="form-group">
+              <label for="assignment-due-date">Due Date</label>
+              <input type="datetime-local" id="assignment-due-date">
+            </div>
+            <div class="form-group">
+              <label>
+                <input type="checkbox" id="assignment-publish"> Publish immediately
+              </label>
+            </div>
+            <div style="display: flex; gap: 10px; margin-top: 20px;">
+              <button type="button" class="btn btn-secondary" onclick="app.closeModal()">Cancel</button>
+              <button type="submit" class="btn btn-primary">Create Assignment</button>
+            </div>
+          </form>
+        `;
+      
+        this.showModal('create-assignment', '➕ Create Assignment', modalContent);
+      
+        document.getElementById('create-assignment-form').addEventListener('submit', (e) => {
+          e.preventDefault();
+          this.submitCreateAssignment(classId);
+        });
+      }
+      
+      async submitCreateAssignment(classId) {
+        const assignmentData = {
+          class_id: classId,
+          title: document.getElementById('assignment-title').value,
+          description: document.getElementById('assignment-description').value,
+          assignment_type: document.getElementById('assignment-type').value,
+          points_possible: parseInt(document.getElementById('assignment-points').value) || 100,
+          due_date: document.getElementById('assignment-due-date').value || null,
+          is_published: document.getElementById('assignment-publish').checked
+        };
+      
+        if (!assignmentData.title) {
+          this.showNotification('Please enter an assignment title', 'error');
+          return;
+        }
+      
+        try {
+          const { error } = await this.auth.supabase
+            .from('assignments')
+            .insert([assignmentData]);
+      
+          if (error) throw error;
+      
+          this.showNotification('Assignment created successfully!', 'success');
+          this.closeModal();
+          // Refresh assignments view
+          setTimeout(() => this.viewAssignments(classId), 100);
+      
+        } catch (error) {
+          console.error('Error creating assignment:', error);
+          this.showNotification('Error creating assignment: ' + error.message, 'error');
+        }
+      }
+      
+      // Student assignment submission
+      async submitAssignment(assignmentId) {
+        this.closeModal();
+        
+        try {
+          // Check if already submitted
+          const { data: existingSubmission } = await this.auth.supabase
+            .from('assignment_submissions')
+            .select('*')
+            .eq('assignment_id', assignmentId)
+            .eq('student_id', this.userInfo.user.id)
+            .single();
+      
+          const isEdit = !!existingSubmission;
+          
+          const modalContent = `
+            <form id="submit-assignment-form">
+              <div class="form-group">
+                <label for="submission-content">Your Submission *</label>
+                <textarea id="submission-content" rows="8" required placeholder="Enter your work here...">${existingSubmission?.content || ''}</textarea>
+              </div>
+              <div class="form-group">
+                <label for="submission-file">File Upload (optional)</label>
+                <input type="file" id="submission-file" accept=".pdf,.doc,.docx,.txt,.jpg,.png">
+                ${existingSubmission?.file_url ? `<small>Current file: <a href="${existingSubmission.file_url}" target="_blank">View File</a></small>` : ''}
+              </div>
+              <div style="display: flex; gap: 10px; margin-top: 20px;">
+                <button type="button" class="btn btn-secondary" onclick="app.closeModal()">Cancel</button>
+                <button type="submit" class="btn btn-primary">${isEdit ? 'Update' : 'Submit'} Assignment</button>
+              </div>
+            </form>
+          `;
+      
+          this.showModal('submit-assignment', isEdit ? '✏️ Edit Submission' : '📝 Submit Assignment', modalContent);
+      
+          document.getElementById('submit-assignment-form').addEventListener('submit', (e) => {
+            e.preventDefault();
+            this.submitAssignmentSubmission(assignmentId, isEdit);
+          });
+      
+        } catch (error) {
+          console.error('Error preparing submission:', error);
+          this.showNotification('Error preparing submission: ' + error.message, 'error');
+        }
+      }
+      
+      async submitAssignmentSubmission(assignmentId, isEdit) {
+        const content = document.getElementById('submission-content').value;
+        
+        if (!content.trim()) {
+          this.showNotification('Please enter your submission content', 'error');
+          return;
+        }
+      
+        try {
+          const submissionData = {
+            assignment_id: assignmentId,
+            student_id: this.userInfo.user.id,
+            content: content,
+            submitted_at: new Date().toISOString(),
+            status: 'submitted'
+          };
+      
+          let error;
+          if (isEdit) {
+            ({ error } = await this.auth.supabase
+              .from('assignment_submissions')
+              .update(submissionData)
+              .eq('assignment_id', assignmentId)
+              .eq('student_id', this.userInfo.user.id));
+          } else {
+            ({ error } = await this.auth.supabase
+              .from('assignment_submissions')
+              .insert([submissionData]));
+          }
+      
+          if (error) throw error;
+      
+          this.showNotification(`Assignment ${isEdit ? 'updated' : 'submitted'} successfully!`, 'success');
+          this.closeModal();
+      
+        } catch (error) {
+          console.error('Error submitting assignment:', error);
+          this.showNotification('Error submitting assignment: ' + error.message, 'error');
+        }
+      }
+      
+      // Teacher grading interface
+      async gradeAssignment(assignmentId) {
+        this.closeModal();
+        
+        try {
+          // Load assignment details and submissions
+          const [assignmentResult, submissionsResult] = await Promise.all([
+            this.auth.supabase
+              .from('assignments')
+              .select('*')
+              .eq('id', assignmentId)
+              .single(),
+            this.auth.supabase
+              .from('assignment_submissions')
+              .select(`
+                *,
+                user_profiles!inner(first_name, last_name, email)
+              `)
+              .eq('assignment_id', assignmentId)
+          ]);
+      
+          if (assignmentResult.error) throw assignmentResult.error;
+          if (submissionsResult.error) throw submissionsResult.error;
+      
+          const assignment = assignmentResult.data;
+          const submissions = submissionsResult.data || [];
+      
+          let content = `
+            <div style="margin-bottom: 20px;">
+              <h3>📊 Grade: ${assignment.title}</h3>
+              <p>Total Submissions: ${submissions.length}</p>
+            </div>
+          `;
+      
+          if (submissions.length === 0) {
+            content += `
+              <div class="empty-state">
+                <h3>📝 No Submissions Yet</h3>
+                <p>Students haven't submitted anything for this assignment yet.</p>
+              </div>
+            `;
+          } else {
+            content += `
+              <div style="max-height: 400px; overflow-y: auto;">
+                ${submissions.map(submission => this.renderSubmissionCard(submission, assignment.points_possible)).join('')}
+              </div>
+            `;
+          }
+      
+          content += `
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal()">Close</button>
+            </div>
+          `;
+      
+          this.showModal('grade-assignment', `📊 Grading - ${assignment.title}`, content);
+      
+        } catch (error) {
+          console.error('Error loading submissions:', error);
+          this.showNotification('Error loading submissions: ' + error.message, 'error');
+        }
+      }
+      
+      renderSubmissionCard(submission, maxPoints) {
+        const studentName = `${submission.user_profiles.first_name} ${submission.user_profiles.last_name}`;
+        const submittedDate = new Date(submission.submitted_at).toLocaleDateString();
+        const isGraded = submission.points_earned !== null;
+      
+        return `
+          <div class="card" style="margin: 0 0 10px 0;">
+            <div style="display: flex; justify-content: between; align-items: start;">
+              <div style="flex: 1;">
+                <h4 style="margin-bottom: 8px;">${studentName}</h4>
+                <p style="margin-bottom: 10px; color: var(--muted); font-size: 14px; max-height: 100px; overflow-y: auto;">
+                  ${submission.content.length > 200 ? submission.content.substring(0, 200) + '...' : submission.content}
+                </p>
+                <div style="font-size: 12px; color: var(--muted);">
+                  Submitted: ${submittedDate}
+                  ${isGraded ? ` • Grade: ${submission.points_earned}/${maxPoints}` : ''}
+                </div>
+              </div>
+              <div style="margin-left: 15px;">
+                <button class="btn btn-primary small" onclick="app.gradeSubmission('${submission.id}', ${maxPoints})">
+                  ${isGraded ? '✏️ Edit Grade' : '📝 Grade'}
+                </button>
+              </div>
+            </div>
+          </div>
+        `;
+      }
+      
+      async gradeSubmission(submissionId, maxPoints) {
+        try {
+          // Get current submission data
+          const { data: submission, error } = await this.auth.supabase
+            .from('assignment_submissions')
+            .select(`
+              *,
+              user_profiles!inner(first_name, last_name)
+            `)
+            .eq('id', submissionId)
+            .single();
+      
+          if (error) throw error;
+      
+          const studentName = `${submission.user_profiles.first_name} ${submission.user_profiles.last_name}`;
+          
+          const modalContent = `
+            <div style="margin-bottom: 20px;">
+              <h3>📝 Grade Submission - ${studentName}</h3>
+              <div style="background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 15px; margin: 10px 0;">
+                <h4 style="margin-bottom: 10px;">Student's Submission:</h4>
+                <div style="max-height: 200px; overflow-y: auto; color: var(--muted);">
+                  ${submission.content}
+                </div>
+              </div>
+            </div>
+            
+            <form id="grade-submission-form">
+              <div class="form-group">
+                <label for="points-earned">Points Earned (out of ${maxPoints})</label>
+                <input type="number" id="points-earned" min="0" max="${maxPoints}" value="${submission.points_earned || ''}" required>
+              </div>
+              <div class="form-group">
+                <label for="feedback">Feedback</label>
+                <textarea id="feedback" rows="4" placeholder="Optional feedback for student...">${submission.feedback || ''}</textarea>
+              </div>
+              <div style="display: flex; gap: 10px; margin-top: 20px;">
+                <button type="button" class="btn btn-secondary" onclick="app.closeModal()">Cancel</button>
+                <button type="submit" class="btn btn-primary">Save Grade</button>
+              </div>
+            </form>
+          `;
+      
+          this.showModal('grade-submission', '📝 Grade Submission', modalContent);
+      
+          document.getElementById('grade-submission-form').addEventListener('submit', (e) => {
+            e.preventDefault();
+            this.submitGrade(submissionId, maxPoints);
+          });
+      
+        } catch (error) {
+          console.error('Error loading submission:', error);
+          this.showNotification('Error loading submission: ' + error.message, 'error');
+        }
+      }
+      
+      async submitGrade(submissionId, maxPoints) {
+        const pointsEarned = parseInt(document.getElementById('points-earned').value);
+        const feedback = document.getElementById('feedback').value;
+      
+        if (pointsEarned < 0 || pointsEarned > maxPoints) {
+          this.showNotification(`Points must be between 0 and ${maxPoints}`, 'error');
+          return;
+        }
+      
+        try {
+          const { error } = await this.auth.supabase
+            .from('assignment_submissions')
+            .update({
+              points_earned: pointsEarned,
+              feedback: feedback,
+              status: 'graded'
+            })
+            .eq('id', submissionId);
+      
+          if (error) throw error;
+      
+          this.showNotification('Grade saved successfully!', 'success');
+          this.closeModal();
+      
+        } catch (error) {
+          console.error('Error saving grade:', error);
+          this.showNotification('Error saving grade: ' + error.message, 'error');
+        }
+      }
+      
+      // Placeholder methods for features coming soon
+      editAssignment(assignmentId) {
+        this.showNotification('Assignment editing coming soon!', 'info');
+      }
+      
+      deleteAssignment(assignmentId) {
+        this.showNotification('Assignment deletion coming soon!', 'info');
+      }
+      
+      manageStudents(classId) {
+        this.showNotification('Student management coming soon!', 'info');
+        this.closeModal();
+      }
+      
+      classAnalytics(classId) {
+        this.showNotification('Class analytics coming soon!', 'info');
+        this.closeModal();
+      }
+      
+      viewGrades(classId) {
+        this.showNotification('Grade viewing coming soon!', 'info');
+        this.closeModal();
+      }
+      
+      async viewDiscussions(classId) {
+        this.closeModal();
+        
+        const classData = this.classes.find(c => c.id === classId);
+        
+        const modalContent = `
+          <div style="margin-bottom: 20px;">
+            <h3>💬 Class Discussions - ${classData?.name}</h3>
+            <p style="color: var(--muted);">Class discussion feature coming soon!</p>
+            <p style="color: var(--muted); font-size: 14px;">This will include:</p>
+            <ul style="color: var(--muted); font-size: 14px; margin-left: 20px;">
+              <li>Class announcements</li>
+              <li>Student questions and answers</li>
+              <li>Group discussions</li>
+              <li>Real-time messaging</li>
+            </ul>
+          </div>
+          
+          <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+            <button class="btn btn-secondary" onclick="app.closeModal()">Close</button>
+          </div>
+        `;
+      
+        this.showModal('discussions', '💬 Class Discussions', modalContent);
+      }
 
     // Initialize the app
     window.app = new ClassesPortalApp();
