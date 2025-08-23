@@ -184,6 +184,11 @@
             height: 20px;
             overflow: hidden;
             margin: 10px 0;
+            position: relative;
+        }
+        
+        .progress-bar.small {
+            height: 12px;
         }
         
         .progress-fill {
@@ -707,7 +712,13 @@
                     total_correct: 0,
                     mastery_progress: {},
                     difficult_facts: [],
-                    needs_placement: true
+                    needs_placement: true,
+                    recent_sessions: [], // Track last 5 sessions for multi-session mastery
+                    mastery_confidence: {
+                        bronze: 0,
+                        silver: 0,  
+                        gold: 0
+                    }
                 };
                 this.currentSession = {
                     problems: [],
@@ -1256,37 +1267,116 @@
                 const avgSpeed = correctResponses.length > 0 ?
                     correctResponses.reduce((sum, r) => sum + r.timeSpent, 0) / correctResponses.length : 999;
                 const accuracy = completedProblems / Math.max(1, this.currentSession.responses.length);
+                const completionRate = completedProblems / targetProblems;
                 
-                // Define mastery criteria
-                const bronzeCriteria = completedProblems >= targetProblems * 0.8 && avgSpeed <= 5.0 && accuracy >= 0.95;
-                const silverCriteria = completedProblems >= targetProblems * 0.85 && avgSpeed <= 3.5 && accuracy >= 0.97;
-                const goldCriteria = completedProblems >= targetProblems * 0.9 && avgSpeed <= 2.5 && accuracy >= 0.98;
+                // Record this session's performance
+                const sessionPerformance = {
+                    date: new Date().toISOString(),
+                    completionRate: completionRate,
+                    avgSpeed: avgSpeed,
+                    accuracy: accuracy,
+                    problems: completedProblems,
+                    range: `${this.studentData.current_range.min}-${this.studentData.current_range.max}`
+                };
                 
+                // Keep only last 5 sessions for this range
+                if (!this.studentData.recent_sessions) {
+                    this.studentData.recent_sessions = [];
+                }
+                
+                this.studentData.recent_sessions.push(sessionPerformance);
+                this.studentData.recent_sessions = this.studentData.recent_sessions
+                    .filter(s => s.range === sessionPerformance.range)
+                    .slice(-5);
+                
+                // Evaluate multi-session mastery
+                this.evaluateMultiSessionMastery();
+            }
+            
+            evaluateMultiSessionMastery() {
+                const sessions = this.studentData.recent_sessions;
+                if (sessions.length < 2) {
+                    // Need at least 2 sessions to evaluate consistency
+                    return;
+                }
+                
+                // Define mastery criteria (more reasonable than before)
+                const masteryLevels = {
+                    bronze: {
+                        completionRate: 0.75,  // 75% completion
+                        avgSpeed: 6.0,         // 6 seconds average
+                        accuracy: 0.92,        // 92% accuracy
+                        sessionsRequired: 2    // Must meet in 2/last 3 sessions
+                    },
+                    silver: {
+                        completionRate: 0.80,  // 80% completion  
+                        avgSpeed: 4.0,         // 4 seconds average
+                        accuracy: 0.95,        // 95% accuracy
+                        sessionsRequired: 2    // Must meet in 2/last 3 sessions
+                    },
+                    gold: {
+                        completionRate: 0.85,  // 85% completion
+                        avgSpeed: 3.0,         // 3 seconds average
+                        accuracy: 0.97,        // 97% accuracy
+                        sessionsRequired: 3    // Must meet in 3/last 4 sessions (more consistency)
+                    }
+                };
+                
+                // Evaluate each mastery level
+                Object.keys(masteryLevels).forEach(level => {
+                    const criteria = masteryLevels[level];
+                    const recentSessions = sessions.slice(-Math.max(criteria.sessionsRequired + 1, 4));
+                    
+                    const qualifyingSessions = recentSessions.filter(session =>
+                        session.completionRate >= criteria.completionRate &&
+                        session.avgSpeed <= criteria.avgSpeed &&
+                        session.accuracy >= criteria.accuracy
+                    );
+                    
+                    const meetsRequirement = qualifyingSessions.length >= criteria.sessionsRequired;
+                    
+                    // Update confidence score
+                    if (meetsRequirement) {
+                        this.studentData.mastery_confidence[level] = Math.min(100, 
+                            this.studentData.mastery_confidence[level] + 20);
+                    } else {
+                        this.studentData.mastery_confidence[level] = Math.max(0,
+                            this.studentData.mastery_confidence[level] - 5);
+                    }
+                });
+                
+                // Determine current mastery level based on confidence
                 let newMasteryLevel = this.studentData.mastery_level;
                 let shouldAdvanceRange = false;
                 
-                if (goldCriteria && this.studentData.mastery_level !== 'Gold') {
+                if (this.studentData.mastery_confidence.gold >= 80 && this.studentData.mastery_level !== 'Gold') {
                     newMasteryLevel = 'Gold';
                     this.studentData.mastery_level = 'Gold';
                     shouldAdvanceRange = true;
-                } else if (silverCriteria && this.studentData.mastery_level === 'Bronze') {
+                } else if (this.studentData.mastery_confidence.silver >= 60 && 
+                          ['Bronze', 'None'].includes(this.studentData.mastery_level)) {
                     newMasteryLevel = 'Silver';
                     this.studentData.mastery_level = 'Silver';
-                } else if (bronzeCriteria && this.studentData.mastery_level === 'None') {
+                } else if (this.studentData.mastery_confidence.bronze >= 40 && 
+                          this.studentData.mastery_level === 'None') {
                     newMasteryLevel = 'Bronze';
                     this.studentData.mastery_level = 'Bronze';
                 }
                 
-                // Advance range if achieved gold mastery
-                if (shouldAdvanceRange) {
+                // Advance range if achieved gold mastery with high confidence
+                if (shouldAdvanceRange && this.studentData.mastery_confidence.gold >= 80) {
                     const currentMax = this.studentData.current_range.max;
                     if (currentMax < 20) {
                         this.studentData.current_range = {
                             min: this.studentData.current_range.min,
                             max: currentMax + 1
                         };
-                        this.studentData.mastery_level = 'Bronze'; // Reset to bronze for new range
-                        this.studentData.time_limit = Math.min(360, this.studentData.time_limit + 30); // Give more time for harder range
+                        this.studentData.mastery_level = 'Bronze';
+                        this.studentData.time_limit = Math.min(360, this.studentData.time_limit + 30);
+                        
+                        // Reset confidence and sessions for new range
+                        this.studentData.mastery_confidence = { bronze: 0, silver: 0, gold: 0 };
+                        this.studentData.recent_sessions = [];
                     }
                 }
                 
@@ -1336,14 +1426,61 @@
             }
             
             generateMasteryProgressHTML() {
-                // This would show progress towards next mastery level
-                return `
+                const confidence = this.studentData.mastery_confidence || { bronze: 0, silver: 0, gold: 0 };
+                const sessions = this.studentData.recent_sessions || [];
+                
+                let progressHTML = `
                     <div class="alert alert-info">
                         <strong>Current Range:</strong> ${this.studentData.current_range.min}-${this.studentData.current_range.max}<br>
                         <strong>Mastery Level:</strong> <span class="mastery-indicator mastery-${this.studentData.mastery_level.toLowerCase()}">${this.studentData.mastery_level}</span><br>
-                        Keep practicing to advance to the next level!
-                    </div>
                 `;
+                
+                // Show progress towards next level
+                const currentLevel = this.studentData.mastery_level.toLowerCase();
+                const nextLevel = currentLevel === 'bronze' ? 'silver' : 
+                                currentLevel === 'silver' ? 'gold' : null;
+                
+                if (nextLevel) {
+                    const nextConfidence = confidence[nextLevel];
+                    const requirement = nextLevel === 'silver' ? 60 : 80;
+                    
+                    progressHTML += `
+                        <strong>Progress to ${nextLevel.charAt(0).toUpperCase() + nextLevel.slice(1)}:</strong> 
+                        <div class="progress-bar" style="margin: 5px 0;">
+                            <div class="progress-fill" style="width: ${nextConfidence}%"></div>
+                        </div>
+                        ${nextConfidence}% / ${requirement}% confidence
+                    `;
+                }
+                
+                if (sessions.length >= 2) {
+                    const recent = sessions.slice(-3);
+                    const trend = this.calculatePerformanceTrend(recent);
+                    
+                    progressHTML += `<br><strong>Recent Performance:</strong> ${trend}`;
+                }
+                
+                progressHTML += `</div>`;
+                
+                return progressHTML;
+            }
+            
+            calculatePerformanceTrend(sessions) {
+                if (sessions.length < 2) return 'Not enough data';
+                
+                const first = sessions[0];
+                const last = sessions[sessions.length - 1];
+                
+                const speedImprovement = ((first.avgSpeed - last.avgSpeed) / first.avgSpeed * 100);
+                const accuracyImprovement = ((last.accuracy - first.accuracy) * 100);
+                
+                if (speedImprovement > 5 && accuracyImprovement > 2) {
+                    return '📈 Improving';
+                } else if (speedImprovement < -5 || accuracyImprovement < -2) {
+                    return '📉 Needs focus';
+                } else {
+                    return '➡️ Consistent';
+                }
             }
             
             populateDetailedResults() {
@@ -1452,9 +1589,10 @@
             }
             
             updateProgressScreen() {
-                // Update mastery breakdown
+                // Update mastery breakdown with confidence levels
                 const masteryDiv = document.getElementById('mastery-breakdown');
                 if (masteryDiv) {
+                    const confidence = this.studentData.mastery_confidence || { bronze: 0, silver: 0, gold: 0 };
                     const totalFacts = Object.keys(this.studentData.problem_history).length;
                     const fastFacts = Object.values(this.studentData.problem_history)
                         .filter(h => {
@@ -1470,46 +1608,128 @@
                         }).length;
                     
                     masteryDiv.innerHTML = `
-                        <div style="margin: 10px 0;">
-                            <span class="mastery-indicator mastery-gold">Gold</span>
-                            ${fastFacts} facts
+                        <div style="margin: 15px 0;">
+                            <h4>Mastery Confidence</h4>
+                            <div style="margin: 10px 0;">
+                                <span class="mastery-indicator mastery-gold">Gold</span>
+                                <div class="progress-bar" style="margin: 5px 0; height: 12px;">
+                                    <div class="progress-fill" style="width: ${confidence.gold}%"></div>
+                                </div>
+                                ${confidence.gold}% (need 80% to advance)
+                            </div>
+                            <div style="margin: 10px 0;">
+                                <span class="mastery-indicator mastery-silver">Silver</span>
+                                <div class="progress-bar" style="margin: 5px 0; height: 12px;">
+                                    <div class="progress-fill" style="width: ${confidence.silver}%"></div>
+                                </div>
+                                ${confidence.silver}% (need 60% to advance)
+                            </div>
+                            <div style="margin: 10px 0;">
+                                <span class="mastery-indicator mastery-bronze">Bronze</span>
+                                <div class="progress-bar" style="margin: 5px 0; height: 12px;">
+                                    <div class="progress-fill" style="width: ${confidence.bronze}%"></div>
+                                </div>
+                                ${confidence.bronze}% (need 40% to advance)
+                            </div>
                         </div>
-                        <div style="margin: 10px 0;">
-                            <span class="mastery-indicator mastery-silver">Silver</span>
-                            ${mediumFacts} facts
-                        </div>
-                        <div style="margin: 10px 0;">
-                            <span class="mastery-indicator mastery-bronze">Bronze</span>
-                            ${totalFacts - fastFacts - mediumFacts} facts
+                        <div style="margin: 15px 0;">
+                            <h4>Fact Mastery</h4>
+                            <div style="margin: 10px 0;">
+                                <span style="color: var(--success)">Fast (&lt;2s):</span> ${fastFacts} facts
+                            </div>
+                            <div style="margin: 10px 0;">
+                                <span style="color: var(--warning)">Medium (2-4s):</span> ${mediumFacts} facts
+                            </div>
+                            <div style="margin: 10px 0;">
+                                <span style="color: var(--danger)">Slow (&gt;4s):</span> ${totalFacts - fastFacts - mediumFacts} facts
+                            </div>
                         </div>
                     `;
                 }
                 
-                // Update performance trends
+                // Update performance trends with session history
                 const trendsDiv = document.getElementById('performance-trends');
                 if (trendsDiv) {
+                    const sessions = this.studentData.recent_sessions || [];
+                    const sessionHistory = sessions.length >= 2 ? 
+                        this.generateSessionHistoryHTML(sessions) :
+                        '<p><em>Complete 2+ sessions to see trends</em></p>';
+                    
                     trendsDiv.innerHTML = `
-                        <p><strong>Sessions Completed:</strong> ${this.studentData.session_count}</p>
-                        <p><strong>Total Problems:</strong> ${this.studentData.total_problems}</p>
-                        <p><strong>Current Average:</strong> ${this.studentData.avg_speed ? this.studentData.avg_speed.toFixed(1) + 's' : '--'}</p>
-                        <p><strong>Difficult Facts:</strong> ${this.studentData.difficult_facts.length}</p>
+                        <div style="margin-bottom: 15px;">
+                            <p><strong>Sessions Completed:</strong> ${this.studentData.session_count}</p>
+                            <p><strong>Total Problems:</strong> ${this.studentData.total_problems}</p>
+                            <p><strong>Current Average:</strong> ${this.studentData.avg_speed ? this.studentData.avg_speed.toFixed(1) + 's' : '--'}</p>
+                            <p><strong>Recent Sessions:</strong> ${sessions.length}/5</p>
+                        </div>
+                        ${sessionHistory}
                     `;
                 }
                 
-                // Update goals
+                // Update goals with specific next steps
                 const goalsDiv = document.getElementById('student-goals');
                 if (goalsDiv) {
+                    const nextGoal = this.getNextGoalDescription();
                     const nextRange = this.studentData.current_range.max + 1;
+                    
                     goalsDiv.innerHTML = `
                         <div style="margin: 10px 0;">
                             <strong>Current Goal:</strong><br>
-                            Achieve ${this.studentData.mastery_level === 'Gold' ? 'mastery' : this.studentData.mastery_level === 'Silver' ? 'Gold' : this.studentData.mastery_level === 'Bronze' ? 'Silver' : 'Bronze'} level
+                            ${nextGoal}
                         </div>
                         <div style="margin: 10px 0;">
                             <strong>Next Milestone:</strong><br>
                             ${nextRange <= 20 ? `Advance to 0-${nextRange} range` : 'All ranges mastered!'}
                         </div>
+                        <div style="margin: 10px 0; font-size: 0.9em; color: var(--muted);">
+                            <strong>Tip:</strong> Consistent practice across multiple sessions builds lasting mastery!
+                        </div>
                     `;
+                }
+            }
+            
+            generateSessionHistoryHTML(sessions) {
+                if (sessions.length === 0) return '<p>No recent sessions</p>';
+                
+                let html = '<div style="font-size: 0.9em;">';
+                html += '<strong>Recent Sessions:</strong><br>';
+                
+                sessions.slice(-3).reverse().forEach((session, index) => {
+                    const date = new Date(session.date).toLocaleDateString();
+                    const completion = (session.completionRate * 100).toFixed(0);
+                    const speed = session.avgSpeed.toFixed(1);
+                    const accuracy = (session.accuracy * 100).toFixed(0);
+                    
+                    html += `
+                        <div style="margin: 5px 0; padding: 5px; background: rgba(0,0,0,0.1); border-radius: 4px;">
+                            ${date}: ${completion}% complete, ${speed}s avg, ${accuracy}% accurate
+                        </div>
+                    `;
+                });
+                
+                html += '</div>';
+                return html;
+            }
+            
+            getNextGoalDescription() {
+                const currentLevel = this.studentData.mastery_level.toLowerCase();
+                const confidence = this.studentData.mastery_confidence || { bronze: 0, silver: 0, gold: 0 };
+                const sessions = this.studentData.recent_sessions || [];
+                
+                if (currentLevel === 'bronze') {
+                    const silverProgress = confidence.silver;
+                    const needed = Math.max(0, 60 - silverProgress);
+                    return `Reach Silver level (${silverProgress}% confidence, need ${needed}% more)`;
+                } else if (currentLevel === 'silver') {
+                    const goldProgress = confidence.gold;
+                    const needed = Math.max(0, 80 - goldProgress);
+                    return `Reach Gold level (${goldProgress}% confidence, need ${needed}% more)`;
+                } else if (currentLevel === 'gold') {
+                    return 'Maintain Gold mastery to advance to next range';
+                } else {
+                    const bronzeProgress = confidence.bronze;
+                    const needed = Math.max(0, 40 - bronzeProgress);
+                    return `Reach Bronze level (${bronzeProgress}% confidence, need ${needed}% more)`;
                 }
             }
             
