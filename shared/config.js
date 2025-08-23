@@ -277,7 +277,7 @@ class PortalUI {
                 </div>
                 
                 <div class="nav-links">
-                    <a href="../index.html" 
+                    <a href="${currentPortal === 'classes' ? '../index.html' : 'index.html'}" 
                        class="nav-link ${currentPortal === 'main' && currentSection === 'dashboard' ? 'active' : ''}"
                        title="Dashboard">
                         <span class="nav-icon">🏠</span>
@@ -481,4 +481,5 @@ if (document.readyState === 'loading') {
     window.portalAuth.initialize();
     PortalUI.addNavigationStyles();
     PortalUI.applyTheme(window.portalAuth.config.theme);
+
 }
