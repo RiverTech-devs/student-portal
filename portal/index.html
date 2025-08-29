@@ -1871,9 +1871,9 @@
             .select('*')
             .eq('id', assignmentId)
             .single();
-
+      
           if (error) throw error;
-
+      
           const modalContent = `
             <form id="edit-assignment-form">
               <div class="form-group">
@@ -1902,25 +1902,36 @@
                 <label for="edit-assignment-due-date">Due Date</label>
                 <input type="datetime-local" id="edit-assignment-due-date" value="${assignment.due_date ? new Date(assignment.due_date).toISOString().slice(0, 16) : ''}">
               </div>
-              <div class="form-group">
-                <label>
-                  <input type="checkbox" id="edit-assignment-publish" ${assignment.is_published ? 'checked' : ''}> Published
-                </label>
+              
+              <!-- Clear status indicator -->
+              <div style="background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 15px; margin: 15px 0;">
+                <h4 style="margin-bottom: 10px; color: var(--accent);">📋 Assignment Status</h4>
+                <div style="display: flex; gap: 15px; align-items: center;">
+                  <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                    <input type="radio" name="assignment-status" value="draft" ${!assignment.is_published ? 'checked' : ''}>
+                    <span>💾 Draft (students can't see)</span>
+                  </label>
+                  <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                    <input type="radio" name="assignment-status" value="published" ${assignment.is_published ? 'checked' : ''}>
+                    <span>🚀 Published (visible to students)</span>
+                  </label>
+                </div>
               </div>
+              
               <div style="display: flex; gap: 10px; margin-top: 20px;">
                 <button type="button" class="btn btn-secondary" onclick="app.closeModal()">Cancel</button>
-                <button type="submit" class="btn btn-primary">Update Assignment</button>
+                <button type="submit" class="btn btn-primary">Save Changes</button>
               </div>
             </form>
           `;
-
+      
           this.showModal('edit-assignment', '✏️ Edit Assignment', modalContent);
-
+      
           document.getElementById('edit-assignment-form').addEventListener('submit', (e) => {
             e.preventDefault();
             this.submitEditAssignment(assignmentId);
           });
-
+      
         } catch (error) {
           console.error('Error loading assignment:', error);
           this.showNotification('Error loading assignment: ' + error.message, 'error');
@@ -1928,32 +1939,49 @@
       }
 
       async submitEditAssignment(assignmentId) {
+        const statusRadios = document.getElementsByName('assignment-status');
+        const selectedStatus = Array.from(statusRadios).find(radio => radio.checked)?.value;
+        
         const updatedData = {
           title: document.getElementById('edit-assignment-title').value,
           description: document.getElementById('edit-assignment-description').value,
           assignment_type: document.getElementById('edit-assignment-type').value,
           points_possible: parseInt(document.getElementById('edit-assignment-points').value) || 100,
           due_date: document.getElementById('edit-assignment-due-date').value || null,
-          is_published: document.getElementById('edit-assignment-publish').checked,
+          is_published: selectedStatus === 'published',
+          status: selectedStatus,
           updated_at: new Date().toISOString()
         };
-
+      
         if (!updatedData.title) {
           this.showNotification('Please enter an assignment title', 'error');
           return;
         }
-
+      
         try {
           const { error } = await this.auth.supabase
             .from('assignments')
             .update(updatedData)
             .eq('id', assignmentId);
-
+      
           if (error) throw error;
-
-          this.showNotification('Assignment updated successfully!', 'success');
+      
+          const statusMessage = selectedStatus === 'published' ? 
+            'Assignment updated and is now visible to students!' : 
+            'Assignment updated and saved as draft.';
+      
+          this.showNotification(statusMessage, 'success');
           this.closeModal();
-
+      
+          // Refresh the current assignment view
+          const currentModal = document.getElementById('portal-modal');
+          if (currentModal && currentModal.querySelector('h3').textContent.includes('Assignments')) {
+            const classId = this.classes.find(c => c.id)?.id;
+            if (classId) {
+              setTimeout(() => this.viewAssignments(classId), 100);
+            }
+          }
+      
         } catch (error) {
           console.error('Error updating assignment:', error);
           this.showNotification('Error updating assignment: ' + error.message, 'error');
@@ -2797,14 +2825,23 @@
       renderAssignmentCard(assignment, isTeacher) {
         const dueDate = assignment.due_date ? new Date(assignment.due_date).toLocaleDateString() : 'No due date';
         const isPublished = assignment.is_published;
+        const isDraft = !isPublished;
         
         return `
-          <div class="card" style="margin: 0;">
+          <div class="card" style="margin: 0; ${isDraft ? 'border-left: 4px solid var(--warning);' : ''}">
             <div style="display: flex; justify-content: space-between; align-items: start;">
               <div style="flex: 1;">
-                <h4 style="margin-bottom: 8px; color: var(--text);">
+                <h4 style="margin-bottom: 8px; color: var(--text); display: flex; align-items: center; gap: 10px;">
                   ${assignment.title}
-                  ${!isPublished ? '<span style="background: var(--warning); color: black; padding: 2px 6px; border-radius: 4px; font-size: 10px; margin-left: 8px;">DRAFT</span>' : ''}
+                  ${isDraft ? `
+                    <span style="background: var(--warning); color: black; padding: 4px 8px; border-radius: 4px; font-size: 10px; font-weight: bold;">
+                      📝 DRAFT
+                    </span>
+                  ` : `
+                    <span style="background: var(--accent-2); color: black; padding: 4px 8px; border-radius: 4px; font-size: 10px; font-weight: bold;">
+                      🚀 PUBLISHED
+                    </span>
+                  `}
                 </h4>
                 <p style="margin-bottom: 10px; color: var(--muted);">${assignment.description || 'No description'}</p>
                 <div style="font-size: 12px; color: var(--muted);">
@@ -2812,12 +2849,25 @@
                   <span>📊 ${assignment.points_possible} points</span> • 
                   <span>📋 ${assignment.assignment_type}</span>
                 </div>
+                ${isDraft ? `
+                  <div style="background: rgba(255, 211, 106, 0.1); border: 1px solid var(--warning); border-radius: 6px; padding: 8px; margin-top: 10px;">
+                    <small style="color: var(--warning);">
+                      ⚠️ This assignment is saved as a draft. Students cannot see it until you publish it.
+                    </small>
+                  </div>
+                ` : ''}
               </div>
-              <div style="display: flex; gap: 8px; margin-left: 15px;">
+              <div style="display: flex; gap: 8px; margin-left: 15px; flex-wrap: wrap;">
                 ${isTeacher ? `
-                  <button class="btn btn-secondary small" onclick="app.editAssignment('${assignment.id}')">✏️</button>
-                  <button class="btn btn-secondary small" onclick="app.gradeAssignment('${assignment.id}')">📊</button>
-                  <button class="btn danger small" onclick="app.deleteAssignment('${assignment.id}')">🗑️</button>
+                  ${isDraft ? `
+                    <button class="btn btn-primary small" onclick="app.publishDraftAssignment('${assignment.id}', '${assignment.title}')" 
+                            title="Make this assignment visible to students">
+                      🚀 Publish
+                    </button>
+                  ` : ''}
+                  <button class="btn btn-secondary small" onclick="app.editAssignment('${assignment.id}')">✏️ Edit</button>
+                  <button class="btn btn-secondary small" onclick="app.gradeAssignment('${assignment.id}')">📊 Grade</button>
+                  <button class="btn danger small" onclick="app.deleteAssignment('${assignment.id}')">🗑️ Delete</button>
                 ` : `
                   ${isPublished ? `<button class="btn btn-primary small" onclick="app.submitAssignment('${assignment.id}')">📝 Submit</button>` : ''}
                 `}
@@ -2825,6 +2875,42 @@
             </div>
           </div>
         `;
+      }
+
+      async publishDraftAssignment(assignmentId, assignmentTitle) {
+        if (!confirm(`Publish "${assignmentTitle}"?\n\nThis will make it visible to all students in the class.`)) {
+          return;
+        }
+      
+        try {
+          const { error } = await this.auth.supabase
+            .from('assignments')
+            .update({ 
+              is_published: true,
+              status: 'published',
+              published_at: new Date().toISOString(),
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', assignmentId);
+      
+          if (error) throw error;
+      
+          this.showNotification(`"${assignmentTitle}" has been published! Students can now see it.`, 'success');
+          
+          // Refresh the current assignment view
+          const currentModal = document.getElementById('portal-modal');
+          if (currentModal && currentModal.querySelector('h3').textContent.includes('Assignments')) {
+            // Get the class ID and refresh
+            const classId = this.classes.find(c => c.id)?.id;
+            if (classId) {
+              setTimeout(() => this.viewAssignments(classId), 100);
+            }
+          }
+      
+        } catch (error) {
+          console.error('Error publishing assignment:', error);
+          this.showNotification('Error publishing assignment: ' + error.message, 'error');
+        }
       }
       
       // Create new assignment (teachers only)
@@ -2859,27 +2945,36 @@
               <label for="assignment-due-date">Due Date</label>
               <input type="datetime-local" id="assignment-due-date">
             </div>
-            <div class="form-group">
-              <label>
-                <input type="checkbox" id="assignment-publish"> Publish immediately
-              </label>
+            
+            <!-- Draft vs Publish explanation -->
+            <div style="background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 15px; margin: 15px 0;">
+              <h4 style="margin-bottom: 10px; color: var(--accent);">📝 Draft vs Published</h4>
+              <p style="font-size: 14px; color: var(--muted); margin-bottom: 10px;">
+                <strong>Save as Draft:</strong> Work on this assignment later. Students won't see it.<br>
+                <strong>Publish:</strong> Make it immediately available to students.
+              </p>
             </div>
-            <div style="display: flex; gap: 10px; margin-top: 20px;">
-              <button type="button" class="btn btn-secondary" onclick="app.closeModal()">Cancel</button>
-              <button type="submit" class="btn btn-primary">Create Assignment</button>
+            
+            <!-- Two action buttons instead of one -->
+            <div style="display: flex; gap: 12px; margin-top: 20px; flex-wrap: wrap;">
+              <button type="button" class="btn btn-secondary" onclick="app.closeModal()">
+                ❌ Cancel
+              </button>
+              <button type="button" class="btn" onclick="app.submitCreateAssignment('${classId}', 'draft')" 
+                      style="background: var(--warning); color: black; border: 2px solid var(--warning);">
+                💾 Save as Draft
+              </button>
+              <button type="button" class="btn btn-primary" onclick="app.submitCreateAssignment('${classId}', 'published')">
+                🚀 Publish Assignment
+              </button>
             </div>
           </form>
         `;
       
         this.showModal('create-assignment', '➕ Create Assignment', modalContent);
-      
-        document.getElementById('create-assignment-form').addEventListener('submit', (e) => {
-          e.preventDefault();
-          this.submitCreateAssignment(classId);
-        });
       }
       
-      async submitCreateAssignment(classId) {
+      sync submitCreateAssignment(classId, status) {
         const assignmentData = {
           class_id: classId,
           title: document.getElementById('assignment-title').value,
@@ -2887,7 +2982,8 @@
           assignment_type: document.getElementById('assignment-type').value,
           points_possible: parseInt(document.getElementById('assignment-points').value) || 100,
           due_date: document.getElementById('assignment-due-date').value || null,
-          is_published: document.getElementById('assignment-publish').checked
+          is_published: status === 'published', // Explicitly set based on which button was clicked
+          status: status // Add explicit status field for clarity
         };
       
         if (!assignmentData.title) {
@@ -2896,20 +2992,43 @@
         }
       
         try {
+          // Show loading state
+          const buttons = document.querySelectorAll('#create-assignment-form button');
+          buttons.forEach(btn => {
+            btn.disabled = true;
+            if (btn.textContent.includes(status === 'draft' ? 'Draft' : 'Publish')) {
+              btn.textContent = status === 'draft' ? '⏳ Saving...' : '⏳ Publishing...';
+            }
+          });
+      
           const { error } = await this.auth.supabase
             .from('assignments')
             .insert([assignmentData]);
       
           if (error) throw error;
       
-          this.showNotification('Assignment created successfully!', 'success');
+          const message = status === 'draft' ? 
+            'Assignment saved as draft! You can publish it later.' : 
+            'Assignment published successfully! Students can now see it.';
+          
+          this.showNotification(message, 'success');
           this.closeModal();
+          
           // Refresh assignments view
           setTimeout(() => this.viewAssignments(classId), 100);
       
         } catch (error) {
           console.error('Error creating assignment:', error);
           this.showNotification('Error creating assignment: ' + error.message, 'error');
+        } finally {
+          // Reset buttons if modal still exists
+          const buttons = document.querySelectorAll('#create-assignment-form button');
+          buttons.forEach(btn => {
+            btn.disabled = false;
+            if (btn.textContent.includes('Saving') || btn.textContent.includes('Publishing')) {
+              btn.textContent = status === 'draft' ? '💾 Save as Draft' : '🚀 Publish Assignment';
+            }
+          });
         }
       }
       
