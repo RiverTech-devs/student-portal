@@ -2058,6 +2058,27 @@
         }
       }
 
+      async function getStorageUsage() {
+        const { data } = await supabase.storage
+          .from('assignments')
+          .list('', { limit: 1000 });
+          
+        const totalSize = data.reduce((sum, file) => sum + file.metadata?.size || 0, 0);
+        return totalSize / (1024 * 1024 * 1024); // Convert to GB
+      }
+
+      function validateFileUpload(file) {
+        const maxSizes = {
+          'student': 10 * 1024 * 1024, // 10MB
+          'teacher': 25 * 1024 * 1024, // 25MB
+        };
+        
+        const userType = getCurrentUserType();
+        if (file.size > maxSizes[userType]) {
+          throw new Error(`File too large. Max ${maxSizes[userType] / 1024 / 1024}MB allowed.`);
+        }
+      }
+      
       // =============================================================================
       // COMPLETE STUDENT MANAGEMENT
       // =============================================================================
@@ -2917,54 +2938,204 @@
       createAssignment(classId) {
         this.closeModal();
         
+        // First check if user wants to use a template
+        this.showAssignmentCreationOptions(classId);
+      }
+      
+      showAssignmentCreationOptions(classId) {
+        const modalContent = `
+          <div style="text-align: center; padding: 20px;">
+            <h3 style="margin-bottom: 20px; color: var(--accent);">Create Assignment</h3>
+            <p style="margin-bottom: 30px; color: var(--muted);">
+              Would you like to create a new assignment or reuse an existing template?
+            </p>
+            
+            <div style="display: grid; gap: 15px; max-width: 400px; margin: 0 auto;">
+              <button class="btn btn-primary" onclick="app.createNewAssignment('${classId}')" style="width: 100%;">
+                ✨ Create New Assignment
+              </button>
+              <button class="btn btn-secondary" onclick="app.showAssignmentTemplates('${classId}')" style="width: 100%;">
+                📋 Use Template/Reuse Assignment
+              </button>
+              <button class="btn btn-secondary" onclick="app.closeModal()" style="width: 100%;">
+                Cancel
+              </button>
+            </div>
+          </div>
+        `;
+      
+        this.showModal('assignment-options', '📝 Assignment Creation', modalContent);
+      }
+
+      async showAssignmentTemplates(classId) {
+        try {
+          const userId = this.userInfo.user.id;
+          
+          // Get user's templates and public templates
+          const { data: templates, error } = await this.auth.supabase
+            .from('assignment_templates')
+            .select('*')
+            .or(`created_by.eq.${userId},is_public.eq.true`)
+            .order('created_at', { ascending: false });
+      
+          if (error) throw error;
+      
+          let content = `
+            <div style="margin-bottom: 20px;">
+              <h3>📋 Assignment Templates</h3>
+              <p style="color: var(--muted);">Choose a template to reuse or create a new assignment</p>
+            </div>
+          `;
+      
+          if (!templates || templates.length === 0) {
+            content += `
+              <div class="empty-state">
+                <h3>📝 No Templates Available</h3>
+                <p>Create your first assignment and it can be saved as a template for future use.</p>
+                <button class="btn btn-primary" onclick="app.createNewAssignment('${classId}')" style="margin-top: 15px;">
+                  ✨ Create New Assignment
+                </button>
+              </div>
+            `;
+          } else {
+            content += `
+              <div style="max-height: 400px; overflow-y: auto; margin-bottom: 20px;">
+                ${templates.map(template => this.renderTemplateCard(template, classId)).join('')}
+              </div>
+              
+              <div style="display: flex; gap: 10px; justify-content: space-between;">
+                <button class="btn btn-secondary" onclick="app.createNewAssignment('${classId}')">
+                  ✨ Create New Instead
+                </button>
+                <button class="btn btn-secondary" onclick="app.closeModal()">
+                  Cancel
+                </button>
+              </div>
+            `;
+          }
+      
+          this.showModal('assignment-templates', '📋 Assignment Templates', content);
+      
+        } catch (error) {
+          console.error('Error loading templates:', error);
+          this.showNotification('Error loading templates: ' + error.message, 'error');
+        }
+      }
+      
+      renderTemplateCard(template, classId) {
+        const isOwner = template.created_by === this.userInfo.user.id;
+        
+        return `
+          <div class="card" style="margin: 0 0 10px 0; cursor: pointer;" onclick="app.useTemplate('${template.id}', '${classId}')">
+            <div style="display: flex; justify-content: space-between; align-items: start;">
+              <div style="flex: 1;">
+                <h4 style="margin-bottom: 8px; color: var(--text);">
+                  ${template.template_name || template.title}
+                  ${template.is_public ? '<span style="background: var(--accent-2); color: black; padding: 2px 6px; border-radius: 4px; font-size: 10px; margin-left: 8px;">PUBLIC</span>' : ''}
+                </h4>
+                <p style="margin-bottom: 8px; color: var(--muted); font-size: 14px;">
+                  ${template.description || 'No description'}
+                </p>
+                <div style="font-size: 12px; color: var(--muted);">
+                  ${template.assignment_type} • ${template.points_possible} points • Used ${template.usage_count} times
+                  ${template.subject ? ' • ' + template.subject : ''}
+                </div>
+              </div>
+              ${isOwner ? `
+                <div style="margin-left: 15px;">
+                  <button class="btn danger small" onclick="event.stopPropagation(); app.deleteTemplate('${template.id}')" title="Delete Template">
+                    🗑️
+                  </button>
+                </div>
+              ` : ''}
+            </div>
+          </div>
+        `;
+      }
+      
+      // Use a template to create new assignment
+      async useTemplate(templateId, classId) {
+        try {
+          const { data: template, error } = await this.auth.supabase
+            .from('assignment_templates')
+            .select('*')
+            .eq('id', templateId)
+            .single();
+      
+          if (error) throw error;
+      
+          // Pre-fill form with template data
+          this.createNewAssignmentFromTemplate(classId, template);
+      
+        } catch (error) {
+          console.error('Error loading template:', error);
+          this.showNotification('Error loading template: ' + error.message, 'error');
+        }
+      }
+      
+      // Create new assignment (with optional template data)
+      createNewAssignment(classId, templateData = null) {
         const modalContent = `
           <form id="create-assignment-form">
+            ${templateData ? `
+              <div style="background: var(--accent-2); color: black; padding: 10px; border-radius: 8px; margin-bottom: 15px;">
+                📋 Creating from template: <strong>${templateData.template_name}</strong>
+              </div>
+            ` : ''}
+            
             <div class="form-group">
               <label for="assignment-title">Assignment Title *</label>
-              <input type="text" id="assignment-title" required>
+              <input type="text" id="assignment-title" value="${templateData?.title || ''}" required>
             </div>
             <div class="form-group">
               <label for="assignment-description">Description</label>
-              <textarea id="assignment-description" rows="3"></textarea>
+              <textarea id="assignment-description" rows="3">${templateData?.description || ''}</textarea>
             </div>
             <div class="form-group">
               <label for="assignment-type">Assignment Type</label>
               <select id="assignment-type">
-                <option value="homework">Homework</option>
-                <option value="quiz">Quiz</option>
-                <option value="test">Test</option>
-                <option value="project">Project</option>
-                <option value="lab">Lab</option>
+                <option value="homework" ${templateData?.assignment_type === 'homework' ? 'selected' : ''}>Homework</option>
+                <option value="quiz" ${templateData?.assignment_type === 'quiz' ? 'selected' : ''}>Quiz</option>
+                <option value="test" ${templateData?.assignment_type === 'test' ? 'selected' : ''}>Test</option>
+                <option value="project" ${templateData?.assignment_type === 'project' ? 'selected' : ''}>Project</option>
+                <option value="lab" ${templateData?.assignment_type === 'lab' ? 'selected' : ''}>Lab</option>
               </select>
             </div>
             <div class="form-group">
               <label for="assignment-points">Points Possible</label>
-              <input type="number" id="assignment-points" min="0" max="1000" value="100">
+              <input type="number" id="assignment-points" min="0" max="1000" value="${templateData?.points_possible || 100}">
             </div>
             <div class="form-group">
               <label for="assignment-due-date">Due Date</label>
               <input type="datetime-local" id="assignment-due-date">
             </div>
             
+            <!-- Save as template option -->
+            <div class="form-group">
+              <label style="display: flex; align-items: center; gap: 8px;">
+                <input type="checkbox" id="save-as-template" ${templateData ? '' : 'checked'}>
+                Save as template for future use
+              </label>
+            </div>
+            
             <!-- Draft vs Publish explanation -->
             <div style="background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 15px; margin: 15px 0;">
               <h4 style="margin-bottom: 10px; color: var(--accent);">📝 Draft vs Published</h4>
-              <p style="font-size: 14px; color: var(--muted); margin-bottom: 10px;">
+              <p style="font-size: 14px; color: var(--muted);">
                 <strong>Save as Draft:</strong> Work on this assignment later. Students won't see it.<br>
                 <strong>Publish:</strong> Make it immediately available to students.
               </p>
             </div>
             
-            <!-- Two action buttons instead of one -->
             <div style="display: flex; gap: 12px; margin-top: 20px; flex-wrap: wrap;">
               <button type="button" class="btn btn-secondary" onclick="app.closeModal()">
                 ❌ Cancel
               </button>
-              <button type="button" class="btn" onclick="app.submitCreateAssignment('${classId}', 'draft')" 
+              <button type="button" class="btn" onclick="app.submitCreateAssignment('${classId}', 'draft', ${templateData ? `'${templateData.id}'` : 'null'})" 
                       style="background: var(--warning); color: black; border: 2px solid var(--warning);">
                 💾 Save as Draft
               </button>
-              <button type="button" class="btn btn-primary" onclick="app.submitCreateAssignment('${classId}', 'published')">
+              <button type="button" class="btn btn-primary" onclick="app.submitCreateAssignment('${classId}', 'published', ${templateData ? `'${templateData.id}'` : 'null'})">
                 🚀 Publish Assignment
               </button>
             </div>
@@ -2974,7 +3145,11 @@
         this.showModal('create-assignment', '➕ Create Assignment', modalContent);
       }
       
-      sync submitCreateAssignment(classId, status) {
+      createNewAssignmentFromTemplate(classId, templateData) {
+        this.createNewAssignment(classId, templateData);
+      }
+      
+      async submitCreateAssignment(classId, status, templateId = null) {
         const assignmentData = {
           class_id: classId,
           title: document.getElementById('assignment-title').value,
@@ -2982,9 +3157,11 @@
           assignment_type: document.getElementById('assignment-type').value,
           points_possible: parseInt(document.getElementById('assignment-points').value) || 100,
           due_date: document.getElementById('assignment-due-date').value || null,
-          is_published: status === 'published', // Explicitly set based on which button was clicked
-          status: status // Add explicit status field for clarity
+          is_published: status === 'published',
+          status: status
         };
+      
+        const saveAsTemplate = document.getElementById('save-as-template')?.checked;
       
         if (!assignmentData.title) {
           this.showNotification('Please enter an assignment title', 'error');
@@ -2992,43 +3169,107 @@
         }
       
         try {
-          // Show loading state
-          const buttons = document.querySelectorAll('#create-assignment-form button');
-          buttons.forEach(btn => {
-            btn.disabled = true;
-            if (btn.textContent.includes(status === 'draft' ? 'Draft' : 'Publish')) {
-              btn.textContent = status === 'draft' ? '⏳ Saving...' : '⏳ Publishing...';
-            }
-          });
-      
-          const { error } = await this.auth.supabase
+          // Create the assignment
+          const { data: newAssignment, error: assignmentError } = await this.auth.supabase
             .from('assignments')
-            .insert([assignmentData]);
+            .insert([assignmentData])
+            .select()
+            .single();
       
-          if (error) throw error;
+          if (assignmentError) throw assignmentError;
+      
+          // Track usage if using template
+          if (templateId) {
+            await this.auth.supabase
+              .from('assignment_templates')
+              .update({ 
+                usage_count: supabase.raw('usage_count + 1'),
+                updated_at: new Date().toISOString()
+              })
+              .eq('id', templateId);
+          }
+      
+          // Save as template if requested
+          if (saveAsTemplate && !templateId) {
+            await this.saveAssignmentAsTemplate(newAssignment.id, assignmentData.title);
+          }
+      
+          // Update assignment usage tracking
+          await this.auth.supabase
+            .from('assignment_usage')
+            .upsert({
+              assignment_id: newAssignment.id,
+              last_used_at: new Date().toISOString(),
+              usage_count: 1,
+              created_by: this.userInfo.user.id
+            });
       
           const message = status === 'draft' ? 
-            'Assignment saved as draft! You can publish it later.' : 
-            'Assignment published successfully! Students can now see it.';
+            'Assignment saved as draft!' : 
+            'Assignment published successfully!';
           
           this.showNotification(message, 'success');
           this.closeModal();
           
-          // Refresh assignments view
           setTimeout(() => this.viewAssignments(classId), 100);
       
         } catch (error) {
           console.error('Error creating assignment:', error);
           this.showNotification('Error creating assignment: ' + error.message, 'error');
-        } finally {
-          // Reset buttons if modal still exists
-          const buttons = document.querySelectorAll('#create-assignment-form button');
-          buttons.forEach(btn => {
-            btn.disabled = false;
-            if (btn.textContent.includes('Saving') || btn.textContent.includes('Publishing')) {
-              btn.textContent = status === 'draft' ? '💾 Save as Draft' : '🚀 Publish Assignment';
+        }
+      }
+
+      // Save assignment as template
+      async saveAssignmentAsTemplate(assignmentId, title) {
+        try {
+          const templateName = `${title} Template`;
+          
+          const { error } = await this.auth.supabase
+            .rpc('create_assignment_template', {
+              source_assignment_id: assignmentId,
+              template_name: templateName,
+              make_public: false
+            });
+      
+          if (error) throw error;
+      
+          this.showNotification('Assignment saved as template for future use!', 'success');
+          
+        } catch (error) {
+          console.error('Error saving template:', error);
+          // Don't show error to user - template saving is optional
+        }
+      }
+      
+      // Delete template
+      async deleteTemplate(templateId) {
+        if (!confirm('Delete this template? This cannot be undone.')) {
+          return;
+        }
+      
+        try {
+          const { error } = await this.auth.supabase
+            .from('assignment_templates')
+            .delete()
+            .eq('id', templateId);
+      
+          if (error) throw error;
+      
+          this.showNotification('Template deleted successfully', 'success');
+          
+          // Refresh template list if modal is still open
+          const currentModal = document.getElementById('portal-modal');
+          if (currentModal && currentModal.textContent.includes('Templates')) {
+            // Find the class ID and refresh
+            const classId = this.classes.find(c => c.id)?.id;
+            if (classId) {
+              setTimeout(() => this.showAssignmentTemplates(classId), 100);
             }
-          });
+          }
+      
+        } catch (error) {
+          console.error('Error deleting template:', error);
+          this.showNotification('Error deleting template: ' + error.message, 'error');
         }
       }
       
@@ -3276,7 +3517,8 @@
         }
       
         try {
-          const { error } = await this.auth.supabase
+          // Update the submission with grade
+          const { error: gradeError } = await this.auth.supabase
             .from('assignment_submissions')
             .update({
               points_earned: pointsEarned,
@@ -3285,7 +3527,10 @@
             })
             .eq('id', submissionId);
       
-          if (error) throw error;
+          if (gradeError) throw gradeError;
+      
+          // Create permanent academic record
+          await this.createPermanentGradeRecord(submissionId, pointsEarned);
       
           this.showNotification('Grade saved successfully!', 'success');
           this.closeModal();
@@ -3293,6 +3538,129 @@
         } catch (error) {
           console.error('Error saving grade:', error);
           this.showNotification('Error saving grade: ' + error.message, 'error');
+        }
+      }
+
+      async createPermanentGradeRecord(submissionId, pointsEarned) {
+        try {
+          // Get submission details with all related data
+          const { data: submission, error } = await this.auth.supabase
+            .from('assignment_submissions')
+            .select(`
+              *,
+              assignments!inner(
+                title,
+                assignment_type,
+                points_possible,
+                class_id,
+                classes!inner(
+                  name,
+                  subject,
+                  grade_level,
+                  user_profiles!inner(first_name, last_name)
+                )
+              ),
+              user_profiles!inner(id)
+            `)
+            .eq('id', submissionId)
+            .single();
+      
+          if (error) throw error;
+      
+          const assignment = submission.assignments;
+          const classInfo = assignment.classes;
+          const teacher = classInfo.user_profiles;
+      
+          // Calculate grade percentage
+          const gradePercentage = assignment.points_possible > 0 ? 
+            (pointsEarned / assignment.points_possible) * 100 : 0;
+      
+          // Get current academic year and semester
+          const { data: academicInfo } = await this.auth.supabase
+            .rpc('get_current_academic_year');
+            
+          const { data: semesterInfo } = await this.auth.supabase
+            .rpc('get_current_semester');
+      
+          // Insert into permanent transcript
+          const { error: transcriptError } = await this.auth.supabase
+            .from('student_transcripts')
+            .upsert({
+              student_id: submission.student_id,
+              class_id: assignment.class_id,
+              class_name: classInfo.name,
+              teacher_name: `${teacher.first_name} ${teacher.last_name}`,
+              assignment_title: assignment.title,
+              assignment_type: assignment.assignment_type,
+              points_earned: pointsEarned,
+              points_possible: assignment.points_possible,
+              grade_percentage: gradePercentage,
+              semester: semesterInfo || 'Current',
+              academic_year: academicInfo || new Date().getFullYear() + '-' + (new Date().getFullYear() + 1),
+              subject: classInfo.subject,
+              grade_level: classInfo.grade_level
+            });
+      
+          if (transcriptError) throw transcriptError;
+      
+          // Update class summary
+          await this.updateClassSummary(submission.student_id, assignment.class_id);
+      
+        } catch (error) {
+          console.error('Error creating permanent record:', error);
+          // Don't fail the grading process if transcript creation fails
+        }
+      }
+
+      // Update student's class summary
+      async updateClassSummary(studentId, classId) {
+        try {
+          // Get all transcripts for this student in this class
+          const { data: transcripts, error } = await this.auth.supabase
+            .from('student_transcripts')
+            .select('*')
+            .eq('student_id', studentId)
+            .eq('class_id', classId)
+            .not('points_earned', 'is', null);
+      
+          if (error || !transcripts || transcripts.length === 0) return;
+      
+          // Calculate totals
+          const totalPointsEarned = transcripts.reduce((sum, t) => sum + (t.points_earned || 0), 0);
+          const totalPointsPossible = transcripts.reduce((sum, t) => sum + (t.points_possible || 0), 0);
+          const finalGradePercentage = totalPointsPossible > 0 ? 
+            (totalPointsEarned / totalPointsPossible) * 100 : 0;
+      
+          // Get class and academic info
+          const firstTranscript = transcripts[0];
+      
+          // Calculate letter grade
+          const { data: letterGrade } = await this.auth.supabase
+            .rpc('calculate_letter_grade', { percentage: finalGradePercentage });
+      
+          // Upsert class summary
+          const { error: summaryError } = await this.auth.supabase
+            .from('student_class_summaries')
+            .upsert({
+              student_id: studentId,
+              class_id: classId,
+              class_name: firstTranscript.class_name,
+              teacher_name: firstTranscript.teacher_name,
+              semester: firstTranscript.semester,
+              academic_year: firstTranscript.academic_year,
+              subject: firstTranscript.subject,
+              grade_level: firstTranscript.grade_level,
+              final_grade_percentage: finalGradePercentage,
+              letter_grade: letterGrade || 'F',
+              total_points_earned: totalPointsEarned,
+              total_points_possible: totalPointsPossible,
+              assignment_count: transcripts.length
+            });
+      
+          if (summaryError) throw summaryError;
+      
+        } catch (error) {
+          console.error('Error updating class summary:', error);
         }
       }
 
@@ -3404,6 +3772,92 @@
             setTimeout(() => notification.remove(), 300);
           }
         }, 5000);
+      }
+
+      // ==============================================================================
+      // ADMIN FUNCTIONS FOR END-OF-YEAR PROCESSING
+      // ==============================================================================
+      
+      // Add this to admin/teacher dashboard
+      async showAcademicYearManagement() {
+        if (this.userInfo.profile.user_type !== 'teacher' && this.userInfo.profile.user_type !== 'admin') {
+          this.showNotification('Access denied: Teachers and admins only', 'error');
+          return;
+        }
+      
+        const modalContent = `
+          <div style="margin-bottom: 20px;">
+            <h3>🎓 Academic Year Management</h3>
+            <p style="color: var(--warning); background: rgba(255, 211, 106, 0.1); padding: 10px; border-radius: 8px; margin: 10px 0;">
+              ⚠️ <strong>Warning:</strong> End-of-year processing will permanently delete student submissions to save storage space. 
+              Make sure all grading is complete before running this process.
+            </p>
+          </div>
+      
+          <div class="form-group">
+            <label for="target-year">Academic Year to Process</label>
+            <select id="target-year">
+              <option value="">Previous Year (Auto-detect)</option>
+              <option value="2023-2024">2023-2024</option>
+              <option value="2024-2025">2024-2025</option>
+              <option value="2025-2026">2025-2026</option>
+            </select>
+          </div>
+      
+          <div style="background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 15px; margin: 15px 0;">
+            <h4>Process Overview:</h4>
+            <ul style="margin: 10px 0; padding-left: 20px; color: var(--muted);">
+              <li>Create permanent grade records for all students</li>
+              <li>Calculate final class grades and transcripts</li>
+              <li>Delete assignment submissions (saves storage)</li>
+              <li>Archive unused assignments (2+ years old)</li>
+            </ul>
+          </div>
+      
+          <div style="display: flex; gap: 10px; margin-top: 20px;">
+            <button class="btn btn-secondary" onclick="app.closeModal()">Cancel</button>
+            <button class="btn" onclick="app.processEndOfYear()" 
+                    style="background: var(--warning); color: black; border: 2px solid var(--warning);">
+              🎓 Process End of Year
+            </button>
+          </div>
+        `;
+      
+        this.showModal('academic-management', '🎓 Academic Year Management', modalContent);
+      }
+      
+      async processEndOfYear() {
+        const targetYear = document.getElementById('target-year').value || null;
+        
+        if (!confirm('Are you sure you want to process end-of-year? This will permanently delete assignment submissions after creating grade records.')) {
+          return;
+        }
+      
+        try {
+          this.showNotification('Processing end of year... This may take several minutes.', 'info');
+      
+          const { data, error } = await this.auth.supabase
+            .rpc('process_end_of_academic_year', { target_academic_year: targetYear });
+      
+          if (error) throw error;
+      
+          const result = data[0];
+          const message = `End of year processing complete!\n\n` +
+            `• Student records processed: ${result.processed_students}\n` +
+            `• Class summaries created: ${result.processed_classes}\n` +
+            `• Submissions deleted: ${result.deleted_submissions}\n` +
+            `• Assignments archived: ${result.archived_assignments}`;
+      
+          this.showNotification('End of year processing completed successfully!', 'success');
+          this.closeModal();
+      
+          // Show detailed results
+          alert(message);
+      
+        } catch (error) {
+          console.error('Error processing end of year:', error);
+          this.showNotification('Error processing end of year: ' + error.message, 'error');
+        }
       }
     }
 
