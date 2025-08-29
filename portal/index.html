@@ -1347,22 +1347,47 @@
       
           } else if (userType === 'student') {
             // Students can message teachers of their classes
-            const { data: teachers } = await this.auth.supabase
-              .from('classes')
-              .select(`
-                teacher_id,
-                user_profiles!inner(id, first_name, last_name, email, user_type)
-              `)
-              .in('id', this.classes.map(c => c.id));
-      
-            if (teachers) {
-              teachers.forEach(classTeacher => {
-                const profile = classTeacher.user_profiles;
+            // First get the teacher IDs from the classes
+            const teacherIds = this.classes.map(c => c.teacher_id).filter(id => id);
+            
+            if (teacherIds.length > 0) {
+              // Then get the teacher profiles using those IDs
+              const { data: teacherProfiles, error: teacherError } = await this.auth.supabase
+                .from('user_profiles')
+                .select('id, first_name, last_name, email, user_type')
+                .in('id', teacherIds)
+                .eq('user_type', 'teacher');
+          
+              if (teacherError) {
+                console.error('Error loading teachers for messaging:', teacherError);
+              } else if (teacherProfiles) {
+                teacherProfiles.forEach(teacher => {
+                  // Avoid duplicates if teacher teaches multiple classes
+                  if (!recipients.find(r => r.id === teacher.id)) {
+                    recipients.push({
+                      id: teacher.id,
+                      name: `${teacher.first_name} ${teacher.last_name}`,
+                      email: teacher.email,
+                      type: 'Teacher'
+                    });
+                  }
+                });
+              }
+            }
+          
+            // Also allow students to message admin staff
+            const { data: adminStaff } = await this.auth.supabase
+              .from('user_profiles')
+              .select('id, first_name, last_name, email, user_type')
+              .eq('user_type', 'admin');
+          
+            if (adminStaff) {
+              adminStaff.forEach(admin => {
                 recipients.push({
-                  id: profile.id,
-                  name: `${profile.first_name} ${profile.last_name}`,
-                  email: profile.email,
-                  type: 'Teacher'
+                  id: admin.id,
+                  name: `${admin.first_name} ${admin.last_name}`,
+                  email: admin.email,
+                  type: 'Admin'
                 });
               });
             }
@@ -1755,7 +1780,7 @@
           </div>
       
           <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
-            <button class="btn btn-secondary" onclick="app.closeModal()">Close</button>
+            <button class="btn btn-secondary" onclick="app.closeClassDetails()">Close</button>
             ${isTeacher ? `<button class="btn btn-primary" onclick="app.editClass('${classId}')">✏️ Edit Class</button>` : ''}
           </div>
         `;
@@ -1768,6 +1793,15 @@
           });
         } else {
           this.showModal('class-details', '📚 Class Details', modalContent);
+        }
+      }
+      
+      // Add this new method to handle closing properly
+      closeClassDetails() {
+        if (window.portalModal) {
+          window.portalModal.close('class-details');
+        } else {
+          this.closeModal();
         }
       }
 
