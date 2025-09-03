@@ -6,14 +6,6 @@
     <title>Reset Password - Student Learning Portal</title>
     
     <!-- Load shared configuration -->
-    <script>
-    // Embedded Supabase configuration
-    window.supabaseConfig = {
-        url: 'https://joxvhzxkrcigknsdrusr.supabase.co',
-        anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpveHZoenhrcmNpZ2tuc2RydXNyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzQyMjE4NzIsImV4cCI6MjA0OTc5Nzg3Mn0.sb_publishable_xgvdFBaHCJKl9p-Lu61aZw_3oLkeTtc'
-    };
-    console.log('Config embedded successfully:', window.supabaseConfig);
-    </script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     
     <style>
@@ -70,6 +62,9 @@
             font-size: 16px;
             font-weight: 600;
             margin-top: 10px;
+            text-decoration: none;
+            display: block;
+            text-align: center;
         }
         .btn-primary {
             background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
@@ -141,8 +136,8 @@
         <h2>🔑 Reset Your Password</h2>
         <div id="alerts"></div>
         
-        <!-- Debug Information -->
-        <div id="debug-info" class="debug-info">
+        <!-- Debug Information (hidden by default, can be shown for debugging) -->
+        <div id="debug-info" class="debug-info hidden">
             <strong>Debug Information:</strong><br>
             <div id="debug-content">Loading debug info...</div>
         </div>
@@ -186,33 +181,154 @@
     </div>
 
     <script>
+        // Supabase configuration
+        const SUPABASE_URL = 'https://joxvhzxkrcigknsdrusr.supabase.co';
+        const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpveHZoenhrcmNpZ2tuc2RydXNyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzQyMjE4NzIsImV4cCI6MjA0OTc5Nzg3Mn0.xgvdFBaHCJKl9p-Lu61aZw_3oLkeTtc';
+
         // Debug function
         function addDebug(message) {
             const debugContent = document.getElementById('debug-content');
-            const timestamp = new Date().toLocaleTimeString();
-            debugContent.innerHTML += `<br>[${timestamp}] ${message}`;
+            if (debugContent) {
+                const timestamp = new Date().toLocaleTimeString();
+                debugContent.innerHTML += `<br>[${timestamp}] ${message}`;
+            }
             console.log(`[DEBUG] ${message}`);
         }
 
-        document.addEventListener('DOMContentLoaded', async function() {
+        // Show alert message
+        function showAlert(message, type) {
+            const alertsContainer = document.getElementById('alerts');
+            if (alertsContainer) {
+                alertsContainer.innerHTML = `
+                    <div class="alert alert-${type}">
+                        ${message}
+                    </div>
+                `;
+            }
+        }
+
+        // Show/hide UI states
+        function showState(stateName) {
+            const states = ['loading-state', 'reset-form', 'error-state', 'success-state'];
+            states.forEach(state => {
+                const element = document.getElementById(state);
+                if (element) {
+                    element.classList.toggle('hidden', state !== stateName);
+                }
+            });
+        }
+
+        // Main password reset flow
+        async function handlePasswordResetFlow() {
+            addDebug('Starting password reset flow...');
+            
+            try {
+                // Initialize Supabase client
+                const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+                addDebug('Supabase client initialized');
+
+                // Get URL parameters
+                const params = new URLSearchParams(window.location.search);
+                const hashParams = new URLSearchParams(window.location.hash.substring(1));
+                
+                // Check for access_token in hash (Supabase puts it there)
+                const access_token = hashParams.get('access_token');
+                const type = hashParams.get('type');
+                
+                addDebug(`URL params: ${window.location.search}`);
+                addDebug(`Hash params: ${window.location.hash}`);
+                addDebug(`Access token present: ${!!access_token}`);
+                addDebug(`Type: ${type}`);
+
+                if (!access_token || type !== 'recovery') {
+                    addDebug('No valid recovery token found');
+                    showState('error-state');
+                    return;
+                }
+
+                // Verify the recovery token by getting the user session
+                const { data: { user }, error: sessionError } = await supabaseClient.auth.getUser(access_token);
+                
+                if (sessionError || !user) {
+                    addDebug(`Session error: ${sessionError?.message || 'No user found'}`);
+                    showState('error-state');
+                    return;
+                }
+
+                addDebug(`Valid session for user: ${user.email}`);
+                
+                // Show the reset form
+                showState('reset-form');
+
+                // Handle form submission
+                const resetForm = document.getElementById('reset-form');
+                resetForm.addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    
+                    const newPassword = document.getElementById('new-password').value;
+                    const confirmPassword = document.getElementById('confirm-password').value;
+                    const resetBtn = document.getElementById('reset-btn');
+
+                    // Validate passwords match
+                    if (newPassword !== confirmPassword) {
+                        showAlert('Passwords do not match. Please try again.', 'error');
+                        return;
+                    }
+
+                    // Validate password length
+                    if (newPassword.length < 6) {
+                        showAlert('Password must be at least 6 characters long.', 'error');
+                        return;
+                    }
+
+                    // Disable button and show loading state
+                    resetBtn.disabled = true;
+                    resetBtn.textContent = 'Updating password...';
+
+                    try {
+                        // Update the password
+                        const { data, error: updateError } = await supabaseClient.auth.updateUser({
+                            password: newPassword
+                        });
+
+                        if (updateError) {
+                            addDebug(`Update error: ${updateError.message}`);
+                            showAlert(`Error: ${updateError.message}`, 'error');
+                            resetBtn.disabled = false;
+                            resetBtn.textContent = 'Update Password';
+                            return;
+                        }
+
+                        addDebug('Password updated successfully');
+                        
+                        // Sign out the user to clear the recovery session
+                        await supabaseClient.auth.signOut();
+                        
+                        // Show success state
+                        showState('success-state');
+
+                    } catch (error) {
+                        console.error('Password update error:', error);
+                        addDebug(`Unexpected error: ${error.message}`);
+                        showAlert('An unexpected error occurred. Please try again.', 'error');
+                        resetBtn.disabled = false;
+                        resetBtn.textContent = 'Update Password';
+                    }
+                });
+
+            } catch (error) {
+                console.error('Password reset flow error:', error);
+                addDebug(`Fatal error: ${error.message}`);
+                showState('error-state');
+            }
+        }
+
+        // Initialize when DOM is ready
+        document.addEventListener('DOMContentLoaded', function() {
             console.log('Password reset page loaded');
             
-            // Set config directly - no waiting needed
-            window.supabaseConfig = {
-                url: 'https://joxvhzxkrcigknsdrusr.supabase.co',
-                anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpveHZoenhrcmNpZ2tuc2RydXNyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzQyMjE4NzIsImV4cCI6MjA0OTc5Nzg3Mn0.sb_publishable_xgvdFBaHCJKl9p-Lu61aZw_3oLkeTtc'
-            };
-            
-            // Initialize Supabase immediately
-            const sb = window.supabase.createClient(
-                window.supabaseConfig.url,
-                window.supabaseConfig.anonKey
-            );
-            
-            console.log('Supabase client created');
-            
-            // Rest of your password reset logic here...
-            // (the handlePasswordResetFlow function and form handling)
+            // Start the password reset flow
+            handlePasswordResetFlow();
         });
     </script>
 </body>
