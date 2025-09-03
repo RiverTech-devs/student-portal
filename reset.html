@@ -18,13 +18,14 @@
             display: flex;
             align-items: center;
             justify-content: center;
+            padding: 20px;
         }
         .container {
             background: white;
             border-radius: 20px;
             box-shadow: 0 20px 40px rgba(0,0,0,0.1);
             padding: 40px;
-            max-width: 400px;
+            max-width: 500px;
             width: 90%;
         }
         h2 {
@@ -115,12 +116,29 @@
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
+        .debug-info {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 15px 0;
+            font-family: monospace;
+            font-size: 12px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <h2>🔑 Reset Your Password</h2>
         <div id="alerts"></div>
+        
+        <!-- Debug Information -->
+        <div id="debug-info" class="debug-info">
+            <strong>Debug Information:</strong><br>
+            <div id="debug-content">Loading debug info...</div>
+        </div>
         
         <!-- Loading State -->
         <div id="loading-state">
@@ -161,28 +179,58 @@
     </div>
 
     <script>
+        // Debug function
+        function addDebug(message) {
+            const debugContent = document.getElementById('debug-content');
+            const timestamp = new Date().toLocaleTimeString();
+            debugContent.innerHTML += `<br>[${timestamp}] ${message}`;
+            console.log(`[DEBUG] ${message}`);
+        }
+
         document.addEventListener('DOMContentLoaded', async function() {
-            console.log('🔑 Password reset page loaded');
-            console.log('URL:', window.location.href);
-            console.log('Hash:', window.location.hash);
+            addDebug('🔑 Password reset page loaded');
+            addDebug('URL: ' + window.location.href);
+            addDebug('Hash: ' + window.location.hash);
+            
+            // Check if Supabase library loaded
+            if (typeof window.supabase === 'undefined') {
+                addDebug('❌ ERROR: Supabase library not loaded!');
+                showError('Supabase library failed to load');
+                return;
+            }
+            addDebug('✅ Supabase library loaded');
             
             // Wait for config to be available
             let attempts = 0;
+            addDebug('⏳ Waiting for config...');
             while (!window.supabaseConfig && attempts < 50) {
                 await new Promise(resolve => setTimeout(resolve, 100));
                 attempts++;
             }
 
             if (!window.supabaseConfig) {
+                addDebug('❌ ERROR: Config not available after 5 seconds');
                 showError('Configuration error. Please try again later.');
                 return;
             }
+            addDebug('✅ Config loaded: ' + JSON.stringify({
+                url: window.supabaseConfig.url ? 'Present' : 'Missing',
+                key: window.supabaseConfig.anonKey ? 'Present' : 'Missing'
+            }));
 
             // Initialize Supabase with shared config
-            const sb = window.supabase.createClient(
-                window.supabaseConfig.url,
-                window.supabaseConfig.anonKey
-            );
+            let sb;
+            try {
+                sb = window.supabase.createClient(
+                    window.supabaseConfig.url,
+                    window.supabaseConfig.anonKey
+                );
+                addDebug('✅ Supabase client created');
+            } catch (error) {
+                addDebug('❌ ERROR creating Supabase client: ' + error.message);
+                showError('Failed to initialize authentication system');
+                return;
+            }
 
             // Get elements
             const loadingState = document.getElementById('loading-state');
@@ -192,7 +240,7 @@
             const alertsDiv = document.getElementById('alerts');
 
             function showError(message) {
-                console.error('Reset error:', message);
+                addDebug('❌ Showing error: ' + message);
                 loadingState.classList.add('hidden');
                 resetForm.classList.add('hidden');
                 successState.classList.add('hidden');
@@ -201,7 +249,7 @@
             }
 
             function showResetForm() {
-                console.log('✅ Showing reset form');
+                addDebug('✅ Showing reset form');
                 loadingState.classList.add('hidden');
                 errorState.classList.add('hidden');
                 successState.classList.add('hidden');
@@ -209,7 +257,7 @@
             }
 
             function showSuccess() {
-                console.log('✅ Password reset successful');
+                addDebug('✅ Showing success state');
                 loadingState.classList.add('hidden');
                 resetForm.classList.add('hidden');
                 errorState.classList.add('hidden');
@@ -226,21 +274,27 @@
             // Parse URL parameters for password reset
             async function handlePasswordResetFlow() {
                 try {
+                    addDebug('🔄 Starting password reset flow...');
+                    
                     // Parse hash parameters
                     const hashParams = new URLSearchParams(window.location.hash.substring(1));
                     const accessToken = hashParams.get('access_token');
                     const refreshToken = hashParams.get('refresh_token');
                     const type = hashParams.get('type');
 
-                    console.log('URL Parameters:', { 
-                        hasAccessToken: !!accessToken, 
-                        hasRefreshToken: !!refreshToken, 
-                        type,
-                        hashLength: window.location.hash.length
-                    });
+                    addDebug('📋 URL Parameters parsed:');
+                    addDebug('- Has Access Token: ' + !!accessToken);
+                    addDebug('- Has Refresh Token: ' + !!refreshToken);
+                    addDebug('- Type: ' + type);
+                    addDebug('- Hash Length: ' + window.location.hash.length);
+                    
+                    // Log token info (first 20 chars only for security)
+                    if (accessToken) {
+                        addDebug('- Access Token Preview: ' + accessToken.substring(0, 20) + '...');
+                    }
 
                     if (type === 'recovery' && accessToken && refreshToken) {
-                        console.log('🔑 Valid recovery tokens found, setting session...');
+                        addDebug('🔑 Valid recovery tokens found, setting session...');
                         
                         // Set the session using the recovery tokens
                         const { data, error } = await sb.auth.setSession({
@@ -249,33 +303,40 @@
                         });
 
                         if (error) {
-                            console.error('Session error:', error);
+                            addDebug('❌ Session error: ' + JSON.stringify(error));
                             throw new Error('Invalid reset link: ' + error.message);
                         }
 
                         if (data.session && data.session.user) {
-                            console.log('✅ Session established for user:', data.session.user.email);
+                            addDebug('✅ Session established for user: ' + data.session.user.email);
+                            addDebug('- User ID: ' + data.session.user.id);
+                            addDebug('- Session expires: ' + new Date(data.session.expires_at * 1000).toLocaleString());
                             showResetForm();
                         } else {
+                            addDebug('❌ No session created despite no error');
+                            addDebug('- Data: ' + JSON.stringify(data));
                             throw new Error('Could not establish session');
                         }
 
                     } else {
-                        // Check if we already have a valid session (in case they navigate back)
+                        // Check if we already have a valid session
+                        addDebug('🔍 No recovery tokens, checking for existing session...');
                         const { data: { session }, error: sessionError } = await sb.auth.getSession();
                         
                         if (session && !sessionError) {
-                            console.log('✅ Existing session found for user:', session.user.email);
+                            addDebug('✅ Existing session found for user: ' + session.user.email);
                             showResetForm();
                         } else {
-                            console.log('❌ No valid reset tokens found');
-                            console.log('Available hash params:', Array.from(hashParams.keys()));
+                            addDebug('❌ No valid reset tokens or session found');
+                            addDebug('- Available hash params: ' + Array.from(hashParams.keys()).join(', '));
+                            addDebug('- Session error: ' + (sessionError ? sessionError.message : 'None'));
                             showError('Invalid password reset link. Please request a new password reset from the login page.');
                         }
                     }
 
                 } catch (error) {
-                    console.error('Password reset flow error:', error);
+                    addDebug('💥 Password reset flow error: ' + error.message);
+                    addDebug('- Stack: ' + error.stack);
                     showError(error.message || 'An error occurred while processing your reset request.');
                 }
             }
@@ -283,6 +344,7 @@
             // Handle form submission
             async function handlePasswordReset(e) {
                 e.preventDefault();
+                addDebug('📝 Form submitted');
                 
                 const newPassword = document.getElementById('new-password').value;
                 const confirmPassword = document.getElementById('confirm-password').value;
@@ -293,21 +355,25 @@
                 
                 // Validate passwords
                 if (newPassword !== confirmPassword) {
+                    addDebug('❌ Passwords do not match');
                     showAlert('Passwords do not match!', 'error');
                     return;
                 }
 
                 if (newPassword.length < 6) {
+                    addDebug('❌ Password too short');
                     showAlert('Password must be at least 6 characters long!', 'error');
                     return;
                 }
+                
+                addDebug('✅ Password validation passed');
                 
                 // Show loading state
                 resetBtn.disabled = true;
                 resetBtn.textContent = 'Updating Password...';
                 
                 try {
-                    console.log('🔄 Updating password...');
+                    addDebug('🔄 Updating password...');
                     
                     // Update the user's password
                     const { data, error } = await sb.auth.updateUser({
@@ -315,10 +381,12 @@
                     });
                     
                     if (error) {
+                        addDebug('❌ Password update error: ' + JSON.stringify(error));
                         throw error;
                     }
                     
-                    console.log('✅ Password updated successfully');
+                    addDebug('✅ Password updated successfully');
+                    addDebug('- Update data: ' + JSON.stringify(data));
                     showAlert('Password updated successfully! Redirecting...', 'success');
                     
                     // Show success state after a short delay
@@ -327,7 +395,7 @@
                     }, 2000);
                     
                 } catch (error) {
-                    console.error('Password update error:', error);
+                    addDebug('💥 Password update failed: ' + error.message);
                     
                     let errorMessage = 'Failed to update password. ';
                     if (error.message.includes('New password should be different')) {
@@ -345,12 +413,13 @@
             }
 
             // Start the password reset flow
+            addDebug('🚀 Initializing password reset flow...');
             await handlePasswordResetFlow();
             
             // Add form submit handler
             document.getElementById('reset-form').addEventListener('submit', handlePasswordReset);
             
-            console.log('🔑 Password reset handler initialized');
+            addDebug('🔑 Password reset handler initialized');
         });
     </script>
 </body>
