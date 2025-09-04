@@ -3622,7 +3622,7 @@
         this.closeModal();
         
         try {
-          // Load assignment details and submissions
+          // Load assignment details and submissions separately to avoid relationship issues
           const [assignmentResult, submissionsResult] = await Promise.all([
             this.auth.supabase
               .from('assignments')
@@ -3631,10 +3631,7 @@
               .single(),
             this.auth.supabase
               .from('assignment_submissions')
-              .select(`
-                *,
-                user_profiles!inner(first_name, last_name, email)
-              `)
+              .select('*')
               .eq('assignment_id', assignmentId)
           ]);
       
@@ -3644,14 +3641,35 @@
           const assignment = assignmentResult.data;
           const submissions = submissionsResult.data || [];
       
+          // Get user profiles for all students who submitted
+          let submissionsWithProfiles = [];
+          if (submissions.length > 0) {
+            const studentIds = submissions.map(s => s.student_id);
+            const { data: userProfiles, error: profileError } = await this.auth.supabase
+              .from('user_profiles')
+              .select('id, first_name, last_name, email')
+              .in('id', studentIds);
+      
+            if (profileError) throw profileError;
+      
+            // Combine submissions with user profiles
+            submissionsWithProfiles = submissions.map(submission => {
+              const profile = userProfiles.find(p => p.id === submission.student_id);
+              return {
+                ...submission,
+                user_profiles: profile || { first_name: 'Unknown', last_name: 'Student', email: '' }
+              };
+            });
+          }
+      
           let content = `
             <div style="margin-bottom: 20px;">
               <h3>📊 Grade: ${assignment.title}</h3>
-              <p>Total Submissions: ${submissions.length}</p>
+              <p>Total Submissions: ${submissionsWithProfiles.length}</p>
             </div>
           `;
       
-          if (submissions.length === 0) {
+          if (submissionsWithProfiles.length === 0) {
             content += `
               <div class="empty-state">
                 <h3>📝 No Submissions Yet</h3>
@@ -3661,7 +3679,7 @@
           } else {
             content += `
               <div style="max-height: 400px; overflow-y: auto;">
-                ${submissions.map(submission => this.renderSubmissionCard(submission, assignment.points_possible)).join('')}
+                ${submissionsWithProfiles.map(submission => this.renderSubmissionCard(submission, assignment.points_possible)).join('')}
               </div>
             `;
           }
@@ -3710,19 +3728,25 @@
       
       async gradeSubmission(submissionId, maxPoints) {
         try {
-          // Get current submission data
-          const { data: submission, error } = await this.auth.supabase
+          // Get current submission data separately to avoid relationship issues
+          const { data: submission, error: submissionError } = await this.auth.supabase
             .from('assignment_submissions')
-            .select(`
-              *,
-              user_profiles!inner(first_name, last_name)
-            `)
+            .select('*')
             .eq('id', submissionId)
             .single();
       
-          if (error) throw error;
+          if (submissionError) throw submissionError;
       
-          const studentName = `${submission.user_profiles.first_name} ${submission.user_profiles.last_name}`;
+          // Get student profile separately
+          const { data: studentProfile, error: profileError } = await this.auth.supabase
+            .from('user_profiles')
+            .select('first_name, last_name')
+            .eq('id', submission.student_id)
+            .single();
+      
+          if (profileError) throw profileError;
+      
+          const studentName = `${studentProfile.first_name} ${studentProfile.last_name}`;
           
           const modalContent = `
             <div style="margin-bottom: 20px;">
