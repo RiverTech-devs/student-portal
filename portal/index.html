@@ -3982,36 +3982,77 @@
           const finalGradePercentage = totalPointsPossible > 0 ? 
             (totalPointsEarned / totalPointsPossible) * 100 : 0;
       
-          // Get class and academic info
+          // Get class and academic info from first transcript
           const firstTranscript = transcripts[0];
       
-          // Calculate letter grade
-          const { data: letterGrade } = await this.auth.supabase
-            .rpc('calculate_letter_grade', { percentage: finalGradePercentage });
+          // Calculate letter grade (simple calculation)
+          let letterGrade;
+          if (finalGradePercentage >= 90) letterGrade = 'A';
+          else if (finalGradePercentage >= 80) letterGrade = 'B';
+          else if (finalGradePercentage >= 70) letterGrade = 'C';
+          else if (finalGradePercentage >= 60) letterGrade = 'D';
+          else letterGrade = 'F';
       
-          // Upsert class summary
-          const { error: summaryError } = await this.auth.supabase
+          const summaryData = {
+            student_id: studentId,
+            class_id: classId,
+            class_name: firstTranscript.class_name,
+            teacher_name: firstTranscript.teacher_name,
+            semester: firstTranscript.semester,
+            academic_year: firstTranscript.academic_year,
+            subject: firstTranscript.subject,
+            grade_level: firstTranscript.grade_level,
+            final_grade_percentage: finalGradePercentage,
+            letter_grade: letterGrade,
+            total_points_earned: totalPointsEarned,
+            total_points_possible: totalPointsPossible,
+            assignment_count: transcripts.length,
+            updated_at: new Date().toISOString()
+          };
+      
+          // Check if a summary already exists
+          const { data: existingSummary, error: checkError } = await this.auth.supabase
             .from('student_class_summaries')
-            .upsert({
-              student_id: studentId,
-              class_id: classId,
-              class_name: firstTranscript.class_name,
-              teacher_name: firstTranscript.teacher_name,
-              semester: firstTranscript.semester,
-              academic_year: firstTranscript.academic_year,
-              subject: firstTranscript.subject,
-              grade_level: firstTranscript.grade_level,
-              final_grade_percentage: finalGradePercentage,
-              letter_grade: letterGrade || 'F',
-              total_points_earned: totalPointsEarned,
-              total_points_possible: totalPointsPossible,
-              assignment_count: transcripts.length
-            });
+            .select('id')
+            .eq('student_id', studentId)
+            .eq('class_id', classId)
+            .eq('semester', firstTranscript.semester)
+            .eq('academic_year', firstTranscript.academic_year)
+            .single();
       
-          if (summaryError) throw summaryError;
+          if (checkError && checkError.code !== 'PGRST116') {
+            // PGRST116 is "not found" which is expected for new records
+            console.error('Error checking existing summary:', checkError);
+            return;
+          }
+      
+          if (existingSummary) {
+            // Update existing record
+            const { error: updateError } = await this.auth.supabase
+              .from('student_class_summaries')
+              .update(summaryData)
+              .eq('id', existingSummary.id);
+      
+            if (updateError) {
+              console.error('Error updating class summary:', updateError);
+            } else {
+              console.log('Class summary updated successfully');
+            }
+          } else {
+            // Insert new record
+            const { error: insertError } = await this.auth.supabase
+              .from('student_class_summaries')
+              .insert([summaryData]);
+      
+            if (insertError) {
+              console.error('Error inserting class summary:', insertError);
+            } else {
+              console.log('Class summary created successfully');
+            }
+          }
       
         } catch (error) {
-          console.error('Error updating class summary:', error);
+          console.error('Error in updateClassSummary:', error);
         }
       }
 
