@@ -3631,8 +3631,8 @@
       
           if (assignmentError) throw assignmentError;
       
-          // Now that we have the foreign key set up, try using the relationship
-          const { data: submissions, error: submissionsError } = await this.auth.supabase
+          // Try using the foreign key relationship first
+          let { data: submissions, error: submissionsError } = await this.auth.supabase
             .from('assignment_submissions')
             .select(`
               *,
@@ -3643,7 +3643,7 @@
           if (submissionsError) {
             console.log('Relationship query failed:', submissionsError);
             
-            // Fallback: try the separate queries approach with more debugging
+            // Fallback: use separate queries
             const { data: submissionsOnly, error: submissionsOnlyError } = await this.auth.supabase
               .from('assignment_submissions')
               .select('*')
@@ -3651,18 +3651,17 @@
       
             if (submissionsOnlyError) throw submissionsOnlyError;
       
-            // Try a more permissive user_profiles query
+            // Get user profiles separately
             const studentIds = submissionsOnly.map(s => s.student_id);
             const { data: userProfiles, error: profileError } = await this.auth.supabase
               .from('user_profiles')
-              .select('*')  // Select all columns to see what we get
+              .select('id, first_name, last_name, email')
               .in('id', studentIds);
       
-            console.log('Fallback profile query result:', userProfiles);
-            console.log('Fallback profile error:', profileError);
+            console.log('Found', userProfiles?.length || 0, 'profiles for', studentIds.length, 'students');
       
-            // Create the submissions with profiles manually
-            const submissionsWithProfiles = submissionsOnly.map(submission => {
+            // Combine the data
+            submissions = submissionsOnly.map(submission => {
               const profile = userProfiles?.find(p => p?.id === submission.student_id);
               return {
                 ...submission,
@@ -3677,10 +3676,8 @@
                 }
               };
             });
-      
-            submissions = submissionsWithProfiles;
           } else {
-            // Relationship query worked, but format the data correctly
+            // Relationship query worked, format the data correctly
             submissions = submissions.map(sub => ({
               ...sub,
               user_profiles: sub.user_profiles || {
