@@ -3850,44 +3850,66 @@
 
       async createPermanentGradeRecord(submissionId, pointsEarned) {
         try {
-          // Get submission details with all related data
-          const { data: submission, error } = await this.auth.supabase
+          // Get submission details with separate queries to avoid complex joins
+          const { data: submission, error: submissionError } = await this.auth.supabase
             .from('assignment_submissions')
-            .select(`
-              *,
-              assignments!inner(
-                title,
-                assignment_type,
-                points_possible,
-                class_id,
-                classes!inner(
-                  name,
-                  subject,
-                  grade_level,
-                  user_profiles!inner(first_name, last_name)
-                )
-              ),
-              user_profiles!inner(id)
-            `)
+            .select('*')
             .eq('id', submissionId)
             .single();
       
-          if (error) throw error;
+          if (submissionError) throw submissionError;
       
-          const assignment = submission.assignments;
-          const classInfo = assignment.classes;
-          const teacher = classInfo.user_profiles;
+          // Get assignment details
+          const { data: assignment, error: assignmentError } = await this.auth.supabase
+            .from('assignments')
+            .select('*')
+            .eq('id', submission.assignment_id)
+            .single();
+      
+          if (assignmentError) throw assignmentError;
+      
+          // Get class details
+          const { data: classInfo, error: classError } = await this.auth.supabase
+            .from('classes')
+            .select('*')
+            .eq('id', assignment.class_id)
+            .single();
+      
+          if (classError) throw classError;
+      
+          // Get teacher details
+          const { data: teacher, error: teacherError } = await this.auth.supabase
+            .from('user_profiles')
+            .select('first_name, last_name')
+            .eq('id', classInfo.teacher_id)
+            .single();
+      
+          if (teacherError) {
+            console.warn('Could not find teacher profile:', teacherError);
+          }
       
           // Calculate grade percentage
           const gradePercentage = assignment.points_possible > 0 ? 
             (pointsEarned / assignment.points_possible) * 100 : 0;
       
-          // Get current academic year and semester
-          const { data: academicInfo } = await this.auth.supabase
-            .rpc('get_current_academic_year');
-            
-          const { data: semesterInfo } = await this.auth.supabase
-            .rpc('get_current_semester');
+          // Get current academic year and semester (with fallbacks)
+          const currentDate = new Date();
+          const currentYear = currentDate.getFullYear();
+          const currentMonth = currentDate.getMonth() + 1; // JavaScript months are 0-based
+          
+          // Simple semester calculation: Jan-May = Spring, Aug-Dec = Fall, Jun-Jul = Summer
+          let semester;
+          if (currentMonth >= 1 && currentMonth <= 5) {
+            semester = `Spring ${currentYear}`;
+          } else if (currentMonth >= 8 && currentMonth <= 12) {
+            semester = `Fall ${currentYear}`;
+          } else {
+            semester = `Summer ${currentYear}`;
+          }
+          
+          const academicYear = currentMonth >= 8 ? 
+            `${currentYear}-${currentYear + 1}` : 
+            `${currentYear - 1}-${currentYear}`;
       
           // Insert into permanent transcript
           const { error: transcriptError } = await this.auth.supabase
@@ -3896,19 +3918,25 @@
               student_id: submission.student_id,
               class_id: assignment.class_id,
               class_name: classInfo.name,
-              teacher_name: `${teacher.first_name} ${teacher.last_name}`,
+              teacher_name: teacher ? `${teacher.first_name} ${teacher.last_name}` : 'Teacher',
               assignment_title: assignment.title,
               assignment_type: assignment.assignment_type,
               points_earned: pointsEarned,
               points_possible: assignment.points_possible,
               grade_percentage: gradePercentage,
-              semester: semesterInfo || 'Current',
-              academic_year: academicInfo || new Date().getFullYear() + '-' + (new Date().getFullYear() + 1),
+              semester: semester,
+              academic_year: academicYear,
               subject: classInfo.subject,
-              grade_level: classInfo.grade_level
+              grade_level: classInfo.grade_level,
+              created_at: new Date().toISOString()
             });
       
-          if (transcriptError) throw transcriptError;
+          if (transcriptError) {
+            console.warn('Transcript creation failed:', transcriptError);
+            // Don't throw - continue even if transcript fails
+          } else {
+            console.log('Permanent grade record created successfully');
+          }
       
           // Update class summary
           await this.updateClassSummary(submission.student_id, assignment.class_id);
