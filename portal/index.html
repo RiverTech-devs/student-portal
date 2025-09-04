@@ -3622,81 +3622,83 @@
         this.closeModal();
         
         try {
-          // Load assignment details and submissions separately to avoid relationship issues
-          const [assignmentResult, submissionsResult] = await Promise.all([
-            this.auth.supabase
-              .from('assignments')
-              .select('*')
-              .eq('id', assignmentId)
-              .single(),
-            this.auth.supabase
+          // Load assignment details
+          const { data: assignment, error: assignmentError } = await this.auth.supabase
+            .from('assignments')
+            .select('*')
+            .eq('id', assignmentId)
+            .single();
+      
+          if (assignmentError) throw assignmentError;
+      
+          // Now that we have the foreign key set up, try using the relationship
+          const { data: submissions, error: submissionsError } = await this.auth.supabase
+            .from('assignment_submissions')
+            .select(`
+              *,
+              user_profiles!student_id(first_name, last_name, email)
+            `)
+            .eq('assignment_id', assignmentId);
+      
+          if (submissionsError) {
+            console.log('Relationship query failed:', submissionsError);
+            
+            // Fallback: try the separate queries approach with more debugging
+            const { data: submissionsOnly, error: submissionsOnlyError } = await this.auth.supabase
               .from('assignment_submissions')
               .select('*')
-              .eq('assignment_id', assignmentId)
-          ]);
+              .eq('assignment_id', assignmentId);
       
-          if (assignmentResult.error) throw assignmentResult.error;
-          if (submissionsResult.error) throw submissionsResult.error;
+            if (submissionsOnlyError) throw submissionsOnlyError;
       
-          const assignment = assignmentResult.data;
-          const submissions = submissionsResult.data || [];
-      
-          console.log('Debug - Submissions found:', submissions);
-      
-          // Get user profiles for all students who submitted
-          let submissionsWithProfiles = [];
-          if (submissions.length > 0) {
-            const studentIds = submissions.map(s => s.student_id);
-            console.log('Debug - Student IDs to lookup:', studentIds);
-      
+            // Try a more permissive user_profiles query
+            const studentIds = submissionsOnly.map(s => s.student_id);
             const { data: userProfiles, error: profileError } = await this.auth.supabase
               .from('user_profiles')
-              .select('id, first_name, last_name, email')
+              .select('*')  // Select all columns to see what we get
               .in('id', studentIds);
       
-            console.log('Debug - User profiles found:', userProfiles);
-            console.log('Debug - Profile error:', profileError);
+            console.log('Fallback profile query result:', userProfiles);
+            console.log('Fallback profile error:', profileError);
       
-            if (profileError) {
-              console.error('Profile lookup error:', profileError);
-              // Don't throw - continue with fallback
-            }
-      
-            // Combine submissions with user profiles
-            submissionsWithProfiles = submissions.map(submission => {
-              const profile = userProfiles?.find(p => {
-                // Debug: log the comparison
-                console.log('Debug - Comparing:', p?.id, 'with', submission.student_id, 'match:', p?.id === submission.student_id);
-                return p?.id === submission.student_id;
-              });
-              
+            // Create the submissions with profiles manually
+            const submissionsWithProfiles = submissionsOnly.map(submission => {
+              const profile = userProfiles?.find(p => p?.id === submission.student_id);
               return {
                 ...submission,
-                user_profiles: profile || { 
-                  first_name: 'Unknown', 
-                  last_name: 'Student', 
-                  email: '',
-                  debug_student_id: submission.student_id // Add for debugging
+                user_profiles: profile ? {
+                  first_name: profile.first_name,
+                  last_name: profile.last_name,
+                  email: profile.email
+                } : {
+                  first_name: 'Student',
+                  last_name: submission.student_id.substring(0, 8),
+                  email: 'unknown@email.com'
                 }
               };
             });
       
-            console.log('Debug - Final submissions with profiles:', submissionsWithProfiles);
+            submissions = submissionsWithProfiles;
+          } else {
+            // Relationship query worked, but format the data correctly
+            submissions = submissions.map(sub => ({
+              ...sub,
+              user_profiles: sub.user_profiles || {
+                first_name: 'Student',
+                last_name: sub.student_id.substring(0, 8),
+                email: 'unknown@email.com'
+              }
+            }));
           }
       
           let content = `
             <div style="margin-bottom: 20px;">
               <h3>📊 Grade: ${assignment.title}</h3>
-              <p>Total Submissions: ${submissionsWithProfiles.length}</p>
-              ${submissionsWithProfiles.some(s => s.user_profiles.first_name === 'Unknown') ? `
-                <div style="background: var(--warning); color: black; padding: 10px; border-radius: 8px; margin-top: 10px;">
-                  ⚠️ Some students showing as "Unknown" - check console for debugging info
-                </div>
-              ` : ''}
+              <p>Total Submissions: ${submissions?.length || 0}</p>
             </div>
           `;
       
-          if (submissionsWithProfiles.length === 0) {
+          if (!submissions || submissions.length === 0) {
             content += `
               <div class="empty-state">
                 <h3>📝 No Submissions Yet</h3>
@@ -3706,7 +3708,7 @@
           } else {
             content += `
               <div style="max-height: 400px; overflow-y: auto;">
-                ${submissionsWithProfiles.map(submission => this.renderSubmissionCard(submission, assignment.points_possible)).join('')}
+                ${submissions.map(submission => this.renderSubmissionCard(submission, assignment.points_possible)).join('')}
               </div>
             `;
           }
