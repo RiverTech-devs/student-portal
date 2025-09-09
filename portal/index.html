@@ -3673,31 +3673,40 @@
       
           if (assignmentError) throw assignmentError;
       
-          // Track usage if using template
+          // Track usage if using template (fixed version)
           if (templateId) {
-            await this.auth.supabase
-              .from('assignment_templates')
-              .update({ 
-                usage_count: supabase.raw('usage_count + 1'),
-                updated_at: new Date().toISOString()
-              })
-              .eq('id', templateId);
+            try {
+              // Get current usage count
+              const { data: template, error: getError } = await this.auth.supabase
+                .from('assignment_templates')
+                .select('usage_count')
+                .eq('id', templateId)
+                .single();
+      
+              if (!getError && template) {
+                // Increment usage count
+                const { error: updateError } = await this.auth.supabase
+                  .from('assignment_templates')
+                  .update({ 
+                    usage_count: (template.usage_count || 0) + 1,
+                    updated_at: new Date().toISOString()
+                  })
+                  .eq('id', templateId);
+      
+                if (updateError) {
+                  console.warn('Could not update template usage count:', updateError);
+                }
+              }
+            } catch (templateError) {
+              console.warn('Template usage tracking failed:', templateError);
+              // Don't fail the assignment creation for this
+            }
           }
       
           // Save as template if requested
           if (saveAsTemplate && !templateId) {
             await this.saveAssignmentAsTemplate(newAssignment.id, assignmentData.title);
           }
-      
-          // Update assignment usage tracking
-          await this.auth.supabase
-            .from('assignment_usage')
-            .upsert({
-              assignment_id: newAssignment.id,
-              last_used_at: new Date().toISOString(),
-              usage_count: 1,
-              created_by: this.userInfo.user.id
-            });
       
           const message = status === 'draft' ? 
             'Assignment saved as draft!' : 
