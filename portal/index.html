@@ -3098,6 +3098,24 @@
           const classData = this.classes.find(c => c.id === classId);
           const isTeacher = this.userInfo.profile.user_type === 'teacher';
           
+          // If student, load their submissions for these assignments
+          if (!isTeacher && assignments && assignments.length > 0) {
+            const assignmentIds = assignments.map(a => a.id);
+            const { data: submissions, error: submissionError } = await this.auth.supabase
+              .from('assignment_submissions')
+              .select('*')
+              .in('assignment_id', assignmentIds)
+              .eq('student_id', this.userInfo.user.id);
+      
+            if (!submissionError && submissions) {
+              // Attach submission data to assignments
+              assignments.forEach(assignment => {
+                const submission = submissions.find(s => s.assignment_id === assignment.id);
+                assignment.student_submission = submission || null;
+              });
+            }
+          }
+          
           let content = `
             <div style="margin-bottom: 20px;">
               <h3>📝 Assignments for ${classData?.name}</h3>
@@ -3825,6 +3843,7 @@
       
       async submitAssignmentSubmission(assignmentId, isEdit) {
         const content = document.getElementById('submission-content').value;
+        const fileInput = document.getElementById('submission-file');
         
         if (!content.trim()) {
           this.showNotification('Please enter your submission content', 'error');
@@ -3832,6 +3851,11 @@
         }
       
         try {
+          // Show loading
+          if (window.portalLoading) {
+            window.portalLoading.show('submit-assignment', 'Submitting assignment...');
+          }
+          
           const submissionData = {
             assignment_id: assignmentId,
             student_id: this.userInfo.user.id,
@@ -3839,6 +3863,46 @@
             submitted_at: new Date().toISOString(),
             status: 'submitted'
           };
+      
+          // Handle file upload if a file is selected
+          if (fileInput && fileInput.files && fileInput.files.length > 0) {
+            const file = fileInput.files[0];
+            
+            // Validate file size (max 10MB for students)
+            const maxSize = 10 * 1024 * 1024; // 10MB
+            if (file.size > maxSize) {
+              throw new Error('File too large. Maximum size is 10MB.');
+            }
+            
+            // Create a unique file name
+            const timestamp = Date.now();
+            const fileName = `${this.userInfo.user.id}/${assignmentId}/${timestamp}_${file.name}`;
+            
+            // Upload file to Supabase storage
+            const { data: uploadData, error: uploadError } = await this.auth.supabase.storage
+              .from('assignment-submissions')
+              .upload(fileName, file, {
+                cacheControl: '3600',
+                upsert: false
+              });
+            
+            if (uploadError) {
+              console.error('File upload error:', uploadError);
+              // Try creating the bucket if it doesn't exist
+              if (uploadError.message?.includes('bucket') || uploadError.statusCode === 404) {
+                throw new Error('Storage not configured. Please contact your administrator.');
+              }
+              throw uploadError;
+            }
+            
+            // Get public URL for the file
+            const { data: { publicUrl } } = this.auth.supabase.storage
+              .from('assignment-submissions')
+              .getPublicUrl(fileName);
+            
+            submissionData.file_url = publicUrl;
+            submissionData.file_name = file.name;
+          }
       
           let error;
           if (isEdit) {
@@ -3861,6 +3925,10 @@
         } catch (error) {
           console.error('Error submitting assignment:', error);
           this.showNotification('Error submitting assignment: ' + error.message, 'error');
+        } finally {
+          if (window.portalLoading) {
+            window.portalLoading.hide('submit-assignment');
+          }
         }
       }
       
@@ -4014,7 +4082,7 @@
         `;
       }
 
-      renderStudentGradingCard(student, maxPoints) {
+     renderStudentGradingCard(student, maxPoints, assignmentId) {
         const profile = student.user_profiles;
         const submission = student.submission;
         const studentName = `${profile.first_name} ${profile.last_name}`;
@@ -4035,7 +4103,7 @@
                   <button class="btn btn-secondary small" onclick="app.messageStudent('${student.student_id}')">
                     💬 Message
                   </button>
-                  <button class="btn btn-secondary small" onclick="app.markAsExcused('${student.student_id}', '${submission?.assignment_id || 'unknown'}')">
+                  <button class="btn btn-secondary small" onclick="app.markAsExcused('${student.student_id}', '${assignmentId}')">
                     ✅ Mark Excused
                   </button>
                 </div>
@@ -4069,10 +4137,18 @@
                     <span style="color: var(--warning); font-size: 12px;">⏳ Waiting to be graded</span>
                   </div>
                 `}
-      
+
                 <p style="margin: 8px 0; color: var(--muted); font-size: 14px; max-height: 60px; overflow-y: auto;">
                   ${submission.content.length > 100 ? submission.content.substring(0, 100) + '...' : submission.content}
                 </p>
+                ${submission.file_url ? `
+                  <div style="display: flex; align-items: center; gap: 6px; margin-top: 8px;">
+                    <span style="color: var(--accent); font-size: 12px;">📎 File attached:</span>
+                    <a href="${submission.file_url}" target="_blank" style="color: var(--link); font-size: 12px; text-decoration: none;">
+                      ${submission.file_name || 'View attachment'}
+                    </a>
+                  </div>
+                ` : ''}
               </div>
               <div style="margin-left: 15px; display: flex; flex-direction: column; gap: 8px;">
                 <button class="btn btn-primary small" onclick="app.gradeSubmission('${submission.id}', ${maxPoints})">
@@ -4117,6 +4193,17 @@
                 <div style="max-height: 200px; overflow-y: auto; color: var(--muted);">
                   ${submission.content}
                 </div>
+                ${submission.file_url ? `
+                  <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid var(--border);">
+                    <h4 style="margin-bottom: 8px; color: var(--accent);">📎 Attached File:</h4>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                      <span style="color: var(--text);">${submission.file_name || 'Attachment'}</span>
+                      <a href="${submission.file_url}" target="_blank" class="btn btn-secondary small">
+                        📥 Download/View
+                      </a>
+                    </div>
+                  </div>
+                ` : ''}
               </div>
             </div>
             
