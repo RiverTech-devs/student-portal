@@ -737,10 +737,7 @@
           gapi.load('client:picker', async () => {
             await gapi.client.init({
               apiKey: 'AIzaSyBwrfXQorKq7fkmj-jUoU-4TYlR1woHJ4Y',
-              clientId: '262464730666-407bjadqc07iiq0i1bte7vh214na8pep.apps.googleusercontent.com',
               discoveryDocs: ['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'],
-              scope: 'https://www.googleapis.com/auth/drive.file',
-              callback: () => {}
             });
             this.initGISTokenClient();
           });
@@ -750,7 +747,7 @@
 
       initGISTokenClient() {
         this.tokenClient = google.accounts.oauth2.initTokenClient({
-          client_id: 'YOUR_OAUTH_CLIENT_ID',
+          client_id: '262464730666-407bjadqc07iiq0i1bte7vh214na8pep.apps.googleusercontent.com',
           scope: 'https://www.googleapis.com/auth/drive.file',
           callback: (resp) => {
             if (resp && resp.access_token) {
@@ -793,63 +790,60 @@
         }
       }
       
-      async createDriveFolderStructure(classData) {
-        try {
-          // Get teacher's root folder
-          const { data: driveConfig } = await this.auth.supabase
-            .from('teacher_drive_config')
-            .select('root_folder_id')
-            .eq('teacher_id', classData.teacher_id)
-            .single();
-          
-          if (!driveConfig?.root_folder_id) {
-            throw new Error('Google Drive not configured for this teacher');
-          }
-          
-          // Create class folder
-          const classFolderResponse = await gapi.client.drive.files.create({
-            resource: {
-              name: `${classData.name} - ${new Date().getFullYear()}`,
-              mimeType: 'application/vnd.google-apps.folder',
-              parents: [driveConfig.root_folder_id]
-            },
-            fields: 'id'
-          });
-          
-          return classFolderResponse.result.id;
-          
-        } catch (error) {
-          console.error('Error creating folder structure:', error);
-          throw error;
+      createDriveFolderStructure = async (classData) => {
+        const { data: driveConfig } = await this.auth.supabase
+          .from('teacher_drive_config')
+          .select('root_folder_id')
+          .eq('teacher_id', classData.teacher_id)
+          .single();
+      
+        if (!driveConfig?.root_folder_id) {
+          throw new Error('Google Drive not configured for this teacher');
         }
-      }
+      
+        const classFolderName = `${classData.name} - ${new Date().getFullYear()}`;
+        const classFolderId = await this.getOrCreateChildFolder(driveConfig.root_folder_id, classFolderName);
+        return classFolderId;
+      };
       
       async uploadFileToDrive(file, folderId, fileName) {
-        // Ensure token exists (re-prompt if expired)
-        const token = gapi.client.getToken()?.access_token;
-        if (!token) this.tokenClient.requestAccessToken({ prompt: '' });
+        await this.ensureDriveToken('');
       
-        const metadata = { name: fileName, parents: [folderId] };
-        const formData = new FormData();
-        formData.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-        formData.append('file', file);
+        const doUpload = async () => {
+          const metadata = { name: fileName, parents: [folderId] };
+          const formData = new FormData();
+          formData.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+          formData.append('file', file);
       
-        const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink', {
-          method: 'POST',
-          headers: { 'Authorization': `Bearer ${gapi.client.getToken().access_token}` },
-          body: formData
-        });
+          return fetch(
+            'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink',
+            {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${gapi.client.getToken().access_token}` },
+              body: formData
+            }
+          );
+        };
       
-        if (!res.ok) throw new Error('Upload failed');
+        // First try
+        let res = await doUpload();
+      
+        // Token expired? refresh silently and retry once
+        if (res.status === 401) {
+          await this.ensureDriveToken('');
+          res = await doUpload();
+        }
+      
+        if (!res.ok) throw new Error(`Upload failed (${res.status})`);
         const result = await res.json();
       
-        // SAFER: don’t make files public by default. If needed, share with teacher:
+        // Privacy: leave files private by default. If you must share:
         // await gapi.client.drive.permissions.create({
         //   fileId: result.id,
         //   resource: { type: 'user', role: 'reader', emailAddress: '<teacher-google-email>' }
         // });
       
-        return result.webViewLink;
+        return { id: result.id, webViewLink: result.webViewLink };
       }
 
       async loadTeacherData() {
@@ -1021,7 +1015,7 @@
                 <button class="btn btn-secondary" onclick="app.showSection('messaging')">
                   💬 Send Message
                 </button>
-                <button class="btn btn-secondary" onclick="app.setupGoogleDriveIntegrationModal()">
+                <button class="btn btn-secondary" onclick="app.showGoogleDriveIntegrationModal()">
                   📁 Setup Google Drive
                 </button>
                 <button class="btn btn-secondary" onclick="app.showAcademicYearManagement()">
@@ -3985,59 +3979,53 @@
       }
       
       async uploadToGoogleDrive(file, assignmentId, studentId) {
-        try {
-          // Get teacher's Drive folder ID for this class
-          const { data: assignment } = await this.auth.supabase
-            .from('assignments')
-            .select('class_id, title')
-            .eq('id', assignmentId)
-            .single();
-          
-          const { data: classData } = await this.auth.supabase
-            .from('classes')
-            .select('teacher_id, name, drive_folder_id')
-            .eq('id', assignment.class_id)
-            .single();
-          
-          if (!classData.drive_folder_id) {
-            // Create Drive folder structure if not exists
-            const folderId = await this.createDriveFolderStructure(classData);
-            
-            // Save folder ID to database
-            await this.auth.supabase
-              .from('classes')
-              .update({ drive_folder_id: folderId })
-              .eq('id', assignment.class_id);
-            
-            classData.drive_folder_id = folderId;
-          }
-          
-          // Upload to Google Drive using Google Picker API or Drive API
-          const driveUrl = await this.uploadFileToDrive(
-            file, 
-            classData.drive_folder_id,
-            `${assignment.title}/${studentId}_${file.name}`
-          );
-          
-          return {
-            success: true,
-            url: driveUrl,
-            storage_type: 'google_drive'
-          };
-          
-        } catch (error) {
-          console.error('Google Drive upload failed, falling back to Supabase:', error);
-          return {
-            success: false,
-            error: error
-          };
+        // Always have a token first
+        await this.ensureDriveToken('');
+      
+        // Lookup assignment & class to decide folder structure
+        const { data: assignment, error: aErr } = await this.auth.supabase
+          .from('assignments')
+          .select('id, title, class_id')
+          .eq('id', assignmentId)
+          .single();
+        if (aErr || !assignment) throw new Error('Assignment not found');
+      
+        const { data: classData, error: cErr } = await this.auth.supabase
+          .from('classes')
+          .select('id, name, teacher_id')
+          .eq('id', assignment.class_id)
+          .single();
+        if (cErr || !classData) throw new Error('Class not found');
+      
+        // Ensure class folder under teacher root
+        const classFolderId = await this.createDriveFolderStructure(classData);
+        // Ensure assignment folder under class folder
+        const assignmentFolderId = await this.getOrCreateChildFolder(classFolderId, assignment.title || `Assignment ${assignment.id}`);
+      
+        // Build a readable, safe filename
+        let studentName = '';
+        if (studentId === this.userInfo.user.id && this.userInfo.profile) {
+          const p = this.userInfo.profile;
+          studentName = [p.first_name, p.last_name].filter(Boolean).join(' ').trim();
         }
+        const baseName = studentName ? `${studentName} - ${file.name}` : file.name;
+        const safeName = baseName.replace(/[\\/:"*?<>|]+/g, '_');
+      
+        // Upload
+        const { id, webViewLink } = await this.uploadFileToDrive(file, assignmentFolderId, safeName);
+      
+        return {
+          success: true,
+          url: webViewLink,
+          storage_type: 'google_drive',
+          drive_file_id: id
+        };
       }
       
       async submitAssignmentSubmission(assignmentId, isEdit) {
         const content = document.getElementById('submission-content').value;
         const fileInput = document.getElementById('submission-file');
-        
+      
         if (!content.trim()) {
           this.showNotification('Please enter your submission content', 'error');
           return;
@@ -4047,7 +4035,7 @@
           if (window.portalLoading) {
             window.portalLoading.show('submit-assignment', 'Submitting assignment...');
           }
-          
+      
           const submissionData = {
             assignment_id: assignmentId,
             student_id: this.userInfo.user.id,
@@ -4056,66 +4044,67 @@
             status: 'submitted'
           };
       
-          // Handle file upload if a file is selected
+          // Optional file
           if (fileInput && fileInput.files && fileInput.files.length > 0) {
             const file = fileInput.files[0];
-            
-            // Validate file size
-            const maxSize = 10 * 1024 * 1024; // 10MB
-            if (file.size > maxSize) {
-              throw new Error('File too large. Maximum size is 10MB.');
-            }
-            
-            // Get assignment's teacher info
-            const { data: assignment } = await this.auth.supabase
-              .from('assignments')
-              .select('class_id')
-              .eq('id', assignmentId)
-              .single();
-            
-            const { data: classInfo } = await this.auth.supabase
-              .from('classes')
-              .select('teacher_id, drive_enabled')
-              .eq('id', assignment.class_id)
-              .single();
-            
+      
+            // 10 MB limit example (keep your own if different)
+            const maxSize = 10 * 1024 * 1024;
+            if (file.size > maxSize) throw new Error('File too large. Maximum size is 10MB.');
+      
+            // Prefer Drive when the teacher has connected it (presence of root_folder_id)
             let uploadResult;
-            
-            // Try Google Drive first if enabled for this teacher
-            if (classInfo?.drive_enabled) {
-              uploadResult = await this.uploadToGoogleDrive(file, assignmentId, this.userInfo.user.id);
+            try {
+              const { data: assignment } = await this.auth.supabase
+                .from('assignments')
+                .select('class_id')
+                .eq('id', assignmentId)
+                .single();
+      
+              const { data: classInfo } = await this.auth.supabase
+                .from('classes')
+                .select('teacher_id')
+                .eq('id', assignment.class_id)
+                .single();
+      
+              const { data: driveConfig } = await this.auth.supabase
+                .from('teacher_drive_config')
+                .select('root_folder_id')
+                .eq('teacher_id', classInfo.teacher_id)
+                .single();
+      
+              if (driveConfig?.root_folder_id) {
+                // Make sure token exists (silent if possible)
+                await this.ensureDriveToken('');
+                uploadResult = await this.uploadToGoogleDrive(file, assignmentId, this.userInfo.user.id);
+              }
+            } catch (e) {
+              console.warn('Drive upload attempt failed; falling back to Supabase:', e);
             }
-            
-            // Fall back to Supabase if Drive fails or isn't enabled
+      
+            // Fallback to Supabase storage
             if (!uploadResult?.success) {
-              const timestamp = Date.now();
-              const fileName = `assignments/${this.userInfo.user.id}/${assignmentId}/${timestamp}_${file.name}`;
-              
-              const { data: uploadData, error: uploadError } = await this.auth.supabase.storage
+              const ts = Date.now();
+              const fileName = `assignments/${this.userInfo.user.id}/${assignmentId}/${ts}_${file.name}`;
+      
+              const { error: uploadError } = await this.auth.supabase.storage
                 .from('user-uploads')
-                .upload(fileName, file, {
-                  cacheControl: '3600',
-                  upsert: false
-                });
-              
+                .upload(fileName, file, { cacheControl: '3600', upsert: false });
               if (uploadError) throw uploadError;
-              
-              const { data: { publicUrl } } = this.auth.supabase.storage
+      
+              const { data: pub } = this.auth.supabase.storage
                 .from('user-uploads')
                 .getPublicUrl(fileName);
-              
-              uploadResult = {
-                success: true,
-                url: publicUrl,
-                storage_type: 'supabase'
-              };
+      
+              uploadResult = { success: true, url: pub.publicUrl, storage_type: 'supabase' };
             }
-            
-            submissionData.file_url = uploadResult.url;
-            submissionData.file_name = file.name;
-            submissionData.storage_type = uploadResult.storage_type; // Track where file is stored
+      
+            submissionData.file_url   = uploadResult.url;
+            submissionData.file_name  = file.name;
+            submissionData.storage_type = uploadResult.storage_type;
           }
       
+          // Insert or update
           let error;
           if (isEdit) {
             ({ error } = await this.auth.supabase
@@ -4128,15 +4117,14 @@
               .from('assignment_submissions')
               .insert([submissionData]));
           }
-      
           if (error) throw error;
       
           this.showNotification(`Assignment ${isEdit ? 'updated' : 'submitted'} successfully!`, 'success');
           this.closeModal();
       
-        } catch (error) {
-          console.error('Error submitting assignment:', error);
-          this.showNotification('Error submitting assignment: ' + error.message, 'error');
+        } catch (err) {
+          console.error('Error submitting assignment:', err);
+          this.showNotification('Error submitting assignment: ' + err.message, 'error');
         } finally {
           if (window.portalLoading) {
             window.portalLoading.hide('submit-assignment');
@@ -4230,6 +4218,32 @@
           root_folder_id: rootFolderId
         });
       };
+
+      async getOrCreateChildFolder(parentId, name) {
+        const q = [
+          "mimeType='application/vnd.google-apps.folder'",
+          `name='${name.replace(/'/g, "\\'")}'`,
+          `'${parentId}' in parents`,
+          'trashed=false'
+        ].join(' and ');
+      
+        const list = await gapi.client.drive.files.list({
+          q, fields: 'files(id,name)', pageSize: 1
+        });
+      
+        if (list.result.files?.length) return list.result.files[0].id;
+      
+        const create = await gapi.client.drive.files.create({
+          resource: { name, mimeType: 'application/vnd.google-apps.folder', parents: [parentId] },
+          fields: 'id'
+        });
+        return create.result.id;
+      }
+      
+      // Given your existing class folder function, create an assignment folder
+      async getOrCreateAssignmentFolder(classFolderId, assignmentName) {
+        return this.getOrCreateChildFolder(classFolderId, assignmentName);
+      }
       
       // Teacher grading interface
       async gradeAssignment(assignmentId) {
