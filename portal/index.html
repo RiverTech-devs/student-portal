@@ -441,6 +441,7 @@
       }
     }
   </style>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
   <!-- Loading Screen -->
@@ -623,13 +624,13 @@
           this.showAuthRequired();
           return;
         }
+        
+        this.userInfo = this.auth.getUserInfo();
+        console.log('👤 User authenticated:', this.userInfo.profile?.first_name);
 
         if (this.userInfo?.profile?.user_type === 'teacher') {
           this.initGoogleAPI();
         }
-        
-        this.userInfo = this.auth.getUserInfo();
-        console.log('👤 User authenticated:', this.userInfo.profile?.first_name);
         
         // Set up the app
         this.setupEventListeners();
@@ -730,75 +731,49 @@
 
       // Google Drive API Configuration
       initGoogleAPI() {
-        // Load Google API client library
         const script = document.createElement('script');
         script.src = 'https://apis.google.com/js/api.js';
         script.onload = () => {
-          gapi.load('client:auth2:picker', () => {
-            this.initializeGoogleClient();
+          gapi.load('client:picker', async () => {
+            await gapi.client.init({
+              apiKey: 'AIzaSyBwrfXQorKq7fkmj-jUoU-4TYlR1woHJ4Y',
+              clientId: '262464730666-407bjadqc07iiq0i1bte7vh214na8pep.apps.googleusercontent.com',
+              discoveryDocs: ['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'],
+              scope: 'https://www.googleapis.com/auth/drive.file',
+              callback: () => {}
+            });
+            this.initGISTokenClient();
           });
         };
         document.head.appendChild(script);
       }
-      
-      async initializeGoogleClient() {
-        try {
-          await gapi.client.init({
-            apiKey: 'AIzaSyBwrfXQorKq7fkmj-jUoU-4TYlR1woHJ4Y',
-            clientId: '262464730666-407bjadqc07iiq0i1bte7vh214na8pep.apps.googleusercontent.com',
-            discoveryDocs: ['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'],
-            scope: 'https://www.googleapis.com/auth/drive.file'
-          });
-          
-          this.googleAuth = gapi.auth2.getAuthInstance();
-          
-          // Check if already signed in
-          if (this.googleAuth.isSignedIn.get()) {
-            await this.saveGoogleTokens();
-          }
-        } catch (error) {
-          console.error('Error initializing Google client:', error);
-        }
+
+      initGISTokenClient() {
+        this.tokenClient = google.accounts.oauth2.initTokenClient({
+          client_id: 'YOUR_OAUTH_CLIENT_ID',
+          scope: 'https://www.googleapis.com/auth/drive.file',
+          callback: (resp) => {
+            if (resp && resp.access_token) {
+              // Make token visible to gapi client & your fetch uploads
+              gapi.client.setToken({ access_token: resp.access_token });
+            }
+          },
+        });
       }
       
-      async authorizeGoogleDrive() {
+      authorizeGoogleDrive = async () => {
         try {
-          if (!this.googleAuth) {
-            this.showNotification('Google API not loaded. Please refresh the page.', 'error');
-            return;
-          }
-          
-          // Sign in with Google
-          const googleUser = await this.googleAuth.signIn();
-          const authResponse = googleUser.getAuthResponse();
-          
-          // Save tokens to database
-          await this.saveGoogleTokens(authResponse);
-          
-          // Create root folder for assignments
-          const rootFolderId = await this.createRootFolder();
-          
-          // Save configuration
-          const { error } = await this.auth.supabase
-            .from('teacher_drive_config')
-            .upsert({
-              teacher_id: this.userInfo.user.id,
-              access_token: authResponse.access_token,
-              refresh_token: authResponse.refresh_token || null,
-              token_expiry: new Date(authResponse.expires_at).toISOString(),
-              root_folder_id: rootFolderId
-            });
-          
-          if (error) throw error;
-          
-          this.showNotification('Google Drive connected successfully!', 'success');
-          this.closeModal();
-          
-        } catch (error) {
-          console.error('Error authorizing Google Drive:', error);
-          this.showNotification('Error connecting Google Drive: ' + error.message, 'error');
+          // First-time connection: ask for explicit consent
+          await this.ensureDriveToken('consent');
+          const rootId = await this.createOrGetRootFolder();
+          await this.saveDriveConfig(rootId);
+          this.showNotification('Google Drive connected!', 'success');
+          this.closeModal('drive-setup');
+        } catch (err) {
+          console.error(err);
+          this.showNotification(`Drive connection failed: ${err.message}`, 'error');
         }
-      }
+      };
       
       async createRootFolder() {
         try {
@@ -850,49 +825,31 @@
       }
       
       async uploadFileToDrive(file, folderId, fileName) {
-        try {
-          // Create metadata
-          const metadata = {
-            name: fileName,
-            parents: [folderId]
-          };
-          
-          // Create form data
-          const formData = new FormData();
-          formData.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-          formData.append('file', file);
-          
-          // Upload file using fetch (since gapi.client doesn't handle file uploads well)
-          const response = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink', {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${gapi.client.getToken().access_token}`
-            },
-            body: formData
-          });
-          
-          if (!response.ok) {
-            throw new Error('Upload failed');
-          }
-          
-          const result = await response.json();
-          
-          // Set file permissions to allow teacher to access
-          await gapi.client.drive.permissions.create({
-            fileId: result.id,
-            resource: {
-              role: 'reader',
-              type: 'anyone',
-              allowFileDiscovery: false
-            }
-          });
-          
-          return result.webViewLink;
-          
-        } catch (error) {
-          console.error('Error uploading to Drive:', error);
-          throw error;
-        }
+        // Ensure token exists (re-prompt if expired)
+        const token = gapi.client.getToken()?.access_token;
+        if (!token) this.tokenClient.requestAccessToken({ prompt: '' });
+      
+        const metadata = { name: fileName, parents: [folderId] };
+        const formData = new FormData();
+        formData.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+        formData.append('file', file);
+      
+        const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${gapi.client.getToken().access_token}` },
+          body: formData
+        });
+      
+        if (!res.ok) throw new Error('Upload failed');
+        const result = await res.json();
+      
+        // SAFER: don’t make files public by default. If needed, share with teacher:
+        // await gapi.client.drive.permissions.create({
+        //   fileId: result.id,
+        //   resource: { type: 'user', role: 'reader', emailAddress: '<teacher-google-email>' }
+        // });
+      
+        return result.webViewLink;
       }
 
       async loadTeacherData() {
@@ -928,36 +885,6 @@
         }
         
         console.log('Loaded', this.classes.length, 'classes for teacher');
-      }
-
-      getTeacherHomeContent() {
-        const totalStudents = this.classes.reduce((sum, cls) => sum + (cls.student_count || 0), 0);
-        
-        return `
-          <div class="grid grid-2">
-            <div class="card">
-              <h3>🎯 Quick Actions</h3>
-              <div style="display: grid; gap: 10px;">
-                <button class="btn btn-primary" onclick="app.createNewClass()">
-                  ➕ Create New Class
-                </button>
-                <button class="btn btn-primary" onclick="app.showSection('classes')">
-                  📚 Manage Classes
-                </button>
-                <button class="btn btn-secondary" onclick="app.showSection('messaging')">
-                  💬 Send Message
-                </button>
-                <button class="btn btn-secondary" onclick="app.setupGoogleDriveIntegration()">
-                  📁 Setup Google Drive
-                </button>
-                <button class="btn btn-secondary" onclick="app.showAcademicYearManagement()">
-                  🎓 Academic Year Management
-                </button>
-              </div>
-            </div>
-            <!-- Rest of the content remains the same -->
-          </div>
-        `;
       }
 
       async loadStudentData() {
@@ -1076,7 +1003,7 @@
           homeContent.innerHTML = this.getParentHomeContent();
         }
       }
-
+      
       getTeacherHomeContent() {
         const totalStudents = this.classes.reduce((sum, cls) => sum + (cls.student_count || 0), 0);
         
@@ -1093,6 +1020,9 @@
                 </button>
                 <button class="btn btn-secondary" onclick="app.showSection('messaging')">
                   💬 Send Message
+                </button>
+                <button class="btn btn-secondary" onclick="app.setupGoogleDriveIntegrationModal()">
+                  📁 Setup Google Drive
                 </button>
                 <button class="btn btn-secondary" onclick="app.showAcademicYearManagement()">
                   🎓 Academic Year Management
@@ -4214,7 +4144,7 @@
         }
       }
 
-      async setupGoogleDriveIntegration() {
+      async showGoogleDriveIntegrationModal() {
         const modalContent = `
           <div style="text-align: center; padding: 20px;">
             <div style="font-size: 48px; margin-bottom: 16px;">📁</div>
@@ -4243,6 +4173,63 @@
         
         this.showModal('drive-setup', '📁 Google Drive Integration', modalContent);
       }
+
+      setupGoogleDriveIntegration() {
+        // Prompt consent and get token
+        this.tokenClient.requestAccessToken({ prompt: 'consent' });
+        // Optionally: create root folder after token arrives
+        setTimeout(async () => {
+          const rootId = await this.createRootFolder();
+          // Save only stable config like folder id:
+          await this.auth.supabase.from('teacher_drive_config').upsert({
+            teacher_id: this.userInfo.user.id,
+            root_folder_id: rootId
+          });
+          this.showNotification('Google Drive connected!', 'success');
+        }, 0);
+      }
+
+      ensureDriveToken = async (prompt = '') => new Promise((resolve, reject) => {
+        if (gapi?.client?.getToken?.()?.access_token) return resolve(gapi.client.getToken().access_token);
+        if (!this.tokenClient) return reject(new Error('Token client not initialized'));
+      
+        this.tokenClient.callback = (resp) => {
+          if (resp && resp.access_token) {
+            gapi.client.setToken({ access_token: resp.access_token });
+            return resolve(resp.access_token);
+          }
+          reject(new Error('No access token returned'));
+        };
+        this.tokenClient.requestAccessToken({ prompt });
+      });
+      
+      createOrGetRootFolder = async () => {
+        // If you already stored it in Supabase, prefer that:
+        const teacherId = this.userInfo?.user?.id;
+        const { data: existing } = await this.auth.supabase
+          .from('teacher_drive_config')
+          .select('root_folder_id')
+          .eq('teacher_id', teacherId)
+          .single();
+      
+        if (existing?.root_folder_id) return existing.root_folder_id;
+      
+        // Otherwise, create a new app-owned root folder
+        const body = {
+          name: 'RiverTech Submissions',
+          mimeType: 'application/vnd.google-apps.folder'
+        };
+        const res = await gapi.client.drive.files.create({ resource: body, fields: 'id' });
+        return res.result.id;
+      };
+      
+      saveDriveConfig = async (rootFolderId) => {
+        const teacherId = this.userInfo?.user?.id;
+        await this.auth.supabase.from('teacher_drive_config').upsert({
+          teacher_id: teacherId,
+          root_folder_id: rootFolderId
+        });
+      };
       
       // Teacher grading interface
       async gradeAssignment(assignmentId) {
