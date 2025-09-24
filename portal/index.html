@@ -3343,7 +3343,7 @@
       
           const author = authorProfile || { first_name: 'Unknown', last_name: 'User', user_type: 'unknown' };
       
-          // Get replies
+          // Get all replies for this discussion
           const { data: replies } = await this.auth.supabase
             .from('discussion_replies')
             .select('*')
@@ -3351,8 +3351,9 @@
             .order('created_at', { ascending: true });
       
           // Get profiles for reply authors
+          let replyTree = [];
           if (replies && replies.length > 0) {
-            const replyAuthorIds = [...new Set(replies.map(r => r.author_id))];
+            const replyAuthorIds = [...new Set(replies.map(r => r.author_id).filter(id => id))];
             
             const { data: replyProfiles } = await this.auth.supabase
               .from('user_profiles')
@@ -3370,11 +3371,14 @@
             // Attach profiles to replies
             replies.forEach(r => {
               r.user_profiles = profileMap[r.author_id] || {
-                first_name: 'Unknown',
+                first_name: 'Deleted',
                 last_name: 'User',
                 user_type: 'unknown'
               };
             });
+      
+            // Build reply tree
+            replyTree = this.buildReplyTree(replies);
           }
       
           const isTeacher = this.userInfo.profile.user_type === 'teacher';
@@ -3388,56 +3392,57 @@
                 ${discussion.is_pinned ? '<span style="background: var(--warning); color: black; padding: 2px 6px; border-radius: 4px; font-size: 10px;">PINNED</span>' : ''}
               </div>
               
-              <div style="background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 15px; margin-bottom: 20px;">
-                <div style="font-size: 12px; color: var(--muted); margin-bottom: 10px;">
-                  By ${author.first_name} ${author.last_name} (${author.user_type}) • 
-                  ${new Date(discussion.created_at).toLocaleString()}
-                </div>
-                <div style="line-height: 1.6; color: var(--text);">
-                  ${discussion.content.replace(/\n/g, '<br>')}
-                </div>
+              <!-- Main Discussion Post -->
+              <div id="main-discussion" style="background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 15px; margin-bottom: 20px;">
+                ${discussion.is_deleted ? `
+                  <div style="color: var(--muted); font-style: italic; padding: 10px; background: var(--bg); border-radius: 6px;">
+                    [This post was deleted by ${discussion.deleted_by === 'teacher' ? 'a teacher' : 'the author'}]
+                  </div>
+                ` : `
+                  <div style="font-size: 12px; color: var(--muted); margin-bottom: 10px;">
+                    By ${author.first_name} ${author.last_name} (${author.user_type}) • 
+                    ${new Date(discussion.created_at).toLocaleString()}
+                    ${(isAuthor || isTeacher) ? `
+                      <button class="btn danger small" style="float: right; margin-left: 5px;" onclick="app.softDeleteDiscussion('${discussionId}')">🗑️</button>
+                      ${isAuthor ? `<button class="btn btn-secondary small" style="float: right;" onclick="app.editDiscussion('${discussionId}')">✏️</button>` : ''}
+                    ` : ''}
+                  </div>
+                  <div style="line-height: 1.6; color: var(--text);">
+                    ${discussion.content.replace(/\n/g, '<br>')}
+                  </div>
+                  
+                  <!-- Reply to main post button -->
+                  <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid var(--border);">
+                    <button class="btn btn-secondary small" onclick="app.showReplyForm('${discussionId}', null, 'main-discussion')">
+                      💬 Reply
+                    </button>
+                    <span style="color: var(--muted); font-size: 12px; margin-left: 10px;">
+                      ${replyTree.length} ${replyTree.length === 1 ? 'reply' : 'replies'}
+                    </span>
+                  </div>
+                `}
               </div>
             </div>
       
-            <!-- Reply Section -->
+            <!-- Reply Tree -->
             <div style="margin-bottom: 20px;">
-              <h4 style="margin-bottom: 15px;">💬 Replies (${replies ? replies.length : 0})</h4>
+              <h4 style="margin-bottom: 15px;">💬 Discussion Thread</h4>
               
-              <!-- New Reply Form -->
-              <div style="background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 15px; margin-bottom: 20px;">
-                <form id="reply-form">
-                  <div class="form-group">
-                    <textarea id="reply-content" rows="3" placeholder="Write your reply..." required style="width: 100%;"></textarea>
-                  </div>
-                  <button type="submit" class="btn btn-primary">Post Reply</button>
-                </form>
-              </div>
-      
-              <!-- Existing Replies -->
-              <div style="max-height: 400px; overflow-y: auto;">
-                ${!replies || replies.length === 0 ? 
+              <!-- Replies Container -->
+              <div id="replies-container" style="max-height: 500px; overflow-y: auto;">
+                ${replyTree.length === 0 ? 
                   '<p style="color: var(--muted); text-align: center;">No replies yet. Be the first to respond!</p>' :
-                  replies.map(reply => this.renderReply(reply, isTeacher || reply.author_id === this.userInfo.user.id)).join('')
+                  this.renderReplyTree(replyTree, discussionId, isTeacher, 0)
                 }
               </div>
             </div>
       
             <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
-              ${(isAuthor || isTeacher) ? `
-                <button class="btn btn-secondary" onclick="app.editDiscussion('${discussionId}')">✏️ Edit</button>
-                <button class="btn danger" onclick="app.deleteDiscussion('${discussionId}')">🗑️ Delete</button>
-              ` : ''}
               <button class="btn btn-secondary" onclick="app.closeModal()">Close</button>
             </div>
           `;
       
           this.showModal('discussion-thread', discussion.title || 'Discussion', content);
-      
-          // Setup reply form
-          document.getElementById('reply-form').addEventListener('submit', (e) => {
-            e.preventDefault();
-            this.postReply(discussionId);
-          });
       
         } catch (error) {
           console.error('Error opening discussion:', error);
@@ -3524,6 +3529,237 @@
         } catch (error) {
           console.error('Error deleting reply:', error);
           this.showNotification('Error deleting reply: ' + error.message, 'error');
+        }
+      }
+
+      buildReplyTree(replies) {
+        const replyMap = {};
+        const tree = [];
+        
+        // First pass: create map
+        replies.forEach(reply => {
+          replyMap[reply.id] = { ...reply, children: [] };
+        });
+        
+        // Second pass: build tree
+        replies.forEach(reply => {
+          if (reply.parent_id && replyMap[reply.parent_id]) {
+            replyMap[reply.parent_id].children.push(replyMap[reply.id]);
+          } else if (!reply.parent_id) {
+            tree.push(replyMap[reply.id]);
+          }
+        });
+        
+        return tree;
+      }
+      
+      // Render nested reply tree
+      renderReplyTree(replies, discussionId, isTeacher, depth = 0) {
+        const maxDepth = 5; // Maximum nesting level
+        const indent = Math.min(depth * 20, maxDepth * 20);
+        
+        return replies.map(reply => {
+          const canDelete = reply.author_id === this.userInfo.user.id || isTeacher;
+          const hasChildren = reply.children && reply.children.length > 0;
+          const replyId = `reply-${reply.id}`;
+          
+          return `
+            <div id="${replyId}" style="margin-left: ${indent}px; margin-bottom: 10px;">
+              <div style="background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px; ${depth > 0 ? 'border-left: 3px solid var(--accent);' : ''}">
+                ${reply.is_deleted ? `
+                  <div style="color: var(--muted); font-style: italic;">
+                    [This reply was deleted by ${reply.deleted_by === 'teacher' ? 'a teacher' : 'the author'}]
+                  </div>
+                ` : `
+                  <div style="font-size: 12px; color: var(--muted); margin-bottom: 8px;">
+                    ${reply.user_profiles.first_name} ${reply.user_profiles.last_name} 
+                    (${reply.user_profiles.user_type}) • 
+                    ${new Date(reply.created_at).toLocaleString()}
+                    ${canDelete ? `
+                      <button class="btn danger small" style="float: right; padding: 2px 6px; font-size: 10px;" 
+                              onclick="app.softDeleteReply('${reply.id}', '${discussionId}')">
+                        🗑️
+                      </button>
+                    ` : ''}
+                  </div>
+                  <div style="line-height: 1.5; color: var(--text); margin-bottom: 10px;">
+                    ${reply.content.replace(/\n/g, '<br>')}
+                  </div>
+                  
+                  <!-- Reply actions -->
+                  <div style="display: flex; gap: 10px; align-items: center;">
+                    ${depth < maxDepth ? `
+                      <button class="btn btn-secondary small" style="padding: 2px 8px; font-size: 11px;" 
+                              onclick="app.showReplyForm('${discussionId}', '${reply.id}', '${replyId}')">
+                        💬 Reply
+                      </button>
+                    ` : ''}
+                    ${hasChildren ? `
+                      <button class="btn btn-secondary small" style="padding: 2px 8px; font-size: 11px;" 
+                              onclick="app.toggleReplies('${reply.id}')">
+                        <span id="toggle-icon-${reply.id}">▼</span> ${reply.children.length} ${reply.children.length === 1 ? 'reply' : 'replies'}
+                      </button>
+                    ` : ''}
+                  </div>
+                `}
+              </div>
+              
+              <!-- Child replies container -->
+              ${hasChildren ? `
+                <div id="children-${reply.id}" style="margin-top: 10px;">
+                  ${this.renderReplyTree(reply.children, discussionId, isTeacher, depth + 1)}
+                </div>
+              ` : ''}
+            </div>
+          `;
+        }).join('');
+      }
+      
+      // Show inline reply form
+      showReplyForm(discussionId, parentId, containerId) {
+        // Remove any existing reply forms
+        const existingForms = document.querySelectorAll('.inline-reply-form');
+        existingForms.forEach(form => form.remove());
+        
+        const formHtml = `
+          <div class="inline-reply-form" style="background: var(--bg); border: 1px solid var(--accent); border-radius: 8px; padding: 15px; margin: 10px 0;">
+            <form id="inline-reply-form">
+              <div class="form-group" style="margin-bottom: 10px;">
+                <textarea id="inline-reply-content" rows="3" placeholder="Write your reply..." required 
+                          style="width: 100%; padding: 8px; border-radius: 6px; border: 1px solid var(--border); 
+                                 background: var(--card); color: var(--text);"></textarea>
+              </div>
+              <div style="display: flex; gap: 10px;">
+                <button type="submit" class="btn btn-primary small">Post Reply</button>
+                <button type="button" class="btn btn-secondary small" onclick="app.cancelReply()">Cancel</button>
+              </div>
+            </form>
+          </div>
+        `;
+        
+        const container = document.getElementById(containerId);
+        if (container) {
+          container.insertAdjacentHTML('afterend', formHtml);
+          
+          document.getElementById('inline-reply-form').addEventListener('submit', (e) => {
+            e.preventDefault();
+            this.postThreadedReply(discussionId, parentId);
+          });
+          
+          // Focus on textarea
+          document.getElementById('inline-reply-content').focus();
+        }
+      }
+      
+      // Cancel reply
+      cancelReply() {
+        const forms = document.querySelectorAll('.inline-reply-form');
+        forms.forEach(form => form.remove());
+      }
+      
+      // Post threaded reply
+      async postThreadedReply(discussionId, parentId) {
+        const content = document.getElementById('inline-reply-content').value;
+      
+        if (!content.trim()) {
+          this.showNotification('Please enter a reply', 'error');
+          return;
+        }
+      
+        try {
+          const { error } = await this.auth.supabase
+            .from('discussion_replies')
+            .insert([{
+              discussion_id: discussionId,
+              author_id: this.userInfo.user.id,
+              parent_id: parentId,
+              content: content
+            }]);
+      
+          if (error) throw error;
+      
+          this.showNotification('Reply posted successfully!', 'success');
+          
+          // Refresh the discussion
+          this.openDiscussion(discussionId);
+      
+        } catch (error) {
+          console.error('Error posting reply:', error);
+          this.showNotification('Error posting reply: ' + error.message, 'error');
+        }
+      }
+      
+      // Soft delete discussion
+      async softDeleteDiscussion(discussionId) {
+        if (!confirm('Delete this post? It will show as deleted but remain in the thread.')) {
+          return;
+        }
+      
+        try {
+          const isTeacher = this.userInfo.profile.user_type === 'teacher';
+          
+          const { error } = await this.auth.supabase
+            .from('class_discussions')
+            .update({
+              is_deleted: true,
+              deleted_by: isTeacher ? 'teacher' : 'author',
+              deleted_at: new Date().toISOString()
+            })
+            .eq('id', discussionId);
+      
+          if (error) throw error;
+      
+          this.showNotification('Post deleted', 'success');
+          this.openDiscussion(discussionId);
+      
+        } catch (error) {
+          console.error('Error deleting post:', error);
+          this.showNotification('Error deleting post: ' + error.message, 'error');
+        }
+      }
+      
+      // Soft delete reply
+      async softDeleteReply(replyId, discussionId) {
+        if (!confirm('Delete this reply? It will show as deleted but remain in the thread.')) {
+          return;
+        }
+      
+        try {
+          const isTeacher = this.userInfo.profile.user_type === 'teacher';
+          
+          const { error } = await this.auth.supabase
+            .from('discussion_replies')
+            .update({
+              is_deleted: true,
+              deleted_by: isTeacher ? 'teacher' : 'author',
+              deleted_at: new Date().toISOString()
+            })
+            .eq('id', replyId);
+      
+          if (error) throw error;
+      
+          this.showNotification('Reply deleted', 'success');
+          this.openDiscussion(discussionId);
+      
+        } catch (error) {
+          console.error('Error deleting reply:', error);
+          this.showNotification('Error deleting reply: ' + error.message, 'error');
+        }
+      }
+      
+      // Toggle replies visibility
+      toggleReplies(replyId) {
+        const childContainer = document.getElementById(`children-${replyId}`);
+        const toggleIcon = document.getElementById(`toggle-icon-${replyId}`);
+        
+        if (childContainer) {
+          if (childContainer.style.display === 'none') {
+            childContainer.style.display = 'block';
+            if (toggleIcon) toggleIcon.textContent = '▼';
+          } else {
+            childContainer.style.display = 'none';
+            if (toggleIcon) toggleIcon.textContent = '▶';
+          }
         }
       }
       
