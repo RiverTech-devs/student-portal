@@ -3127,24 +3127,52 @@
           // Load discussions for this class
           const { data: discussions, error } = await this.auth.supabase
             .from('class_discussions')
-            .select(`
-              *,
-              user_profiles!inner(first_name, last_name, user_type),
-              discussion_replies(
-                id,
-                content,
-                created_at,
-                user_profiles!inner(first_name, last_name, user_type)
-              )
-            `)
+            .select('*')
             .eq('class_id', classId)
             .order('created_at', { ascending: false });
-
+      
           if (error) throw error;
-
+      
+          // Load user profiles for discussion authors
+          if (discussions && discussions.length > 0) {
+            const authorIds = [...new Set(discussions.map(d => d.author_id))];
+            
+            const { data: profiles } = await this.auth.supabase
+              .from('user_profiles')
+              .select('id, first_name, last_name, user_type')
+              .in('id', authorIds);
+      
+            // Create profile map
+            const profileMap = {};
+            if (profiles) {
+              profiles.forEach(p => {
+                profileMap[p.id] = p;
+              });
+            }
+      
+            // Attach profiles to discussions
+            discussions.forEach(d => {
+              d.user_profiles = profileMap[d.author_id] || {
+                first_name: 'Unknown',
+                last_name: 'User',
+                user_type: 'unknown'
+              };
+            });
+      
+            // Get reply counts for each discussion
+            for (let discussion of discussions) {
+              const { data: replies, error: replyError } = await this.auth.supabase
+                .from('discussion_replies')
+                .select('id')
+                .eq('discussion_id', discussion.id);
+              
+              discussion.reply_count = replies ? replies.length : 0;
+            }
+          }
+      
           const classData = this.classes.find(c => c.id === classId);
           const isTeacher = this.userInfo.profile.user_type === 'teacher';
-
+      
           let content = `
             <div style="margin-bottom: 20px;">
               <h3>💬 Class Discussions - ${classData?.name}</h3>
@@ -3153,7 +3181,7 @@
               </button>
             </div>
           `;
-
+      
           if (!discussions || discussions.length === 0) {
             content += `
               <div class="empty-state">
@@ -3168,15 +3196,15 @@
               </div>
             `;
           }
-
+      
           content += `
             <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
               <button class="btn btn-secondary" onclick="app.closeModal()">Close</button>
             </div>
           `;
-
+      
           this.showModal('discussions', '💬 Class Discussions', content);
-
+      
         } catch (error) {
           console.error('Error loading discussions:', error);
           this.showNotification('Error loading discussions: ' + error.message, 'error');
@@ -3184,11 +3212,11 @@
       }
 
       renderDiscussionCard(discussion, isTeacher) {
-        const author = discussion.user_profiles;
+        const author = discussion.user_profiles || { first_name: 'Unknown', last_name: 'User', user_type: 'unknown' };
         const createdDate = new Date(discussion.created_at).toLocaleDateString();
-        const replyCount = discussion.discussion_replies?.length || 0;
+        const replyCount = discussion.reply_count || 0;
         const canEdit = discussion.author_id === this.userInfo.user.id || isTeacher;
-
+      
         return `
           <div class="card" style="margin: 0 0 15px 0; cursor: pointer;" onclick="app.openDiscussion('${discussion.id}')">
             <div style="display: flex; justify-content: space-between; align-items: start;">
@@ -3297,26 +3325,60 @@
 
       async openDiscussion(discussionId) {
         try {
-          // Get discussion with replies
+          // Get discussion
           const { data: discussion, error } = await this.auth.supabase
             .from('class_discussions')
-            .select(`
-              *,
-              user_profiles!class_discussions_author_id_fkey(first_name, last_name, user_type),
-              discussion_replies(
-                *,
-                user_profiles!discussion_replies_author_id_fkey(first_name, last_name, user_type)
-              )
-            `)
+            .select('*')
             .eq('id', discussionId)
             .single();
       
           if (error) throw error;
       
-          const author = discussion.user_profiles;
+          // Get author profile
+          const { data: authorProfile } = await this.auth.supabase
+            .from('user_profiles')
+            .select('first_name, last_name, user_type')
+            .eq('id', discussion.author_id)
+            .single();
+      
+          const author = authorProfile || { first_name: 'Unknown', last_name: 'User', user_type: 'unknown' };
+      
+          // Get replies
+          const { data: replies } = await this.auth.supabase
+            .from('discussion_replies')
+            .select('*')
+            .eq('discussion_id', discussionId)
+            .order('created_at', { ascending: true });
+      
+          // Get profiles for reply authors
+          if (replies && replies.length > 0) {
+            const replyAuthorIds = [...new Set(replies.map(r => r.author_id))];
+            
+            const { data: replyProfiles } = await this.auth.supabase
+              .from('user_profiles')
+              .select('id, first_name, last_name, user_type')
+              .in('id', replyAuthorIds);
+      
+            // Create profile map
+            const profileMap = {};
+            if (replyProfiles) {
+              replyProfiles.forEach(p => {
+                profileMap[p.id] = p;
+              });
+            }
+      
+            // Attach profiles to replies
+            replies.forEach(r => {
+              r.user_profiles = profileMap[r.author_id] || {
+                first_name: 'Unknown',
+                last_name: 'User',
+                user_type: 'unknown'
+              };
+            });
+          }
+      
           const isTeacher = this.userInfo.profile.user_type === 'teacher';
           const isAuthor = discussion.author_id === this.userInfo.user.id;
-          const replies = discussion.discussion_replies || [];
       
           let content = `
             <div style="margin-bottom: 20px;">
@@ -3339,7 +3401,7 @@
       
             <!-- Reply Section -->
             <div style="margin-bottom: 20px;">
-              <h4 style="margin-bottom: 15px;">💬 Replies (${replies.length})</h4>
+              <h4 style="margin-bottom: 15px;">💬 Replies (${replies ? replies.length : 0})</h4>
               
               <!-- New Reply Form -->
               <div style="background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 15px; margin-bottom: 20px;">
@@ -3353,7 +3415,7 @@
       
               <!-- Existing Replies -->
               <div style="max-height: 400px; overflow-y: auto;">
-                ${replies.length === 0 ? 
+                ${!replies || replies.length === 0 ? 
                   '<p style="color: var(--muted); text-align: center;">No replies yet. Be the first to respond!</p>' :
                   replies.map(reply => this.renderReply(reply, isTeacher || reply.author_id === this.userInfo.user.id)).join('')
                 }
