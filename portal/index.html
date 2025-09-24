@@ -963,18 +963,16 @@
         console.log('Loaded', this.classes.length, 'classes for student');
       }
 
+      // Replace the loadMessages method with this simpler approach
+
       async loadMessages() {
         console.log('Loading messages...');
         
         try {
-          // Load messages with sender and recipient profiles
+          // First load the messages without joins
           const { data: messages, error } = await this.auth.supabase
             .from('messages')
-            .select(`
-              *,
-              sender:user_profiles!messages_sender_id_fkey(id, first_name, last_name, email, user_type),
-              recipient:user_profiles!messages_recipient_id_fkey(id, first_name, last_name, email, user_type)
-            `)
+            .select('*')
             .or(`sender_id.eq.${this.userInfo.user.id},recipient_id.eq.${this.userInfo.user.id}`)
             .order('created_at', { ascending: false })
             .limit(20);
@@ -983,6 +981,40 @@
             console.error('Error loading messages:', error);
             this.messages = [];
             return;
+          }
+      
+          // If we have messages, load the user profiles separately
+          if (messages && messages.length > 0) {
+            // Collect all unique user IDs
+            const userIds = new Set();
+            messages.forEach(msg => {
+              userIds.add(msg.sender_id);
+              userIds.add(msg.recipient_id);
+            });
+      
+            // Load all user profiles at once
+            const { data: profiles, error: profileError } = await this.auth.supabase
+              .from('user_profiles')
+              .select('id, first_name, last_name, email, user_type')
+              .in('id', Array.from(userIds));
+      
+            if (profileError) {
+              console.error('Error loading user profiles:', profileError);
+            }
+      
+            // Create a map for quick lookup
+            const profileMap = {};
+            if (profiles) {
+              profiles.forEach(profile => {
+                profileMap[profile.id] = profile;
+              });
+            }
+      
+            // Attach profiles to messages
+            messages.forEach(msg => {
+              msg.sender = profileMap[msg.sender_id] || null;
+              msg.recipient = profileMap[msg.recipient_id] || null;
+            });
           }
       
           this.messages = messages || [];
@@ -1725,28 +1757,37 @@
           let recipients = [];
       
           if (userType === 'teacher') {
-            // Teachers can message students in their classes and other teachers
+            // Get class IDs for teacher's classes
+            const classIds = this.classes.map(c => c.id);
             
-            // Get students in teacher's classes
-            const { data: enrollments } = await this.auth.supabase
-              .from('class_enrollments')
-              .select(`
-                student_id,
-                user_profiles!inner(id, first_name, last_name, email, user_type)
-              `)
-              .in('class_id', this.classes.map(c => c.id))
-              .eq('status', 'active');
+            if (classIds.length > 0) {
+              // Get students in teacher's classes
+              const { data: enrollments } = await this.auth.supabase
+                .from('class_enrollments')
+                .select('student_id')
+                .in('class_id', classIds)
+                .eq('status', 'active');
       
-            if (enrollments) {
-              enrollments.forEach(enrollment => {
-                const profile = enrollment.user_profiles;
-                recipients.push({
-                  id: profile.id,
-                  name: `${profile.first_name} ${profile.last_name}`,
-                  email: profile.email,
-                  type: 'Student'
-                });
-              });
+              if (enrollments && enrollments.length > 0) {
+                const studentIds = [...new Set(enrollments.map(e => e.student_id))];
+                
+                // Get student profiles
+                const { data: students } = await this.auth.supabase
+                  .from('user_profiles')
+                  .select('id, first_name, last_name, email, user_type')
+                  .in('id', studentIds);
+      
+                if (students) {
+                  students.forEach(student => {
+                    recipients.push({
+                      id: student.id,
+                      name: `${student.first_name} ${student.last_name}`,
+                      email: student.email,
+                      type: 'Student'
+                    });
+                  });
+                }
+              }
             }
       
             // Get other teachers and staff
@@ -1769,40 +1810,32 @@
       
           } else if (userType === 'student') {
             // Students can message teachers of their classes
-            // First get the teacher IDs from the classes
-            const teacherIds = this.classes.map(c => c.teacher_id).filter(id => id);
+            const teacherIds = [...new Set(this.classes.map(c => c.teacher_id).filter(id => id))];
             
             if (teacherIds.length > 0) {
-              // Then get the teacher profiles using those IDs
-              const { data: teacherProfiles, error: teacherError } = await this.auth.supabase
+              const { data: teacherProfiles } = await this.auth.supabase
                 .from('user_profiles')
                 .select('id, first_name, last_name, email, user_type')
-                .in('id', teacherIds)
-                .eq('user_type', 'teacher');
-          
-              if (teacherError) {
-                console.error('Error loading teachers for messaging:', teacherError);
-              } else if (teacherProfiles) {
+                .in('id', teacherIds);
+      
+              if (teacherProfiles) {
                 teacherProfiles.forEach(teacher => {
-                  // Avoid duplicates if teacher teaches multiple classes
-                  if (!recipients.find(r => r.id === teacher.id)) {
-                    recipients.push({
-                      id: teacher.id,
-                      name: `${teacher.first_name} ${teacher.last_name}`,
-                      email: teacher.email,
-                      type: 'Teacher'
-                    });
-                  }
+                  recipients.push({
+                    id: teacher.id,
+                    name: `${teacher.first_name} ${teacher.last_name}`,
+                    email: teacher.email,
+                    type: 'Teacher'
+                  });
                 });
               }
             }
-          
+      
             // Also allow students to message admin staff
             const { data: adminStaff } = await this.auth.supabase
               .from('user_profiles')
               .select('id, first_name, last_name, email, user_type')
               .eq('user_type', 'admin');
-          
+      
             if (adminStaff) {
               adminStaff.forEach(admin => {
                 recipients.push({
