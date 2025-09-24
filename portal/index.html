@@ -963,65 +963,83 @@
         console.log('Loaded', this.classes.length, 'classes for student');
       }
 
-      // Replace the loadMessages method with this simpler approach
-
       async loadMessages() {
-        console.log('Loading messages...');
+        console.log('Loading message threads...');
         
         try {
-          // First load the messages without joins
+          // Get all messages for this user
           const { data: messages, error } = await this.auth.supabase
             .from('messages')
             .select('*')
             .or(`sender_id.eq.${this.userInfo.user.id},recipient_id.eq.${this.userInfo.user.id}`)
-            .order('created_at', { ascending: false })
-            .limit(20);
+            .order('created_at', { ascending: false });
       
           if (error) {
             console.error('Error loading messages:', error);
             this.messages = [];
+            this.messageThreads = [];
             return;
           }
       
-          // If we have messages, load the user profiles separately
-          if (messages && messages.length > 0) {
-            // Collect all unique user IDs
-            const userIds = new Set();
-            messages.forEach(msg => {
-              userIds.add(msg.sender_id);
-              userIds.add(msg.recipient_id);
-            });
+          // Group messages into conversations
+          const conversations = {};
+          
+          messages?.forEach(msg => {
+            // Determine the other person in the conversation
+            const otherPersonId = msg.sender_id === this.userInfo.user.id ? 
+              msg.recipient_id : msg.sender_id;
+            
+            if (!conversations[otherPersonId]) {
+              conversations[otherPersonId] = [];
+            }
+            conversations[otherPersonId].push(msg);
+          });
       
-            // Load all user profiles at once
-            const { data: profiles, error: profileError } = await this.auth.supabase
+          // Get user profiles for all conversation participants
+          const userIds = Object.keys(conversations);
+          if (userIds.length > 0) {
+            const { data: profiles } = await this.auth.supabase
               .from('user_profiles')
               .select('id, first_name, last_name, email, user_type')
-              .in('id', Array.from(userIds));
+              .in('id', userIds);
       
-            if (profileError) {
-              console.error('Error loading user profiles:', profileError);
-            }
-      
-            // Create a map for quick lookup
-            const profileMap = {};
-            if (profiles) {
-              profiles.forEach(profile => {
-                profileMap[profile.id] = profile;
-              });
-            }
-      
-            // Attach profiles to messages
-            messages.forEach(msg => {
-              msg.sender = profileMap[msg.sender_id] || null;
-              msg.recipient = profileMap[msg.recipient_id] || null;
+            // Create conversation threads
+            this.messageThreads = userIds.map(userId => {
+              const profile = profiles?.find(p => p.id === userId) || {
+                first_name: 'Unknown',
+                last_name: 'User',
+                user_type: 'unknown'
+              };
+              
+              const threadMessages = conversations[userId];
+              const lastMessage = threadMessages[0]; // Already sorted by date desc
+              const unreadCount = threadMessages.filter(m => 
+                m.recipient_id === this.userInfo.user.id && !m.is_read
+              ).length;
+              
+              return {
+                userId: userId,
+                profile: profile,
+                messages: threadMessages,
+                lastMessage: lastMessage,
+                unreadCount: unreadCount,
+                lastMessageDate: new Date(lastMessage.created_at)
+              };
             });
+      
+            // Sort threads by last message date
+            this.messageThreads.sort((a, b) => b.lastMessageDate - a.lastMessageDate);
+          } else {
+            this.messageThreads = [];
           }
       
           this.messages = messages || [];
-          console.log('Loaded', this.messages.length, 'messages');
+          console.log('Loaded', this.messageThreads.length, 'conversation threads');
+          
         } catch (error) {
           console.error('Error in loadMessages:', error);
           this.messages = [];
+          this.messageThreads = [];
         }
       }
 
@@ -1290,45 +1308,213 @@
         `;
       }
 
-      renderMessages() {
-        const messagesList = document.getElementById('messages-list');
+      renderMessage(msg) {
+        const isSent = msg.sender_id === this.userInfo.user.id;
+        const time = new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        const date = new Date(msg.created_at).toLocaleDateString();
         
-        if (this.messages.length === 0) {
-          messagesList.innerHTML = `
-            <div class="empty-state">
-              <h3>📬 No Messages</h3>
-              <p>Your messages will appear here</p>
+        return `
+          <div style="margin-bottom: 15px; display: flex; ${isSent ? 'justify-content: flex-end' : 'justify-content: flex-start'};">
+            <div style="max-width: 70%; ${isSent ? 'text-align: right' : 'text-align: left'};">
+              ${msg.subject && msg.subject !== 'Re: ' && msg.subject !== '' ? `
+                <div style="font-size: 11px; color: var(--muted); margin-bottom: 4px;">
+                  ${msg.subject}
+                </div>
+              ` : ''}
+              <div style="
+                background: ${isSent ? 'var(--accent)' : 'var(--card)'};
+                color: ${isSent ? 'black' : 'var(--text)'};
+                padding: 10px 15px;
+                border-radius: ${isSent ? '18px 18px 4px 18px' : '18px 18px 18px 4px'};
+                display: inline-block;
+                max-width: 100%;
+                word-wrap: break-word;
+                text-align: left;
+              ">
+                ${msg.content.replace(/\n/g, '<br>')}
+              </div>
+              <div style="font-size: 10px; color: var(--muted); margin-top: 4px;">
+                ${time} • ${date}
+              </div>
             </div>
-          `;
+          </div>
+        `;
+      }
+
+      renderConversationThread(thread) {
+        const profile = thread.profile;
+        const lastMessage = thread.lastMessage;
+        const isSent = lastMessage.sender_id === this.userInfo.user.id;
+        const messagePreview = lastMessage.content.length > 50 ? 
+          lastMessage.content.substring(0, 50) + '...' : lastMessage.content;
+        
+        return `
+          <div class="list-item" style="cursor: pointer; ${thread.unreadCount > 0 ? 'background: rgba(106, 169, 255, 0.1);' : ''}" 
+               onclick="app.openConversation('${thread.userId}')">
+            <div class="list-item-content">
+              <div class="list-item-title" style="display: flex; align-items: center; gap: 10px;">
+                ${profile.first_name} ${profile.last_name}
+                <span style="font-size: 11px; color: var(--muted);">(${profile.user_type})</span>
+                ${thread.unreadCount > 0 ? `
+                  <span style="background: var(--accent); color: white; padding: 2px 6px; border-radius: 10px; font-size: 11px;">
+                    ${thread.unreadCount} new
+                  </span>
+                ` : ''}
+              </div>
+              <div class="list-item-meta">
+                ${isSent ? '→ You: ' : '← '}${messagePreview}
+              </div>
+              <div style="font-size: 11px; color: var(--muted); margin-top: 4px;">
+                ${this.formatMessageDate(thread.lastMessageDate)}
+              </div>
+            </div>
+            <button class="btn btn-secondary small" onclick="event.stopPropagation(); app.openConversation('${thread.userId}')">
+              Open Chat
+            </button>
+          </div>
+        `;
+      }
+
+      async openConversation(otherUserId) {
+        // Get the conversation thread
+        const thread = this.messageThreads?.find(t => t.userId === otherUserId);
+        if (!thread) {
+          // New conversation - get user profile
+          const { data: profile } = await this.auth.supabase
+            .from('user_profiles')
+            .select('id, first_name, last_name, email, user_type')
+            .eq('id', otherUserId)
+            .single();
+          
+          if (profile) {
+            this.showConversationThread({
+              userId: otherUserId,
+              profile: profile,
+              messages: [],
+              unreadCount: 0
+            });
+          }
+          return;
+        }
+        
+        // Mark messages as read
+        if (thread.unreadCount > 0) {
+          const unreadIds = thread.messages
+            .filter(m => m.recipient_id === this.userInfo.user.id && !m.is_read)
+            .map(m => m.id);
+          
+          await this.auth.supabase
+            .from('messages')
+            .update({ is_read: true })
+            .in('id', unreadIds);
+        }
+        
+        this.showConversationThread(thread);
+      }
+
+      showConversationThread(thread) {
+        const profile = thread.profile;
+        const messages = thread.messages || [];
+        
+        // Sort messages chronologically for display
+        const sortedMessages = [...messages].sort((a, b) => 
+          new Date(a.created_at) - new Date(b.created_at)
+        );
+        
+        const modalContent = `
+          <div style="height: 500px; display: flex; flex-direction: column;">
+            <!-- Header -->
+            <div style="padding: 15px; border-bottom: 1px solid var(--border); background: var(--card);">
+              <h4 style="margin: 0;">${profile.first_name} ${profile.last_name}</h4>
+              <div style="font-size: 12px; color: var(--muted);">
+                ${profile.user_type} • ${profile.email}
+              </div>
+            </div>
+            
+            <!-- Messages Container -->
+            <div id="messages-container" style="flex: 1; overflow-y: auto; padding: 15px; background: var(--bg);">
+              ${sortedMessages.length === 0 ? 
+                '<p style="text-align: center; color: var(--muted);">No messages yet. Start the conversation!</p>' :
+                sortedMessages.map(msg => this.renderMessage(msg)).join('')
+              }
+            </div>
+            
+            <!-- Message Input -->
+            <div style="padding: 15px; border-top: 1px solid var(--border); background: var(--card);">
+              <form id="conversation-reply-form" style="display: flex; gap: 10px;">
+                <input type="text" id="conversation-message" placeholder="Type a message..." 
+                       style="flex: 1; padding: 10px; border-radius: 20px; border: 1px solid var(--border); 
+                              background: var(--bg); color: var(--text);" required>
+                <button type="submit" class="btn btn-primary" style="border-radius: 20px;">
+                  Send →
+                </button>
+              </form>
+            </div>
+          </div>
+        `;
+        
+        if (window.portalModal) {
+          window.portalModal.create('conversation', {
+            title: `💬 Conversation with ${profile.first_name} ${profile.last_name}`,
+            content: modalContent,
+            size: 'medium'
+          });
         } else {
-          messagesList.innerHTML = `
-            <div class="list">
-              ${this.messages.map(msg => {
-                const isSent = msg.sender_id === this.userInfo.user.id;
-                const otherPerson = isSent ? msg.recipient : msg.sender;
-                const personName = otherPerson ? 
-                  `${otherPerson.first_name} ${otherPerson.last_name}` : 
-                  'Unknown User';
-                const personType = otherPerson?.user_type || '';
-                
-                return `
-                  <div class="list-item">
-                    <div class="list-item-content">
-                      <div class="list-item-title">${msg.subject}</div>
-                      <div class="list-item-meta">
-                        ${isSent ? `To: ${personName}` : `From: ${personName}`} 
-                        ${personType ? `(${personType})` : ''} • 
-                        ${new Date(msg.created_at).toLocaleDateString()}
-                      </div>
-                    </div>
-                    <button class="btn btn-secondary small" onclick="app.viewMessage('${msg.id}')">
-                      View
-                    </button>
-                  </div>
-                `;
-              }).join('')}
-            </div>
-          `;
+          this.showModal('conversation', `💬 Conversation with ${profile.first_name} ${profile.last_name}`, modalContent);
+        }
+
+        / Setup message form
+        document.getElementById('conversation-reply-form').addEventListener('submit', (e) => {
+          e.preventDefault();
+          this.sendMessageInThread(profile.id);
+        });
+        
+        // Scroll to bottom
+        setTimeout(() => {
+          const container = document.getElementById('messages-container');
+          if (container) container.scrollTop = container.scrollHeight;
+        }, 100);
+      }
+
+      async sendMessageInThread(recipientId) {
+        const content = document.getElementById('conversation-message').value;
+        
+        if (!content.trim()) return;
+        
+        try {
+          // Find existing thread ID if it exists
+          const existingThread = this.messageThreads?.find(t => t.userId === recipientId);
+          let threadId = existingThread?.messages[0]?.thread_id;
+          
+          // Generate new thread ID if needed
+          if (!threadId) {
+            threadId = crypto.randomUUID();
+          }
+          
+          const { error } = await this.auth.supabase
+            .from('messages')
+            .insert([{
+              sender_id: this.userInfo.user.id,
+              recipient_id: recipientId,
+              subject: '',  // No subject in chat-style messaging
+              content: content,
+              thread_id: threadId,
+              is_read: false
+            }]);
+      
+          if (error) throw error;
+          
+          // Clear input
+          document.getElementById('conversation-message').value = '';
+          
+          // Reload messages and refresh the conversation
+          await this.loadMessages();
+          this.renderMessages();
+          this.openConversation(recipientId);
+          
+        } catch (error) {
+          console.error('Error sending message:', error);
+          this.showNotification('Error sending message: ' + error.message, 'error');
         }
       }
 
@@ -1381,6 +1567,21 @@
             </div>
           `;
         }
+
+      formatMessageDate(date) {
+        const now = new Date();
+        const diffMs = now - date;
+        const diffMins = Math.floor(diffMs / 60000);
+        const diffHours = Math.floor(diffMs / 3600000);
+        const diffDays = Math.floor(diffMs / 86400000);
+        
+        if (diffMins < 1) return 'Just now';
+        if (diffMins < 60) return `${diffMins} min ago`;
+        if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
+        if (diffDays < 7) return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
+        return date.toLocaleDateString();
+      }
+      
       // Account Deletion
       showDeleteAccountConfirmation() {
         const modalContent = `
@@ -2265,29 +2466,34 @@
         const subject = document.getElementById('message-subject')?.value;
         const content = document.getElementById('message-content')?.value;
         
-        if (!recipientId || !subject || !content) {
+        if (!recipientId || !content) {
           if (window.PortalUI) {
-            window.PortalUI.showNotification('Please fill in all fields', 'error');
+            window.PortalUI.showNotification('Please select a recipient and enter a message', 'error');
           }
           return;
         }
         
         try {
-          // Get recipient info for confirmation message
-          const selectedRecipient = this.messageRecipients?.find(r => r.id === recipientId);
-          const recipientName = selectedRecipient ? selectedRecipient.name : 'recipient';
+          // Generate thread ID for new conversation
+          const threadId = crypto.randomUUID();
           
           const { error } = await this.auth.supabase
             .from('messages')
             .insert([{
               sender_id: this.userInfo.user.id,
               recipient_id: recipientId,
-              subject: subject,
-              content: content
+              subject: subject || '',
+              content: content,
+              thread_id: threadId,
+              is_read: false
             }]);
       
           if (error) throw error;
-      
+          
+          // Get recipient name
+          const selectedRecipient = this.messageRecipients?.find(r => r.id === recipientId);
+          const recipientName = selectedRecipient ? selectedRecipient.name : 'recipient';
+          
           if (window.PortalUI) {
             window.PortalUI.showNotification(`Message sent to ${recipientName}!`, 'success');
           }
@@ -2298,6 +2504,9 @@
           // Refresh messages
           await this.loadMessages();
           this.renderMessages();
+          
+          // Open the conversation
+          this.openConversation(recipientId);
       
         } catch (error) {
           console.error('Error sending message:', error);
