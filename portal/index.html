@@ -966,23 +966,31 @@
       async loadMessages() {
         console.log('Loading messages...');
         
-        // Simple messages query without relationships
-        const { data: messages, error } = await this.auth.supabase
-          .from('messages')
-          .select('*')
-          .or(`sender_id.eq.${this.userInfo.user.id},recipient_id.eq.${this.userInfo.user.id}`)
-          .order('created_at', { ascending: false })
-          .limit(10);
-
-        if (error) {
-          console.error('Error loading messages:', error);
-          // Don't show error for messages since it's not critical
+        try {
+          // Load messages with sender and recipient profiles
+          const { data: messages, error } = await this.auth.supabase
+            .from('messages')
+            .select(`
+              *,
+              sender:user_profiles!messages_sender_id_fkey(id, first_name, last_name, email, user_type),
+              recipient:user_profiles!messages_recipient_id_fkey(id, first_name, last_name, email, user_type)
+            `)
+            .or(`sender_id.eq.${this.userInfo.user.id},recipient_id.eq.${this.userInfo.user.id}`)
+            .order('created_at', { ascending: false })
+            .limit(20);
+      
+          if (error) {
+            console.error('Error loading messages:', error);
+            this.messages = [];
+            return;
+          }
+      
+          this.messages = messages || [];
+          console.log('Loaded', this.messages.length, 'messages');
+        } catch (error) {
+          console.error('Error in loadMessages:', error);
           this.messages = [];
-          return;
         }
-
-        this.messages = messages || [];
-        console.log('Loaded', this.messages.length, 'messages');
       }
 
       setupHomeContent() {
@@ -1263,20 +1271,30 @@
         } else {
           messagesList.innerHTML = `
             <div class="list">
-              ${this.messages.map(msg => `
-                <div class="list-item">
-                  <div class="list-item-content">
-                    <div class="list-item-title">${msg.subject}</div>
-                    <div class="list-item-meta">
-                      ${msg.sender_id === this.userInfo.user.id ? 'Sent' : 'Received'} • 
-                      ${new Date(msg.created_at).toLocaleDateString()}
+              ${this.messages.map(msg => {
+                const isSent = msg.sender_id === this.userInfo.user.id;
+                const otherPerson = isSent ? msg.recipient : msg.sender;
+                const personName = otherPerson ? 
+                  `${otherPerson.first_name} ${otherPerson.last_name}` : 
+                  'Unknown User';
+                const personType = otherPerson?.user_type || '';
+                
+                return `
+                  <div class="list-item">
+                    <div class="list-item-content">
+                      <div class="list-item-title">${msg.subject}</div>
+                      <div class="list-item-meta">
+                        ${isSent ? `To: ${personName}` : `From: ${personName}`} 
+                        ${personType ? `(${personType})` : ''} • 
+                        ${new Date(msg.created_at).toLocaleDateString()}
+                      </div>
                     </div>
+                    <button class="btn btn-secondary small" onclick="app.viewMessage('${msg.id}')">
+                      View
+                    </button>
                   </div>
-                  <button class="btn btn-secondary small" onclick="app.viewMessage('${msg.id}')">
-                    View
-                  </button>
-                </div>
-              `).join('')}
+                `;
+              }).join('')}
             </div>
           `;
         }
@@ -2210,11 +2228,11 @@
       }
 
       async sendMessage() {
-        const recipient = document.getElementById('message-recipient')?.value;
+        const recipientId = document.getElementById('message-recipient')?.value;
         const subject = document.getElementById('message-subject')?.value;
         const content = document.getElementById('message-content')?.value;
         
-        if (!recipient || !subject || !content) {
+        if (!recipientId || !subject || !content) {
           if (window.PortalUI) {
             window.PortalUI.showNotification('Please fill in all fields', 'error');
           }
@@ -2222,19 +2240,23 @@
         }
         
         try {
+          // Get recipient info for confirmation message
+          const selectedRecipient = this.messageRecipients?.find(r => r.id === recipientId);
+          const recipientName = selectedRecipient ? selectedRecipient.name : 'recipient';
+          
           const { error } = await this.auth.supabase
             .from('messages')
             .insert([{
               sender_id: this.userInfo.user.id,
-              recipient_id: recipient,
+              recipient_id: recipientId,
               subject: subject,
               content: content
             }]);
-
+      
           if (error) throw error;
-
+      
           if (window.PortalUI) {
-            window.PortalUI.showNotification('Message sent successfully!', 'success');
+            window.PortalUI.showNotification(`Message sent to ${recipientName}!`, 'success');
           }
           
           // Clear form
@@ -2243,7 +2265,7 @@
           // Refresh messages
           await this.loadMessages();
           this.renderMessages();
-
+      
         } catch (error) {
           console.error('Error sending message:', error);
           if (window.PortalUI) {
@@ -2255,50 +2277,86 @@
       viewMessage(messageId) {
         const message = this.messages.find(m => m.id === messageId);
         if (!message) return;
-
+      
+        const isSent = message.sender_id === this.userInfo.user.id;
+        const sender = message.sender;
+        const recipient = message.recipient;
+        
+        const senderName = sender ? `${sender.first_name} ${sender.last_name}` : 'Unknown';
+        const recipientName = recipient ? `${recipient.first_name} ${recipient.last_name}` : 'Unknown';
+      
         const modalContent = `
           <div style="margin-bottom: 20px;">
             <div style="padding-bottom: 10px; border-bottom: 1px solid var(--border); margin-bottom: 15px;">
-              <h4 style="margin-bottom: 5px;">${message.subject}</h4>
-              <div style="font-size: 12px; color: var(--muted);">
-                ${message.sender_id === this.userInfo.user.id ? 'Sent' : 'Received'} • 
-                ${new Date(message.created_at).toLocaleString()}
+              <h4 style="margin-bottom: 10px; color: var(--text);">${message.subject}</h4>
+              <div style="font-size: 12px; color: var(--muted); line-height: 1.6;">
+                <div><strong>From:</strong> ${senderName} ${sender ? `(${sender.user_type})` : ''}</div>
+                <div><strong>To:</strong> ${recipientName} ${recipient ? `(${recipient.user_type})` : ''}</div>
+                <div><strong>Date:</strong> ${new Date(message.created_at).toLocaleString()}</div>
               </div>
             </div>
-            <div style="line-height: 1.6;">
-              ${message.content.replace(/\n/g, '<br>')}
+            <div style="line-height: 1.6; white-space: pre-wrap; word-wrap: break-word;">
+              ${message.content}
             </div>
           </div>
         `;
-
+      
+        const footerButtons = isSent ? 
+          `<button class="btn btn-secondary" onclick="window.portalModal ? window.portalModal.close('view-message') : app.closeModal()">Close</button>` :
+          `
+            <button class="btn btn-secondary" onclick="window.portalModal ? window.portalModal.close('view-message') : app.closeModal()">Close</button>
+            <button class="btn btn-primary" onclick="app.replyToMessage('${messageId}')">Reply</button>
+          `;
+      
         if (window.portalModal) {
           window.portalModal.create('view-message', {
             title: '📧 Message',
             content: modalContent,
             size: 'medium',
-            footer: `
-              <button class="btn btn-secondary" onclick="window.portalModal.close('view-message')">Close</button>
-              <button class="btn btn-primary" onclick="app.replyToMessage('${messageId}')">Reply</button>
-            `
+            footer: footerButtons
           });
+        } else {
+          this.showModal('view-message', '📧 Message', modalContent + `
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              ${footerButtons}
+            </div>
+          `);
         }
       }
 
       replyToMessage(messageId) {
         const message = this.messages.find(m => m.id === messageId);
         if (!message) return;
-
+      
+        // Close the view message modal
         if (window.portalModal) {
           window.portalModal.close('view-message');
+        } else {
+          this.closeModal();
         }
-        
-        // Pre-fill reply form
-        document.getElementById('message-recipient').value = message.sender_id;
-        document.getElementById('message-subject').value = `Re: ${message.subject}`;
-        document.getElementById('message-content').value = `\n\n--- Original Message ---\n${message.content}`;
         
         // Switch to messaging section
         this.showSection('messaging');
+        
+        // Wait for DOM update then pre-fill the form
+        setTimeout(() => {
+          const recipientDropdown = document.getElementById('message-recipient');
+          const subjectInput = document.getElementById('message-subject');
+          const contentInput = document.getElementById('message-content');
+          
+          if (recipientDropdown && subjectInput && contentInput) {
+            // Set recipient to the SENDER of the original message (we're replying TO them)
+            recipientDropdown.value = message.sender_id;
+            
+            // Add "Re: " to subject if not already there
+            const subject = message.subject;
+            subjectInput.value = subject.startsWith('Re: ') ? subject : `Re: ${subject}`;
+            
+            // Clear content area for fresh reply (don't quote entire thread)
+            contentInput.value = '';
+            contentInput.focus();
+          }
+        }, 100);
       }
 
       // =============================================================================
@@ -3201,6 +3259,304 @@
         } catch (error) {
           console.error('Error creating discussion:', error);
           this.showNotification('Error creating discussion: ' + error.message, 'error');
+        }
+      }
+
+      async openDiscussion(discussionId) {
+        try {
+          // Get discussion with replies
+          const { data: discussion, error } = await this.auth.supabase
+            .from('class_discussions')
+            .select(`
+              *,
+              user_profiles!class_discussions_author_id_fkey(first_name, last_name, user_type),
+              discussion_replies(
+                *,
+                user_profiles!discussion_replies_author_id_fkey(first_name, last_name, user_type)
+              )
+            `)
+            .eq('id', discussionId)
+            .single();
+      
+          if (error) throw error;
+      
+          const author = discussion.user_profiles;
+          const isTeacher = this.userInfo.profile.user_type === 'teacher';
+          const isAuthor = discussion.author_id === this.userInfo.user.id;
+          const replies = discussion.discussion_replies || [];
+      
+          let content = `
+            <div style="margin-bottom: 20px;">
+              <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+                ${discussion.discussion_type === 'announcement' ? '📢' : discussion.discussion_type === 'question' ? '❓' : '💬'}
+                <h3 style="margin: 0;">${discussion.title || 'Discussion'}</h3>
+                ${discussion.is_pinned ? '<span style="background: var(--warning); color: black; padding: 2px 6px; border-radius: 4px; font-size: 10px;">PINNED</span>' : ''}
+              </div>
+              
+              <div style="background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 15px; margin-bottom: 20px;">
+                <div style="font-size: 12px; color: var(--muted); margin-bottom: 10px;">
+                  By ${author.first_name} ${author.last_name} (${author.user_type}) • 
+                  ${new Date(discussion.created_at).toLocaleString()}
+                </div>
+                <div style="line-height: 1.6; color: var(--text);">
+                  ${discussion.content.replace(/\n/g, '<br>')}
+                </div>
+              </div>
+            </div>
+      
+            <!-- Reply Section -->
+            <div style="margin-bottom: 20px;">
+              <h4 style="margin-bottom: 15px;">💬 Replies (${replies.length})</h4>
+              
+              <!-- New Reply Form -->
+              <div style="background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 15px; margin-bottom: 20px;">
+                <form id="reply-form">
+                  <div class="form-group">
+                    <textarea id="reply-content" rows="3" placeholder="Write your reply..." required style="width: 100%;"></textarea>
+                  </div>
+                  <button type="submit" class="btn btn-primary">Post Reply</button>
+                </form>
+              </div>
+      
+              <!-- Existing Replies -->
+              <div style="max-height: 400px; overflow-y: auto;">
+                ${replies.length === 0 ? 
+                  '<p style="color: var(--muted); text-align: center;">No replies yet. Be the first to respond!</p>' :
+                  replies.map(reply => this.renderReply(reply, isTeacher || reply.author_id === this.userInfo.user.id)).join('')
+                }
+              </div>
+            </div>
+      
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              ${(isAuthor || isTeacher) ? `
+                <button class="btn btn-secondary" onclick="app.editDiscussion('${discussionId}')">✏️ Edit</button>
+                <button class="btn danger" onclick="app.deleteDiscussion('${discussionId}')">🗑️ Delete</button>
+              ` : ''}
+              <button class="btn btn-secondary" onclick="app.closeModal()">Close</button>
+            </div>
+          `;
+      
+          this.showModal('discussion-thread', discussion.title || 'Discussion', content);
+      
+          // Setup reply form
+          document.getElementById('reply-form').addEventListener('submit', (e) => {
+            e.preventDefault();
+            this.postReply(discussionId);
+          });
+      
+        } catch (error) {
+          console.error('Error opening discussion:', error);
+          this.showNotification('Error opening discussion: ' + error.message, 'error');
+        }
+      }
+      
+      // Render individual reply
+      renderReply(reply, canDelete) {
+        const author = reply.user_profiles;
+        const replyDate = new Date(reply.created_at).toLocaleString();
+      
+        return `
+          <div style="background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 10px;">
+            <div style="display: flex; justify-content: space-between; align-items: start;">
+              <div style="flex: 1;">
+                <div style="font-size: 12px; color: var(--muted); margin-bottom: 8px;">
+                  ${author.first_name} ${author.last_name} (${author.user_type}) • ${replyDate}
+                </div>
+                <div style="line-height: 1.5; color: var(--text);">
+                  ${reply.content.replace(/\n/g, '<br>')}
+                </div>
+              </div>
+              ${canDelete ? `
+                <button class="btn danger small" onclick="app.deleteReply('${reply.id}', '${reply.discussion_id}')" style="margin-left: 10px;">
+                  🗑️
+                </button>
+              ` : ''}
+            </div>
+          </div>
+        `;
+      }
+      
+      // Post a reply to discussion
+      async postReply(discussionId) {
+        const content = document.getElementById('reply-content').value;
+      
+        if (!content.trim()) {
+          this.showNotification('Please enter a reply', 'error');
+          return;
+        }
+      
+        try {
+          const { error } = await this.auth.supabase
+            .from('discussion_replies')
+            .insert([{
+              discussion_id: discussionId,
+              author_id: this.userInfo.user.id,
+              content: content
+            }]);
+      
+          if (error) throw error;
+      
+          this.showNotification('Reply posted successfully!', 'success');
+          
+          // Refresh the discussion
+          this.openDiscussion(discussionId);
+      
+        } catch (error) {
+          console.error('Error posting reply:', error);
+          this.showNotification('Error posting reply: ' + error.message, 'error');
+        }
+      }
+      
+      // Delete a reply
+      async deleteReply(replyId, discussionId) {
+        if (!confirm('Delete this reply?')) {
+          return;
+        }
+      
+        try {
+          const { error } = await this.auth.supabase
+            .from('discussion_replies')
+            .delete()
+            .eq('id', replyId);
+      
+          if (error) throw error;
+      
+          this.showNotification('Reply deleted', 'success');
+          
+          // Refresh the discussion
+          this.openDiscussion(discussionId);
+      
+        } catch (error) {
+          console.error('Error deleting reply:', error);
+          this.showNotification('Error deleting reply: ' + error.message, 'error');
+        }
+      }
+      
+      // Edit discussion
+      async editDiscussion(discussionId) {
+        try {
+          const { data: discussion, error } = await this.auth.supabase
+            .from('class_discussions')
+            .select('*')
+            .eq('id', discussionId)
+            .single();
+      
+          if (error) throw error;
+      
+          const isTeacher = this.userInfo.profile.user_type === 'teacher';
+      
+          const modalContent = `
+            <form id="edit-discussion-form">
+              <div class="form-group">
+                <label for="edit-discussion-type">Discussion Type</label>
+                <select id="edit-discussion-type">
+                  ${isTeacher ? `<option value="announcement" ${discussion.discussion_type === 'announcement' ? 'selected' : ''}>📢 Announcement</option>` : ''}
+                  <option value="question" ${discussion.discussion_type === 'question' ? 'selected' : ''}>❓ Question</option>
+                  <option value="general" ${discussion.discussion_type === 'general' ? 'selected' : ''}>💬 General Discussion</option>
+                  <option value="assignment_help" ${discussion.discussion_type === 'assignment_help' ? 'selected' : ''}>📝 Assignment Help</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="edit-discussion-title">Title</label>
+                <input type="text" id="edit-discussion-title" value="${discussion.title || ''}" placeholder="Enter discussion title">
+              </div>
+              <div class="form-group">
+                <label for="edit-discussion-content">Content *</label>
+                <textarea id="edit-discussion-content" rows="6" required>${discussion.content}</textarea>
+              </div>
+              ${isTeacher ? `
+                <div class="form-group">
+                  <label>
+                    <input type="checkbox" id="edit-discussion-pinned" ${discussion.is_pinned ? 'checked' : ''}> Pin this discussion
+                  </label>
+                </div>
+              ` : ''}
+              <div style="display: flex; gap: 10px; margin-top: 20px;">
+                <button type="button" class="btn btn-secondary" onclick="app.closeModal()">Cancel</button>
+                <button type="submit" class="btn btn-primary">Save Changes</button>
+              </div>
+            </form>
+          `;
+      
+          this.showModal('edit-discussion', '✏️ Edit Discussion', modalContent);
+      
+          document.getElementById('edit-discussion-form').addEventListener('submit', (e) => {
+            e.preventDefault();
+            this.submitEditDiscussion(discussionId, discussion.class_id);
+          });
+      
+        } catch (error) {
+          console.error('Error loading discussion:', error);
+          this.showNotification('Error loading discussion: ' + error.message, 'error');
+        }
+      }
+      
+      // Submit edited discussion
+      async submitEditDiscussion(discussionId, classId) {
+        const updatedData = {
+          title: document.getElementById('edit-discussion-title').value || null,
+          content: document.getElementById('edit-discussion-content').value,
+          discussion_type: document.getElementById('edit-discussion-type').value,
+          is_pinned: document.getElementById('edit-discussion-pinned')?.checked || false,
+          updated_at: new Date().toISOString()
+        };
+      
+        if (!updatedData.content.trim()) {
+          this.showNotification('Please enter discussion content', 'error');
+          return;
+        }
+      
+        try {
+          const { error } = await this.auth.supabase
+            .from('class_discussions')
+            .update(updatedData)
+            .eq('id', discussionId);
+      
+          if (error) throw error;
+      
+          this.showNotification('Discussion updated successfully!', 'success');
+          this.closeModal();
+          
+          // Refresh discussions
+          setTimeout(() => this.viewDiscussions(classId), 100);
+      
+        } catch (error) {
+          console.error('Error updating discussion:', error);
+          this.showNotification('Error updating discussion: ' + error.message, 'error');
+        }
+      }
+      
+      // Delete discussion
+      async deleteDiscussion(discussionId) {
+        if (!confirm('Delete this discussion and all replies? This cannot be undone.')) {
+          return;
+        }
+      
+        try {
+          // Get class ID before deletion for refresh
+          const { data: discussion } = await this.auth.supabase
+            .from('class_discussions')
+            .select('class_id')
+            .eq('id', discussionId)
+            .single();
+      
+          const { error } = await this.auth.supabase
+            .from('class_discussions')
+            .delete()
+            .eq('id', discussionId);
+      
+          if (error) throw error;
+      
+          this.showNotification('Discussion deleted successfully', 'success');
+          
+          // Refresh discussions
+          if (discussion) {
+            setTimeout(() => this.viewDiscussions(discussion.class_id), 100);
+          }
+      
+        } catch (error) {
+          console.error('Error deleting discussion:', error);
+          this.showNotification('Error deleting discussion: ' + error.message, 'error');
         }
       }
 
