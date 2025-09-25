@@ -2169,145 +2169,178 @@
         }
       }
       
-      async viewDiscussions(classId) {
-        try {
-          if (!classId) throw new Error('classId is required');
-      
-          // --- helpers (why: avoid `.length` on undefined) ---
-          const arr = (v) => (Array.isArray(v) ? v : (v == null ? [] : [v]).filter(() => true));
-      
-          let discussions = [];
-          let primaryErr = null;
-      
-          // 1) Try stacked view
-          const { data: viaViewRaw, error: viewErr } = await this.auth.supabase
-            .from('discussion_thread_summaries')
-            .select('id, class_id, created_by, title, is_locked, is_pinned, activity_at, comment_count, created_at')
-            .eq('class_id', classId)
-            .order('is_pinned', { ascending: false })
-            .order('activity_at', { ascending: false });
-      
-          const viaView = arr(viaViewRaw);
-          if (viewErr) primaryErr = viewErr;
-      
-          const needFallback = !!primaryErr || viaView.length === 0;
-      
-          if (needFallback) {
-            // 2) Fallback to base table
-            const { data: viaTableRaw, error: tblErr } = await this.auth.supabase
-              .from('class_discussions')
-              .select('id, class_id, author_id, title, created_at')
-              .eq('class_id', classId)
-              .order('created_at', { ascending: false });
-      
-            if (tblErr) throw tblErr;
-            const viaTable = arr(viaTableRaw);
-      
-            discussions = viaTable.map(d => ({
-              id: d.id,
-              class_id: d.class_id,
-              created_by: d.author_id,
-              title: d.title,
-              is_locked: false,
-              is_pinned: false,
-              activity_at: d.created_at,
-              comment_count: 0,
-              created_at: d.created_at
-            }));
-      
-            // Grouped reply counts (no N+1)
-            if (discussions.length) {
-              const ids = discussions.map(d => d.id);
-              const { data: countsRaw, error: cntErr } = await this.auth.supabase
-                .from('discussion_replies')
-                .select('discussion_id, id')
-                .in('discussion_id', ids);
-      
-              if (!cntErr) {
-                const counts = arr(countsRaw);
-                const map = counts.reduce((m, r) => {
-                  m[r.discussion_id] = (m[r.discussion_id] || 0) + 1;
-                  return m;
-                }, {});
-                discussions.forEach(d => { d.comment_count = map[d.id] || 0; });
-              } else {
-                console.warn('[discussions] reply count error:', cntErr.message || cntErr);
-              }
-            }
-          } else {
-            discussions = viaView; // already an array
-          }
-      
-          // 3) Profiles once
-          let profileMap = {};
-          if (discussions.length) {
-            const authorIds = Array.from(new Set(discussions.map(d => d.created_by).filter(Boolean)));
-            if (authorIds.length) {
-              const { data: profilesRaw, error: profErr } = await this.auth.supabase
-                .from('user_profiles')
-                .select('id, first_name, last_name, user_type')
-                .in('id', authorIds);
-      
-              if (profErr) {
-                console.warn('[discussions] profiles error:', profErr.message || profErr);
-              } else {
-                arr(profilesRaw).forEach(p => { profileMap[p.id] = p; });
-              }
-            }
-      
-            discussions.forEach(d => {
-              d.author_id = d.created_by;
-              d.reply_count = typeof d.comment_count === 'number' ? d.comment_count : 0;
-              d.user_profiles = profileMap[d.created_by] || {
-                first_name: 'Unknown',
-                last_name: 'User',
-                user_type: 'unknown'
-              };
-            });
-          }
-      
-          // 4) Render
-          const classData = (this.classes || []).find(c => c.id === classId);
-          const isTeacher = this.userInfo?.profile?.user_type === 'teacher';
-      
-          let content = `
-            <div style="margin-bottom: 20px;">
-              <h3>💬 Class Discussions - ${classData?.name ?? ''}</h3>
-              <button class="btn btn-primary" onclick="app.createDiscussion('${classId}')" style="margin-top: 10px;">
-                ➕ Start New Discussion
-              </button>
-            </div>
-          `;
-      
-          if (!discussions.length) {
-            const devHint = primaryErr ? `<pre style="white-space:pre-wrap;background:#0001;padding:8px;border-radius:8px">Hint: ${primaryErr.message}</pre>` : '';
-            content += `
-              <div class="empty-state">
-                <h3>💬 No Discussions Yet</h3>
-                <p>Start the first discussion to get the conversation going!</p>
-                ${devHint}
-              </div>
-            `;
-          } else {
-            content += `
-              <div style="max-height: 500px; overflow-y: auto;">
-                ${discussions.map(discussion => this.renderDiscussionCard(discussion, isTeacher)).join('')}
-              </div>
-            `;
-          }
-      
-          content += `
-            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
-              <button class="btn btn-secondary" onclick="app.closeModal('discussions')">Close</button>
-            </div>
-          `;
-      
-          this.showModal('discussions', '💬 Class Discussions', content, true);
-        } catch (error) {
-          console.error('Error loading discussions:', error);
-          this.showNotification('Error loading discussions: ' + (error?.message || error), 'error');
+     _asArray(v) { return Array.isArray(v) ? v : (v == null ? [] : [v]).filter(() => true); }
+    _asString(v) { return typeof v === 'string' ? v : (v == null ? '' : String(v)); }
+    _asInt(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
+    
+    // Normalize + render safely (keeps your existing renderDiscussionCard)
+    safeRenderDiscussionCard(discussion, isTeacher) {
+      const norm = {
+        id: discussion.id,
+        class_id: discussion.class_id,
+        created_by: discussion.created_by ?? discussion.author_id ?? null,
+        author_id: discussion.created_by ?? discussion.author_id ?? null,
+        title: this._asString(discussion.title),
+        body: this._asString(discussion.body ?? discussion.content ?? ''), // body may not exist
+        reply_count: this._asInt(discussion.reply_count ?? discussion.comment_count),
+        comment_count: this._asInt(discussion.comment_count ?? discussion.reply_count),
+        is_locked: !!discussion.is_locked,
+        is_pinned: !!discussion.is_pinned,
+        activity_at: discussion.activity_at ?? discussion.created_at ?? null,
+        created_at: discussion.created_at ?? null,
+        user_profiles: discussion.user_profiles ?? {
+          first_name: '',
+          last_name: '',
+          user_type: ''
         }
+      };
+    
+      try {
+        return this.renderDiscussionCard(norm, isTeacher);
+      } catch (e) {
+        console.warn('renderDiscussionCard failed; falling back.', e, norm);
+        return `
+          <div class="list-item">
+            <div class="list-item-content">
+              <div class="list-item-title">${norm.title || 'Untitled'}</div>
+              <div class="list-item-meta">${norm.comment_count} replies${
+                norm.activity_at ? ` • Last active ${this.formatMessageDate(new Date(norm.activity_at))}` : ''
+              }</div>
+            </div>
+          </div>
+        `;
       }
+    }
+    
+    async viewDiscussions(classId) {
+      try {
+        if (!classId) throw new Error('classId is required');
+    
+        let discussions = [];
+        let primaryErr = null;
+    
+        // Try stacked view first
+        const { data: viaViewRaw, error: viewErr } = await this.auth.supabase
+          .from('discussion_thread_summaries')
+          .select('id, class_id, created_by, title, is_locked, is_pinned, activity_at, comment_count, created_at')
+          .eq('class_id', classId)
+          .order('is_pinned', { ascending: false })
+          .order('activity_at', { ascending: false });
+    
+        const viaView = this._asArray(viaViewRaw);
+        if (viewErr) primaryErr = viewErr;
+    
+        const needFallback = !!primaryErr || viaView.length === 0;
+    
+        if (needFallback) {
+          // Fallback to base table
+          const { data: viaTableRaw, error: tblErr } = await this.auth.supabase
+            .from('class_discussions')
+            .select('id, class_id, author_id, title, created_at')
+            .eq('class_id', classId)
+            .order('created_at', { ascending: false });
+    
+          if (tblErr) throw tblErr;
+          const viaTable = this._asArray(viaTableRaw);
+    
+          discussions = viaTable.map(d => ({
+            id: d.id,
+            class_id: d.class_id,
+            created_by: d.author_id,
+            title: d.title,
+            is_locked: false,
+            is_pinned: false,
+            activity_at: d.created_at,
+            comment_count: 0,
+            created_at: d.created_at
+          }));
+    
+          // Grouped reply counts
+          if (discussions.length) {
+            const ids = discussions.map(d => d.id);
+            const { data: countsRaw, error: cntErr } = await this.auth.supabase
+              .from('discussion_replies')
+              .select('discussion_id, id')
+              .in('discussion_id', ids);
+    
+            if (!cntErr) {
+              const counts = this._asArray(countsRaw);
+              const map = counts.reduce((m, r) => {
+                m[r.discussion_id] = (m[r.discussion_id] || 0) + 1;
+                return m;
+              }, {});
+              discussions.forEach(d => { d.comment_count = map[d.id] || 0; });
+            } else {
+              console.warn('[discussions] reply count error:', cntErr?.message || cntErr);
+            }
+          }
+        } else {
+          discussions = viaView;
+        }
+    
+        // Profiles once, coalesced
+        const authorIds = Array.from(new Set(this._asArray(discussions).map(d => d.created_by).filter(Boolean)));
+        const profileMap = {};
+        if (authorIds.length) {
+          const { data: profilesRaw, error: profErr } = await this.auth.supabase
+            .from('user_profiles')
+            .select('id, first_name, last_name, user_type')
+            .in('id', authorIds);
+    
+          if (profErr) {
+            console.warn('[discussions] profiles error:', profErr?.message || profErr);
+          } else {
+            this._asArray(profilesRaw).forEach(p => { profileMap[p.id] = p; });
+          }
+        }
+    
+        // Attach profiles safely
+        discussions.forEach(d => {
+          d.user_profiles = profileMap[d.created_by] || { first_name: '', last_name: '', user_type: '' };
+          d.reply_count = typeof d.comment_count === 'number' ? d.comment_count : 0;
+        });
+    
+        // Render
+        const classData = (this.classes || []).find(c => c.id === classId);
+        const isTeacher = this.userInfo?.profile?.user_type === 'teacher';
+    
+        let content = `
+          <div style="margin-bottom: 20px;">
+            <h3>💬 Class Discussions - ${classData?.name ?? ''}</h3>
+            <button class="btn btn-primary" onclick="app.createDiscussion('${classId}')" style="margin-top: 10px;">
+              ➕ Start New Discussion
+            </button>
+          </div>
+        `;
+    
+        if (!this._asArray(discussions).length) {
+          const devHint = primaryErr ? `<pre style="white-space:pre-wrap;background:#0001;padding:8px;border-radius:8px">Hint: ${primaryErr.message}</pre>` : '';
+          content += `
+            <div class="empty-state">
+              <h3>💬 No Discussions Yet</h3>
+              <p>Start the first discussion to get the conversation going!</p>
+              ${devHint}
+            </div>
+          `;
+        } else {
+          const listHTML = this._asArray(discussions)
+            .map(d => this.safeRenderDiscussionCard(d, isTeacher))
+            .join('');
+          content += `<div style="max-height: 500px; overflow-y: auto;">${listHTML}</div>`;
+        }
+    
+        content += `
+          <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+            <button class="btn btn-secondary" onclick="app.closeModal('discussions')">Close</button>
+          </div>
+        `;
+    
+        this.showModal('discussions', '💬 Class Discussions', content, true);
+      } catch (error) {
+        console.error('Error loading discussions:', error);
+        this.showNotification('Error loading discussions: ' + (error?.message || error), 'error');
+      }
+    }
 
       renderDiscussionCard(discussion, isTeacher) {
         const author = discussion.user_profiles || { first_name: 'Unknown', last_name: 'User', user_type: 'unknown' };
