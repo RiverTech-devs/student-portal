@@ -472,6 +472,7 @@
     }
   </style>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script src="https://apis.google.com/js/api.js" async defer></script>
 </head>
 <body>
   <!-- Loading Screen -->
@@ -805,31 +806,46 @@
         script.src = 'https://apis.google.com/js/api.js';
         script.onload = () => {
           gapi.load('client:picker', async () => {
-            await gapi.client.init({
-              apiKey: 'AIzaSyBwrfXQorKq7fkmj-jUoU-4TYlR1woHJ4Y',
-              discoveryDocs: ['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'],
-            });
-            this.initGISTokenClient();
+            try {
+              await gapi.client.init({
+                apiKey: 'AIzaSyBwrfXQorKq7fkmj-jUoU-4TYlR1woHJ4Y',
+                discoveryDocs: ['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'],
+              });
+              this.initGISTokenClient();
+            } catch (error) {
+              console.error('Error initializing Google API:', error);
+            }
           });
         };
         document.head.appendChild(script);
       }
 
       initGISTokenClient() {
+        if (typeof google === 'undefined' || !google.accounts) {
+          console.log('Google Identity Services not loaded yet');
+          return;
+        }
+        
         this.tokenClient = google.accounts.oauth2.initTokenClient({
           client_id: '262464730666-407bjadqc07iiq0i1bte7vh214na8pep.apps.googleusercontent.com',
           scope: 'https://www.googleapis.com/auth/drive.file',
           callback: (resp) => {
             if (resp && resp.access_token) {
-              // Make token visible to gapi client & your fetch uploads
+              // Make token visible to gapi client
               gapi.client.setToken({ access_token: resp.access_token });
             }
           },
         });
       }
       
-      authorizeGoogleDrive = async () => {
+      async authorizeGoogleDrive() {
         try {
+          // Check if Google Identity Services is loaded
+          if (typeof google === 'undefined' || !google.accounts || !google.accounts.oauth2) {
+            this.showNotification('Google Identity Services not loaded. Please try again.', 'error');
+            return;
+          }
+          
           // Use Google Identity Services for OAuth2 with offline access
           const client = google.accounts.oauth2.initCodeClient({
             client_id: '262464730666-407bjadqc07iiq0i1bte7vh214na8pep.apps.googleusercontent.com',
@@ -838,12 +854,16 @@
             callback: async (response) => {
               try {
                 // Exchange authorization code for tokens via Edge Function
-                const { data: { session } } = await this.auth.supabase.auth.getSession();
+                const sessionResult = await this.auth.supabase.auth.getSession();
+                if (!sessionResult.data || !sessionResult.data.session) {
+                  throw new Error('No active session');
+                }
+                
                 const tokenResponse = await fetch(`${location.origin}/functions/v1/exchange-google-code`, {
                   method: 'POST',
                   headers: { 
                     'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${session.access_token}`
+                    'Authorization': `Bearer ${sessionResult.data.session.access_token}`
                   },
                   body: JSON.stringify({ code: response.code })
                 });
@@ -888,7 +908,7 @@
           console.error(err);
           this.showNotification(`Drive connection failed: ${err.message}`, 'error');
         }
-      };
+      }
       
       // Create root folder using access token
       async createRootFolderWithToken(accessToken) {
@@ -1640,7 +1660,208 @@
             </div>
             ` : ''}
           </div>
+          
+          <!-- Settings Actions -->
+          <div style="margin-top: 20px; display: grid; gap: 10px;">
+            <button class="btn btn-secondary" onclick="window.portalAuth?.goToMainPortal()">
+              🏠 Back to Main Portal
+            </button>
+            <button class="btn danger" onclick="window.portalAuth?.logout()">
+              🚪 Logout
+            </button>
+            <button class="btn danger" onclick="app.showDeleteAccountConfirmation()" style="background: #8B0000; border-color: #8B0000;">
+              🗑️ Delete Account
+            </button>
+          </div>
         `;
+      }
+
+      async openConversation(otherUserId) {
+        // Get the conversation thread
+        const thread = this.messageThreads?.find(t => t.userId === otherUserId);
+        if (!thread) {
+          // New conversation - get user profile
+          const { data: profile } = await this.auth.supabase
+            .from('user_profiles')
+            .select('id, first_name, last_name, email, user_type')
+            .eq('id', otherUserId)
+            .single();
+          
+          if (profile) {
+            this.showConversationModal({
+              userId: otherUserId,
+              profile: profile,
+              messages: [],
+              unreadCount: 0
+            });
+          }
+          return;
+        }
+        
+        // Mark messages as read
+        if (thread.unreadCount > 0) {
+          const unreadIds = thread.messages
+            .filter(m => m.recipient_id === this.userInfo.user.id && !m.is_read)
+            .map(m => m.id);
+          
+          await this.auth.supabase
+            .from('messages')
+            .update({ is_read: true })
+            .in('id', unreadIds);
+        }
+        
+        this.showConversationModal(thread);
+      }
+
+      showConversationModal(thread) {
+        const profile = thread.profile;
+        const messages = thread.messages || [];
+        
+        // Sort messages chronologically for display
+        const sortedMessages = [...messages].sort((a, b) => 
+          new Date(a.created_at) - new Date(b.created_at)
+        );
+        
+        const modalContent = `
+          <div style="height: 500px; display: flex; flex-direction: column;">
+            <!-- Header -->
+            <div style="padding: 15px; border-bottom: 1px solid var(--border); background: var(--card);">
+              <h4 style="margin: 0;">${profile.first_name} ${profile.last_name}</h4>
+              <div style="font-size: 12px; color: var(--muted);">
+                ${profile.user_type} • ${profile.email}
+              </div>
+            </div>
+            
+            <!-- Messages Container -->
+            <div id="messages-container" style="flex: 1; overflow-y: auto; padding: 15px; background: var(--bg);">
+              ${sortedMessages.length === 0 ? 
+                '<p style="text-align: center; color: var(--muted);">No messages yet. Start the conversation!</p>' :
+                sortedMessages.map(msg => this.renderMessage(msg)).join('')
+              }
+            </div>
+            
+            <!-- Message Input -->
+            <div style="padding: 15px; border-top: 1px solid var(--border); background: var(--card);">
+              <form id="conversation-reply-form" style="display: flex; gap: 10px;">
+                <input type="text" id="conversation-message" placeholder="Type a message..." 
+                       style="flex: 1; padding: 10px; border-radius: 20px; border: 1px solid var(--border); 
+                              background: var(--bg); color: var(--text);" required>
+                <button type="submit" class="btn btn-primary" style="border-radius: 20px;">
+                  Send →
+                </button>
+              </form>
+            </div>
+          </div>
+        `;
+        
+        this.showModal('conversation', `💬 Conversation with ${profile.first_name} ${profile.last_name}`, modalContent, true);
+
+        // Setup message form
+        document.getElementById('conversation-reply-form').addEventListener('submit', (e) => {
+          e.preventDefault();
+          this.sendMessageInThread(profile.id);
+        });
+        
+        // Scroll to bottom
+        setTimeout(() => {
+          const container = document.getElementById('messages-container');
+          if (container) container.scrollTop = container.scrollHeight;
+        }, 100);
+      }
+
+      renderMessage(msg) {
+        const isSent = msg.sender_id === this.userInfo.user.id;
+        const time = new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        const date = new Date(msg.created_at).toLocaleDateString();
+        
+        return `
+          <div style="margin-bottom: 15px; display: flex; ${isSent ? 'justify-content: flex-end' : 'justify-content: flex-start'};">
+            <div style="max-width: 70%; ${isSent ? 'text-align: right' : 'text-align: left'};">
+              ${msg.subject && msg.subject !== 'Re: ' && msg.subject !== '' ? `
+                <div style="font-size: 11px; color: var(--muted); margin-bottom: 4px;">
+                  ${msg.subject}
+                </div>
+              ` : ''}
+              <div style="
+                background: ${isSent ? 'var(--accent)' : 'var(--card)'};
+                color: ${isSent ? 'black' : 'var(--text)'};
+                padding: 10px 15px;
+                border-radius: ${isSent ? '18px 18px 4px 18px' : '18px 18px 18px 4px'};
+                display: inline-block;
+                max-width: 100%;
+                word-wrap: break-word;
+                text-align: left;
+              ">
+                ${msg.content.replace(/\n/g, '<br>')}
+              </div>
+              <div style="font-size: 10px; color: var(--muted); margin-top: 4px;">
+                ${time} • ${date}
+              </div>
+            </div>
+          </div>
+        `;
+      }
+
+      async sendMessageInThread(recipientId) {
+        const content = document.getElementById('conversation-message').value;
+        
+        if (!content.trim()) return;
+        
+        try {
+          // Find existing thread ID if it exists
+          const existingThread = this.messageThreads?.find(t => t.userId === recipientId);
+          let threadId = existingThread?.messages[0]?.thread_id;
+          
+          // Generate new thread ID if needed
+          if (!threadId) {
+            threadId = crypto.randomUUID();
+          }
+          
+          const { error } = await this.auth.supabase
+            .from('messages')
+            .insert([{
+              sender_id: this.userInfo.user.id,
+              recipient_id: recipientId,
+              subject: '',  // No subject in chat-style messaging
+              content: content,
+              thread_id: threadId,
+              is_read: false
+            }]);
+      
+          if (error) throw error;
+          
+          // Clear input
+          document.getElementById('conversation-message').value = '';
+          
+          // Reload messages and refresh the conversation
+          await this.loadMessages();
+          this.renderMessages();
+          this.openConversation(recipientId);
+          
+        } catch (error) {
+          console.error('Error sending message:', error);
+          this.showNotification('Error sending message: ' + error.message, 'error');
+        }
+      }
+
+      async messageStudent(studentId) {
+        this.closeModal();
+        
+        // Pre-fill message form with student
+        this.showSection('messaging');
+        
+        // Load recipients if not loaded
+        if (!this.messageRecipients || this.messageRecipients.length === 0) {
+          await this.loadMessageRecipients();
+        }
+        
+        // Set the recipient
+        setTimeout(() => {
+          const dropdown = document.getElementById('message-recipient');
+          if (dropdown) {
+            dropdown.value = studentId;
+          }
+        }, 100);
       }
 
       formatMessageDate(date) {
@@ -2074,318 +2295,316 @@
         `;
       }
 
-      // FIX 4: Add hard delete method for discussions
-      async hardDeleteDiscussion(discussionId) {
-        const isTeacher = this.userInfo.profile.user_type === 'teacher';
-        
-        if (!confirm(`Permanently delete this discussion and all its replies?\n\n${isTeacher ? 'As a teacher, you can delete any discussion.' : 'This will remove your discussion completely.'}\n\nThis action cannot be undone.`)) {
-          return;
-        }
-        
-        try {
-          // Get class ID before deletion for refresh
-          const { data: discussion } = await this.auth.supabase
-            .from('class_discussions')
-            .select('class_id')
-            .eq('id', discussionId)
-            .single();
+        // FIX 4: Add hard delete method for discussions
+        async hardDeleteDiscussion(discussionId) {
+          const isTeacher = this.userInfo.profile.user_type === 'teacher';
           
-          // Delete the discussion (replies cascade delete in database)
-          const { error } = await this.auth.supabase
-            .from('class_discussions')
-            .delete()
-            .eq('id', discussionId);
-          
-          if (error) throw error;
-          
-          this.showNotification('Discussion permanently deleted', 'success');
-          
-          // Refresh discussions
-          if (discussion) {
-            this.closeModal('discussions');
-            setTimeout(() => this.viewDiscussions(discussion.class_id), 100);
+          if (!confirm(`Permanently delete this discussion and all its replies?\n\n${isTeacher ? 'As a teacher, you can delete any discussion.' : 'This will remove your discussion completely.'}\n\nThis action cannot be undone.`)) {
+            return;
           }
           
-        } catch (error) {
-          console.error('Error deleting discussion:', error);
-          this.showNotification('Error deleting discussion: ' + error.message, 'error');
-        }
-      }
-
-      // Enhanced file upload with Drive priority and Supabase fallback
-      async submitAssignmentSubmission(assignmentId, isEdit) {
-        const content = document.getElementById('submission-content').value;
-        const fileInput = document.getElementById('submission-file');
-      
-        if (!content.trim()) {
-          this.showNotification('Please enter your submission content', 'error');
-          return;
-        }
-      
-        try {
-          if (window.portalLoading) {
-            window.portalLoading.show('submit-assignment', 'Submitting assignment...');
-          }
-      
-          const submissionData = {
-            assignment_id: assignmentId,
-            student_id: this.userInfo.user.id,
-            content: content,
-            submitted_at: new Date().toISOString(),
-            status: 'submitted'
-          };
-      
-          // Handle file upload if present
-          if (fileInput && fileInput.files && fileInput.files.length > 0) {
-            const file = fileInput.files[0];
-      
-            // 10 MB limit
-            const maxSize = 10 * 1024 * 1024;
-            if (file.size > maxSize) throw new Error('File too large. Maximum size is 10MB.');
-      
-            // Try Google Drive first, then fall back to Supabase
-            let uploadResult = null;
-            
-            // Attempt Drive upload if teacher has it configured
-            try {
-              uploadResult = await this.attemptDriveUpload(file, assignmentId);
-              if (uploadResult.success) {
-                console.log('File uploaded to Google Drive successfully');
-              }
-            } catch (driveError) {
-              console.log('Drive upload failed, will try Supabase:', driveError.message);
-            }
-      
-            // Fall back to Supabase if Drive failed or wasn't available
-            if (!uploadResult || !uploadResult.success) {
-              console.log('Using Supabase storage for file upload');
-              uploadResult = await this.uploadToSupabase(file, assignmentId);
-            }
-      
-            if (!uploadResult.success) {
-              throw new Error('File upload failed to both Google Drive and Supabase');
-            }
-      
-            submissionData.file_url = uploadResult.url;
-            submissionData.file_name = file.name;
-            submissionData.storage_type = uploadResult.storage_type;
-            submissionData.drive_file_id = uploadResult.drive_file_id || null;
-          }
-      
-          // Insert or update submission
-          let error;
-          if (isEdit) {
-            ({ error } = await this.auth.supabase
-              .from('assignment_submissions')
-              .update(submissionData)
-              .eq('assignment_id', assignmentId)
-              .eq('student_id', this.userInfo.user.id));
-          } else {
-            ({ error } = await this.auth.supabase
-              .from('assignment_submissions')
-              .insert([submissionData]));
-          }
-          
-          if (error) throw error;
-      
-          this.showNotification(`Assignment ${isEdit ? 'updated' : 'submitted'} successfully!`, 'success');
-          this.closeModal('submit-assignment');
-      
-        } catch (err) {
-          console.error('Error submitting assignment:', err);
-          this.showNotification('Error submitting assignment: ' + err.message, 'error');
-        } finally {
-          if (window.portalLoading) {
-            window.portalLoading.hide('submit-assignment');
-          }
-        }
-      }
-      
-      // Attempt to upload to Google Drive via Edge Function
-      async attemptDriveUpload(file, assignmentId) {
-        // Get assignment and class info
-        const { data: assignment } = await this.auth.supabase
-          .from('assignments')
-          .select('class_id, title')
-          .eq('id', assignmentId)
-          .single();
-      
-        if (!assignment) throw new Error('Assignment not found');
-      
-        const { data: classData } = await this.auth.supabase
-          .from('classes')
-          .select('teacher_id, name')
-          .eq('id', assignment.class_id)
-          .single();
-      
-        if (!classData) throw new Error('Class not found');
-      
-        // Check if teacher has Drive configured
-        const { data: driveConfig } = await this.auth.supabase
-          .from('teacher_drive_config')
-          .select('root_folder_id, refresh_token')
-          .eq('teacher_id', classData.teacher_id)
-          .single();
-      
-        if (!driveConfig?.root_folder_id || !driveConfig?.refresh_token) {
-          throw new Error('Teacher has not configured Google Drive');
-        }
-      
-        // Call Edge Function to upload file
-        const formData = new FormData();
-        formData.append('file', file);
-        formData.append('assignmentId', assignmentId);
-        formData.append('teacherId', classData.teacher_id);
-      
-        const { data: { session } } = await this.auth.supabase.auth.getSession();
-        
-        const response = await fetch(`${location.origin}/functions/v1/upload-to-drive`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${session.access_token}`
-          },
-          body: formData
-        });
-      
-        const result = await response.json();
-        
-        if (!result.success) {
-          throw new Error(result.error || 'Drive upload failed');
-        }
-        
-        return result;
-      }
-      
-      // Fallback upload to Supabase
-      async uploadToSupabase(file, assignmentId) {
-        try {
-          const timestamp = Date.now();
-          const fileName = `assignments/${this.userInfo.user.id}/${assignmentId}/${timestamp}_${file.name}`;
-      
-          const { data: uploadData, error: uploadError } = await this.auth.supabase.storage
-            .from('user-uploads')
-            .upload(fileName, file, { 
-              cacheControl: '3600', 
-              upsert: false 
-            });
-      
-          if (uploadError) {
-            throw uploadError;
-          }
-      
-          // Get public URL
-          const { data: urlData } = this.auth.supabase.storage
-            .from('user-uploads')
-            .getPublicUrl(fileName);
-      
-          return {
-            success: true,
-            url: urlData.publicUrl,
-            storage_type: 'supabase',
-            drive_file_id: null
-          };
-        } catch (error) {
-          console.error('Supabase upload error:', error);
-          return {
-            success: false,
-            error: error.message
-          };
-        }
-      }
-      
-      // Retrieve file with Drive priority
-      async retrieveFile(submission) {
-        // Try Drive first if it was stored there
-        if (submission.storage_type === 'google_drive' && submission.drive_file_id) {
           try {
-            // First try to get the direct link from database
-            const { data: driveUpload } = await this.auth.supabase
-              .from('drive_uploads')
-              .select('drive_web_link')
-              .eq('drive_file_id', submission.drive_file_id)
+            // Get class ID before deletion for refresh
+            const { data: discussion } = await this.auth.supabase
+              .from('class_discussions')
+              .select('class_id')
+              .eq('id', discussionId)
               .single();
             
-            if (driveUpload?.drive_web_link) {
-              return driveUpload.drive_web_link;
+            // Delete the discussion (replies cascade delete in database)
+            const { error } = await this.auth.supabase
+              .from('class_discussions')
+              .delete()
+              .eq('id', discussionId);
+            
+            if (error) throw error;
+            
+            this.showNotification('Discussion permanently deleted', 'success');
+            
+            // Refresh discussions
+            if (discussion) {
+              this.closeModal('discussions');
+              setTimeout(() => this.viewDiscussions(discussion.class_id), 100);
             }
             
-            // If not in database, construct the link
-            return `https://drive.google.com/file/d/${submission.drive_file_id}/view`;
           } catch (error) {
-            console.log('Drive retrieval failed, using stored URL:', error);
+            console.error('Error deleting discussion:', error);
+            this.showNotification('Error deleting discussion: ' + error.message, 'error');
+          }
+        }
+
+        // Enhanced file upload with Drive priority and Supabase fallback
+        async submitAssignmentSubmission(assignmentId, isEdit) {
+          const content = document.getElementById('submission-content').value;
+          const fileInput = document.getElementById('submission-file');
+        
+          if (!content.trim()) {
+            this.showNotification('Please enter your submission content', 'error');
+            return;
+          }
+        
+          try {
+            if (window.portalLoading) {
+              window.portalLoading.show('submit-assignment', 'Submitting assignment...');
+            }
+        
+            const submissionData = {
+              assignment_id: assignmentId,
+              student_id: this.userInfo.user.id,
+              content: content,
+              submitted_at: new Date().toISOString(),
+              status: 'submitted'
+            };
+        
+            // Handle file upload if present
+            if (fileInput && fileInput.files && fileInput.files.length > 0) {
+              const file = fileInput.files[0];
+        
+              // 10 MB limit
+              const maxSize = 10 * 1024 * 1024;
+              if (file.size > maxSize) throw new Error('File too large. Maximum size is 10MB.');
+        
+              // Try Google Drive first, then fall back to Supabase
+              let uploadResult = null;
+              
+              // Attempt Drive upload if teacher has it configured
+              try {
+                uploadResult = await this.attemptDriveUpload(file, assignmentId);
+                if (uploadResult.success) {
+                  console.log('File uploaded to Google Drive successfully');
+                }
+              } catch (driveError) {
+                console.log('Drive upload failed, will try Supabase:', driveError.message);
+              }
+        
+              // Fall back to Supabase if Drive failed or wasn't available
+              if (!uploadResult || !uploadResult.success) {
+                console.log('Using Supabase storage for file upload');
+                uploadResult = await this.uploadToSupabase(file, assignmentId);
+              }
+        
+              if (!uploadResult.success) {
+                throw new Error('File upload failed to both Google Drive and Supabase');
+              }
+        
+              submissionData.file_url = uploadResult.url;
+              submissionData.file_name = file.name;
+              submissionData.storage_type = uploadResult.storage_type;
+              submissionData.drive_file_id = uploadResult.drive_file_id || null;
+            }
+        
+            // Insert or update submission
+            let error;
+            if (isEdit) {
+              ({ error } = await this.auth.supabase
+                .from('assignment_submissions')
+                .update(submissionData)
+                .eq('assignment_id', assignmentId)
+                .eq('student_id', this.userInfo.user.id));
+            } else {
+              ({ error } = await this.auth.supabase
+                .from('assignment_submissions')
+                .insert([submissionData]));
+            }
+            
+            if (error) throw error;
+        
+            this.showNotification(`Assignment ${isEdit ? 'updated' : 'submitted'} successfully!`, 'success');
+            this.closeModal('submit-assignment');
+        
+          } catch (err) {
+            console.error('Error submitting assignment:', err);
+            this.showNotification('Error submitting assignment: ' + err.message, 'error');
+          } finally {
+            if (window.portalLoading) {
+              window.portalLoading.hide('submit-assignment');
+            }
           }
         }
         
-        // Fall back to direct URL (works for both Supabase and Drive web links)
-        return submission.file_url;
-      }
-      
-      // View submission with proper file handling
-      async viewSubmissionWithFile(assignmentId, submissionId) {
-        try {
-          const { data: submission } = await this.auth.supabase
-            .from('assignment_submissions')
-            .select('*')
-            .eq('id', submissionId)
+        // Attempt to upload to Google Drive via Edge Function
+        async attemptDriveUpload(file, assignmentId) {
+          // Get assignment and class info
+          const { data: assignment } = await this.auth.supabase
+            .from('assignments')
+            .select('class_id, title')
+            .eq('id', assignmentId)
             .single();
-          
-          if (submission?.file_url) {
-            // Get the correct file URL based on storage type
-            const fileUrl = await this.retrieveFile(submission);
-            
-            // Update the submission object with the correct URL
-            submission.display_file_url = fileUrl;
+        
+          if (!assignment) throw new Error('Assignment not found');
+        
+          const { data: classData } = await this.auth.supabase
+            .from('classes')
+            .select('teacher_id, name')
+            .eq('id', assignment.class_id)
+            .single();
+        
+          if (!classData) throw new Error('Class not found');
+        
+          // Check if teacher has Drive configured
+          const { data: driveConfig } = await this.auth.supabase
+            .from('teacher_drive_config')
+            .select('root_folder_id, refresh_token')
+            .eq('teacher_id', classData.teacher_id)
+            .single();
+        
+          if (!driveConfig || !driveConfig.root_folder_id || !driveConfig.refresh_token) {
+            throw new Error('Teacher has not configured Google Drive');
+          }
+        
+          // Call Edge Function to upload file
+          const formData = new FormData();
+          formData.append('file', file);
+          formData.append('assignmentId', assignmentId);
+          formData.append('teacherId', classData.teacher_id);
+        
+          const sessionResult = await this.auth.supabase.auth.getSession();
+          if (!sessionResult.data || !sessionResult.data.session) {
+            throw new Error('No active session');
           }
           
-          // Continue with normal submission viewing
-          this.viewSubmission(assignmentId, submissionId);
-        } catch (error) {
-          console.error('Error viewing submission:', error);
-          this.showNotification('Error viewing submission: ' + error.message, 'error');
+          const response = await fetch(`${location.origin}/functions/v1/upload-to-drive`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${sessionResult.data.session.access_token}`
+            },
+            body: formData
+          });
+        
+          const result = await response.json();
+          
+          if (!result.success) {
+            throw new Error(result.error || 'Drive upload failed');
+          }
+          
+          return result;
         }
-      }
-
-      // Utility notification method
-      showNotification(message, type = 'info') {
-        if (window.PortalUI) {
-          window.PortalUI.showNotification(message, type);
-        } else {
-          // Fallback notification
-          const notification = document.createElement('div');
-          notification.style.cssText = `
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            padding: 16px 20px;
-            border-radius: 8px;
-            color: white;
-            z-index: 10001;
-            max-width: 350px;
-            font-size: 14px;
-            background: ${type === 'success' ? '#4caf50' : type === 'error' ? '#f44336' : '#2196f3'};
-            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-            animation: slideIn 0.3s ease;
-          `;
-          
-          notification.textContent = message;
-          document.body.appendChild(notification);
-          
-          // Remove after 5 seconds
-          setTimeout(() => {
-            if (notification.parentNode) {
-              notification.style.animation = 'slideOut 0.3s ease';
-              setTimeout(() => notification.remove(), 300);
+        
+        // Fallback upload to Supabase
+        async uploadToSupabase(file, assignmentId) {
+          try {
+            const timestamp = Date.now();
+            const fileName = `assignments/${this.userInfo.user.id}/${assignmentId}/${timestamp}_${file.name}`;
+        
+            const { data: uploadData, error: uploadError } = await this.auth.supabase.storage
+              .from('user-uploads')
+              .upload(fileName, file, { 
+                cacheControl: '3600', 
+                upsert: false 
+              });
+        
+            if (uploadError) {
+              throw uploadError;
             }
-          }, 5000);
+        
+            // Get public URL
+            const { data: urlData } = this.auth.supabase.storage
+              .from('user-uploads')
+              .getPublicUrl(fileName);
+        
+            return {
+              success: true,
+              url: urlData.publicUrl,
+              storage_type: 'supabase',
+              drive_file_id: null
+            };
+          } catch (error) {
+            console.error('Supabase upload error:', error);
+            return {
+              success: false,
+              error: error.message
+            };
+          }
+        }
+      
+        // Retrieve file with Drive priority
+        async retrieveFile(submission) {
+          // Try Drive first if it was stored there
+          if (submission.storage_type === 'google_drive' && submission.drive_file_id) {
+            try {
+              // First try to get the direct link from database
+              const { data: driveUpload } = await this.auth.supabase
+                .from('drive_uploads')
+                .select('drive_web_link')
+                .eq('drive_file_id', submission.drive_file_id)
+                .single();
+              
+              if (driveUpload?.drive_web_link) {
+                return driveUpload.drive_web_link;
+              }
+              
+              // If not in database, construct the link
+              return `https://drive.google.com/file/d/${submission.drive_file_id}/view`;
+            } catch (error) {
+              console.log('Drive retrieval failed, using stored URL:', error);
+            }
+          }
+          
+          // Fall back to direct URL (works for both Supabase and Drive web links)
+          return submission.file_url;
+        }
+      
+        // View submission with proper file handling
+        async viewSubmissionWithFile(assignmentId, submissionId) {
+          try {
+            const { data: submission } = await this.auth.supabase
+              .from('assignment_submissions')
+              .select('*')
+              .eq('id', submissionId)
+              .single();
+            
+            if (submission?.file_url) {
+              // Get the correct file URL based on storage type
+              const fileUrl = await this.retrieveFile(submission);
+              
+              // Update the submission object with the correct URL
+              submission.display_file_url = fileUrl;
+            }
+            
+            // Continue with normal submission viewing
+            this.viewSubmission(assignmentId, submissionId);
+          } catch (error) {
+            console.error('Error viewing submission:', error);
+            this.showNotification('Error viewing submission: ' + error.message, 'error');
+          }
+        }
+
+        // Utility notification method
+        showNotification(message, type = 'info') {
+          if (window.PortalUI) {
+            window.PortalUI.showNotification(message, type);
+          } else {
+            // Fallback notification
+            const notification = document.createElement('div');
+            notification.style.cssText = `
+              position: fixed;
+              top: 20px;
+              right: 20px;
+              padding: 16px 20px;
+              border-radius: 8px;
+              color: white;
+              z-index: 10001;
+              max-width: 350px;
+              font-size: 14px;
+              background: ${type === 'success' ? '#4caf50' : type === 'error' ? '#f44336' : '#2196f3'};
+              box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+              animation: slideIn 0.3s ease;
+            `;
+            
+            notification.textContent = message;
+            document.body.appendChild(notification);
+            
+            // Remove after 5 seconds
+            setTimeout(() => {
+              if (notification.parentNode) {
+                notification.style.animation = 'slideOut 0.3s ease';
+                setTimeout(() => notification.remove(), 300);
+              }
+            }, 5000);
+          }
         }
       }
-
-      // Add remaining methods from original code here...
-      // Include all the assignment, grading, student management methods
-      // These remain largely unchanged from your original code
-    }
-    
-    // Initialize the app
+      // Utility notification method
     window.app = new ClassesPortalApp();
   </script>
 </body>
