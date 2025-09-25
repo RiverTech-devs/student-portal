@@ -2171,35 +2171,39 @@
       
       async viewDiscussions(classId) {
         try {
-          let discussions = [];
-          let errPrimary = null;
+          if (!classId) throw new Error('classId is required');
       
-          const { data: viaView, error: viewErr } = await this.auth.supabase
+          // --- helpers (why: avoid `.length` on undefined) ---
+          const arr = (v) => (Array.isArray(v) ? v : (v == null ? [] : [v]).filter(() => true));
+      
+          let discussions = [];
+          let primaryErr = null;
+      
+          // 1) Try stacked view
+          const { data: viaViewRaw, error: viewErr } = await this.auth.supabase
             .from('discussion_thread_summaries')
-            .select(
-              // removed "body"
-              'id, class_id, created_by, title, is_locked, is_pinned, activity_at, comment_count, created_at'
-            )
+            .select('id, class_id, created_by, title, is_locked, is_pinned, activity_at, comment_count, created_at')
             .eq('class_id', classId)
             .order('is_pinned', { ascending: false })
             .order('activity_at', { ascending: false });
       
-          if (viewErr) {
-            errPrimary = viewErr;
-            console.warn('[discussions] view error:', viewErr?.message || viewErr);
-          }
+          const viaView = arr(viaViewRaw);
+          if (viewErr) primaryErr = viewErr;
       
-          const needFallback = !!errPrimary || !viaView || viaView.length === 0;
+          const needFallback = !!primaryErr || viaView.length === 0;
+      
           if (needFallback) {
-            const { data: viaTable, error: tblErr } = await this.auth.supabase
+            // 2) Fallback to base table
+            const { data: viaTableRaw, error: tblErr } = await this.auth.supabase
               .from('class_discussions')
               .select('id, class_id, author_id, title, created_at')
               .eq('class_id', classId)
               .order('created_at', { ascending: false });
       
             if (tblErr) throw tblErr;
+            const viaTable = arr(viaTableRaw);
       
-            discussions = (viaTable || []).map(d => ({
+            discussions = viaTable.map(d => ({
               id: d.id,
               class_id: d.class_id,
               created_by: d.author_id,
@@ -2207,44 +2211,50 @@
               is_locked: false,
               is_pinned: false,
               activity_at: d.created_at,
-              comment_count: undefined,
+              comment_count: 0,
               created_at: d.created_at
             }));
       
+            // Grouped reply counts (no N+1)
             if (discussions.length) {
               const ids = discussions.map(d => d.id);
-              const { data: counts, error: cntErr } = await this.auth.supabase
+              const { data: countsRaw, error: cntErr } = await this.auth.supabase
                 .from('discussion_replies')
                 .select('discussion_id, id')
                 .in('discussion_id', ids);
       
-              if (!cntErr && counts) {
-                const map = counts.reduce((acc, r) => {
-                  acc[r.discussion_id] = (acc[r.discussion_id] || 0) + 1;
-                  return acc;
+              if (!cntErr) {
+                const counts = arr(countsRaw);
+                const map = counts.reduce((m, r) => {
+                  m[r.discussion_id] = (m[r.discussion_id] || 0) + 1;
+                  return m;
                 }, {});
                 discussions.forEach(d => { d.comment_count = map[d.id] || 0; });
               } else {
-                console.warn('[discussions] reply count fallback error:', cntErr?.message || cntErr);
-                discussions.forEach(d => { d.comment_count = 0; });
+                console.warn('[discussions] reply count error:', cntErr.message || cntErr);
               }
             }
           } else {
-            discussions = viaView || [];
+            discussions = viaView; // already an array
           }
       
-          // profiles once
+          // 3) Profiles once
           let profileMap = {};
           if (discussions.length) {
             const authorIds = Array.from(new Set(discussions.map(d => d.created_by).filter(Boolean)));
             if (authorIds.length) {
-              const { data: profiles } = await this.auth.supabase
+              const { data: profilesRaw, error: profErr } = await this.auth.supabase
                 .from('user_profiles')
                 .select('id, first_name, last_name, user_type')
                 .in('id', authorIds);
       
-              profileMap = (profiles || []).reduce((a, p) => (a[p.id] = p, a), {});
+              if (profErr) {
+                console.warn('[discussions] profiles error:', profErr.message || profErr);
+              } else {
+                arr(profilesRaw).forEach(p => { profileMap[p.id] = p; });
+              }
             }
+      
             discussions.forEach(d => {
               d.author_id = d.created_by;
               d.reply_count = typeof d.comment_count === 'number' ? d.comment_count : 0;
@@ -2256,6 +2266,7 @@
             });
           }
       
+          // 4) Render
           const classData = (this.classes || []).find(c => c.id === classId);
           const isTeacher = this.userInfo?.profile?.user_type === 'teacher';
       
@@ -2269,7 +2280,7 @@
           `;
       
           if (!discussions.length) {
-            const devHint = errPrimary ? `<pre style="white-space:pre-wrap;background:#0001;padding:8px;border-radius:8px">Hint: ${errPrimary.message}</pre>` : '';
+            const devHint = primaryErr ? `<pre style="white-space:pre-wrap;background:#0001;padding:8px;border-radius:8px">Hint: ${primaryErr.message}</pre>` : '';
             content += `
               <div class="empty-state">
                 <h3>💬 No Discussions Yet</h3>
@@ -2294,7 +2305,7 @@
           this.showModal('discussions', '💬 Class Discussions', content, true);
         } catch (error) {
           console.error('Error loading discussions:', error);
-          this.showNotification('Error loading discussions: ' + (error.message || error), 'error');
+          this.showNotification('Error loading discussions: ' + (error?.message || error), 'error');
         }
       }
 
