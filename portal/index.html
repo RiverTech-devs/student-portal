@@ -2295,316 +2295,1385 @@
         `;
       }
 
-        // FIX 4: Add hard delete method for discussions
-        async hardDeleteDiscussion(discussionId) {
-          const isTeacher = this.userInfo.profile.user_type === 'teacher';
-          
-          if (!confirm(`Permanently delete this discussion and all its replies?\n\n${isTeacher ? 'As a teacher, you can delete any discussion.' : 'This will remove your discussion completely.'}\n\nThis action cannot be undone.`)) {
-            return;
-          }
-          
-          try {
-            // Get class ID before deletion for refresh
-            const { data: discussion } = await this.auth.supabase
-              .from('class_discussions')
-              .select('class_id')
-              .eq('id', discussionId)
-              .single();
-            
-            // Delete the discussion (replies cascade delete in database)
-            const { error } = await this.auth.supabase
-              .from('class_discussions')
-              .delete()
-              .eq('id', discussionId);
-            
-            if (error) throw error;
-            
-            this.showNotification('Discussion permanently deleted', 'success');
-            
-            // Refresh discussions
-            if (discussion) {
-              this.closeModal('discussions');
-              setTimeout(() => this.viewDiscussions(discussion.class_id), 100);
-            }
-            
-          } catch (error) {
-            console.error('Error deleting discussion:', error);
-            this.showNotification('Error deleting discussion: ' + error.message, 'error');
-          }
+      // FIX 4: Add hard delete method for discussions
+      async hardDeleteDiscussion(discussionId) {
+        const isTeacher = this.userInfo.profile.user_type === 'teacher';
+        
+        if (!confirm(`Permanently delete this discussion and all its replies?\n\n${isTeacher ? 'As a teacher, you can delete any discussion.' : 'This will remove your discussion completely.'}\n\nThis action cannot be undone.`)) {
+          return;
         }
+        
+        try {
+          // Get class ID before deletion for refresh
+          const { data: discussion } = await this.auth.supabase
+            .from('class_discussions')
+            .select('class_id')
+            .eq('id', discussionId)
+            .single();
+          
+          // Delete the discussion (replies cascade delete in database)
+          const { error } = await this.auth.supabase
+            .from('class_discussions')
+            .delete()
+            .eq('id', discussionId);
+          
+          if (error) throw error;
+          
+          this.showNotification('Discussion permanently deleted', 'success');
+          
+          // Refresh discussions
+          if (discussion) {
+            this.closeModal('discussions');
+            setTimeout(() => this.viewDiscussions(discussion.class_id), 100);
+          }
+          
+        } catch (error) {
+          console.error('Error deleting discussion:', error);
+          this.showNotification('Error deleting discussion: ' + error.message, 'error');
+        }
+      }
 
-        // Enhanced file upload with Drive priority and Supabase fallback
-        async submitAssignmentSubmission(assignmentId, isEdit) {
-          const content = document.getElementById('submission-content').value;
-          const fileInput = document.getElementById('submission-file');
-        
-          if (!content.trim()) {
-            this.showNotification('Please enter your submission content', 'error');
-            return;
-          }
-        
-          try {
-            if (window.portalLoading) {
-              window.portalLoading.show('submit-assignment', 'Submitting assignment...');
-            }
-        
-            const submissionData = {
-              assignment_id: assignmentId,
-              student_id: this.userInfo.user.id,
-              content: content,
-              submitted_at: new Date().toISOString(),
-              status: 'submitted'
-            };
-        
-            // Handle file upload if present
-            if (fileInput && fileInput.files && fileInput.files.length > 0) {
-              const file = fileInput.files[0];
-        
-              // 10 MB limit
-              const maxSize = 10 * 1024 * 1024;
-              if (file.size > maxSize) throw new Error('File too large. Maximum size is 10MB.');
-        
-              // Try Google Drive first, then fall back to Supabase
-              let uploadResult = null;
-              
-              // Attempt Drive upload if teacher has it configured
-              try {
-                uploadResult = await this.attemptDriveUpload(file, assignmentId);
-                if (uploadResult.success) {
-                  console.log('File uploaded to Google Drive successfully');
-                }
-              } catch (driveError) {
-                console.log('Drive upload failed, will try Supabase:', driveError.message);
-              }
-        
-              // Fall back to Supabase if Drive failed or wasn't available
-              if (!uploadResult || !uploadResult.success) {
-                console.log('Using Supabase storage for file upload');
-                uploadResult = await this.uploadToSupabase(file, assignmentId);
-              }
-        
-              if (!uploadResult.success) {
-                throw new Error('File upload failed to both Google Drive and Supabase');
-              }
-        
-              submissionData.file_url = uploadResult.url;
-              submissionData.file_name = file.name;
-              submissionData.storage_type = uploadResult.storage_type;
-              submissionData.drive_file_id = uploadResult.drive_file_id || null;
-            }
-        
-            // Insert or update submission
-            let error;
-            if (isEdit) {
-              ({ error } = await this.auth.supabase
-                .from('assignment_submissions')
-                .update(submissionData)
-                .eq('assignment_id', assignmentId)
-                .eq('student_id', this.userInfo.user.id));
-            } else {
-              ({ error } = await this.auth.supabase
-                .from('assignment_submissions')
-                .insert([submissionData]));
-            }
-            
-            if (error) throw error;
-        
-            this.showNotification(`Assignment ${isEdit ? 'updated' : 'submitted'} successfully!`, 'success');
-            this.closeModal('submit-assignment');
-        
-          } catch (err) {
-            console.error('Error submitting assignment:', err);
-            this.showNotification('Error submitting assignment: ' + err.message, 'error');
-          } finally {
-            if (window.portalLoading) {
-              window.portalLoading.hide('submit-assignment');
-            }
-          }
-        }
-        
-        // Attempt to upload to Google Drive via Edge Function
-        async attemptDriveUpload(file, assignmentId) {
-          // Get assignment and class info
-          const { data: assignment } = await this.auth.supabase
-            .from('assignments')
-            .select('class_id, title')
-            .eq('id', assignmentId)
-            .single();
-        
-          if (!assignment) throw new Error('Assignment not found');
-        
-          const { data: classData } = await this.auth.supabase
-            .from('classes')
-            .select('teacher_id, name')
-            .eq('id', assignment.class_id)
-            .single();
-        
-          if (!classData) throw new Error('Class not found');
-        
-          // Check if teacher has Drive configured
-          const { data: driveConfig } = await this.auth.supabase
-            .from('teacher_drive_config')
-            .select('root_folder_id, refresh_token')
-            .eq('teacher_id', classData.teacher_id)
-            .single();
-        
-          if (!driveConfig || !driveConfig.root_folder_id || !driveConfig.refresh_token) {
-            throw new Error('Teacher has not configured Google Drive');
-          }
-        
-          // Call Edge Function to upload file
-          const formData = new FormData();
-          formData.append('file', file);
-          formData.append('assignmentId', assignmentId);
-          formData.append('teacherId', classData.teacher_id);
-        
-          const sessionResult = await this.auth.supabase.auth.getSession();
-          if (!sessionResult.data || !sessionResult.data.session) {
-            throw new Error('No active session');
-          }
-          
-          const response = await fetch(`${location.origin}/functions/v1/upload-to-drive`, {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${sessionResult.data.session.access_token}`
-            },
-            body: formData
-          });
-        
-          const result = await response.json();
-          
-          if (!result.success) {
-            throw new Error(result.error || 'Drive upload failed');
-          }
-          
-          return result;
-        }
-        
-        // Fallback upload to Supabase
-        async uploadToSupabase(file, assignmentId) {
-          try {
-            const timestamp = Date.now();
-            const fileName = `assignments/${this.userInfo.user.id}/${assignmentId}/${timestamp}_${file.name}`;
-        
-            const { data: uploadData, error: uploadError } = await this.auth.supabase.storage
-              .from('user-uploads')
-              .upload(fileName, file, { 
-                cacheControl: '3600', 
-                upsert: false 
-              });
-        
-            if (uploadError) {
-              throw uploadError;
-            }
-        
-            // Get public URL
-            const { data: urlData } = this.auth.supabase.storage
-              .from('user-uploads')
-              .getPublicUrl(fileName);
-        
-            return {
-              success: true,
-              url: urlData.publicUrl,
-              storage_type: 'supabase',
-              drive_file_id: null
-            };
-          } catch (error) {
-            console.error('Supabase upload error:', error);
-            return {
-              success: false,
-              error: error.message
-            };
-          }
+      // Enhanced file upload with Drive priority and Supabase fallback
+      async submitAssignmentSubmission(assignmentId, isEdit) {
+        const content = document.getElementById('submission-content').value;
+        const fileInput = document.getElementById('submission-file');
+      
+        if (!content.trim()) {
+          this.showNotification('Please enter your submission content', 'error');
+          return;
         }
       
-        // Retrieve file with Drive priority
-        async retrieveFile(submission) {
-          // Try Drive first if it was stored there
-          if (submission.storage_type === 'google_drive' && submission.drive_file_id) {
+        try {
+          if (window.portalLoading) {
+            window.portalLoading.show('submit-assignment', 'Submitting assignment...');
+          }
+      
+          const submissionData = {
+            assignment_id: assignmentId,
+            student_id: this.userInfo.user.id,
+            content: content,
+            submitted_at: new Date().toISOString(),
+            status: 'submitted'
+          };
+      
+          // Handle file upload if present
+          if (fileInput && fileInput.files && fileInput.files.length > 0) {
+            const file = fileInput.files[0];
+      
+            // 10 MB limit
+            const maxSize = 10 * 1024 * 1024;
+            if (file.size > maxSize) throw new Error('File too large. Maximum size is 10MB.');
+      
+            // Try Google Drive first, then fall back to Supabase
+            let uploadResult = null;
+            
+            // Attempt Drive upload if teacher has it configured
             try {
-              // First try to get the direct link from database
-              const { data: driveUpload } = await this.auth.supabase
-                .from('drive_uploads')
-                .select('drive_web_link')
-                .eq('drive_file_id', submission.drive_file_id)
-                .single();
-              
-              if (driveUpload?.drive_web_link) {
-                return driveUpload.drive_web_link;
+              uploadResult = await this.attemptDriveUpload(file, assignmentId);
+              if (uploadResult.success) {
+                console.log('File uploaded to Google Drive successfully');
               }
-              
-              // If not in database, construct the link
-              return `https://drive.google.com/file/d/${submission.drive_file_id}/view`;
-            } catch (error) {
-              console.log('Drive retrieval failed, using stored URL:', error);
+            } catch (driveError) {
+              console.log('Drive upload failed, will try Supabase:', driveError.message);
             }
+      
+            // Fall back to Supabase if Drive failed or wasn't available
+            if (!uploadResult || !uploadResult.success) {
+              console.log('Using Supabase storage for file upload');
+              uploadResult = await this.uploadToSupabase(file, assignmentId);
+            }
+      
+            if (!uploadResult.success) {
+              throw new Error('File upload failed to both Google Drive and Supabase');
+            }
+      
+            submissionData.file_url = uploadResult.url;
+            submissionData.file_name = file.name;
+            submissionData.storage_type = uploadResult.storage_type;
+            submissionData.drive_file_id = uploadResult.drive_file_id || null;
+          }
+      
+          // Insert or update submission
+          let error;
+          if (isEdit) {
+            ({ error } = await this.auth.supabase
+              .from('assignment_submissions')
+              .update(submissionData)
+              .eq('assignment_id', assignmentId)
+              .eq('student_id', this.userInfo.user.id));
+          } else {
+            ({ error } = await this.auth.supabase
+              .from('assignment_submissions')
+              .insert([submissionData]));
           }
           
-          // Fall back to direct URL (works for both Supabase and Drive web links)
-          return submission.file_url;
-        }
+          if (error) throw error;
       
-        // View submission with proper file handling
-        async viewSubmissionWithFile(assignmentId, submissionId) {
-          try {
-            const { data: submission } = await this.auth.supabase
-              .from('assignment_submissions')
-              .select('*')
-              .eq('id', submissionId)
-              .single();
-            
-            if (submission?.file_url) {
-              // Get the correct file URL based on storage type
-              const fileUrl = await this.retrieveFile(submission);
-              
-              // Update the submission object with the correct URL
-              submission.display_file_url = fileUrl;
-            }
-            
-            // Continue with normal submission viewing
-            this.viewSubmission(assignmentId, submissionId);
-          } catch (error) {
-            console.error('Error viewing submission:', error);
-            this.showNotification('Error viewing submission: ' + error.message, 'error');
-          }
-        }
-
-        // Utility notification method
-        showNotification(message, type = 'info') {
-          if (window.PortalUI) {
-            window.PortalUI.showNotification(message, type);
-          } else {
-            // Fallback notification
-            const notification = document.createElement('div');
-            notification.style.cssText = `
-              position: fixed;
-              top: 20px;
-              right: 20px;
-              padding: 16px 20px;
-              border-radius: 8px;
-              color: white;
-              z-index: 10001;
-              max-width: 350px;
-              font-size: 14px;
-              background: ${type === 'success' ? '#4caf50' : type === 'error' ? '#f44336' : '#2196f3'};
-              box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-              animation: slideIn 0.3s ease;
-            `;
-            
-            notification.textContent = message;
-            document.body.appendChild(notification);
-            
-            // Remove after 5 seconds
-            setTimeout(() => {
-              if (notification.parentNode) {
-                notification.style.animation = 'slideOut 0.3s ease';
-                setTimeout(() => notification.remove(), 300);
-              }
-            }, 5000);
+          this.showNotification(`Assignment ${isEdit ? 'updated' : 'submitted'} successfully!`, 'success');
+          this.closeModal('submit-assignment');
+      
+        } catch (err) {
+          console.error('Error submitting assignment:', err);
+          this.showNotification('Error submitting assignment: ' + err.message, 'error');
+        } finally {
+          if (window.portalLoading) {
+            window.portalLoading.hide('submit-assignment');
           }
         }
       }
+      
+      // Attempt to upload to Google Drive via Edge Function
+      async attemptDriveUpload(file, assignmentId) {
+        // Get assignment and class info
+        const { data: assignment } = await this.auth.supabase
+          .from('assignments')
+          .select('class_id, title')
+          .eq('id', assignmentId)
+          .single();
+      
+        if (!assignment) throw new Error('Assignment not found');
+      
+        const { data: classData } = await this.auth.supabase
+          .from('classes')
+          .select('teacher_id, name')
+          .eq('id', assignment.class_id)
+          .single();
+      
+        if (!classData) throw new Error('Class not found');
+      
+        // Check if teacher has Drive configured
+        const { data: driveConfig } = await this.auth.supabase
+          .from('teacher_drive_config')
+          .select('root_folder_id, refresh_token')
+          .eq('teacher_id', classData.teacher_id)
+          .single();
+      
+        if (!driveConfig || !driveConfig.root_folder_id || !driveConfig.refresh_token) {
+          throw new Error('Teacher has not configured Google Drive');
+        }
+      
+        // Call Edge Function to upload file
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('assignmentId', assignmentId);
+        formData.append('teacherId', classData.teacher_id);
+      
+        const sessionResult = await this.auth.supabase.auth.getSession();
+        if (!sessionResult.data || !sessionResult.data.session) {
+          throw new Error('No active session');
+        }
+        
+        const response = await fetch(`${location.origin}/functions/v1/upload-to-drive`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${sessionResult.data.session.access_token}`
+          },
+          body: formData
+        });
+      
+        const result = await response.json();
+        
+        if (!result.success) {
+          throw new Error(result.error || 'Drive upload failed');
+        }
+        
+        return result;
+      }
+      
+      // Fallback upload to Supabase
+      async uploadToSupabase(file, assignmentId) {
+        try {
+          const timestamp = Date.now();
+          const fileName = `assignments/${this.userInfo.user.id}/${assignmentId}/${timestamp}_${file.name}`;
+      
+          const { data: uploadData, error: uploadError } = await this.auth.supabase.storage
+            .from('user-uploads')
+            .upload(fileName, file, { 
+              cacheControl: '3600', 
+              upsert: false 
+            });
+      
+          if (uploadError) {
+            throw uploadError;
+          }
+      
+          // Get public URL
+          const { data: urlData } = this.auth.supabase.storage
+            .from('user-uploads')
+            .getPublicUrl(fileName);
+      
+          return {
+            success: true,
+            url: urlData.publicUrl,
+            storage_type: 'supabase',
+            drive_file_id: null
+          };
+        } catch (error) {
+          console.error('Supabase upload error:', error);
+          return {
+            success: false,
+            error: error.message
+          };
+        }
+      }
+      
+      // Retrieve file with Drive priority
+      async retrieveFile(submission) {
+        // Try Drive first if it was stored there
+        if (submission.storage_type === 'google_drive' && submission.drive_file_id) {
+          try {
+            // First try to get the direct link from database
+            const { data: driveUpload } = await this.auth.supabase
+              .from('drive_uploads')
+              .select('drive_web_link')
+              .eq('drive_file_id', submission.drive_file_id)
+              .single();
+            
+            if (driveUpload?.drive_web_link) {
+              return driveUpload.drive_web_link;
+            }
+            
+            // If not in database, construct the link
+            return `https://drive.google.com/file/d/${submission.drive_file_id}/view`;
+          } catch (error) {
+            console.log('Drive retrieval failed, using stored URL:', error);
+          }
+        }
+        
+        // Fall back to direct URL (works for both Supabase and Drive web links)
+        return submission.file_url;
+      }
+      
+      // View submission with proper file handling
+      async viewSubmissionWithFile(assignmentId, submissionId) {
+        try {
+          const { data: submission } = await this.auth.supabase
+            .from('assignment_submissions')
+            .select('*')
+            .eq('id', submissionId)
+            .single();
+          
+          if (submission?.file_url) {
+            // Get the correct file URL based on storage type
+            const fileUrl = await this.retrieveFile(submission);
+            
+            // Update the submission object with the correct URL
+            submission.display_file_url = fileUrl;
+          }
+          
+          // Continue with normal submission viewing
+          this.viewSubmission(assignmentId, submissionId);
+        } catch (error) {
+          console.error('Error viewing submission:', error);
+          this.showNotification('Error viewing submission: ' + error.message, 'error');
+        }
+      }
+
       // Utility notification method
+      showNotification(message, type = 'info') {
+        if (window.PortalUI) {
+          window.PortalUI.showNotification(message, type);
+        } else {
+          // Fallback notification
+          const notification = document.createElement('div');
+          notification.style.cssText = `
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 16px 20px;
+            border-radius: 8px;
+            color: white;
+            z-index: 10001;
+            max-width: 350px;
+            font-size: 14px;
+            background: ${type === 'success' ? '#4caf50' : type === 'error' ? '#f44336' : '#2196f3'};
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            animation: slideIn 0.3s ease;
+          `;
+          
+          notification.textContent = message;
+          document.body.appendChild(notification);
+          
+          // Remove after 5 seconds
+          setTimeout(() => {
+            if (notification.parentNode) {
+              notification.style.animation = 'slideOut 0.3s ease';
+              setTimeout(() => notification.remove(), 300);
+            }
+          }, 5000);
+        }
+      }
+
+      // MISSING FUNCTIONS IMPLEMENTATION
+
+      // 1. Open Discussion - View full discussion thread with replies
+      async openDiscussion(discussionId) {
+        try {
+          // Load discussion details
+          const { data: discussion, error } = await this.auth.supabase
+            .from('class_discussions')
+            .select('*')
+            .eq('id', discussionId)
+            .single();
+
+          if (error) throw error;
+
+          // Load author profile
+          const { data: authorProfile } = await this.auth.supabase
+            .from('user_profiles')
+            .select('id, first_name, last_name, user_type')
+            .eq('id', discussion.author_id)
+            .single();
+
+          // Load replies with author profiles
+          const { data: replies } = await this.auth.supabase
+            .from('discussion_replies')
+            .select('*')
+            .eq('discussion_id', discussionId)
+            .order('created_at', { ascending: true });
+
+          let repliesHtml = '';
+          if (replies && replies.length > 0) {
+            // Get all reply author IDs
+            const replyAuthorIds = [...new Set(replies.map(r => r.author_id))];
+            
+            const { data: replyProfiles } = await this.auth.supabase
+              .from('user_profiles')
+              .select('id, first_name, last_name, user_type')
+              .in('id', replyAuthorIds);
+
+            const profileMap = {};
+            replyProfiles?.forEach(p => {
+              profileMap[p.id] = p;
+            });
+
+            repliesHtml = replies.map(reply => {
+              const author = profileMap[reply.author_id] || { first_name: 'Unknown', last_name: 'User' };
+              const replyDate = new Date(reply.created_at).toLocaleDateString();
+              const replyTime = new Date(reply.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+              
+              return `
+                <div class="card" style="margin: 10px 0; padding: 15px;">
+                  <div style="display: flex; justify-content: space-between; align-items: start;">
+                    <div>
+                      <strong>${author.first_name} ${author.last_name}</strong> 
+                      <span style="color: var(--muted); font-size: 12px;">(${author.user_type})</span>
+                      <div style="font-size: 11px; color: var(--muted);">${replyDate} at ${replyTime}</div>
+                      <p style="margin-top: 10px;">${reply.content}</p>
+                    </div>
+                    ${reply.author_id === this.userInfo.user.id ? `
+                      <button class="btn danger small" onclick="app.deleteReply('${reply.id}', '${discussionId}')">🗑️</button>
+                    ` : ''}
+                  </div>
+                </div>
+              `;
+            }).join('');
+          }
+
+          const modalContent = `
+            <div style="max-height: 70vh; overflow-y: auto;">
+              <div class="card" style="background: var(--card); margin-bottom: 20px;">
+                <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+                  ${discussion.discussion_type === 'announcement' ? '📢' : discussion.discussion_type === 'question' ? '❓' : '💬'}
+                  <h3 style="margin: 0;">${discussion.title || 'Discussion'}</h3>
+                  ${discussion.is_pinned ? '<span style="background: var(--warning); color: black; padding: 2px 6px; border-radius: 4px; font-size: 10px;">PINNED</span>' : ''}
+                </div>
+                <p style="line-height: 1.6; margin-bottom: 10px;">${discussion.content}</p>
+                <div style="font-size: 12px; color: var(--muted);">
+                  Posted by ${authorProfile?.first_name} ${authorProfile?.last_name} • ${new Date(discussion.created_at).toLocaleDateString()}
+                </div>
+              </div>
+
+              <h4 style="margin-bottom: 15px;">💬 Replies (${replies?.length || 0})</h4>
+              
+              <div id="replies-container">
+                ${repliesHtml || '<p style="color: var(--muted); text-align: center;">No replies yet. Be the first to respond!</p>'}
+              </div>
+
+              <div class="card" style="margin-top: 20px; background: var(--card);">
+                <h4 style="margin-bottom: 10px;">Add Reply</h4>
+                <form id="reply-form">
+                  <div class="form-group">
+                    <textarea id="reply-content" rows="3" placeholder="Write your reply..." required></textarea>
+                  </div>
+                  <button type="submit" class="btn btn-primary">Post Reply</button>
+                </form>
+              </div>
+            </div>
+
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal('discussion-thread')">Close</button>
+            </div>
+          `;
+
+          this.showModal('discussion-thread', discussion.title || 'Discussion Thread', modalContent, true);
+
+          // Setup reply form
+          document.getElementById('reply-form')?.addEventListener('submit', (e) => {
+            e.preventDefault();
+            this.postReply(discussionId);
+          });
+
+        } catch (error) {
+          console.error('Error opening discussion:', error);
+          this.showNotification('Error loading discussion: ' + error.message, 'error');
+        }
+      }
+
+      // 2. Post Reply to Discussion
+      async postReply(discussionId) {
+        const content = document.getElementById('reply-content')?.value;
+        
+        if (!content?.trim()) {
+          this.showNotification('Please enter a reply', 'error');
+          return;
+        }
+
+        try {
+          const { error } = await this.auth.supabase
+            .from('discussion_replies')
+            .insert([{
+              discussion_id: discussionId,
+              author_id: this.userInfo.user.id,
+              content: content.trim()
+            }]);
+
+          if (error) throw error;
+
+          this.showNotification('Reply posted successfully!', 'success');
+          
+          // Refresh the discussion
+          this.closeModal('discussion-thread');
+          setTimeout(() => this.openDiscussion(discussionId), 100);
+
+        } catch (error) {
+          console.error('Error posting reply:', error);
+          this.showNotification('Error posting reply: ' + error.message, 'error');
+        }
+      }
+
+      // 3. Delete Reply
+      async deleteReply(replyId, discussionId) {
+        if (!confirm('Delete this reply?')) {
+          return;
+        }
+
+        try {
+          const { error } = await this.auth.supabase
+            .from('discussion_replies')
+            .delete()
+            .eq('id', replyId)
+            .eq('author_id', this.userInfo.user.id);
+
+          if (error) throw error;
+
+          this.showNotification('Reply deleted', 'success');
+          
+          // Refresh discussion
+          this.closeModal('discussion-thread');
+          setTimeout(() => this.openDiscussion(discussionId), 100);
+
+        } catch (error) {
+          console.error('Error deleting reply:', error);
+          this.showNotification('Error deleting reply: ' + error.message, 'error');
+        }
+      }
+
+      // 4. View Assignments
+      async viewAssignments(classId) {
+        try {
+          const isTeacher = this.userInfo.profile.user_type === 'teacher';
+          const classData = this.classes.find(c => c.id === classId);
+
+          // Load assignments for this class
+          const { data: assignments, error } = await this.auth.supabase
+            .from('assignments')
+            .select('*')
+            .eq('class_id', classId)
+            .order('created_at', { ascending: false });
+
+          if (error) throw error;
+
+          let assignmentsHtml = '';
+          if (assignments && assignments.length > 0) {
+            // For students, load their submissions
+            if (!isTeacher) {
+              const assignmentIds = assignments.map(a => a.id);
+              const { data: submissions } = await this.auth.supabase
+                .from('assignment_submissions')
+                .select('*')
+                .in('assignment_id', assignmentIds)
+                .eq('student_id', this.userInfo.user.id);
+
+              const submissionMap = {};
+              submissions?.forEach(s => {
+                submissionMap[s.assignment_id] = s;
+              });
+
+              assignmentsHtml = assignments.map(assignment => {
+                const submission = submissionMap[assignment.id];
+                const dueDate = new Date(assignment.due_date).toLocaleDateString();
+                const status = submission ? submission.status : 'not_submitted';
+                const statusColor = status === 'submitted' ? 'var(--accent-2)' : 
+                                   status === 'graded' ? 'var(--accent)' : 'var(--warning)';
+
+                return `
+                  <div class="card" style="margin: 10px 0;">
+                    <h4>${assignment.title}</h4>
+                    <p style="color: var(--muted); margin: 10px 0;">${assignment.description || 'No description'}</p>
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                      <div>
+                        <span style="font-size: 12px; color: var(--muted);">Due: ${dueDate}</span>
+                        <span style="margin-left: 15px; color: ${statusColor}; font-weight: bold;">
+                          Status: ${status.replace('_', ' ')}
+                        </span>
+                      </div>
+                      <button class="btn btn-primary small" onclick="app.${submission ? 'viewSubmission' : 'submitAssignment'}('${assignment.id}')">
+                        ${submission ? 'View Submission' : 'Submit'}
+                      </button>
+                    </div>
+                  </div>
+                `;
+              }).join('');
+            } else {
+              // Teacher view
+              assignmentsHtml = assignments.map(assignment => {
+                const dueDate = new Date(assignment.due_date).toLocaleDateString();
+                
+                return `
+                  <div class="card" style="margin: 10px 0;">
+                    <h4>${assignment.title}</h4>
+                    <p style="color: var(--muted); margin: 10px 0;">${assignment.description || 'No description'}</p>
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                      <span style="font-size: 12px; color: var(--muted);">Due: ${dueDate}</span>
+                      <div style="display: flex; gap: 10px;">
+                        <button class="btn btn-secondary small" onclick="app.viewSubmissions('${assignment.id}')">
+                          View Submissions
+                        </button>
+                        <button class="btn btn-primary small" onclick="app.editAssignment('${assignment.id}')">
+                          Edit
+                        </button>
+                        <button class="btn danger small" onclick="app.deleteAssignment('${assignment.id}')">
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                `;
+              }).join('');
+            }
+          }
+
+          const modalContent = `
+            <div>
+              <h3>📝 Assignments - ${classData?.name}</h3>
+              ${isTeacher ? `
+                <button class="btn btn-primary" onclick="app.createAssignment('${classId}')" style="margin: 15px 0;">
+                  ➕ Create New Assignment
+                </button>
+              ` : ''}
+              
+              <div style="max-height: 60vh; overflow-y: auto;">
+                ${assignmentsHtml || '<p style="color: var(--muted); text-align: center; padding: 20px;">No assignments yet.</p>'}
+              </div>
+            </div>
+
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal('assignments')">Close</button>
+            </div>
+          `;
+
+          this.showModal('assignments', '📝 Class Assignments', modalContent, true);
+
+        } catch (error) {
+          console.error('Error loading assignments:', error);
+          this.showNotification('Error loading assignments: ' + error.message, 'error');
+        }
+      }
+
+      // 5. Manage Students (Teacher Only)
+      async manageStudents(classId) {
+        try {
+          const classData = this.classes.find(c => c.id === classId);
+
+          // Load enrolled students
+          const { data: enrollments, error } = await this.auth.supabase
+            .from('class_enrollments')
+            .select('*')
+            .eq('class_id', classId)
+            .eq('status', 'active');
+
+          if (error) throw error;
+
+          let studentsHtml = '';
+          if (enrollments && enrollments.length > 0) {
+            const studentIds = enrollments.map(e => e.student_id);
+            
+            const { data: students } = await this.auth.supabase
+              .from('user_profiles')
+              .select('id, first_name, last_name, email, grade_level')
+              .in('id', studentIds);
+
+            const studentMap = {};
+            students?.forEach(s => {
+              studentMap[s.id] = s;
+            });
+
+            studentsHtml = enrollments.map(enrollment => {
+              const student = studentMap[enrollment.student_id] || {};
+              const enrollDate = new Date(enrollment.enrolled_at).toLocaleDateString();
+
+              return `
+                <div class="list-item">
+                  <div class="list-item-content">
+                    <div class="list-item-title">${student.first_name} ${student.last_name}</div>
+                    <div class="list-item-meta">
+                      ${student.email} • Grade ${student.grade_level || 'N/A'} • Enrolled: ${enrollDate}
+                    </div>
+                  </div>
+                  <div style="display: flex; gap: 10px;">
+                    <button class="btn btn-secondary small" onclick="app.messageStudent('${student.id}')">
+                      💬 Message
+                    </button>
+                    <button class="btn danger small" onclick="app.removeStudent('${enrollment.id}', '${classId}')">
+                      Remove
+                    </button>
+                  </div>
+                </div>
+              `;
+            }).join('');
+          }
+
+          const modalContent = `
+            <div>
+              <h3>👥 Students - ${classData?.name}</h3>
+              <p style="color: var(--muted); margin-bottom: 15px;">
+                Class Code: <span style="background: var(--accent); color: black; padding: 2px 6px; border-radius: 4px; font-weight: bold;">
+                  ${classData?.class_code}
+                </span>
+                • ${enrollments?.length || 0} / ${classData?.max_students || 30} students enrolled
+              </p>
+              
+              <div class="list" style="max-height: 60vh; overflow-y: auto;">
+                ${studentsHtml || '<p style="color: var(--muted); text-align: center; padding: 20px;">No students enrolled yet. Share the class code for students to join.</p>'}
+              </div>
+            </div>
+
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal('manage-students')">Close</button>
+            </div>
+          `;
+
+          this.showModal('manage-students', '👥 Manage Students', modalContent, true);
+
+        } catch (error) {
+          console.error('Error loading students:', error);
+          this.showNotification('Error loading students: ' + error.message, 'error');
+        }
+      }
+
+      // 6. Remove Student from Class
+      async removeStudent(enrollmentId, classId) {
+        if (!confirm('Remove this student from the class?')) {
+          return;
+        }
+
+        try {
+          const { error } = await this.auth.supabase
+            .from('class_enrollments')
+            .update({ status: 'removed' })
+            .eq('id', enrollmentId);
+
+          if (error) throw error;
+
+          this.showNotification('Student removed from class', 'success');
+          
+          // Refresh students list
+          this.closeModal('manage-students');
+          setTimeout(() => this.manageStudents(classId), 100);
+
+        } catch (error) {
+          console.error('Error removing student:', error);
+          this.showNotification('Error removing student: ' + error.message, 'error');
+        }
+      }
+
+      // 7. Class Analytics (Teacher Only)
+      async classAnalytics(classId) {
+        try {
+          const classData = this.classes.find(c => c.id === classId);
+
+          // Get enrollment data
+          const { data: enrollments } = await this.auth.supabase
+            .from('class_enrollments')
+            .select('*')
+            .eq('class_id', classId)
+            .eq('status', 'active');
+
+          // Get assignments
+          const { data: assignments } = await this.auth.supabase
+            .from('assignments')
+            .select('*')
+            .eq('class_id', classId);
+
+          // Get submissions
+          let submissionRate = 0;
+          if (assignments && assignments.length > 0) {
+            const { data: submissions } = await this.auth.supabase
+              .from('assignment_submissions')
+              .select('*')
+              .in('assignment_id', assignments.map(a => a.id));
+
+            const totalPossible = (enrollments?.length || 0) * assignments.length;
+            submissionRate = totalPossible > 0 ? ((submissions?.length || 0) / totalPossible * 100).toFixed(1) : 0;
+          }
+
+          // Get discussion activity
+          const { data: discussions } = await this.auth.supabase
+            .from('class_discussions')
+            .select('*')
+            .eq('class_id', classId);
+
+          const modalContent = `
+            <div>
+              <h3>📊 Class Analytics - ${classData?.name}</h3>
+              
+              <div class="grid grid-2" style="margin-top: 20px;">
+                <div class="card">
+                  <h4>👥 Enrollment</h4>
+                  <div style="font-size: 32px; color: var(--accent); margin: 10px 0;">
+                    ${enrollments?.length || 0}
+                  </div>
+                  <p style="color: var(--muted);">Active students</p>
+                </div>
+
+                <div class="card">
+                  <h4>📝 Assignments</h4>
+                  <div style="font-size: 32px; color: var(--accent-2); margin: 10px 0;">
+                    ${assignments?.length || 0}
+                  </div>
+                  <p style="color: var(--muted);">Total assignments</p>
+                </div>
+
+                <div class="card">
+                  <h4>✅ Submission Rate</h4>
+                  <div style="font-size: 32px; color: var(--warning); margin: 10px 0;">
+                    ${submissionRate}%
+                  </div>
+                  <p style="color: var(--muted);">Average completion</p>
+                </div>
+
+                <div class="card">
+                  <h4>💬 Discussions</h4>
+                  <div style="font-size: 32px; color: var(--link); margin: 10px 0;">
+                    ${discussions?.length || 0}
+                  </div>
+                  <p style="color: var(--muted);">Active topics</p>
+                </div>
+              </div>
+
+              <div class="card" style="margin-top: 20px;">
+                <h4>📈 Quick Actions</h4>
+                <div style="display: grid; gap: 10px; margin-top: 15px;">
+                  <button class="btn btn-secondary" onclick="app.exportClassData('${classId}')">
+                    📥 Export Class Data
+                  </button>
+                  <button class="btn btn-secondary" onclick="app.generateReport('${classId}')">
+                    📄 Generate Report
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal('analytics')">Close</button>
+            </div>
+          `;
+
+          this.showModal('analytics', '📊 Class Analytics', modalContent, true);
+
+        } catch (error) {
+          console.error('Error loading analytics:', error);
+          this.showNotification('Error loading analytics: ' + error.message, 'error');
+        }
+      }
+
+      // 8. View Grades (Student Only)
+      async viewGrades(classId) {
+        try {
+          const classData = this.classes.find(c => c.id === classId);
+
+          // Load assignments and submissions
+          const { data: assignments } = await this.auth.supabase
+            .from('assignments')
+            .select('*')
+            .eq('class_id', classId)
+            .order('created_at', { ascending: false });
+
+          let gradesHtml = '';
+          if (assignments && assignments.length > 0) {
+            const { data: submissions } = await this.auth.supabase
+              .from('assignment_submissions')
+              .select('*')
+              .in('assignment_id', assignments.map(a => a.id))
+              .eq('student_id', this.userInfo.user.id);
+
+            const submissionMap = {};
+            submissions?.forEach(s => {
+              submissionMap[s.assignment_id] = s;
+            });
+
+            gradesHtml = assignments.map(assignment => {
+              const submission = submissionMap[assignment.id];
+              const grade = submission?.grade || 'Not graded';
+              const points = submission?.points_earned || '-';
+              const maxPoints = assignment.max_points || 100;
+
+              return `
+                <div class="list-item">
+                  <div class="list-item-content">
+                    <div class="list-item-title">${assignment.title}</div>
+                    <div class="list-item-meta">
+                      Due: ${new Date(assignment.due_date).toLocaleDateString()}
+                    </div>
+                  </div>
+                  <div style="text-align: right;">
+                    <div style="font-size: 20px; font-weight: bold; color: ${submission?.grade ? 'var(--accent-2)' : 'var(--muted)'};">
+                      ${grade}
+                    </div>
+                    <div style="font-size: 12px; color: var(--muted);">
+                      ${points} / ${maxPoints} pts
+                    </div>
+                  </div>
+                </div>
+              `;
+            }).join('');
+          }
+
+          const modalContent = `
+            <div>
+              <h3>📊 My Grades - ${classData?.name}</h3>
+              
+              <div class="list" style="max-height: 60vh; overflow-y: auto; margin-top: 20px;">
+                ${gradesHtml || '<p style="color: var(--muted); text-align: center; padding: 20px;">No grades available yet.</p>'}
+              </div>
+            </div>
+
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal('grades')">Close</button>
+            </div>
+          `;
+
+          this.showModal('grades', '📊 My Grades', modalContent, true);
+
+        } catch (error) {
+          console.error('Error loading grades:', error);
+          this.showNotification('Error loading grades: ' + error.message, 'error');
+        }
+      }
+
+      // 9. Edit Class
+      async editClass(classId) {
+        const classData = this.classes.find(c => c.id === classId);
+        if (!classData) return;
+
+        const modalContent = `
+          <form id="edit-class-form">
+            <div class="form-group">
+              <label for="edit-class-name">Class Name *</label>
+              <input type="text" id="edit-class-name" value="${classData.name}" required>
+            </div>
+            <div class="form-group">
+              <label for="edit-class-subject">Subject *</label>
+              <select id="edit-class-subject" required>
+                <option value="Mathematics" ${classData.subject === 'Mathematics' ? 'selected' : ''}>Mathematics</option>
+                <option value="Science" ${classData.subject === 'Science' ? 'selected' : ''}>Science</option>
+                <option value="English" ${classData.subject === 'English' ? 'selected' : ''}>English</option>
+                <option value="History" ${classData.subject === 'History' ? 'selected' : ''}>History</option>
+                <option value="Art" ${classData.subject === 'Art' ? 'selected' : ''}>Art</option>
+                <option value="Music" ${classData.subject === 'Music' ? 'selected' : ''}>Music</option>
+                <option value="Physical Education" ${classData.subject === 'Physical Education' ? 'selected' : ''}>Physical Education</option>
+                <option value="Computer Science" ${classData.subject === 'Computer Science' ? 'selected' : ''}>Computer Science</option>
+                <option value="Other" ${classData.subject === 'Other' ? 'selected' : ''}>Other</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="edit-class-description">Description</label>
+              <textarea id="edit-class-description" rows="3">${classData.description || ''}</textarea>
+            </div>
+            <div class="form-group">
+              <label for="edit-max-students">Maximum Students</label>
+              <input type="number" id="edit-max-students" min="1" max="100" value="${classData.max_students || 30}">
+            </div>
+          </form>
+
+          <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+            <button class="btn btn-secondary" onclick="app.closeModal('edit-class')">Cancel</button>
+            <button class="btn btn-primary" onclick="app.submitEditClass('${classId}')">Save Changes</button>
+          </div>
+        `;
+
+        this.showModal('edit-class', '✏️ Edit Class', modalContent, true);
+      }
+
+      // 10. Submit Edit Class
+      async submitEditClass(classId) {
+        const updatedData = {
+          name: document.getElementById('edit-class-name').value,
+          subject: document.getElementById('edit-class-subject').value,
+          description: document.getElementById('edit-class-description').value || null,
+          max_students: parseInt(document.getElementById('edit-max-students').value) || 30
+        };
+
+        if (!updatedData.name || !updatedData.subject) {
+          this.showNotification('Please fill in required fields', 'error');
+          return;
+        }
+
+        try {
+          const { error } = await this.auth.supabase
+            .from('classes')
+            .update(updatedData)
+            .eq('id', classId)
+            .eq('teacher_id', this.userInfo.user.id);
+
+          if (error) throw error;
+
+          this.showNotification('Class updated successfully!', 'success');
+          this.closeModal('edit-class');
+          
+          // Reload classes
+          await this.loadTeacherData();
+          this.renderClasses();
+
+        } catch (error) {
+          console.error('Error updating class:', error);
+          this.showNotification('Error updating class: ' + error.message, 'error');
+        }
+      }
+
+      // 11. Delete Class
+      async deleteClass(classId) {
+        const classData = this.classes.find(c => c.id === classId);
+        
+        if (!confirm(`Are you sure you want to delete "${classData?.name}"?\n\nThis will remove all assignments, discussions, and student enrollments. This action cannot be undone.`)) {
+          return;
+        }
+
+        try {
+          const { error } = await this.auth.supabase
+            .from('classes')
+            .update({ is_active: false })
+            .eq('id', classId)
+            .eq('teacher_id', this.userInfo.user.id);
+
+          if (error) throw error;
+
+          this.showNotification('Class deleted successfully', 'success');
+          
+          // Reload classes
+          await this.loadTeacherData();
+          this.renderClasses();
+
+        } catch (error) {
+          console.error('Error deleting class:', error);
+          this.showNotification('Error deleting class: ' + error.message, 'error');
+        }
+      }
+
+      // 12. Enroll in Class (Student)
+      async enrollInClass() {
+        const modalContent = `
+          <form id="enroll-form">
+            <div class="form-group">
+              <label for="class-code">Enter Class Code</label>
+              <input type="text" id="class-code" placeholder="e.g. ABC123" required 
+                     style="text-transform: uppercase;">
+            </div>
+            <p style="color: var(--muted); font-size: 14px;">
+              Ask your teacher for the class enrollment code.
+            </p>
+          </form>
+
+          <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+            <button class="btn btn-secondary" onclick="app.closeModal('enroll')">Cancel</button>
+            <button class="btn btn-primary" onclick="app.submitEnrollment()">Join Class</button>
+          </div>
+        `;
+
+        this.showModal('enroll', '➕ Join a Class', modalContent);
+      }
+
+      // 13. Submit Enrollment
+      async submitEnrollment() {
+        const classCode = document.getElementById('class-code')?.value?.toUpperCase();
+        
+        if (!classCode) {
+          this.showNotification('Please enter a class code', 'error');
+          return;
+        }
+
+        try {
+          // Find class by code
+          const { data: classData, error: findError } = await this.auth.supabase
+            .from('classes')
+            .select('*')
+            .eq('class_code', classCode)
+            .eq('is_active', true)
+            .single();
+
+          if (findError || !classData) {
+            this.showNotification('Invalid class code', 'error');
+            return;
+          }
+
+          // Check if already enrolled
+          const { data: existing } = await this.auth.supabase
+            .from('class_enrollments')
+            .select('*')
+            .eq('class_id', classData.id)
+            .eq('student_id', this.userInfo.user.id)
+            .eq('status', 'active')
+            .single();
+
+          if (existing) {
+            this.showNotification('You are already enrolled in this class', 'error');
+            return;
+          }
+
+          // Create enrollment
+          const { error: enrollError } = await this.auth.supabase
+            .from('class_enrollments')
+            .insert([{
+              class_id: classData.id,
+              student_id: this.userInfo.user.id,
+              status: 'active'
+            }]);
+
+          if (enrollError) throw enrollError;
+
+          this.showNotification(`Successfully joined ${classData.name}!`, 'success');
+          this.closeModal('enroll');
+          
+          // Reload student data
+          await this.loadStudentData();
+          this.renderClasses();
+
+        } catch (error) {
+          console.error('Error enrolling in class:', error);
+          this.showNotification('Error joining class: ' + error.message, 'error');
+        }
+      }
+
+      // 14. Create Discussion
+      async createDiscussion(classId) {
+        const modalContent = `
+          <form id="create-discussion-form">
+            <div class="form-group">
+              <label for="discussion-title">Title *</label>
+              <input type="text" id="discussion-title" required>
+            </div>
+            <div class="form-group">
+              <label for="discussion-type">Type</label>
+              <select id="discussion-type">
+                <option value="general">General Discussion</option>
+                <option value="question">Question</option>
+                <option value="announcement">Announcement</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="discussion-content">Content *</label>
+              <textarea id="discussion-content" rows="5" required></textarea>
+            </div>
+          </form>
+
+          <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+            <button class="btn btn-secondary" onclick="app.closeModal('create-discussion')">Cancel</button>
+            <button class="btn btn-primary" onclick="app.submitDiscussion('${classId}')">Post Discussion</button>
+          </div>
+        `;
+
+        this.showModal('create-discussion', '➕ Start New Discussion', modalContent, true);
+      }
+
+      // 15. Submit Discussion
+      async submitDiscussion(classId) {
+        const discussionData = {
+          class_id: classId,
+          author_id: this.userInfo.user.id,
+          title: document.getElementById('discussion-title').value,
+          content: document.getElementById('discussion-content').value,
+          discussion_type: document.getElementById('discussion-type').value,
+          is_pinned: false
+        };
+
+        if (!discussionData.title || !discussionData.content) {
+          this.showNotification('Please fill in all required fields', 'error');
+          return;
+        }
+
+        try {
+          const { error } = await this.auth.supabase
+            .from('class_discussions')
+            .insert([discussionData]);
+
+          if (error) throw error;
+
+          this.showNotification('Discussion posted successfully!', 'success');
+          this.closeModal('create-discussion');
+          
+          // Refresh discussions
+          setTimeout(() => this.viewDiscussions(classId), 100);
+
+        } catch (error) {
+          console.error('Error creating discussion:', error);
+          this.showNotification('Error creating discussion: ' + error.message, 'error');
+        }
+      }
+
+      // 16. Edit Discussion
+      async editDiscussion(discussionId) {
+        try {
+          const { data: discussion } = await this.auth.supabase
+            .from('class_discussions')
+            .select('*')
+            .eq('id', discussionId)
+            .single();
+
+          if (!discussion) return;
+
+          const modalContent = `
+            <form id="edit-discussion-form">
+              <div class="form-group">
+                <label for="edit-discussion-title">Title *</label>
+                <input type="text" id="edit-discussion-title" value="${discussion.title}" required>
+              </div>
+              <div class="form-group">
+                <label for="edit-discussion-content">Content *</label>
+                <textarea id="edit-discussion-content" rows="5" required>${discussion.content}</textarea>
+              </div>
+            </form>
+
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal('edit-discussion')">Cancel</button>
+              <button class="btn btn-primary" onclick="app.submitEditDiscussion('${discussionId}')">Save Changes</button>
+            </div>
+          `;
+
+          this.showModal('edit-discussion', '✏️ Edit Discussion', modalContent, true);
+
+        } catch (error) {
+          console.error('Error loading discussion:', error);
+          this.showNotification('Error loading discussion: ' + error.message, 'error');
+        }
+      }
+
+      // 17. Submit Edit Discussion
+      async submitEditDiscussion(discussionId) {
+        const updatedData = {
+          title: document.getElementById('edit-discussion-title').value,
+          content: document.getElementById('edit-discussion-content').value
+        };
+
+        if (!updatedData.title || !updatedData.content) {
+          this.showNotification('Please fill in all required fields', 'error');
+          return;
+        }
+
+        try {
+          const { error } = await this.auth.supabase
+            .from('class_discussions')
+            .update(updatedData)
+            .eq('id', discussionId)
+            .eq('author_id', this.userInfo.user.id);
+
+          if (error) throw error;
+
+          this.showNotification('Discussion updated successfully!', 'success');
+          this.closeModal('edit-discussion');
+
+        } catch (error) {
+          console.error('Error updating discussion:', error);
+          this.showNotification('Error updating discussion: ' + error.message, 'error');
+        }
+      }
+
+      // 18. Show Google Drive Integration Modal
+      showGoogleDriveIntegrationModal() {
+        const modalContent = `
+          <div>
+            <h3>📁 Google Drive Integration</h3>
+            <p style="color: var(--muted); margin: 15px 0;">
+              Connect Google Drive to automatically organize and store student assignment submissions.
+            </p>
+            
+            <div class="card" style="background: var(--card); margin: 20px 0;">
+              <h4>Benefits:</h4>
+              <ul style="color: var(--muted); line-height: 1.8; padding-left: 20px;">
+                <li>Automatic folder organization by class and assignment</li>
+                <li>Secure cloud storage for all submissions</li>
+                <li>Easy access and sharing capabilities</li>
+                <li>Backup and archival of student work</li>
+              </ul>
+            </div>
+
+            <div class="card" style="background: var(--warning); color: black; padding: 15px;">
+              <strong>Note:</strong> You'll need to authorize access to your Google Drive. 
+              A folder called "RiverTech Student Assignments" will be created to store all submissions.
+            </div>
+          </div>
+
+          <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+            <button class="btn btn-secondary" onclick="app.closeModal('drive-setup')">Cancel</button>
+            <button class="btn btn-primary" onclick="app.authorizeGoogleDrive()">
+              🔗 Connect Google Drive
+            </button>
+          </div>
+        `;
+
+        this.showModal('drive-setup', '📁 Google Drive Setup', modalContent);
+      }
+
+      // 19. Show Academic Year Management
+      showAcademicYearManagement() {
+        const modalContent = `
+          <div>
+            <h3>🎓 Academic Year Management</h3>
+            <p style="color: var(--muted); margin: 15px 0;">
+              Manage academic years, semesters, and archival of past classes.
+            </p>
+            
+            <div class="card">
+              <h4>Current Academic Year</h4>
+              <p>2024-2025 Academic Year</p>
+              <p style="color: var(--muted); font-size: 14px;">Fall Semester (Active)</p>
+            </div>
+
+            <div class="card" style="margin-top: 20px;">
+              <h4>Quick Actions</h4>
+              <div style="display: grid; gap: 10px; margin-top: 15px;">
+                <button class="btn btn-secondary">
+                  📅 Create New Academic Year
+                </button>
+                <button class="btn btn-secondary">
+                  📚 Archive Current Classes
+                </button>
+                <button class="btn btn-secondary">
+                  📊 View Historical Data
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+            <button class="btn btn-secondary" onclick="app.closeModal('academic-year')">Close</button>
+          </div>
+        `;
+
+        this.showModal('academic-year', '🎓 Academic Year Management', modalContent);
+      }
+
+      // 20. Show Delete Account Confirmation
+      async showDeleteAccountConfirmation() {
+        const modalContent = `
+          <div>
+            <h3 style="color: var(--danger);">⚠️ Delete Account</h3>
+            <p style="margin: 20px 0;">
+              This action will permanently delete your account and all associated data including:
+            </p>
+            <ul style="color: var(--muted); line-height: 1.8; padding-left: 20px;">
+              <li>Your profile information</li>
+              <li>All classes you teach (teachers)</li>
+              <li>All enrollments (students)</li>
+              <li>All messages and discussions</li>
+              <li>All assignments and submissions</li>
+            </ul>
+            <p style="color: var(--danger); font-weight: bold; margin-top: 20px;">
+              This action cannot be undone!
+            </p>
+          </div>
+
+          <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+            <button class="btn btn-secondary" onclick="app.closeModal('delete-account')">Cancel</button>
+            <button class="btn danger" onclick="app.deleteAccount()">
+              Delete My Account
+            </button>
+          </div>
+        `;
+
+        this.showModal('delete-account', '🗑️ Delete Account', modalContent);
+      }
+
+      // 21. Delete Account
+      async deleteAccount() {
+        const finalConfirm = prompt('Type "DELETE" to confirm account deletion:');
+        
+        if (finalConfirm !== 'DELETE') {
+          this.showNotification('Account deletion cancelled', 'info');
+          return;
+        }
+
+        try {
+          // Call Supabase Edge Function to handle cascading deletes
+          const { error } = await this.auth.supabase.auth.admin.deleteUser(
+            this.userInfo.user.id
+          );
+
+          if (error) throw error;
+
+          this.showNotification('Account deleted successfully', 'success');
+          
+          // Logout
+          await this.auth.logout();
+          
+        } catch (error) {
+          console.error('Error deleting account:', error);
+          this.showNotification('Error deleting account: ' + error.message, 'error');
+        }
+      }
+
+      // Helper function for data export (placeholder)
+      async exportClassData(classId) {
+        this.showNotification('Export feature coming soon!', 'info');
+      }
+
+      // Helper function for report generation (placeholder)
+      async generateReport(classId) {
+        this.showNotification('Report generation coming soon!', 'info');
+      }
+
+      // Helper function for assignment submission
+      async submitAssignment(assignmentId) {
+        this.showNotification('Assignment submission interface coming soon!', 'info');
+      }
+
+      // Helper function for viewing submission
+      async viewSubmission(assignmentId) {
+        this.showNotification('View submission interface coming soon!', 'info');
+      }
+
+      // Helper function for creating assignment
+      async createAssignment(classId) {
+        this.showNotification('Assignment creation interface coming soon!', 'info');
+      }
+
+      // Helper function for editing assignment  
+      async editAssignment(assignmentId) {
+        this.showNotification('Assignment editing interface coming soon!', 'info');
+      }
+
+      // Helper function for deleting assignment
+      async deleteAssignment(assignmentId) {
+        this.showNotification('Assignment deletion coming soon!', 'info');
+      }
+
+      // Helper function for viewing submissions
+      async viewSubmissions(assignmentId) {
+        this.showNotification('View submissions interface coming soon!', 'info');
+      }
+    }
+      
+    // Initialize the app
     window.app = new ClassesPortalApp();
   </script>
 </body>
