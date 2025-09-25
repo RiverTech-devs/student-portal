@@ -2168,62 +2168,65 @@
           }
         }
       }
-
-      // FIX 4: Add full delete for discussions (teacher only)
+      
       async viewDiscussions(classId) {
         try {
-          // Load discussions for this class
+          // 1) Stacked threads (no N+1)
           const { data: discussions, error } = await this.auth.supabase
-            .from('class_discussions')
-            .select('*')
+            .from('discussion_thread_summaries')
+            .select('id, class_id, created_by, title, body, is_locked, is_pinned, activity_at, comment_count, created_at')
             .eq('class_id', classId)
-            .order('created_at', { ascending: false });
+            .order('is_pinned', { ascending: false })
+            .order('activity_at', { ascending: false });
       
           if (error) throw error;
       
-          // Load user profiles for discussion authors
-          if (discussions && discussions.length > 0) {
-            const authorIds = [...new Set(discussions.map(d => d.author_id))];
-            
-            const { data: profiles } = await this.auth.supabase
-              .from('user_profiles')
-              .select('id, first_name, last_name, user_type')
-              .in('id', authorIds);
+          // 2) Profiles in one round-trip
+          let profileMap = {};
+          if (discussions && discussions.length) {
+            // support created_by or author_id (legacy)
+            const authorIds = Array.from(
+              new Set(
+                discussions
+                  .map(d => d.created_by ?? d.author_id)
+                  .filter(Boolean)
+              )
+            );
       
-            // Create profile map
-            const profileMap = {};
-            if (profiles) {
-              profiles.forEach(p => {
-                profileMap[p.id] = p;
-              });
+            if (authorIds.length) {
+              const { data: profiles, error: profErr } = await this.auth.supabase
+                .from('user_profiles')
+                .select('id, first_name, last_name, user_type')
+                .in('id', authorIds);
+      
+              if (profErr) throw profErr;
+      
+              profileMap = (profiles || []).reduce((acc, p) => {
+                acc[p.id] = p;
+                return acc;
+              }, {});
             }
       
-            // Attach profiles to discussions
+            // 3) Attach profiles + normalize fields
             discussions.forEach(d => {
-              d.user_profiles = profileMap[d.author_id] || {
+              const authorId = d.created_by ?? d.author_id ?? null;
+              d.author_id = authorId;                              // normalize
+              d.reply_count = d.comment_count ?? 0;               // normalize
+              d.user_profiles = profileMap[authorId] || {
                 first_name: 'Unknown',
                 last_name: 'User',
                 user_type: 'unknown'
               };
             });
-      
-            // Get reply counts for each discussion
-            for (let discussion of discussions) {
-              const { data: replies, error: replyError } = await this.auth.supabase
-                .from('discussion_replies')
-                .select('id')
-                .eq('discussion_id', discussion.id);
-              
-              discussion.reply_count = replies ? replies.length : 0;
-            }
           }
       
+          // 4) Render (unchanged layout)
           const classData = this.classes.find(c => c.id === classId);
-          const isTeacher = this.userInfo.profile.user_type === 'teacher';
+          const isTeacher = this.userInfo?.profile?.user_type === 'teacher';
       
           let content = `
             <div style="margin-bottom: 20px;">
-              <h3>💬 Class Discussions - ${classData?.name}</h3>
+              <h3>💬 Class Discussions - ${classData?.name ?? ''}</h3>
               <button class="btn btn-primary" onclick="app.createDiscussion('${classId}')" style="margin-top: 10px;">
                 ➕ Start New Discussion
               </button>
@@ -2252,10 +2255,9 @@
           `;
       
           this.showModal('discussions', '💬 Class Discussions', content, true);
-      
-        } catch (error) {
-          console.error('Error loading discussions:', error);
-          this.showNotification('Error loading discussions: ' + error.message, 'error');
+        } catch (err) {
+          console.error('Error loading discussions:', err);
+          this.showNotification('Error loading discussions: ' + err.message, 'error');
         }
       }
 
