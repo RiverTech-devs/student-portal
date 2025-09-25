@@ -2171,48 +2171,84 @@
       
       async viewDiscussions(classId) {
         try {
-          // 1) Stacked threads (no N+1)
-          const { data: discussions, error } = await this.auth.supabase
+          let discussions = [];
+          let errPrimary = null;
+      
+          const { data: viaView, error: viewErr } = await this.auth.supabase
             .from('discussion_thread_summaries')
-            .select('id, class_id, created_by, title, body, is_locked, is_pinned, activity_at, comment_count, created_at')
+            .select(
+              // removed "body"
+              'id, class_id, created_by, title, is_locked, is_pinned, activity_at, comment_count, created_at'
+            )
             .eq('class_id', classId)
             .order('is_pinned', { ascending: false })
             .order('activity_at', { ascending: false });
       
-          if (error) throw error;
+          if (viewErr) {
+            errPrimary = viewErr;
+            console.warn('[discussions] view error:', viewErr?.message || viewErr);
+          }
       
-          // 2) Profiles in one round-trip
+          const needFallback = !!errPrimary || !viaView || viaView.length === 0;
+          if (needFallback) {
+            const { data: viaTable, error: tblErr } = await this.auth.supabase
+              .from('class_discussions')
+              .select('id, class_id, author_id, title, created_at')
+              .eq('class_id', classId)
+              .order('created_at', { ascending: false });
+      
+            if (tblErr) throw tblErr;
+      
+            discussions = (viaTable || []).map(d => ({
+              id: d.id,
+              class_id: d.class_id,
+              created_by: d.author_id,
+              title: d.title,
+              is_locked: false,
+              is_pinned: false,
+              activity_at: d.created_at,
+              comment_count: undefined,
+              created_at: d.created_at
+            }));
+      
+            if (discussions.length) {
+              const ids = discussions.map(d => d.id);
+              const { data: counts, error: cntErr } = await this.auth.supabase
+                .from('discussion_replies')
+                .select('discussion_id, id')
+                .in('discussion_id', ids);
+      
+              if (!cntErr && counts) {
+                const map = counts.reduce((acc, r) => {
+                  acc[r.discussion_id] = (acc[r.discussion_id] || 0) + 1;
+                  return acc;
+                }, {});
+                discussions.forEach(d => { d.comment_count = map[d.id] || 0; });
+              } else {
+                console.warn('[discussions] reply count fallback error:', cntErr?.message || cntErr);
+                discussions.forEach(d => { d.comment_count = 0; });
+              }
+            }
+          } else {
+            discussions = viaView || [];
+          }
+      
+          // profiles once
           let profileMap = {};
-          if (discussions && discussions.length) {
-            // support created_by or author_id (legacy)
-            const authorIds = Array.from(
-              new Set(
-                discussions
-                  .map(d => d.created_by ?? d.author_id)
-                  .filter(Boolean)
-              )
-            );
-      
+          if (discussions.length) {
+            const authorIds = Array.from(new Set(discussions.map(d => d.created_by).filter(Boolean)));
             if (authorIds.length) {
-              const { data: profiles, error: profErr } = await this.auth.supabase
+              const { data: profiles } = await this.auth.supabase
                 .from('user_profiles')
                 .select('id, first_name, last_name, user_type')
                 .in('id', authorIds);
       
-              if (profErr) throw profErr;
-      
-              profileMap = (profiles || []).reduce((acc, p) => {
-                acc[p.id] = p;
-                return acc;
-              }, {});
+              profileMap = (profiles || []).reduce((a, p) => (a[p.id] = p, a), {});
             }
-      
-            // 3) Attach profiles + normalize fields
             discussions.forEach(d => {
-              const authorId = d.created_by ?? d.author_id ?? null;
-              d.author_id = authorId;                              // normalize
-              d.reply_count = d.comment_count ?? 0;               // normalize
-              d.user_profiles = profileMap[authorId] || {
+              d.author_id = d.created_by;
+              d.reply_count = typeof d.comment_count === 'number' ? d.comment_count : 0;
+              d.user_profiles = profileMap[d.created_by] || {
                 first_name: 'Unknown',
                 last_name: 'User',
                 user_type: 'unknown'
@@ -2220,8 +2256,7 @@
             });
           }
       
-          // 4) Render (unchanged layout)
-          const classData = this.classes.find(c => c.id === classId);
+          const classData = (this.classes || []).find(c => c.id === classId);
           const isTeacher = this.userInfo?.profile?.user_type === 'teacher';
       
           let content = `
@@ -2233,11 +2268,13 @@
             </div>
           `;
       
-          if (!discussions || discussions.length === 0) {
+          if (!discussions.length) {
+            const devHint = errPrimary ? `<pre style="white-space:pre-wrap;background:#0001;padding:8px;border-radius:8px">Hint: ${errPrimary.message}</pre>` : '';
             content += `
               <div class="empty-state">
                 <h3>💬 No Discussions Yet</h3>
                 <p>Start the first discussion to get the conversation going!</p>
+                ${devHint}
               </div>
             `;
           } else {
@@ -2255,9 +2292,9 @@
           `;
       
           this.showModal('discussions', '💬 Class Discussions', content, true);
-        } catch (err) {
-          console.error('Error loading discussions:', err);
-          this.showNotification('Error loading discussions: ' + err.message, 'error');
+        } catch (error) {
+          console.error('Error loading discussions:', error);
+          this.showNotification('Error loading discussions: ' + (error.message || error), 'error');
         }
       }
 
