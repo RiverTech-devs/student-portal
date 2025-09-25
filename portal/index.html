@@ -2606,7 +2606,7 @@
 
       // MISSING FUNCTIONS IMPLEMENTATION
 
-      // 1. Open Discussion - View full discussion thread with replies
+      // 1. Open Discussion - View full discussion thread with nested replies
       async openDiscussion(discussionId) {
         try {
           // Load discussion details
@@ -2625,16 +2625,16 @@
             .eq('id', discussion.author_id)
             .single();
 
-          // Load replies with author profiles
+          // Load all replies for this discussion
           const { data: replies } = await this.auth.supabase
             .from('discussion_replies')
             .select('*')
             .eq('discussion_id', discussionId)
             .order('created_at', { ascending: true });
 
-          let repliesHtml = '';
+          // Load profiles for all reply authors
+          let profileMap = {};
           if (replies && replies.length > 0) {
-            // Get all reply author IDs
             const replyAuthorIds = [...new Set(replies.map(r => r.author_id))];
             
             const { data: replyProfiles } = await this.auth.supabase
@@ -2642,33 +2642,13 @@
               .select('id, first_name, last_name, user_type')
               .in('id', replyAuthorIds);
 
-            const profileMap = {};
             replyProfiles?.forEach(p => {
               profileMap[p.id] = p;
             });
-
-            repliesHtml = replies.map(reply => {
-              const author = profileMap[reply.author_id] || { first_name: 'Unknown', last_name: 'User' };
-              const replyDate = new Date(reply.created_at).toLocaleDateString();
-              const replyTime = new Date(reply.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-              
-              return `
-                <div class="card" style="margin: 10px 0; padding: 15px;">
-                  <div style="display: flex; justify-content: space-between; align-items: start;">
-                    <div>
-                      <strong>${author.first_name} ${author.last_name}</strong> 
-                      <span style="color: var(--muted); font-size: 12px;">(${author.user_type})</span>
-                      <div style="font-size: 11px; color: var(--muted);">${replyDate} at ${replyTime}</div>
-                      <p style="margin-top: 10px;">${reply.content}</p>
-                    </div>
-                    ${reply.author_id === this.userInfo.user.id ? `
-                      <button class="btn danger small" onclick="app.deleteReply('${reply.id}', '${discussionId}')">🗑️</button>
-                    ` : ''}
-                  </div>
-                </div>
-              `;
-            }).join('');
           }
+
+          // Build nested reply structure
+          const nestedReplies = this.buildNestedReplies(replies || [], profileMap);
 
           const modalContent = `
             <div style="max-height: 70vh; overflow-y: auto;">
@@ -2679,25 +2659,19 @@
                   ${discussion.is_pinned ? '<span style="background: var(--warning); color: black; padding: 2px 6px; border-radius: 4px; font-size: 10px;">PINNED</span>' : ''}
                 </div>
                 <p style="line-height: 1.6; margin-bottom: 10px;">${discussion.content}</p>
-                <div style="font-size: 12px; color: var(--muted);">
+                <div style="font-size: 12px; color: var(--muted); margin-bottom: 10px;">
                   Posted by ${authorProfile?.first_name} ${authorProfile?.last_name} • ${new Date(discussion.created_at).toLocaleDateString()}
                 </div>
+                <button class="btn btn-secondary small" onclick="app.showReplyForm('${discussionId}', null, 'main-discussion')">
+                  💬 Reply
+                </button>
+                <div id="reply-to-main-discussion" style="margin-top: 10px;"></div>
               </div>
 
-              <h4 style="margin-bottom: 15px;">💬 Replies (${replies?.length || 0})</h4>
+              <h4 style="margin-bottom: 15px;">💬 Discussion (${replies?.length || 0} ${replies?.length === 1 ? 'comment' : 'comments'})</h4>
               
               <div id="replies-container">
-                ${repliesHtml || '<p style="color: var(--muted); text-align: center;">No replies yet. Be the first to respond!</p>'}
-              </div>
-
-              <div class="card" style="margin-top: 20px; background: var(--card);">
-                <h4 style="margin-bottom: 10px;">Add Reply</h4>
-                <form id="reply-form">
-                  <div class="form-group">
-                    <textarea id="reply-content" rows="3" placeholder="Write your reply..." required></textarea>
-                  </div>
-                  <button type="submit" class="btn btn-primary">Post Reply</button>
-                </form>
+                ${nestedReplies || '<p style="color: var(--muted); text-align: center;">No comments yet. Be the first to respond!</p>'}
               </div>
             </div>
 
@@ -2708,21 +2682,120 @@
 
           this.showModal('discussion-thread', discussion.title || 'Discussion Thread', modalContent, true);
 
-          // Setup reply form
-          document.getElementById('reply-form')?.addEventListener('submit', (e) => {
-            e.preventDefault();
-            this.postReply(discussionId);
-          });
-
         } catch (error) {
           console.error('Error opening discussion:', error);
           this.showNotification('Error loading discussion: ' + error.message, 'error');
         }
       }
 
-      // 2. Post Reply to Discussion
-      async postReply(discussionId) {
-        const content = document.getElementById('reply-content')?.value;
+      // Build hierarchical nested reply structure
+      buildNestedReplies(replies, profileMap, parentId = null, level = 0) {
+        const filteredReplies = replies.filter(r => r.parent_reply_id === parentId);
+        
+        if (filteredReplies.length === 0) {
+          return '';
+        }
+
+        return filteredReplies.map(reply => {
+          const author = profileMap[reply.author_id] || { first_name: 'Unknown', last_name: 'User' };
+          const replyDate = new Date(reply.created_at).toLocaleDateString();
+          const replyTime = new Date(reply.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          const isAuthor = reply.author_id === this.userInfo.user.id;
+          const isTeacher = this.userInfo.profile.user_type === 'teacher';
+          
+          // Calculate indentation based on nesting level
+          const marginLeft = level * 30;
+          const borderLeft = level > 0 ? '2px solid var(--border)' : 'none';
+          
+          return `
+            <div class="reply-item" style="margin-left: ${marginLeft}px; border-left: ${borderLeft}; padding-left: ${level > 0 ? '15px' : '0'}; margin-bottom: 15px;">
+              <div style="background: ${level % 2 === 0 ? 'var(--card)' : 'rgba(42, 49, 64, 0.5)'}; padding: 12px; border-radius: 8px;">
+                <div style="display: flex; justify-content: space-between; align-items: start;">
+                  <div style="flex: 1;">
+                    <div style="margin-bottom: 8px;">
+                      <strong>${author.first_name} ${author.last_name}</strong> 
+                      <span style="color: var(--muted); font-size: 12px;">(${author.user_type})</span>
+                      <span style="font-size: 11px; color: var(--muted); margin-left: 10px;">
+                        ${replyDate} at ${replyTime}
+                      </span>
+                    </div>
+                    <p style="margin: 10px 0; line-height: 1.5;">${reply.content}</p>
+                    <div style="display: flex; gap: 10px; margin-top: 10px;">
+                      <button class="btn btn-secondary small" onclick="app.showReplyForm('${reply.discussion_id}', '${reply.id}', 'reply-${reply.id}')">
+                        ↩️ Reply
+                      </button>
+                      ${isAuthor || isTeacher ? `
+                        <button class="btn danger small" onclick="app.deleteReply('${reply.id}', '${reply.discussion_id}')">
+                          🗑️ Delete
+                        </button>
+                      ` : ''}
+                    </div>
+                    <div id="reply-to-reply-${reply.id}" style="margin-top: 10px;"></div>
+                  </div>
+                </div>
+              </div>
+              
+              <!-- Nested replies -->
+              <div style="margin-top: 10px;">
+                ${this.buildNestedReplies(replies, profileMap, reply.id, level + 1)}
+              </div>
+            </div>
+          `;
+        }).join('');
+      }
+
+      // Show inline reply form
+      showReplyForm(discussionId, parentReplyId = null, containerId) {
+        const container = document.getElementById(`reply-to-${containerId}`);
+        
+        // Check if form already exists
+        if (container.querySelector('.reply-form')) {
+          container.innerHTML = '';
+          return;
+        }
+
+        // Clear other open reply forms
+        document.querySelectorAll('[id^="reply-to-"]').forEach(el => {
+          if (el.id !== `reply-to-${containerId}`) {
+            el.innerHTML = '';
+          }
+        });
+
+        const formHtml = `
+          <div class="reply-form card" style="padding: 15px; margin-top: 10px; background: var(--card); border: 1px solid var(--accent);">
+            <form onsubmit="event.preventDefault(); app.postReply('${discussionId}', ${parentReplyId ? `'${parentReplyId}'` : 'null'}, '${containerId}');">
+              <div class="form-group">
+                <textarea 
+                  id="reply-content-${containerId}" 
+                  rows="3" 
+                  placeholder="Write your reply..." 
+                  required
+                  style="width: 100%;"
+                ></textarea>
+              </div>
+              <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                <button type="button" class="btn btn-secondary small" onclick="document.getElementById('reply-to-${containerId}').innerHTML = '';">
+                  Cancel
+                </button>
+                <button type="submit" class="btn btn-primary small">
+                  Post Reply
+                </button>
+              </div>
+            </form>
+          </div>
+        `;
+
+        container.innerHTML = formHtml;
+        
+        // Focus on textarea
+        setTimeout(() => {
+          document.getElementById(`reply-content-${containerId}`)?.focus();
+        }, 100);
+      }
+
+      // 2. Post Reply to Discussion (with parent support)
+      async postReply(discussionId, parentReplyId = null, containerId) {
+        const content = document.getElementById(`reply-content-${containerId}`)?.value;
         
         if (!content?.trim()) {
           this.showNotification('Please enter a reply', 'error');
@@ -2730,17 +2803,23 @@
         }
 
         try {
+          const replyData = {
+            discussion_id: discussionId,
+            author_id: this.userInfo.user.id,
+            content: content.trim(),
+            parent_reply_id: parentReplyId
+          };
+
           const { error } = await this.auth.supabase
             .from('discussion_replies')
-            .insert([{
-              discussion_id: discussionId,
-              author_id: this.userInfo.user.id,
-              content: content.trim()
-            }]);
+            .insert([replyData]);
 
           if (error) throw error;
 
           this.showNotification('Reply posted successfully!', 'success');
+          
+          // Clear form
+          document.getElementById(`reply-to-${containerId}`).innerHTML = '';
           
           // Refresh the discussion
           this.closeModal('discussion-thread');
@@ -2752,18 +2831,20 @@
         }
       }
 
-      // 3. Delete Reply
+      // 3. Delete Reply (with cascade for nested replies)
       async deleteReply(replyId, discussionId) {
-        if (!confirm('Delete this reply?')) {
+        const isTeacher = this.userInfo.profile.user_type === 'teacher';
+        
+        if (!confirm(`Delete this reply${isTeacher ? ' and all its nested replies' : ''}?\n\nThis action cannot be undone.`)) {
           return;
         }
 
         try {
+          // Note: Assuming cascade delete is set up in Supabase for nested replies
           const { error } = await this.auth.supabase
             .from('discussion_replies')
             .delete()
-            .eq('id', replyId)
-            .eq('author_id', this.userInfo.user.id);
+            .eq('id', replyId);
 
           if (error) throw error;
 
