@@ -2213,134 +2213,118 @@
     }
     
     async viewDiscussions(classId) {
-      try {
-        if (!classId) throw new Error('classId is required');
-    
-        let discussions = [];
-        let primaryErr = null;
-    
-        // Try stacked view first
-        const { data: viaViewRaw, error: viewErr } = await this.auth.supabase
-          .from('discussion_thread_summaries')
-          .select('id, class_id, created_by, title, is_locked, is_pinned, activity_at, comment_count, created_at')
-          .eq('class_id', classId)
-          .order('is_pinned', { ascending: false })
-          .order('activity_at', { ascending: false });
-    
-        const viaView = this._asArray(viaViewRaw);
-        if (viewErr) primaryErr = viewErr;
-    
-        const needFallback = !!primaryErr || viaView.length === 0;
-    
-        if (needFallback) {
-          // Fallback to base table
-          const { data: viaTableRaw, error: tblErr } = await this.auth.supabase
+        try {
+          if (!classId) throw new Error('classId is required');
+      
+          let discussions = [];
+          
+          // Get discussions with all needed fields
+          const { data: discussionsRaw, error } = await this.auth.supabase
             .from('class_discussions')
-            .select('id, class_id, author_id, title, created_at')
+            .select(`
+              id,
+              class_id,
+              author_id,
+              title,
+              content,
+              discussion_type,
+              is_locked,
+              is_pinned,
+              created_at
+            `)
             .eq('class_id', classId)
+            .order('is_pinned', { ascending: false })
             .order('created_at', { ascending: false });
-    
-          if (tblErr) throw tblErr;
-          const viaTable = this._asArray(viaTableRaw);
-    
-          discussions = viaTable.map(d => ({
-            id: d.id,
-            class_id: d.class_id,
-            created_by: d.author_id,
-            title: d.title,
-            is_locked: false,
-            is_pinned: false,
-            activity_at: d.created_at,
-            comment_count: 0,
-            created_at: d.created_at
-          }));
-    
-          // Grouped reply counts
-          if (discussions.length) {
-            const ids = discussions.map(d => d.id);
-            const { data: countsRaw, error: cntErr } = await this.auth.supabase
+      
+          if (error) throw error;
+      
+          discussions = discussionsRaw || [];
+      
+          // Get reply counts for all discussions
+          if (discussions.length > 0) {
+            const discussionIds = discussions.map(d => d.id);
+            const { data: replies } = await this.auth.supabase
               .from('discussion_replies')
-              .select('discussion_id, id')
-              .in('discussion_id', ids);
-    
-            if (!cntErr) {
-              const counts = this._asArray(countsRaw);
-              const map = counts.reduce((m, r) => {
-                m[r.discussion_id] = (m[r.discussion_id] || 0) + 1;
-                return m;
-              }, {});
-              discussions.forEach(d => { d.comment_count = map[d.id] || 0; });
-            } else {
-              console.warn('[discussions] reply count error:', cntErr?.message || cntErr);
-            }
+              .select('discussion_id')
+              .in('discussion_id', discussionIds);
+      
+            // Count replies per discussion
+            const replyCount = {};
+            replies?.forEach(reply => {
+              replyCount[reply.discussion_id] = (replyCount[reply.discussion_id] || 0) + 1;
+            });
+      
+            // Add reply count to discussions
+            discussions.forEach(d => {
+              d.reply_count = replyCount[d.id] || 0;
+            });
           }
-        } else {
-          discussions = viaView;
-        }
-    
-        // Profiles once, coalesced
-        const authorIds = Array.from(new Set(this._asArray(discussions).map(d => d.created_by).filter(Boolean)));
-        const profileMap = {};
-        if (authorIds.length) {
-          const { data: profilesRaw, error: profErr } = await this.auth.supabase
-            .from('user_profiles')
-            .select('id, first_name, last_name, user_type')
-            .in('id', authorIds);
-    
-          if (profErr) {
-            console.warn('[discussions] profiles error:', profErr?.message || profErr);
-          } else {
-            this._asArray(profilesRaw).forEach(p => { profileMap[p.id] = p; });
+      
+          // Get author profiles
+          const authorIds = [...new Set(discussions.map(d => d.author_id).filter(Boolean))];
+          const profileMap = {};
+          
+          if (authorIds.length > 0) {
+            const { data: profiles } = await this.auth.supabase
+              .from('user_profiles')
+              .select('id, first_name, last_name, user_type')
+              .in('id', authorIds);
+      
+            profiles?.forEach(p => {
+              profileMap[p.id] = p;
+            });
           }
-        }
-    
-        // Attach profiles safely
-        discussions.forEach(d => {
-          d.user_profiles = profileMap[d.created_by] || { first_name: '', last_name: '', user_type: '' };
-          d.reply_count = typeof d.comment_count === 'number' ? d.comment_count : 0;
-        });
-    
-        // Render
-        const classData = (this.classes || []).find(c => c.id === classId);
-        const isTeacher = this.userInfo?.profile?.user_type === 'teacher';
-    
-        let content = `
-          <div style="margin-bottom: 20px;">
-            <h3>💬 Class Discussions - ${classData?.name ?? ''}</h3>
-            <button class="btn btn-primary" onclick="app.createDiscussion('${classId}')" style="margin-top: 10px;">
-              ➕ Start New Discussion
-            </button>
-          </div>
-        `;
-    
-        if (!this._asArray(discussions).length) {
-          const devHint = primaryErr ? `<pre style="white-space:pre-wrap;background:#0001;padding:8px;border-radius:8px">Hint: ${primaryErr.message}</pre>` : '';
-          content += `
-            <div class="empty-state">
-              <h3>💬 No Discussions Yet</h3>
-              <p>Start the first discussion to get the conversation going!</p>
-              ${devHint}
+      
+          // Attach profiles to discussions
+          discussions.forEach(d => {
+            d.user_profiles = profileMap[d.author_id] || {
+              first_name: 'Unknown',
+              last_name: 'User',
+              user_type: 'unknown'
+            };
+          });
+      
+          // Render the modal
+          const classData = this.classes.find(c => c.id === classId);
+          const isTeacher = this.userInfo?.profile?.user_type === 'teacher';
+      
+          let content = `
+            <div style="margin-bottom: 20px;">
+              <h3>💬 Class Discussions - ${classData?.name || ''}</h3>
+              <button class="btn btn-primary" onclick="app.createDiscussion('${classId}')" style="margin-top: 10px;">
+                ➕ Start New Discussion
+              </button>
             </div>
           `;
-        } else {
-          const listHTML = this._asArray(discussions)
-            .map(d => this.safeRenderDiscussionCard(d, isTeacher))
-            .join('');
-          content += `<div style="max-height: 500px; overflow-y: auto;">${listHTML}</div>`;
+      
+          if (discussions.length === 0) {
+            content += `
+              <div class="empty-state">
+                <h3>💬 No Discussions Yet</h3>
+                <p>Start the first discussion to get the conversation going!</p>
+              </div>
+            `;
+          } else {
+            content += '<div style="max-height: 500px; overflow-y: auto;">';
+            discussions.forEach(discussion => {
+              content += this.renderDiscussionCard(discussion, isTeacher);
+            });
+            content += '</div>';
+          }
+      
+          content += `
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal('discussions')">Close</button>
+            </div>
+          `;
+      
+          this.showModal('discussions', '💬 Class Discussions', content, true);
+      
+        } catch (error) {
+          console.error('Error loading discussions:', error);
+          this.showNotification('Error loading discussions: ' + error.message, 'error');
         }
-    
-        content += `
-          <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
-            <button class="btn btn-secondary" onclick="app.closeModal('discussions')">Close</button>
-          </div>
-        `;
-    
-        this.showModal('discussions', '💬 Class Discussions', content, true);
-      } catch (error) {
-        console.error('Error loading discussions:', error);
-        this.showNotification('Error loading discussions: ' + (error?.message || error), 'error');
       }
-    }
 
       renderDiscussionCard(discussion, isTeacher) {
         const author = discussion.user_profiles || { first_name: 'Unknown', last_name: 'User', user_type: 'unknown' };
@@ -2348,21 +2332,30 @@
         const replyCount = discussion.reply_count || 0;
         const canEdit = discussion.author_id === this.userInfo.user.id;
         const canDelete = discussion.author_id === this.userInfo.user.id || isTeacher;
+        
+        // Safely handle content that might not exist
+        const content = discussion.content || 'No content available';
+        const truncatedContent = content.length > 150 ? content.substring(0, 150) + '...' : content;
+        
+        // Handle discussion type with fallback
+        const discussionType = discussion.discussion_type || 'general';
+        const typeIcon = discussionType === 'announcement' ? '📢' : 
+                         discussionType === 'question' ? '❓' : '💬';
       
         return `
           <div class="card" style="margin: 0 0 15px 0; cursor: pointer;" onclick="app.openDiscussion('${discussion.id}')">
             <div style="display: flex; justify-content: space-between; align-items: start;">
               <div style="flex: 1;">
                 <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
-                  ${discussion.discussion_type === 'announcement' ? '📢' : discussion.discussion_type === 'question' ? '❓' : '💬'}
-                  <h4 style="margin: 0;">${discussion.title || 'Discussion'}</h4>
+                  ${typeIcon}
+                  <h4 style="margin: 0;">${discussion.title || 'Untitled Discussion'}</h4>
                   ${discussion.is_pinned ? '<span style="background: var(--warning); color: black; padding: 2px 6px; border-radius: 4px; font-size: 10px;">PINNED</span>' : ''}
                 </div>
                 <p style="margin-bottom: 10px; color: var(--muted); font-size: 14px; line-height: 1.4;">
-                  ${discussion.content.length > 150 ? discussion.content.substring(0, 150) + '...' : discussion.content}
+                  ${truncatedContent}
                 </p>
                 <div style="font-size: 12px; color: var(--muted);">
-                  By ${author.first_name} ${author.last_name} (${author.user_type}) • ${createdDate} • ${replyCount} replies
+                  By ${author.first_name} ${author.last_name} (${author.user_type}) • ${createdDate} • ${replyCount} ${replyCount === 1 ? 'reply' : 'replies'}
                 </div>
               </div>
               <div style="margin-left: 15px; display: flex; gap: 5px;">
@@ -2687,35 +2680,43 @@
         }
       }
 
-      // MISSING FUNCTIONS IMPLEMENTATION
-
-      // 1. Open Discussion - View full discussion thread with nested replies
       async openDiscussion(discussionId) {
         try {
-          // Load discussion details
+          // Load discussion with all fields
           const { data: discussion, error } = await this.auth.supabase
             .from('class_discussions')
-            .select('*')
+            .select(`
+              id,
+              class_id,
+              author_id,
+              title,
+              content,
+              discussion_type,
+              is_pinned,
+              is_locked,
+              created_at
+            `)
             .eq('id', discussionId)
             .single();
-
+      
           if (error) throw error;
-
+          if (!discussion) throw new Error('Discussion not found');
+      
           // Load author profile
           const { data: authorProfile } = await this.auth.supabase
             .from('user_profiles')
             .select('id, first_name, last_name, user_type')
             .eq('id', discussion.author_id)
             .single();
-
-          // Load all replies for this discussion
+      
+          // Load all replies
           const { data: replies } = await this.auth.supabase
             .from('discussion_replies')
             .select('*')
             .eq('discussion_id', discussionId)
             .order('created_at', { ascending: true });
-
-          // Load profiles for all reply authors
+      
+          // Load profiles for reply authors
           let profileMap = {};
           if (replies && replies.length > 0) {
             const replyAuthorIds = [...new Set(replies.map(r => r.author_id))];
@@ -2724,47 +2725,55 @@
               .from('user_profiles')
               .select('id, first_name, last_name, user_type')
               .in('id', replyAuthorIds);
-
+      
             replyProfiles?.forEach(p => {
               profileMap[p.id] = p;
             });
           }
-
+      
           // Build nested reply structure
           const nestedReplies = this.buildNestedReplies(replies || [], profileMap);
-
+      
+          // Handle discussion type with fallback
+          const discussionType = discussion.discussion_type || 'general';
+          const typeIcon = discussionType === 'announcement' ? '📢' : 
+                           discussionType === 'question' ? '❓' : '💬';
+      
           const modalContent = `
             <div style="max-height: 70vh; overflow-y: auto;">
               <div class="card" style="background: var(--card); margin-bottom: 20px;">
                 <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
-                  ${discussion.discussion_type === 'announcement' ? '📢' : discussion.discussion_type === 'question' ? '❓' : '💬'}
-                  <h3 style="margin: 0;">${discussion.title || 'Discussion'}</h3>
+                  ${typeIcon}
+                  <h3 style="margin: 0;">${discussion.title || 'Untitled Discussion'}</h3>
                   ${discussion.is_pinned ? '<span style="background: var(--warning); color: black; padding: 2px 6px; border-radius: 4px; font-size: 10px;">PINNED</span>' : ''}
+                  ${discussion.is_locked ? '<span style="background: var(--danger); color: white; padding: 2px 6px; border-radius: 4px; font-size: 10px;">LOCKED</span>' : ''}
                 </div>
-                <p style="line-height: 1.6; margin-bottom: 10px;">${discussion.content}</p>
+                <p style="line-height: 1.6; margin-bottom: 10px;">${discussion.content || 'No content'}</p>
                 <div style="font-size: 12px; color: var(--muted); margin-bottom: 10px;">
-                  Posted by ${authorProfile?.first_name} ${authorProfile?.last_name} • ${new Date(discussion.created_at).toLocaleDateString()}
+                  Posted by ${authorProfile?.first_name || 'Unknown'} ${authorProfile?.last_name || 'User'} • ${new Date(discussion.created_at).toLocaleDateString()}
                 </div>
-                <button class="btn btn-secondary small" onclick="app.showReplyForm('${discussionId}', null, 'main-discussion')">
-                  💬 Reply
-                </button>
-                <div id="reply-to-main-discussion" style="margin-top: 10px;"></div>
+                ${!discussion.is_locked ? `
+                  <button class="btn btn-secondary small" onclick="app.showReplyForm('${discussionId}', null, 'main-discussion')">
+                    💬 Reply
+                  </button>
+                  <div id="reply-to-main-discussion" style="margin-top: 10px;"></div>
+                ` : '<p style="color: var(--muted); font-style: italic;">This discussion is locked</p>'}
               </div>
-
+      
               <h4 style="margin-bottom: 15px;">💬 Discussion (${replies?.length || 0} ${replies?.length === 1 ? 'comment' : 'comments'})</h4>
               
               <div id="replies-container">
                 ${nestedReplies || '<p style="color: var(--muted); text-align: center;">No comments yet. Be the first to respond!</p>'}
               </div>
             </div>
-
+      
             <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
               <button class="btn btn-secondary" onclick="app.closeModal('discussion-thread')">Close</button>
             </div>
           `;
-
+      
           this.showModal('discussion-thread', discussion.title || 'Discussion Thread', modalContent, true);
-
+      
         } catch (error) {
           console.error('Error opening discussion:', error);
           this.showNotification('Error loading discussion: ' + error.message, 'error');
