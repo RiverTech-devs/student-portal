@@ -2776,7 +2776,24 @@
                 <div id="reply-to-main-discussion" style="margin-top: 10px;"></div>
               </div>
       
-              <h4 style="margin-bottom: 15px;">💬 Discussion (${replies?.length || 0} ${replies?.length === 1 ? 'comment' : 'comments'})</h4>
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                <h4 style="margin: 0;">💬 Discussion (${replies?.length || 0} ${replies?.length === 1 ? 'comment' : 'comments'})</h4>
+                ${replies && replies.length > 2 ? `
+                  <div>
+                    <button 
+                      class="btn btn-secondary small"
+                      onclick="app.toggleAllReplies('collapse')"
+                      style="margin-right: 5px;">
+                      Collapse All
+                    </button>
+                    <button 
+                      class="btn btn-secondary small"
+                      onclick="app.toggleAllReplies('expand')">
+                      Expand All
+                    </button>
+                  </div>
+                ` : ''}
+              </div>
               
               <div id="replies-container">
                 ${nestedReplies || '<p style="color: var(--muted); text-align: center;">No comments yet. Be the first to respond!</p>'}
@@ -2797,7 +2814,7 @@
       }
 
      buildNestedReplies(replies, profileMap, parentId = null, level = 0) {
-        const filteredReplies = replies.filter(r => r.parent_id === parentId);  // Changed from parent_reply_id
+        const filteredReplies = replies.filter(r => r.parent_id === parentId);
         
         if (filteredReplies.length === 0) {
           return '';
@@ -2810,6 +2827,22 @@
           const isAuthor = reply.author_id === this.userInfo.user.id;
           const isTeacher = this.userInfo.profile.user_type === 'teacher';
           
+          // Check if this reply has children
+          const childReplies = replies.filter(r => r.parent_id === reply.id);
+          const hasChildren = childReplies.length > 0;
+          
+          // Count all nested descendants
+          const countDescendants = (replyId) => {
+            const children = replies.filter(r => r.parent_id === replyId);
+            let count = children.length;
+            children.forEach(child => {
+              count += countDescendants(child.id);
+            });
+            return count;
+          };
+          
+          const descendantCount = hasChildren ? countDescendants(reply.id) : 0;
+          
           // Calculate indentation based on nesting level
           const marginLeft = level * 30;
           const borderLeft = level > 0 ? '2px solid var(--border)' : 'none';
@@ -2819,12 +2852,26 @@
               <div style="background: ${level % 2 === 0 ? 'var(--card)' : 'rgba(42, 49, 64, 0.5)'}; padding: 12px; border-radius: 8px;">
                 <div style="display: flex; justify-content: space-between; align-items: start;">
                   <div style="flex: 1;">
-                    <div style="margin-bottom: 8px;">
-                      <strong>${author.first_name} ${author.last_name}</strong> 
-                      <span style="color: var(--muted); font-size: 12px;">(${author.user_type})</span>
-                      <span style="font-size: 11px; color: var(--muted); margin-left: 10px;">
-                        ${replyDate} at ${replyTime}
-                      </span>
+                    <div style="margin-bottom: 8px; display: flex; align-items: center; gap: 10px;">
+                      ${hasChildren ? `
+                        <button 
+                          onclick="app.toggleReplyCollapse('reply-children-${reply.id}', 'collapse-btn-${reply.id}', ${descendantCount})"
+                          id="collapse-btn-${reply.id}"
+                          style="background: transparent; border: 1px solid var(--border); color: var(--muted); 
+                                 padding: 2px 8px; border-radius: 4px; cursor: pointer; font-size: 11px;
+                                 display: flex; align-items: center; gap: 4px;"
+                          title="Collapse/expand thread">
+                          <span class="collapse-icon">▼</span>
+                          <span class="collapse-count">${descendantCount} ${descendantCount === 1 ? 'reply' : 'replies'}</span>
+                        </button>
+                      ` : ''}
+                      <div>
+                        <strong>${author.first_name} ${author.last_name}</strong> 
+                        <span style="color: var(--muted); font-size: 12px;">(${author.user_type})</span>
+                        <span style="font-size: 11px; color: var(--muted); margin-left: 10px;">
+                          ${replyDate} at ${replyTime}
+                        </span>
+                      </div>
                     </div>
                     <p style="margin: 10px 0; line-height: 1.5;">${reply.content}</p>
                     <div style="display: flex; gap: 10px; margin-top: 10px;">
@@ -2842,13 +2889,36 @@
                 </div>
               </div>
               
-              <!-- Nested replies -->
-              <div style="margin-top: 10px;">
+              <!-- Nested replies container -->
+              <div id="reply-children-${reply.id}" style="margin-top: 10px;">
                 ${this.buildNestedReplies(replies, profileMap, reply.id, level + 1)}
               </div>
             </div>
           `;
         }).join('');
+      }
+
+      toggleReplyCollapse(containerId, buttonId, replyCount) {
+        const container = document.getElementById(containerId);
+        const button = document.getElementById(buttonId);
+        
+        if (!container || !button) return;
+        
+        const isCollapsed = container.style.display === 'none';
+        
+        if (isCollapsed) {
+          // Expand
+          container.style.display = 'block';
+          button.querySelector('.collapse-icon').textContent = '▼';
+          button.querySelector('.collapse-count').textContent = `${replyCount} ${replyCount === 1 ? 'reply' : 'replies'}`;
+          button.style.opacity = '1';
+        } else {
+          // Collapse
+          container.style.display = 'none';
+          button.querySelector('.collapse-icon').textContent = '▶';
+          button.querySelector('.collapse-count').textContent = `${replyCount} hidden`;
+          button.style.opacity = '0.8';
+        }
       }
 
       // Show inline reply form
@@ -2898,6 +2968,30 @@
         setTimeout(() => {
           document.getElementById(`reply-content-${containerId}`)?.focus();
         }, 100);
+      }
+
+      toggleAllReplies(action) {
+        const replyContainers = document.querySelectorAll('[id^="reply-children-"]');
+        const buttons = document.querySelectorAll('[id^="collapse-btn-"]');
+        
+        replyContainers.forEach((container, index) => {
+          const button = buttons[index];
+          if (!button) return;
+          
+          const replyCount = parseInt(button.querySelector('.collapse-count').textContent) || 0;
+          
+          if (action === 'collapse') {
+            container.style.display = 'none';
+            button.querySelector('.collapse-icon').textContent = '▶';
+            button.querySelector('.collapse-count').textContent = `${replyCount} hidden`;
+            button.style.opacity = '0.8';
+          } else {
+            container.style.display = 'block';
+            button.querySelector('.collapse-icon').textContent = '▼';
+            button.querySelector('.collapse-count').textContent = `${replyCount} ${replyCount === 1 ? 'reply' : 'replies'}`;
+            button.style.opacity = '1';
+          }
+        });
       }
 
       async postReply(discussionId, parentReplyId = null, containerId) {
