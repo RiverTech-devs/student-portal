@@ -2218,7 +2218,7 @@
       
           let discussions = [];
           
-          // Get discussions with all needed fields
+          // Get discussions - only non-deleted ones
           const { data: discussionsRaw, error } = await this.auth.supabase
             .from('class_discussions')
             .select(`
@@ -2228,11 +2228,13 @@
               title,
               content,
               discussion_type,
-              is_locked,
               is_pinned,
-              created_at
+              is_deleted,
+              created_at,
+              updated_at
             `)
             .eq('class_id', classId)
+            .eq('is_deleted', false)
             .order('is_pinned', { ascending: false })
             .order('created_at', { ascending: false });
       
@@ -2246,7 +2248,8 @@
             const { data: replies } = await this.auth.supabase
               .from('discussion_replies')
               .select('discussion_id')
-              .in('discussion_id', discussionIds);
+              .in('discussion_id', discussionIds)
+              .eq('is_deleted', false);
       
             // Count replies per discussion
             const replyCount = {};
@@ -2371,11 +2374,10 @@
         `;
       }
 
-      // FIX 4: Add hard delete method for discussions
       async hardDeleteDiscussion(discussionId) {
         const isTeacher = this.userInfo.profile.user_type === 'teacher';
         
-        if (!confirm(`Permanently delete this discussion and all its replies?\n\n${isTeacher ? 'As a teacher, you can delete any discussion.' : 'This will remove your discussion completely.'}\n\nThis action cannot be undone.`)) {
+        if (!confirm(`Delete this discussion and all its replies?\n\n${isTeacher ? 'As a teacher, you can delete any discussion.' : 'This will remove your discussion.'}\n\nThis action cannot be undone.`)) {
           return;
         }
         
@@ -2387,15 +2389,29 @@
             .eq('id', discussionId)
             .single();
           
-          // Delete the discussion (replies cascade delete in database)
+          // Soft delete the discussion
           const { error } = await this.auth.supabase
             .from('class_discussions')
-            .delete()
+            .update({
+              is_deleted: true,
+              deleted_by: this.userInfo.user.id,
+              deleted_at: new Date().toISOString()
+            })
             .eq('id', discussionId);
           
           if (error) throw error;
           
-          this.showNotification('Discussion permanently deleted', 'success');
+          // Also soft delete all replies
+          await this.auth.supabase
+            .from('discussion_replies')
+            .update({
+              is_deleted: true,
+              deleted_by: this.userInfo.user.id,
+              deleted_at: new Date().toISOString()
+            })
+            .eq('discussion_id', discussionId);
+          
+          this.showNotification('Discussion deleted', 'success');
           
           // Refresh discussions
           if (discussion) {
@@ -2693,10 +2709,12 @@
               content,
               discussion_type,
               is_pinned,
-              is_locked,
-              created_at
+              is_deleted,
+              created_at,
+              updated_at
             `)
             .eq('id', discussionId)
+            .eq('is_deleted', false)
             .single();
       
           if (error) throw error;
@@ -2709,11 +2727,12 @@
             .eq('id', discussion.author_id)
             .single();
       
-          // Load all replies
+          // Load all non-deleted replies
           const { data: replies } = await this.auth.supabase
             .from('discussion_replies')
             .select('*')
             .eq('discussion_id', discussionId)
+            .eq('is_deleted', false)
             .order('created_at', { ascending: true });
       
           // Load profiles for reply authors
@@ -2746,18 +2765,15 @@
                   ${typeIcon}
                   <h3 style="margin: 0;">${discussion.title || 'Untitled Discussion'}</h3>
                   ${discussion.is_pinned ? '<span style="background: var(--warning); color: black; padding: 2px 6px; border-radius: 4px; font-size: 10px;">PINNED</span>' : ''}
-                  ${discussion.is_locked ? '<span style="background: var(--danger); color: white; padding: 2px 6px; border-radius: 4px; font-size: 10px;">LOCKED</span>' : ''}
                 </div>
                 <p style="line-height: 1.6; margin-bottom: 10px;">${discussion.content || 'No content'}</p>
                 <div style="font-size: 12px; color: var(--muted); margin-bottom: 10px;">
                   Posted by ${authorProfile?.first_name || 'Unknown'} ${authorProfile?.last_name || 'User'} • ${new Date(discussion.created_at).toLocaleDateString()}
                 </div>
-                ${!discussion.is_locked ? `
-                  <button class="btn btn-secondary small" onclick="app.showReplyForm('${discussionId}', null, 'main-discussion')">
-                    💬 Reply
-                  </button>
-                  <div id="reply-to-main-discussion" style="margin-top: 10px;"></div>
-                ` : '<p style="color: var(--muted); font-style: italic;">This discussion is locked</p>'}
+                <button class="btn btn-secondary small" onclick="app.showReplyForm('${discussionId}', null, 'main-discussion')">
+                  💬 Reply
+                </button>
+                <div id="reply-to-main-discussion" style="margin-top: 10px;"></div>
               </div>
       
               <h4 style="margin-bottom: 15px;">💬 Discussion (${replies?.length || 0} ${replies?.length === 1 ? 'comment' : 'comments'})</h4>
@@ -2923,29 +2939,32 @@
         }
       }
 
-      // 3. Delete Reply (with cascade for nested replies)
       async deleteReply(replyId, discussionId) {
         const isTeacher = this.userInfo.profile.user_type === 'teacher';
         
         if (!confirm(`Delete this reply${isTeacher ? ' and all its nested replies' : ''}?\n\nThis action cannot be undone.`)) {
           return;
         }
-
+      
         try {
-          // Note: Assuming cascade delete is set up in Supabase for nested replies
+          // Soft delete the reply
           const { error } = await this.auth.supabase
             .from('discussion_replies')
-            .delete()
+            .update({
+              is_deleted: true,
+              deleted_by: this.userInfo.user.id,
+              deleted_at: new Date().toISOString()
+            })
             .eq('id', replyId);
-
+      
           if (error) throw error;
-
+      
           this.showNotification('Reply deleted', 'success');
           
           // Refresh discussion
           this.closeModal('discussion-thread');
           setTimeout(() => this.openDiscussion(discussionId), 100);
-
+      
         } catch (error) {
           console.error('Error deleting reply:', error);
           this.showNotification('Error deleting reply: ' + error.message, 'error');
