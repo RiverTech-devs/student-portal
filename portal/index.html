@@ -2727,28 +2727,33 @@
             .eq('id', discussion.author_id)
             .single();
       
-          // Load all non-deleted replies
+          // Load ALL replies (including deleted ones to maintain context)
           const { data: replies } = await this.auth.supabase
             .from('discussion_replies')
             .select('*')
             .eq('discussion_id', discussionId)
-            .eq('is_deleted', false)
             .order('created_at', { ascending: true });
       
-          // Load profiles for reply authors
+          // Load profiles for all authors and deleters
           let profileMap = {};
           if (replies && replies.length > 0) {
-            const replyAuthorIds = [...new Set(replies.map(r => r.author_id))];
+            const userIds = new Set([
+              ...replies.map(r => r.author_id),
+              ...replies.filter(r => r.deleted_by).map(r => r.deleted_by)
+            ]);
             
-            const { data: replyProfiles } = await this.auth.supabase
+            const { data: profiles } = await this.auth.supabase
               .from('user_profiles')
               .select('id, first_name, last_name, user_type')
-              .in('id', replyAuthorIds);
+              .in('id', Array.from(userIds));
       
-            replyProfiles?.forEach(p => {
+            profiles?.forEach(p => {
               profileMap[p.id] = p;
             });
           }
+      
+          // Count only non-deleted replies for display
+          const activeReplyCount = replies?.filter(r => !r.is_deleted).length || 0;
       
           // Build nested reply structure
           const nestedReplies = this.buildNestedReplies(replies || [], profileMap);
@@ -2776,24 +2781,7 @@
                 <div id="reply-to-main-discussion" style="margin-top: 10px;"></div>
               </div>
       
-              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-                <h4 style="margin: 0;">💬 Discussion (${replies?.length || 0} ${replies?.length === 1 ? 'comment' : 'comments'})</h4>
-                ${replies && replies.length > 2 ? `
-                  <div>
-                    <button 
-                      class="btn btn-secondary small"
-                      onclick="app.toggleAllReplies('collapse')"
-                      style="margin-right: 5px;">
-                      Collapse All
-                    </button>
-                    <button 
-                      class="btn btn-secondary small"
-                      onclick="app.toggleAllReplies('expand')">
-                      Expand All
-                    </button>
-                  </div>
-                ` : ''}
-              </div>
+              <h4 style="margin-bottom: 15px;">💬 Discussion (${activeReplyCount} active ${activeReplyCount === 1 ? 'comment' : 'comments'})</h4>
               
               <div id="replies-container">
                 ${nestedReplies || '<p style="color: var(--muted); text-align: center;">No comments yet. Be the first to respond!</p>'}
@@ -2826,12 +2814,25 @@
           const replyTime = new Date(reply.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
           const isAuthor = reply.author_id === this.userInfo.user.id;
           const isTeacher = this.userInfo.profile.user_type === 'teacher';
+          const isDeleted = reply.is_deleted;
+          
+          // Get deleter info if deleted
+          let deletedByText = '';
+          if (isDeleted) {
+            if (reply.deleted_by === reply.author_id) {
+              deletedByText = 'deleted by user';
+            } else if (profileMap[reply.deleted_by]?.user_type === 'teacher') {
+              deletedByText = 'deleted by teacher';
+            } else {
+              deletedByText = 'deleted';
+            }
+          }
           
           // Check if this reply has children
           const childReplies = replies.filter(r => r.parent_id === reply.id);
           const hasChildren = childReplies.length > 0;
           
-          // Count all nested descendants
+          // Count all nested descendants (including deleted ones)
           const countDescendants = (replyId) => {
             const children = replies.filter(r => r.parent_id === replyId);
             let count = children.length;
@@ -2848,8 +2849,8 @@
           const borderLeft = level > 0 ? '2px solid var(--border)' : 'none';
           
           return `
-            <div class="reply-item" style="margin-left: ${marginLeft}px; border-left: ${borderLeft}; padding-left: ${level > 0 ? '15px' : '0'}; margin-bottom: 15px;">
-              <div style="background: ${level % 2 === 0 ? 'var(--card)' : 'rgba(42, 49, 64, 0.5)'}; padding: 12px; border-radius: 8px;">
+            <div class="reply-item" style="margin-left: ${marginLeft}px; border-left: ${borderLeft}; padding-left: ${level > 0 ? '15px' : '0'}; margin-bottom: 15px; ${isDeleted ? 'opacity: 0.6;' : ''}">
+              <div style="background: ${level % 2 === 0 ? 'var(--card)' : 'rgba(42, 49, 64, 0.5)'}; padding: 12px; border-radius: 8px; ${isDeleted ? 'border: 1px solid var(--danger);' : ''}">
                 <div style="display: flex; justify-content: space-between; align-items: start;">
                   <div style="flex: 1;">
                     <div style="margin-bottom: 8px; display: flex; align-items: center; gap: 10px;">
@@ -2871,20 +2872,26 @@
                         <span style="font-size: 11px; color: var(--muted); margin-left: 10px;">
                           ${replyDate} at ${replyTime}
                         </span>
+                        ${isDeleted ? `<span style="color: var(--danger); font-size: 11px; margin-left: 10px; font-style: italic;">[${deletedByText}]</span>` : ''}
                       </div>
                     </div>
-                    <p style="margin: 10px 0; line-height: 1.5;">${reply.content}</p>
-                    <div style="display: flex; gap: 10px; margin-top: 10px;">
-                      <button class="btn btn-secondary small" onclick="app.showReplyForm('${reply.discussion_id}', '${reply.id}', 'reply-${reply.id}')">
-                        ↩️ Reply
-                      </button>
-                      ${isAuthor || isTeacher ? `
-                        <button class="btn danger small" onclick="app.deleteReply('${reply.id}', '${reply.discussion_id}')">
-                          🗑️ Delete
+                    ${isDeleted ? 
+                      `<p style="margin: 10px 0; line-height: 1.5; color: var(--muted); font-style: italic;">This comment has been ${deletedByText}</p>` :
+                      `<p style="margin: 10px 0; line-height: 1.5;">${reply.content}</p>`
+                    }
+                    ${!isDeleted ? `
+                      <div style="display: flex; gap: 10px; margin-top: 10px;">
+                        <button class="btn btn-secondary small" onclick="app.showReplyForm('${reply.discussion_id}', '${reply.id}', 'reply-${reply.id}')">
+                          ↩️ Reply
                         </button>
-                      ` : ''}
-                    </div>
-                    <div id="reply-to-reply-${reply.id}" style="margin-top: 10px;"></div>
+                        ${(isAuthor || isTeacher) ? `
+                          <button class="btn danger small" onclick="app.deleteReply('${reply.id}', '${reply.discussion_id}')">
+                            🗑️ Delete
+                          </button>
+                        ` : ''}
+                      </div>
+                      <div id="reply-to-reply-${reply.id}" style="margin-top: 10px;"></div>
+                    ` : ''}
                   </div>
                 </div>
               </div>
@@ -3047,16 +3054,15 @@
       async deleteReply(replyId, discussionId) {
         const isTeacher = this.userInfo.profile.user_type === 'teacher';
         
-        if (!confirm(`Delete this reply${isTeacher ? ' and all its nested replies' : ''}?\n\nThis action cannot be undone.`)) {
+        if (!confirm(`Delete this reply?\n\nThe reply will be marked as deleted but remain visible.`)) {
           return;
         }
       
         try {
-          // Find and hide the reply element immediately for better UX
+          // Find and update the reply element immediately
           const replyElement = document.querySelector(`#reply-to-reply-${replyId}`)?.closest('.reply-item');
           if (replyElement) {
             replyElement.style.opacity = '0.5';
-            replyElement.style.pointerEvents = 'none';
           }
       
           // Soft delete the reply
@@ -3071,42 +3077,10 @@
       
           if (error) throw error;
       
-          // Remove the reply from DOM instead of refreshing entire discussion
-          if (replyElement) {
-            replyElement.style.transition = 'all 0.3s ease';
-            replyElement.style.transform = 'translateX(-20px)';
-            replyElement.style.opacity = '0';
-            
-            setTimeout(() => {
-              replyElement.remove();
-              
-              // Update reply count in the header
-              const replyCountElement = document.querySelector('#replies-container')?.previousElementSibling?.querySelector('h4');
-              if (replyCountElement) {
-                const currentText = replyCountElement.textContent;
-                const match = currentText.match(/\((\d+)/);
-                if (match) {
-                  const currentCount = parseInt(match[1]);
-                  const newCount = Math.max(0, currentCount - 1);
-                  replyCountElement.textContent = `💬 Discussion (${newCount} ${newCount === 1 ? 'comment' : 'comments'})`;
-                }
-              }
-              
-              // Check if no replies left
-              const remainingReplies = document.querySelectorAll('#replies-container .reply-item');
-              if (remainingReplies.length === 0) {
-                const repliesContainer = document.getElementById('replies-container');
-                if (repliesContainer) {
-                  repliesContainer.innerHTML = '<p style="color: var(--muted); text-align: center;">No comments yet. Be the first to respond!</p>';
-                }
-              }
-            }, 300);
-          } else {
-            // Fallback: refresh if element not found
-            this.refreshDiscussionReplies(discussionId);
-          }
-      
           this.showNotification('Reply deleted', 'success');
+          
+          // Refresh just the replies section to show the deleted status
+          await this.refreshDiscussionReplies(discussionId);
       
         } catch (error) {
           console.error('Error deleting reply:', error);
@@ -3115,32 +3089,33 @@
           // Restore element on error
           if (replyElement) {
             replyElement.style.opacity = '1';
-            replyElement.style.pointerEvents = 'auto';
           }
         }
       }
 
       async refreshDiscussionReplies(discussionId) {
         try {
-          // Load replies without closing modal
+          // Load ALL replies (including deleted for context)
           const { data: replies } = await this.auth.supabase
             .from('discussion_replies')
             .select('*')
             .eq('discussion_id', discussionId)
-            .eq('is_deleted', false)
             .order('created_at', { ascending: true });
       
-          // Load profiles
+          // Load profiles for all users involved
           let profileMap = {};
           if (replies && replies.length > 0) {
-            const replyAuthorIds = [...new Set(replies.map(r => r.author_id))];
+            const userIds = new Set([
+              ...replies.map(r => r.author_id),
+              ...replies.filter(r => r.deleted_by).map(r => r.deleted_by)
+            ]);
             
-            const { data: replyProfiles } = await this.auth.supabase
+            const { data: profiles } = await this.auth.supabase
               .from('user_profiles')
               .select('id, first_name, last_name, user_type')
-              .in('id', replyAuthorIds);
+              .in('id', Array.from(userIds));
       
-            replyProfiles?.forEach(p => {
+            profiles?.forEach(p => {
               profileMap[p.id] = p;
             });
           }
@@ -3152,15 +3127,15 @@
             repliesContainer.innerHTML = nestedReplies || '<p style="color: var(--muted); text-align: center;">No comments yet. Be the first to respond!</p>';
           }
       
-          // Update count
-          const replyCountElement = document.querySelector('#replies-container')?.previousElementSibling?.querySelector('h4');
-          if (replyCountElement) {
-            replyCountElement.textContent = `💬 Discussion (${replies?.length || 0} ${replies?.length === 1 ? 'comment' : 'comments'})`;
+          // Update count (only active replies)
+          const activeReplyCount = replies?.filter(r => !r.is_deleted).length || 0;
+          const replyCountElement = document.querySelector('#replies-container')?.previousElementSibling;
+          if (replyCountElement && replyCountElement.tagName === 'H4') {
+            replyCountElement.textContent = `💬 Discussion (${activeReplyCount} active ${activeReplyCount === 1 ? 'comment' : 'comments'})`;
           }
       
         } catch (error) {
           console.error('Error refreshing replies:', error);
-          // Fall back to full refresh on error
           this.closeModal('discussion-thread');
           setTimeout(() => this.openDiscussion(discussionId), 100);
         }
