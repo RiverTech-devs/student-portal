@@ -3996,42 +3996,1081 @@
 
       // Helper function for data export (placeholder)
       async exportClassData(classId) {
-        this.showNotification('Export feature coming soon!', 'info');
+        try {
+          const classData = this.classes.find(c => c.id === classId);
+          if (!classData) {
+            this.showNotification('Class not found', 'error');
+            return;
+          }
+      
+          // Show export options modal
+          const modalContent = `
+            <div>
+              <h3>📥 Export Class Data</h3>
+              <p style="color: var(--muted); margin: 15px 0;">
+                Choose what data to export for "${classData.name}"
+              </p>
+              
+              <form id="export-options">
+                <div style="margin: 20px 0;">
+                  <label style="display: block; margin-bottom: 10px;">
+                    <input type="checkbox" id="export-students" checked> Student Information
+                  </label>
+                  <label style="display: block; margin-bottom: 10px;">
+                    <input type="checkbox" id="export-assignments" checked> Assignments
+                  </label>
+                  <label style="display: block; margin-bottom: 10px;">
+                    <input type="checkbox" id="export-submissions" checked> Submissions & Grades
+                  </label>
+                  <label style="display: block; margin-bottom: 10px;">
+                    <input type="checkbox" id="export-discussions" checked> Discussions
+                  </label>
+                </div>
+                
+                <div class="form-group">
+                  <label>Export Format:</label>
+                  <select id="export-format">
+                    <option value="csv">CSV (Spreadsheet)</option>
+                    <option value="json">JSON (Data)</option>
+                  </select>
+                </div>
+              </form>
+            </div>
+      
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal('export-options')">Cancel</button>
+              <button class="btn btn-primary" onclick="app.performExport('${classId}')">
+                📥 Export Data
+              </button>
+            </div>
+          `;
+      
+          this.showModal('export-options', '📥 Export Options', modalContent, true);
+      
+        } catch (error) {
+          console.error('Error showing export options:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+        }
+      }
+      
+      async performExport(classId) {
+        try {
+          const classData = this.classes.find(c => c.id === classId);
+          const format = document.getElementById('export-format').value;
+          const includeStudents = document.getElementById('export-students').checked;
+          const includeAssignments = document.getElementById('export-assignments').checked;
+          const includeSubmissions = document.getElementById('export-submissions').checked;
+          const includeDiscussions = document.getElementById('export-discussions').checked;
+      
+          if (window.portalLoading) {
+            window.portalLoading.show('export', 'Exporting data...');
+          }
+      
+          const exportData = {
+            class: {
+              name: classData.name,
+              subject: classData.subject,
+              grade_level: classData.grade_level,
+              class_code: classData.class_code,
+              created_at: classData.created_at
+            },
+            exported_at: new Date().toISOString(),
+            teacher: `${this.userInfo.profile.first_name} ${this.userInfo.profile.last_name}`
+          };
+      
+          // Fetch requested data
+          if (includeStudents) {
+            const { data: enrollments } = await this.auth.supabase
+              .from('class_enrollments')
+              .select('*')
+              .eq('class_id', classId)
+              .eq('status', 'active');
+      
+            const { data: students } = await this.auth.supabase
+              .from('user_profiles')
+              .select('id, first_name, last_name, email, grade_level')
+              .in('id', enrollments?.map(e => e.student_id) || []);
+      
+            exportData.students = students || [];
+          }
+      
+          if (includeAssignments) {
+            const { data: assignments } = await this.auth.supabase
+              .from('assignments')
+              .select('*')
+              .eq('class_id', classId);
+      
+            exportData.assignments = assignments || [];
+          }
+      
+          if (includeSubmissions) {
+            const assignmentIds = exportData.assignments?.map(a => a.id) || [];
+            const { data: submissions } = await this.auth.supabase
+              .from('assignment_submissions')
+              .select('*')
+              .in('assignment_id', assignmentIds);
+      
+            exportData.submissions = submissions || [];
+          }
+      
+          if (includeDiscussions) {
+            const { data: discussions } = await this.auth.supabase
+              .from('class_discussions')
+              .select('*')
+              .eq('class_id', classId)
+              .eq('is_deleted', false);
+      
+            exportData.discussions = discussions || [];
+          }
+      
+          // Export based on format
+          if (format === 'csv') {
+            this.exportAsCSV(exportData, classData.name);
+          } else {
+            this.exportAsJSON(exportData, classData.name);
+          }
+      
+          this.closeModal('export-options');
+          this.showNotification('Data exported successfully!', 'success');
+      
+        } catch (error) {
+          console.error('Error exporting data:', error);
+          this.showNotification('Error exporting data: ' + error.message, 'error');
+        } finally {
+          if (window.portalLoading) {
+            window.portalLoading.hide('export');
+          }
+        }
+      }
+      
+      exportAsCSV(data, className) {
+        let csv = '';
+        
+        // Class Information
+        csv += 'CLASS INFORMATION\n';
+        csv += 'Field,Value\n';
+        csv += `Class Name,"${data.class.name}"\n`;
+        csv += `Subject,"${data.class.subject}"\n`;
+        csv += `Grade Level,"${data.class.grade_level || 'All'}"\n`;
+        csv += `Class Code,"${data.class.class_code}"\n`;
+        csv += `Teacher,"${data.teacher}"\n`;
+        csv += `Exported,"${data.exported_at}"\n\n`;
+      
+        // Students
+        if (data.students && data.students.length > 0) {
+          csv += 'STUDENTS\n';
+          csv += 'First Name,Last Name,Email,Grade Level\n';
+          data.students.forEach(s => {
+            csv += `"${s.first_name}","${s.last_name}","${s.email}","${s.grade_level || 'N/A'}"\n`;
+          });
+          csv += '\n';
+        }
+      
+        // Assignments
+        if (data.assignments && data.assignments.length > 0) {
+          csv += 'ASSIGNMENTS\n';
+          csv += 'Title,Description,Due Date,Max Points,Published\n';
+          data.assignments.forEach(a => {
+            csv += `"${a.title}","${a.description || ''}","${new Date(a.due_date).toLocaleDateString()}","${a.max_points}","${a.is_published}"\n`;
+          });
+          csv += '\n';
+        }
+      
+        // Submissions
+        if (data.submissions && data.submissions.length > 0) {
+          csv += 'SUBMISSIONS\n';
+          csv += 'Assignment ID,Student ID,Status,Grade,Points Earned,Submitted At\n';
+          data.submissions.forEach(s => {
+            csv += `"${s.assignment_id}","${s.student_id}","${s.status}","${s.grade || ''}","${s.points_earned || ''}","${new Date(s.submitted_at).toLocaleDateString()}"\n`;
+          });
+        }
+      
+        // Download CSV
+        const blob = new Blob([csv], { type: 'text/csv' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `${className.replace(/\s+/g, '_')}_Export_${new Date().toISOString().split('T')[0]}.csv`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      }
+      
+      exportAsJSON(data, className) {
+        const jsonStr = JSON.stringify(data, null, 2);
+        const blob = new Blob([jsonStr], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `${className.replace(/\s+/g, '_')}_Export_${new Date().toISOString().split('T')[0]}.json`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
       }
 
       // Helper function for report generation (placeholder)
       async generateReport(classId) {
-        this.showNotification('Report generation coming soon!', 'info');
+        try {
+          const classData = this.classes.find(c => c.id === classId);
+          if (!classData) {
+            this.showNotification('Class not found', 'error');
+            return;
+          }
+      
+          // Show loading
+          if (window.portalLoading) {
+            window.portalLoading.show('report', 'Generating report...');
+          }
+      
+          // Gather all data
+          const { data: enrollments } = await this.auth.supabase
+            .from('class_enrollments')
+            .select('*')
+            .eq('class_id', classId)
+            .eq('status', 'active');
+      
+          const { data: students } = await this.auth.supabase
+            .from('user_profiles')
+            .select('*')
+            .in('id', enrollments?.map(e => e.student_id) || []);
+      
+          const { data: assignments } = await this.auth.supabase
+            .from('assignments')
+            .select('*')
+            .eq('class_id', classId)
+            .order('created_at', { ascending: false });
+      
+          const { data: submissions } = await this.auth.supabase
+            .from('assignment_submissions')
+            .select('*')
+            .in('assignment_id', assignments?.map(a => a.id) || []);
+      
+          const { data: discussions } = await this.auth.supabase
+            .from('class_discussions')
+            .select('*')
+            .eq('class_id', classId)
+            .eq('is_deleted', false);
+      
+          const { data: replies } = await this.auth.supabase
+            .from('discussion_replies')
+            .select('*')
+            .in('discussion_id', discussions?.map(d => d.id) || [])
+            .eq('is_deleted', false);
+      
+          // Calculate statistics
+          const totalStudents = enrollments?.length || 0;
+          const totalAssignments = assignments?.length || 0;
+          const totalSubmissions = submissions?.length || 0;
+          const possibleSubmissions = totalStudents * totalAssignments;
+          const submissionRate = possibleSubmissions > 0 ? 
+            ((totalSubmissions / possibleSubmissions) * 100).toFixed(1) : 0;
+      
+          // Calculate grades
+          const gradedSubmissions = submissions?.filter(s => s.status === 'graded') || [];
+          const averageScore = gradedSubmissions.length > 0 ?
+            (gradedSubmissions.reduce((sum, s) => sum + (s.points_earned || 0), 0) / gradedSubmissions.length).toFixed(1) : 0;
+      
+          // Student performance data
+          const studentPerformance = students?.map(student => {
+            const studentSubmissions = submissions?.filter(s => s.student_id === student.id) || [];
+            const studentGrades = studentSubmissions.filter(s => s.status === 'graded');
+            const avgScore = studentGrades.length > 0 ?
+              (studentGrades.reduce((sum, s) => sum + (s.points_earned || 0), 0) / studentGrades.length).toFixed(1) : 'N/A';
+            
+            return {
+              name: `${student.first_name} ${student.last_name}`,
+              email: student.email,
+              submissions: studentSubmissions.length,
+              graded: studentGrades.length,
+              averageScore: avgScore,
+              participationScore: ((studentSubmissions.length / totalAssignments) * 100).toFixed(0)
+            };
+          }) || [];
+      
+          // Generate HTML report
+          const reportHTML = `
+            <!DOCTYPE html>
+            <html>
+            <head>
+              <title>Class Report - ${classData.name}</title>
+              <style>
+                body { font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; }
+                h1 { color: #333; border-bottom: 2px solid #4CAF50; padding-bottom: 10px; }
+                h2 { color: #555; margin-top: 30px; }
+                .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin: 20px 0; }
+                .stat-card { background: #f5f5f5; padding: 15px; border-radius: 8px; }
+                .stat-value { font-size: 24px; font-weight: bold; color: #4CAF50; }
+                .stat-label { color: #666; font-size: 14px; }
+                table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+                th, td { padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }
+                th { background: #4CAF50; color: white; }
+                tr:hover { background: #f5f5f5; }
+                .footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid #ddd; color: #666; font-size: 12px; }
+              </style>
+            </head>
+            <body>
+              <h1>Class Report: ${classData.name}</h1>
+              <p><strong>Subject:</strong> ${classData.subject} | <strong>Grade Level:</strong> ${classData.grade_level || 'All'}</p>
+              <p><strong>Report Generated:</strong> ${new Date().toLocaleString()}</p>
+              
+              <h2>📊 Class Overview</h2>
+              <div class="stats-grid">
+                <div class="stat-card">
+                  <div class="stat-value">${totalStudents}</div>
+                  <div class="stat-label">Total Students</div>
+                </div>
+                <div class="stat-card">
+                  <div class="stat-value">${totalAssignments}</div>
+                  <div class="stat-label">Assignments</div>
+                </div>
+                <div class="stat-card">
+                  <div class="stat-value">${submissionRate}%</div>
+                  <div class="stat-label">Submission Rate</div>
+                </div>
+                <div class="stat-card">
+                  <div class="stat-value">${averageScore}</div>
+                  <div class="stat-label">Average Score</div>
+                </div>
+              </div>
+              
+              <h2>👥 Student Performance</h2>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Student Name</th>
+                    <th>Email</th>
+                    <th>Submissions</th>
+                    <th>Graded</th>
+                    <th>Avg Score</th>
+                    <th>Participation</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${studentPerformance.map(s => `
+                    <tr>
+                      <td>${s.name}</td>
+                      <td>${s.email}</td>
+                      <td>${s.submissions}/${totalAssignments}</td>
+                      <td>${s.graded}</td>
+                      <td>${s.averageScore}</td>
+                      <td>${s.participationScore}%</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+              
+              <h2>📝 Assignments Summary</h2>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Assignment</th>
+                    <th>Due Date</th>
+                    <th>Submissions</th>
+                    <th>Graded</th>
+                    <th>Average Score</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${(assignments || []).map(a => {
+                    const assignmentSubs = submissions?.filter(s => s.assignment_id === a.id) || [];
+                    const gradedSubs = assignmentSubs.filter(s => s.status === 'graded');
+                    const avgScore = gradedSubs.length > 0 ?
+                      (gradedSubs.reduce((sum, s) => sum + (s.points_earned || 0), 0) / gradedSubs.length).toFixed(1) : 'N/A';
+                    
+                    return `
+                      <tr>
+                        <td>${a.title}</td>
+                        <td>${new Date(a.due_date).toLocaleDateString()}</td>
+                        <td>${assignmentSubs.length}/${totalStudents}</td>
+                        <td>${gradedSubs.length}</td>
+                        <td>${avgScore}/${a.max_points}</td>
+                      </tr>
+                    `;
+                  }).join('')}
+                </tbody>
+              </table>
+              
+              <h2>💬 Discussion Activity</h2>
+              <p>Total Discussions: ${discussions?.length || 0}</p>
+              <p>Total Replies: ${replies?.length || 0}</p>
+              <p>Average Replies per Discussion: ${discussions?.length ? (replies?.length / discussions.length).toFixed(1) : 0}</p>
+              
+              <div class="footer">
+                <p>This report was generated by RiverTech Education Portal on ${new Date().toLocaleString()}</p>
+                <p>Teacher: ${this.userInfo.profile.first_name} ${this.userInfo.profile.last_name}</p>
+              </div>
+            </body>
+            </html>
+          `;
+      
+          // Create and download the report
+          const blob = new Blob([reportHTML], { type: 'text/html' });
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = `${classData.name.replace(/\s+/g, '_')}_Report_${new Date().toISOString().split('T')[0]}.html`;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          URL.revokeObjectURL(url);
+      
+          this.showNotification('Report generated and downloaded!', 'success');
+      
+        } catch (error) {
+          console.error('Error generating report:', error);
+          this.showNotification('Error generating report: ' + error.message, 'error');
+        } finally {
+          if (window.portalLoading) {
+            window.portalLoading.hide('report');
+          }
+        }
       }
 
       // Helper function for assignment submission
       async submitAssignment(assignmentId) {
-        this.showNotification('Assignment submission interface coming soon!', 'info');
+        try {
+          // Load assignment details
+          const { data: assignment, error } = await this.auth.supabase
+            .from('assignments')
+            .select('*')
+            .eq('id', assignmentId)
+            .single();
+      
+          if (error) throw error;
+      
+          // Check for existing submission
+          const { data: existingSubmission } = await this.auth.supabase
+            .from('assignment_submissions')
+            .select('*')
+            .eq('assignment_id', assignmentId)
+            .eq('student_id', this.userInfo.user.id)
+            .single();
+      
+          const isEdit = !!existingSubmission;
+          const modalContent = `
+            <div>
+              <h3>${assignment.title}</h3>
+              <p style="color: var(--muted); margin: 10px 0;">${assignment.description || 'No description provided'}</p>
+              <p style="color: var(--warning); font-size: 14px;">Due: ${new Date(assignment.due_date).toLocaleDateString()}</p>
+              
+              ${isEdit ? `
+                <div class="card" style="background: var(--warning); color: black; padding: 10px; margin: 15px 0;">
+                  <strong>Note:</strong> You have already submitted this assignment. You can update your submission below.
+                </div>
+              ` : ''}
+      
+              <form id="submission-form">
+                <div class="form-group">
+                  <label for="submission-content">Your Answer/Work *</label>
+                  <textarea 
+                    id="submission-content" 
+                    rows="8" 
+                    required
+                    placeholder="Enter your answer or describe your work..."
+                  >${existingSubmission?.content || ''}</textarea>
+                </div>
+                
+                <div class="form-group">
+                  <label for="submission-file">Attach File (Optional)</label>
+                  <input 
+                    type="file" 
+                    id="submission-file" 
+                    accept=".pdf,.doc,.docx,.txt,.jpg,.png,.jpeg"
+                  >
+                  <small style="color: var(--muted);">Max file size: 10MB. Accepted formats: PDF, DOC, DOCX, TXT, JPG, PNG</small>
+                </div>
+      
+                ${existingSubmission?.file_url ? `
+                  <div class="card" style="background: var(--card); padding: 10px; margin: 10px 0;">
+                    <strong>Currently attached file:</strong> ${existingSubmission.file_name || 'File attached'}
+                  </div>
+                ` : ''}
+              </form>
+            </div>
+      
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal('submit-assignment')">Cancel</button>
+              <button class="btn btn-primary" onclick="app.submitAssignmentSubmission('${assignmentId}', ${isEdit})">
+                ${isEdit ? 'Update Submission' : 'Submit Assignment'}
+              </button>
+            </div>
+          `;
+      
+          this.showModal('submit-assignment', `📝 ${isEdit ? 'Edit' : 'Submit'} Assignment`, modalContent, true);
+      
+        } catch (error) {
+          console.error('Error loading assignment:', error);
+          this.showNotification('Error loading assignment: ' + error.message, 'error');
+        }
       }
 
       // Helper function for viewing submission
       async viewSubmission(assignmentId) {
-        this.showNotification('View submission interface coming soon!', 'info');
+        try {
+          // Load assignment details
+          const { data: assignment } = await this.auth.supabase
+            .from('assignments')
+            .select('*')
+            .eq('id', assignmentId)
+            .single();
+      
+          // Load submission
+          const { data: submission, error } = await this.auth.supabase
+            .from('assignment_submissions')
+            .select('*')
+            .eq('assignment_id', assignmentId)
+            .eq('student_id', this.userInfo.user.id)
+            .single();
+      
+          if (error) throw error;
+      
+          const modalContent = `
+            <div>
+              <h3>${assignment?.title || 'Assignment'}</h3>
+              <p style="color: var(--muted); margin: 10px 0;">${assignment?.description || 'No description'}</p>
+              
+              <div class="card" style="margin: 20px 0;">
+                <h4>Your Submission</h4>
+                <div style="margin: 15px 0;">
+                  <strong>Status:</strong> 
+                  <span style="color: ${submission.status === 'graded' ? 'var(--accent-2)' : 'var(--accent)'};">
+                    ${submission.status.charAt(0).toUpperCase() + submission.status.slice(1)}
+                  </span>
+                </div>
+                
+                <div style="margin: 15px 0;">
+                  <strong>Submitted:</strong> ${new Date(submission.submitted_at).toLocaleString()}
+                </div>
+      
+                <div style="margin: 15px 0;">
+                  <strong>Your Answer:</strong>
+                  <div style="background: var(--bg); padding: 15px; border-radius: 8px; margin-top: 10px; white-space: pre-wrap;">
+                    ${submission.content}
+                  </div>
+                </div>
+      
+                ${submission.file_url ? `
+                  <div style="margin: 15px 0;">
+                    <strong>Attached File:</strong> 
+                    <a href="${submission.file_url}" target="_blank" class="btn btn-secondary small" style="margin-left: 10px;">
+                      📎 ${submission.file_name || 'View File'}
+                    </a>
+                  </div>
+                ` : ''}
+      
+                ${submission.status === 'graded' ? `
+                  <div style="border-top: 1px solid var(--border); margin-top: 20px; padding-top: 20px;">
+                    <h4>Grade & Feedback</h4>
+                    
+                    <div style="margin: 15px 0;">
+                      <strong>Grade:</strong> 
+                      <span style="font-size: 24px; color: var(--accent-2); margin-left: 10px;">
+                        ${submission.grade || 'No grade'}
+                      </span>
+                      ${submission.points_earned !== null ? `
+                        <span style="margin-left: 15px;">
+                          (${submission.points_earned} / ${assignment?.max_points || 100} points)
+                        </span>
+                      ` : ''}
+                    </div>
+      
+                    ${submission.feedback ? `
+                      <div style="margin: 15px 0;">
+                        <strong>Teacher Feedback:</strong>
+                        <div style="background: var(--bg); padding: 15px; border-radius: 8px; margin-top: 10px;">
+                          ${submission.feedback}
+                        </div>
+                      </div>
+                    ` : ''}
+                  </div>
+                ` : ''}
+              </div>
+      
+              ${submission.status !== 'graded' ? `
+                <div style="background: var(--card); padding: 10px; border-radius: 8px;">
+                  <small style="color: var(--muted);">Your submission is pending review by the teacher.</small>
+                </div>
+              ` : ''}
+            </div>
+      
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              ${submission.status !== 'graded' ? `
+                <button class="btn btn-secondary" onclick="app.submitAssignment('${assignmentId}')">
+                  ✏️ Edit Submission
+                </button>
+              ` : ''}
+              <button class="btn btn-secondary" onclick="app.closeModal('view-submission')">Close</button>
+            </div>
+          `;
+      
+          this.showModal('view-submission', '📄 View Submission', modalContent, true);
+      
+        } catch (error) {
+          console.error('Error loading submission:', error);
+          this.showNotification('Error loading submission: ' + error.message, 'error');
+        }
       }
 
       // Helper function for creating assignment
       async createAssignment(classId) {
-        this.showNotification('Assignment creation interface coming soon!', 'info');
+        const classData = this.classes.find(c => c.id === classId);
+        
+        const modalContent = `
+          <form id="create-assignment-form">
+            <div class="form-group">
+              <label for="assignment-title">Title *</label>
+              <input type="text" id="assignment-title" required placeholder="Assignment title">
+            </div>
+            
+            <div class="form-group">
+              <label for="assignment-description">Description</label>
+              <textarea id="assignment-description" rows="4" placeholder="Describe the assignment requirements..."></textarea>
+            </div>
+            
+            <div class="form-group">
+              <label for="assignment-due-date">Due Date *</label>
+              <input type="datetime-local" id="assignment-due-date" required>
+            </div>
+            
+            <div class="form-group">
+              <label for="assignment-max-points">Maximum Points</label>
+              <input type="number" id="assignment-max-points" min="1" max="1000" value="100">
+            </div>
+            
+            <div class="form-group">
+              <label>
+                <input type="checkbox" id="assignment-is-published" checked>
+                Publish immediately (visible to students)
+              </label>
+            </div>
+          </form>
+      
+          <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+            <button class="btn btn-secondary" onclick="app.closeModal('create-assignment')">Cancel</button>
+            <button class="btn btn-primary" onclick="app.submitCreateAssignment('${classId}')">Create Assignment</button>
+          </div>
+        `;
+      
+        this.showModal('create-assignment', '➕ Create Assignment', modalContent, true);
+      }
+      
+      async submitCreateAssignment(classId) {
+        const assignmentData = {
+          class_id: classId,
+          title: document.getElementById('assignment-title').value,
+          description: document.getElementById('assignment-description').value || null,
+          due_date: document.getElementById('assignment-due-date').value,
+          max_points: parseInt(document.getElementById('assignment-max-points').value) || 100,
+          is_published: document.getElementById('assignment-is-published').checked
+        };
+      
+        if (!assignmentData.title || !assignmentData.due_date) {
+          this.showNotification('Please fill in required fields', 'error');
+          return;
+        }
+      
+        try {
+          const { error } = await this.auth.supabase
+            .from('assignments')
+            .insert([assignmentData]);
+      
+          if (error) throw error;
+      
+          this.showNotification('Assignment created successfully!', 'success');
+          this.closeModal('create-assignment');
+          
+          // Refresh assignments view
+          setTimeout(() => this.viewAssignments(classId), 100);
+      
+        } catch (error) {
+          console.error('Error creating assignment:', error);
+          this.showNotification('Error creating assignment: ' + error.message, 'error');
+        }
       }
 
       // Helper function for editing assignment  
       async editAssignment(assignmentId) {
-        this.showNotification('Assignment editing interface coming soon!', 'info');
+        try {
+          // Load existing assignment data
+          const { data: assignment, error } = await this.auth.supabase
+            .from('assignments')
+            .select('*')
+            .eq('id', assignmentId)
+            .single();
+      
+          if (error) throw error;
+          if (!assignment) {
+            this.showNotification('Assignment not found', 'error');
+            return;
+          }
+      
+          // Convert datetime for input field
+          const dueDate = new Date(assignment.due_date);
+          const formattedDate = dueDate.toISOString().slice(0, 16);
+      
+          const modalContent = `
+            <form id="edit-assignment-form">
+              <div class="form-group">
+                <label for="edit-assignment-title">Title *</label>
+                <input type="text" id="edit-assignment-title" value="${assignment.title}" required>
+              </div>
+              
+              <div class="form-group">
+                <label for="edit-assignment-description">Description</label>
+                <textarea id="edit-assignment-description" rows="4">${assignment.description || ''}</textarea>
+              </div>
+              
+              <div class="form-group">
+                <label for="edit-assignment-due-date">Due Date *</label>
+                <input type="datetime-local" id="edit-assignment-due-date" value="${formattedDate}" required>
+              </div>
+              
+              <div class="form-group">
+                <label for="edit-assignment-max-points">Maximum Points</label>
+                <input type="number" id="edit-assignment-max-points" min="1" max="1000" value="${assignment.max_points || 100}">
+              </div>
+              
+              <div class="form-group">
+                <label>
+                  <input type="checkbox" id="edit-assignment-is-published" ${assignment.is_published ? 'checked' : ''}>
+                  Published (visible to students)
+                </label>
+              </div>
+            </form>
+      
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal('edit-assignment')">Cancel</button>
+              <button class="btn btn-primary" onclick="app.submitEditAssignment('${assignmentId}', '${assignment.class_id}')">
+                Save Changes
+              </button>
+            </div>
+          `;
+      
+          this.showModal('edit-assignment', '✏️ Edit Assignment', modalContent, true);
+      
+        } catch (error) {
+          console.error('Error loading assignment:', error);
+          this.showNotification('Error loading assignment: ' + error.message, 'error');
+        }
+      }
+      
+      async submitEditAssignment(assignmentId, classId) {
+        const updatedData = {
+          title: document.getElementById('edit-assignment-title').value,
+          description: document.getElementById('edit-assignment-description').value || null,
+          due_date: document.getElementById('edit-assignment-due-date').value,
+          max_points: parseInt(document.getElementById('edit-assignment-max-points').value) || 100,
+          is_published: document.getElementById('edit-assignment-is-published').checked,
+          updated_at: new Date().toISOString()
+        };
+      
+        if (!updatedData.title || !updatedData.due_date) {
+          this.showNotification('Please fill in required fields', 'error');
+          return;
+        }
+      
+        try {
+          const { error } = await this.auth.supabase
+            .from('assignments')
+            .update(updatedData)
+            .eq('id', assignmentId);
+      
+          if (error) throw error;
+      
+          this.showNotification('Assignment updated successfully!', 'success');
+          this.closeModal('edit-assignment');
+          
+          // Refresh assignments view
+          this.closeModal('assignments');
+          setTimeout(() => this.viewAssignments(classId), 100);
+      
+        } catch (error) {
+          console.error('Error updating assignment:', error);
+          this.showNotification('Error updating assignment: ' + error.message, 'error');
+        }
       }
 
       // Helper function for deleting assignment
       async deleteAssignment(assignmentId) {
-        this.showNotification('Assignment deletion coming soon!', 'info');
+        try {
+          // First get assignment details and check for submissions
+          const { data: assignment } = await this.auth.supabase
+            .from('assignments')
+            .select('*, class_id')
+            .eq('id', assignmentId)
+            .single();
+      
+          if (!assignment) {
+            this.showNotification('Assignment not found', 'error');
+            return;
+          }
+      
+          // Check if there are any submissions
+          const { data: submissions, error: subError } = await this.auth.supabase
+            .from('assignment_submissions')
+            .select('id')
+            .eq('assignment_id', assignmentId);
+      
+          if (subError) throw subError;
+      
+          const hasSubmissions = submissions && submissions.length > 0;
+      
+          // Show confirmation with appropriate warning
+          let confirmMessage = `Are you sure you want to delete "${assignment.title}"?\n\n`;
+          if (hasSubmissions) {
+            confirmMessage += `⚠️ WARNING: This assignment has ${submissions.length} student submission(s).\n`;
+            confirmMessage += `All submissions and grades will be permanently deleted.\n\n`;
+          }
+          confirmMessage += `This action cannot be undone.`;
+      
+          if (!confirm(confirmMessage)) {
+            return;
+          }
+      
+          // If there are submissions and user confirmed, ask for double confirmation
+          if (hasSubmissions) {
+            const doubleConfirm = prompt(`This assignment has student submissions. Type "DELETE" to confirm deletion:`);
+            if (doubleConfirm !== 'DELETE') {
+              this.showNotification('Deletion cancelled', 'info');
+              return;
+            }
+          }
+      
+          // Delete the assignment (submissions will cascade delete if foreign key is set up)
+          const { error } = await this.auth.supabase
+            .from('assignments')
+            .delete()
+            .eq('id', assignmentId);
+      
+          if (error) throw error;
+      
+          this.showNotification('Assignment deleted successfully', 'success');
+          
+          // Refresh assignments view
+          this.closeModal('assignments');
+          setTimeout(() => this.viewAssignments(assignment.class_id), 100);
+      
+        } catch (error) {
+          console.error('Error deleting assignment:', error);
+          this.showNotification('Error deleting assignment: ' + error.message, 'error');
+        }
       }
 
       // Helper function for viewing submissions
       async viewSubmissions(assignmentId) {
-        this.showNotification('View submissions interface coming soon!', 'info');
+        try {
+          // Load assignment details
+          const { data: assignment } = await this.auth.supabase
+            .from('assignments')
+            .select('*')
+            .eq('id', assignmentId)
+            .single();
+      
+          // Load all submissions for this assignment
+          const { data: submissions, error } = await this.auth.supabase
+            .from('assignment_submissions')
+            .select('*')
+            .eq('assignment_id', assignmentId)
+            .order('submitted_at', { ascending: false });
+      
+          if (error) throw error;
+      
+          // Load student profiles
+          let studentMap = {};
+          if (submissions && submissions.length > 0) {
+            const studentIds = submissions.map(s => s.student_id);
+            const { data: students } = await this.auth.supabase
+              .from('user_profiles')
+              .select('id, first_name, last_name, email')
+              .in('id', studentIds);
+      
+            students?.forEach(s => {
+              studentMap[s.id] = s;
+            });
+          }
+      
+          const modalContent = `
+            <div>
+              <h3>${assignment?.title || 'Assignment'}</h3>
+              <p style="color: var(--muted);">Due: ${new Date(assignment?.due_date).toLocaleDateString()}</p>
+              
+              <div style="margin-top: 20px;">
+                ${submissions && submissions.length > 0 ? `
+                  <div class="list">
+                    ${submissions.map(submission => {
+                      const student = studentMap[submission.student_id] || {};
+                      return `
+                        <div class="list-item">
+                          <div class="list-item-content">
+                            <div class="list-item-title">
+                              ${student.first_name} ${student.last_name}
+                            </div>
+                            <div class="list-item-meta">
+                              Submitted: ${new Date(submission.submitted_at).toLocaleString()}
+                              ${submission.status === 'graded' ? 
+                                ` • Grade: ${submission.grade || 'N/A'}` : 
+                                ' • Status: Pending Review'
+                              }
+                            </div>
+                          </div>
+                          <button class="btn btn-primary small" onclick="app.gradeSubmission('${submission.id}', '${assignmentId}')">
+                            ${submission.status === 'graded' ? '✏️ Edit Grade' : '📝 Grade'}
+                          </button>
+                        </div>
+                      `;
+                    }).join('')}
+                  </div>
+                ` : `
+                  <div class="empty-state">
+                    <p style="color: var(--muted);">No submissions yet</p>
+                  </div>
+                `}
+              </div>
+            </div>
+      
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal('view-submissions')">Close</button>
+            </div>
+          `;
+      
+          this.showModal('view-submissions', '📋 View Submissions', modalContent, true);
+      
+        } catch (error) {
+          console.error('Error loading submissions:', error);
+          this.showNotification('Error loading submissions: ' + error.message, 'error');
+        }
+      }
+
+      async gradeSubmission(submissionId, assignmentId) {
+        try {
+          // Load submission details
+          const { data: submission } = await this.auth.supabase
+            .from('assignment_submissions')
+            .select('*')
+            .eq('id', submissionId)
+            .single();
+      
+          // Load student profile
+          const { data: student } = await this.auth.supabase
+            .from('user_profiles')
+            .select('first_name, last_name')
+            .eq('id', submission.student_id)
+            .single();
+      
+          // Load assignment for max points
+          const { data: assignment } = await this.auth.supabase
+            .from('assignments')
+            .select('title, max_points')
+            .eq('id', assignmentId)
+            .single();
+      
+          const modalContent = `
+            <div>
+              <h3>Grade Submission - ${student?.first_name} ${student?.last_name}</h3>
+              <p style="color: var(--muted);">Assignment: ${assignment?.title}</p>
+              
+              <div class="card" style="margin: 20px 0;">
+                <h4>Student's Work</h4>
+                <div style="background: var(--bg); padding: 15px; border-radius: 8px; margin-top: 10px; max-height: 300px; overflow-y: auto; white-space: pre-wrap;">
+                  ${submission.content}
+                </div>
+                ${submission.file_url ? `
+                  <div style="margin-top: 10px;">
+                    <a href="${submission.file_url}" target="_blank" class="btn btn-secondary small">
+                      📎 View Attached File
+                    </a>
+                  </div>
+                ` : ''}
+              </div>
+      
+              <form id="grade-form">
+                <div class="form-group">
+                  <label for="grade-score">Points Earned (Max: ${assignment?.max_points || 100})</label>
+                  <input 
+                    type="number" 
+                    id="grade-score" 
+                    min="0" 
+                    max="${assignment?.max_points || 100}" 
+                    value="${submission.points_earned || ''}"
+                    placeholder="Enter points"
+                  >
+                </div>
+                
+                <div class="form-group">
+                  <label for="grade-letter">Letter Grade</label>
+                  <select id="grade-letter">
+                    <option value="">Select Grade</option>
+                    <option value="A+" ${submission.grade === 'A+' ? 'selected' : ''}>A+</option>
+                    <option value="A" ${submission.grade === 'A' ? 'selected' : ''}>A</option>
+                    <option value="A-" ${submission.grade === 'A-' ? 'selected' : ''}>A-</option>
+                    <option value="B+" ${submission.grade === 'B+' ? 'selected' : ''}>B+</option>
+                    <option value="B" ${submission.grade === 'B' ? 'selected' : ''}>B</option>
+                    <option value="B-" ${submission.grade === 'B-' ? 'selected' : ''}>B-</option>
+                    <option value="C+" ${submission.grade === 'C+' ? 'selected' : ''}>C+</option>
+                    <option value="C" ${submission.grade === 'C' ? 'selected' : ''}>C</option>
+                    <option value="C-" ${submission.grade === 'C-' ? 'selected' : ''}>C-</option>
+                    <option value="D" ${submission.grade === 'D' ? 'selected' : ''}>D</option>
+                    <option value="F" ${submission.grade === 'F' ? 'selected' : ''}>F</option>
+                  </select>
+                </div>
+                
+                <div class="form-group">
+                  <label for="grade-feedback">Feedback</label>
+                  <textarea 
+                    id="grade-feedback" 
+                    rows="4" 
+                    placeholder="Provide feedback to the student..."
+                  >${submission.feedback || ''}</textarea>
+                </div>
+              </form>
+            </div>
+      
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal('grade-submission')">Cancel</button>
+              <button class="btn btn-primary" onclick="app.submitGrade('${submissionId}', '${assignmentId}')">
+                Save Grade
+              </button>
+            </div>
+          `;
+      
+          this.showModal('grade-submission', '📝 Grade Submission', modalContent, true);
+      
+        } catch (error) {
+          console.error('Error loading submission:', error);
+          this.showNotification('Error loading submission: ' + error.message, 'error');
+        }
+      }
+      
+      async submitGrade(submissionId, assignmentId) {
+        const gradeData = {
+          points_earned: parseInt(document.getElementById('grade-score').value) || null,
+          grade: document.getElementById('grade-letter').value || null,
+          feedback: document.getElementById('grade-feedback').value || null,
+          status: 'graded',
+          graded_at: new Date().toISOString()
+        };
+      
+        try {
+          const { error } = await this.auth.supabase
+            .from('assignment_submissions')
+            .update(gradeData)
+            .eq('id', submissionId);
+      
+          if (error) throw error;
+      
+          this.showNotification('Grade saved successfully!', 'success');
+          this.closeModal('grade-submission');
+          
+          // Refresh submissions view
+          this.closeModal('view-submissions');
+          setTimeout(() => this.viewSubmissions(assignmentId), 100);
+      
+        } catch (error) {
+          console.error('Error saving grade:', error);
+          this.showNotification('Error saving grade: ' + error.message, 'error');
+        }
       }
     }
       
