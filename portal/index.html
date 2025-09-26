@@ -840,22 +840,19 @@
       
      async authorizeGoogleDrive() {
         try {
-          // Check if Google Identity Services is loaded
-          if (typeof google === 'undefined' || !google.accounts || !google.accounts.oauth2) {
-            this.showNotification('Google Identity Services not loaded. Please try again.', 'error');
+          if (typeof google === 'undefined' || !google.accounts?.oauth2) {
+            this.showNotification('Google Identity Services not loaded. Please refresh and try again.', 'error');
             return;
           }
           
-          // Use only the valid scope for file management
           const client = google.accounts.oauth2.initCodeClient({
             client_id: '262464730666-407bjadqc07iiq0i1bte7vh214na8pep.apps.googleusercontent.com',
-            scope: 'https://www.googleapis.com/auth/drive.file', // Only use the valid scope
+            scope: 'https://www.googleapis.com/auth/drive.file',
             ux_mode: 'popup',
             callback: async (response) => {
               try {
-                // Exchange authorization code for tokens via Edge Function
                 const sessionResult = await this.auth.supabase.auth.getSession();
-                if (!sessionResult.data || !sessionResult.data.session) {
+                if (!sessionResult.data?.session) {
                   throw new Error('No active session');
                 }
                 
@@ -868,26 +865,19 @@
                   body: JSON.stringify({ code: response.code })
                 });
                 
-                if (!tokenResponse.ok) {
-                  const errorData = await tokenResponse.text();
-                  console.error('Token exchange failed:', errorData);
-                  throw new Error('Failed to exchange authorization code');
-                }
-                
                 const tokens = await tokenResponse.json();
                 
                 if (!tokens.refresh_token) {
-                  // If no refresh token, user may need to revoke access first
-                  this.showNotification('No refresh token received. Please revoke RiverTech access in your Google account settings and try again.', 'warning');
+                  this.showNotification('Authorization incomplete. Please revoke RiverTech access in Google settings and try again.', 'warning');
                   window.open('https://myaccount.google.com/permissions', '_blank');
                   return;
                 }
                 
-                // Create root folder in Drive
+                // Create root folder
                 const rootFolderId = await this.createRootFolderWithToken(tokens.access_token);
                 
-                // Store tokens and config in database
-                const { error } = await this.auth.supabase
+                // Save configuration
+                const { error: configError } = await this.auth.supabase
                   .from('teacher_drive_config')
                   .upsert({
                     teacher_id: this.userInfo.user.id,
@@ -895,23 +885,31 @@
                     access_token: tokens.access_token,
                     token_expiry: new Date(Date.now() + (tokens.expires_in || 3600) * 1000).toISOString(),
                     root_folder_id: rootFolderId,
+                    drive_enabled: true
+                  }, {
+                    onConflict: 'teacher_id'
+                  });
+                
+                if (configError) throw configError;
+                
+                // Update public settings table
+                await this.auth.supabase
+                  .from('teacher_upload_settings')
+                  .upsert({
+                    teacher_id: this.userInfo.user.id,
                     drive_enabled: true,
+                    fallback_enabled: true,
                     updated_at: new Date().toISOString()
                   }, {
                     onConflict: 'teacher_id'
                   });
                 
-                if (error) throw error;
-                
-                this.showNotification('Google Drive connected successfully! Students can now upload files to your Drive.', 'success');
+                this.showNotification('Google Drive connected successfully!', 'success');
                 this.closeModal('drive-setup');
                 
-                // Test the connection
-                await this.testDriveConnection();
-                
               } catch (err) {
-                console.error('Token exchange error:', err);
-                this.showNotification(`Failed to connect Drive: ${err.message}`, 'error');
+                console.error('Setup error:', err);
+                this.showNotification(`Connection failed: ${err.message}`, 'error');
               }
             }
           });
@@ -919,7 +917,7 @@
           client.requestCode();
         } catch (err) {
           console.error(err);
-          this.showNotification(`Drive connection failed: ${err.message}`, 'error');
+          this.showNotification(`Setup failed: ${err.message}`, 'error');
         }
       }
 
@@ -1344,6 +1342,9 @@
                 </button>
                 <button class="btn btn-secondary" onclick="app.showSection('messaging')">
                   💬 Send Message
+                </button>
+                <button class="btn btn-secondary" onclick="app.setupStorageBucket()">
+                  🗄️ Setup File Storage
                 </button>
                 <button class="btn btn-secondary" onclick="app.showGoogleDriveIntegrationModal()">
                   📁 Setup Google Drive
@@ -2469,7 +2470,129 @@
         }
       }
 
-      // Enhanced file upload with Drive priority and Supabase fallback
+      // Complete upload system replacement
+      async attemptDriveUpload(file, assignmentId) {
+        try {
+          // Get assignment and class info
+          const { data: assignment } = await this.auth.supabase
+            .from('assignments')
+            .select('class_id, title')
+            .eq('id', assignmentId)
+            .single();
+      
+          if (!assignment) throw new Error('Assignment not found');
+      
+          const { data: classData } = await this.auth.supabase
+            .from('classes')
+            .select('teacher_id, name')
+            .eq('id', assignment.class_id)
+            .single();
+      
+          if (!classData) throw new Error('Class not found');
+      
+          // Check upload settings from the public table
+          const { data: uploadSettings } = await this.auth.supabase
+            .from('teacher_upload_settings')
+            .select('drive_enabled')
+            .eq('teacher_id', classData.teacher_id)
+            .single();
+      
+          if (!uploadSettings?.drive_enabled) {
+            throw new Error('Teacher has not enabled Google Drive uploads');
+          }
+      
+          // Prepare upload via Edge Function
+          const formData = new FormData();
+          formData.append('file', file);
+          formData.append('assignmentId', assignmentId);
+          formData.append('teacherId', classData.teacher_id);
+          formData.append('studentName', `${this.userInfo.profile.first_name}_${this.userInfo.profile.last_name}`);
+          formData.append('assignmentTitle', assignment.title);
+          formData.append('className', classData.name);
+      
+          const sessionResult = await this.auth.supabase.auth.getSession();
+          if (!sessionResult.data?.session) {
+            throw new Error('No active session');
+          }
+          
+          const response = await fetch(`${location.origin}/functions/v1/upload-to-drive`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${sessionResult.data.session.access_token}`
+            },
+            body: formData
+          });
+      
+          const result = await response.json();
+          
+          if (!result.success) {
+            throw new Error(result.error || 'Drive upload failed');
+          }
+          
+          return {
+            success: true,
+            url: result.url || result.webViewLink,
+            storage_type: 'google_drive',
+            drive_file_id: result.fileId
+          };
+          
+        } catch (error) {
+          console.log('Drive upload not available:', error.message);
+          throw error;
+        }
+      }
+      
+      // Improved Supabase fallback with automatic bucket setup
+      async uploadToSupabase(file, assignmentId) {
+        try {
+          const bucketName = 'assignment-uploads';
+          
+          // Ensure bucket exists (this will be created by admin initially)
+          const fileName = `${this.userInfo.user.id}/${assignmentId}/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
+      
+          // Upload file
+          const { data: uploadData, error: uploadError } = await this.auth.supabase.storage
+            .from(bucketName)
+            .upload(fileName, file, { 
+              cacheControl: '3600', 
+              upsert: false 
+            });
+      
+          if (uploadError) {
+            console.error('Storage error:', uploadError);
+            
+            // Provide helpful error message
+            if (uploadError.statusCode === 400 || uploadError.message?.includes('Bucket not found')) {
+              throw new Error('File storage not configured. Please contact your administrator.');
+            }
+            throw uploadError;
+          }
+      
+          // Create signed URL for private bucket
+          const { data: signedUrlData, error: signedError } = await this.auth.supabase.storage
+            .from(bucketName)
+            .createSignedUrl(fileName, 604800); // 7 days expiry
+      
+          if (signedError) throw signedError;
+      
+          return {
+            success: true,
+            url: signedUrlData.signedUrl,
+            storage_type: 'supabase',
+            drive_file_id: null,
+            file_path: fileName // Store path for future reference
+          };
+          
+        } catch (error) {
+          console.error('Supabase upload error:', error);
+          return {
+            success: false,
+            error: error.message
+          };
+        }
+      }
+      
+      // Updated submission function with better error handling
       async submitAssignmentSubmission(assignmentId, isEdit) {
         const content = document.getElementById('submission-content').value;
         const fileInput = document.getElementById('submission-file');
@@ -2493,65 +2616,69 @@
           };
       
           // Handle file upload if present
-          if (fileInput && fileInput.files && fileInput.files.length > 0) {
+          if (fileInput?.files?.length > 0) {
             const file = fileInput.files[0];
-      
-            // 10 MB limit
-            const maxSize = 10 * 1024 * 1024;
-            if (file.size > maxSize) throw new Error('File too large. Maximum size is 10MB.');
-      
-            // Try Google Drive first, then fall back to Supabase
-            let uploadResult = null;
             
-            // Attempt Drive upload if teacher has it configured
+            // Validate file
+            const maxSize = 10 * 1024 * 1024; // 10MB
+            if (file.size > maxSize) {
+              throw new Error('File too large. Maximum size is 10MB.');
+            }
+      
+            let uploadResult = null;
+            let uploadErrors = [];
+      
+            // Try Drive first
             try {
+              console.log('Attempting Google Drive upload...');
               uploadResult = await this.attemptDriveUpload(file, assignmentId);
-              if (uploadResult.success) {
-                console.log('File uploaded to Google Drive successfully');
-              }
+              console.log('Drive upload successful');
             } catch (driveError) {
-              console.log('Drive upload failed, will try Supabase:', driveError.message);
+              console.log('Drive upload failed:', driveError.message);
+              uploadErrors.push(`Drive: ${driveError.message}`);
             }
       
-            // Fall back to Supabase if Drive failed or wasn't available
-            if (!uploadResult || !uploadResult.success) {
-              console.log('Using Supabase storage for file upload');
-              uploadResult = await this.uploadToSupabase(file, assignmentId);
+            // Fallback to Supabase
+            if (!uploadResult?.success) {
+              try {
+                console.log('Attempting Supabase storage upload...');
+                uploadResult = await this.uploadToSupabase(file, assignmentId);
+                if (uploadResult.success) {
+                  console.log('Supabase upload successful');
+                }
+              } catch (supabaseError) {
+                console.log('Supabase upload failed:', supabaseError.message);
+                uploadErrors.push(`Storage: ${supabaseError.message}`);
+              }
             }
       
-            if (!uploadResult.success) {
-              throw new Error('File upload failed to both Google Drive and Supabase');
+            if (!uploadResult?.success) {
+              // Both methods failed - show detailed error
+              const errorMessage = `File upload failed. ${uploadErrors.join(' | ')}`;
+              throw new Error(errorMessage);
             }
       
+            // Add file info to submission
             submissionData.file_url = uploadResult.url;
             submissionData.file_name = file.name;
             submissionData.storage_type = uploadResult.storage_type;
             submissionData.drive_file_id = uploadResult.drive_file_id || null;
+            submissionData.file_path = uploadResult.file_path || null;
           }
       
-          let error;
-          if (isEdit) {
-            // Update existing submission - use upsert to avoid RLS issues
-            ({ error } = await this.auth.supabase
-              .from('assignment_submissions')
-              .upsert(submissionData, {
-                onConflict: 'assignment_id,student_id'
-              }));
-          } else {
-            // Insert new submission - use upsert to handle potential duplicates
-            ({ error } = await this.auth.supabase
-              .from('assignment_submissions')
-              .upsert([submissionData], {
-                onConflict: 'assignment_id,student_id'
-              }));
-          }
+          // Submit to database using upsert
+          const { error } = await this.auth.supabase
+            .from('assignment_submissions')
+            .upsert(submissionData, {
+              onConflict: 'assignment_id,student_id'
+            });
           
           if (error) throw error;
       
           this.showNotification(`Assignment ${isEdit ? 'updated' : 'submitted'} successfully!`, 'success');
           this.closeModal('submit-assignment');
           
-          // Refresh the assignments view
+          // Refresh view
           const { data: assignment } = await this.auth.supabase
             .from('assignments')
             .select('class_id')
@@ -2564,8 +2691,8 @@
           }
       
         } catch (err) {
-          console.error('Error submitting assignment:', err);
-          this.showNotification('Error submitting assignment: ' + err.message, 'error');
+          console.error('Submission error:', err);
+          this.showNotification(err.message, 'error');
         } finally {
           if (window.portalLoading) {
             window.portalLoading.hide('submit-assignment');
@@ -2573,98 +2700,42 @@
         }
       }
       
-      // Attempt to upload to Google Drive via Edge Function
-      async attemptDriveUpload(file, assignmentId) {
-        // Get assignment and class info
-        const { data: assignment } = await this.auth.supabase
-          .from('assignments')
-          .select('class_id, title')
-          .eq('id', assignmentId)
-          .single();
-      
-        if (!assignment) throw new Error('Assignment not found');
-      
-        const { data: classData } = await this.auth.supabase
-          .from('classes')
-          .select('teacher_id, name')
-          .eq('id', assignment.class_id)
-          .single();
-      
-        if (!classData) throw new Error('Class not found');
-      
-        // Check if teacher has Drive configured
-        const { data: driveConfig } = await this.auth.supabase
-          .from('teacher_drive_config')
-          .select('root_folder_id, refresh_token')
-          .eq('teacher_id', classData.teacher_id)
-          .single();
-      
-        if (!driveConfig || !driveConfig.root_folder_id || !driveConfig.refresh_token) {
-          throw new Error('Teacher has not configured Google Drive');
-        }
-      
-        // Call Edge Function to upload file
-        const formData = new FormData();
-        formData.append('file', file);
-        formData.append('assignmentId', assignmentId);
-        formData.append('teacherId', classData.teacher_id);
-      
-        const sessionResult = await this.auth.supabase.auth.getSession();
-        if (!sessionResult.data || !sessionResult.data.session) {
-          throw new Error('No active session');
-        }
-        
-        const response = await fetch(`${location.origin}/functions/v1/upload-to-drive`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${sessionResult.data.session.access_token}`
-          },
-          body: formData
-        });
-      
-        const result = await response.json();
-        
-        if (!result.success) {
-          throw new Error(result.error || 'Drive upload failed');
-        }
-        
-        return result;
-      }
-      
-      // Fallback upload to Supabase
-      async uploadToSupabase(file, assignmentId) {
+      async setupStorageBucket() {
         try {
-          const timestamp = Date.now();
-          const fileName = `assignments/${this.userInfo.user.id}/${assignmentId}/${timestamp}_${file.name}`;
+          // This should be run once by an admin or teacher to set up the bucket
+          const bucketName = 'assignment-uploads';
+          
+          const { data, error } = await this.auth.supabase.storage.createBucket(
+            bucketName,
+            {
+              public: false,
+              allowedMimeTypes: [
+                'image/*',
+                'application/pdf',
+                'application/msword',
+                'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                'text/plain',
+                'text/csv',
+                'application/vnd.ms-excel',
+                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+              ],
+              fileSizeLimit: 10485760 // 10MB
+            }
+          );
       
-          const { data: uploadData, error: uploadError } = await this.auth.supabase.storage
-            .from('user-uploads')
-            .upload(fileName, file, { 
-              cacheControl: '3600', 
-              upsert: false 
-            });
-      
-          if (uploadError) {
-            throw uploadError;
+          if (error) {
+            if (error.message.includes('already exists')) {
+              this.showNotification('Storage bucket already exists', 'info');
+            } else {
+              throw error;
+            }
+          } else {
+            this.showNotification('Storage bucket created successfully', 'success');
           }
-      
-          // Get public URL
-          const { data: urlData } = this.auth.supabase.storage
-            .from('user-uploads')
-            .getPublicUrl(fileName);
-      
-          return {
-            success: true,
-            url: urlData.publicUrl,
-            storage_type: 'supabase',
-            drive_file_id: null
-          };
+          
         } catch (error) {
-          console.error('Supabase upload error:', error);
-          return {
-            success: false,
-            error: error.message
-          };
+          console.error('Error setting up storage:', error);
+          this.showNotification('Error setting up storage: ' + error.message, 'error');
         }
       }
       
