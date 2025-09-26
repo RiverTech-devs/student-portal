@@ -2485,24 +2485,39 @@
             submissionData.drive_file_id = uploadResult.drive_file_id || null;
           }
       
-          // Insert or update submission
           let error;
           if (isEdit) {
+            // Update existing submission - use upsert to avoid RLS issues
             ({ error } = await this.auth.supabase
               .from('assignment_submissions')
-              .update(submissionData)
-              .eq('assignment_id', assignmentId)
-              .eq('student_id', this.userInfo.user.id));
+              .upsert(submissionData, {
+                onConflict: 'assignment_id,student_id'
+              }));
           } else {
+            // Insert new submission - use upsert to handle potential duplicates
             ({ error } = await this.auth.supabase
               .from('assignment_submissions')
-              .insert([submissionData]));
+              .upsert([submissionData], {
+                onConflict: 'assignment_id,student_id'
+              }));
           }
           
           if (error) throw error;
       
           this.showNotification(`Assignment ${isEdit ? 'updated' : 'submitted'} successfully!`, 'success');
           this.closeModal('submit-assignment');
+          
+          // Refresh the assignments view
+          const { data: assignment } = await this.auth.supabase
+            .from('assignments')
+            .select('class_id')
+            .eq('id', assignmentId)
+            .single();
+            
+          if (assignment) {
+            this.closeModal('assignments');
+            setTimeout(() => this.viewAssignments(assignment.class_id), 100);
+          }
       
         } catch (err) {
           console.error('Error submitting assignment:', err);
@@ -4431,22 +4446,33 @@
       // Helper function for assignment submission
       async submitAssignment(assignmentId) {
         try {
-          // Load assignment details
-          const { data: assignment, error } = await this.auth.supabase
+          // Load assignment details first
+          const { data: assignment, error: assignmentError } = await this.auth.supabase
             .from('assignments')
             .select('*')
             .eq('id', assignmentId)
             .single();
       
-          if (error) throw error;
+          if (assignmentError) throw assignmentError;
       
-          // Check for existing submission
-          const { data: existingSubmission } = await this.auth.supabase
-            .from('assignment_submissions')
-            .select('*')
-            .eq('assignment_id', assignmentId)
-            .eq('student_id', this.userInfo.user.id)
-            .single();
+          // Try to check for existing submission with better error handling
+          let existingSubmission = null;
+          try {
+            const { data, error } = await this.auth.supabase
+              .from('assignment_submissions')
+              .select('*')
+              .eq('assignment_id', assignmentId)
+              .eq('student_id', this.userInfo.user.id)
+              .maybeSingle(); // Use maybeSingle instead of single to avoid errors when no row exists
+      
+            if (!error && data) {
+              existingSubmission = data;
+            }
+          } catch (checkError) {
+            // If we can't check for existing submission, assume there isn't one
+            console.log('Could not check for existing submission:', checkError);
+            existingSubmission = null;
+          }
       
           const isEdit = !!existingSubmission;
           const modalContent = `
@@ -4868,69 +4894,164 @@
             .eq('id', assignmentId)
             .single();
       
+          // Get ALL students enrolled in this class
+          const { data: enrollments } = await this.auth.supabase
+            .from('class_enrollments')
+            .select('student_id')
+            .eq('class_id', assignment.class_id)
+            .eq('status', 'active');
+      
+          if (!enrollments || enrollments.length === 0) {
+            const modalContent = `
+              <div>
+                <h3>${assignment?.title || 'Assignment'}</h3>
+                <p style="color: var(--muted);">Due: ${new Date(assignment?.due_date).toLocaleDateString()}</p>
+                <div class="empty-state">
+                  <p style="color: var(--muted);">No students enrolled in this class</p>
+                </div>
+              </div>
+              <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+                <button class="btn btn-secondary" onclick="app.closeModal('view-submissions')">Close</button>
+              </div>
+            `;
+            this.showModal('view-submissions', '📋 View Submissions', modalContent, true);
+            return;
+          }
+      
+          // Get all student profiles
+          const studentIds = enrollments.map(e => e.student_id);
+          const { data: students } = await this.auth.supabase
+            .from('user_profiles')
+            .select('id, first_name, last_name, email, grade_level')
+            .in('id', studentIds)
+            .order('last_name');
+      
           // Load all submissions for this assignment
-          const { data: submissions, error } = await this.auth.supabase
+          const { data: submissions } = await this.auth.supabase
             .from('assignment_submissions')
             .select('*')
-            .eq('assignment_id', assignmentId)
-            .order('submitted_at', { ascending: false });
+            .eq('assignment_id', assignmentId);
       
-          if (error) throw error;
+          // Create a map of submissions by student ID
+          const submissionMap = {};
+          submissions?.forEach(s => {
+            submissionMap[s.student_id] = s;
+          });
       
-          // Load student profiles
-          let studentMap = {};
-          if (submissions && submissions.length > 0) {
-            const studentIds = submissions.map(s => s.student_id);
-            const { data: students } = await this.auth.supabase
-              .from('user_profiles')
-              .select('id, first_name, last_name, email')
-              .in('id', studentIds);
-      
-            students?.forEach(s => {
-              studentMap[s.id] = s;
-            });
-          }
+          // Calculate statistics
+          const totalStudents = students?.length || 0;
+          const submittedCount = submissions?.length || 0;
+          const gradedCount = submissions?.filter(s => s.status === 'graded').length || 0;
+          const submissionRate = totalStudents > 0 ? ((submittedCount / totalStudents) * 100).toFixed(0) : 0;
       
           const modalContent = `
             <div>
               <h3>${assignment?.title || 'Assignment'}</h3>
-              <p style="color: var(--muted);">Due: ${new Date(assignment?.due_date).toLocaleDateString()}</p>
+              <p style="color: var(--muted);">Due: ${new Date(assignment?.due_date).toLocaleDateString()} • Max Points: ${assignment?.max_points || 100}</p>
               
-              <div style="margin-top: 20px;">
-                ${submissions && submissions.length > 0 ? `
+              <!-- Statistics -->
+              <div class="card" style="background: var(--card); padding: 15px; margin: 20px 0;">
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px;">
+                  <div>
+                    <div style="font-size: 24px; font-weight: bold; color: var(--accent);">${totalStudents}</div>
+                    <div style="font-size: 12px; color: var(--muted);">Total Students</div>
+                  </div>
+                  <div>
+                    <div style="font-size: 24px; font-weight: bold; color: var(--accent-2);">${submittedCount}</div>
+                    <div style="font-size: 12px; color: var(--muted);">Submitted</div>
+                  </div>
+                  <div>
+                    <div style="font-size: 24px; font-weight: bold; color: var(--warning);">${gradedCount}</div>
+                    <div style="font-size: 12px; color: var(--muted);">Graded</div>
+                  </div>
+                  <div>
+                    <div style="font-size: 24px; font-weight: bold; color: var(--link);">${submissionRate}%</div>
+                    <div style="font-size: 12px; color: var(--muted);">Submission Rate</div>
+                  </div>
+                </div>
+              </div>
+      
+              <!-- Filter Options -->
+              <div style="margin: 20px 0;">
+                <label style="margin-right: 15px;">
+                  <input type="radio" name="submission-filter" value="all" checked onchange="app.filterSubmissionsList('all', '${assignmentId}')">
+                  All Students (${totalStudents})
+                </label>
+                <label style="margin-right: 15px;">
+                  <input type="radio" name="submission-filter" value="submitted" onchange="app.filterSubmissionsList('submitted', '${assignmentId}')">
+                  Submitted (${submittedCount})
+                </label>
+                <label style="margin-right: 15px;">
+                  <input type="radio" name="submission-filter" value="not-submitted" onchange="app.filterSubmissionsList('not-submitted', '${assignmentId}')">
+                  Not Submitted (${totalStudents - submittedCount})
+                </label>
+                <label>
+                  <input type="radio" name="submission-filter" value="graded" onchange="app.filterSubmissionsList('graded', '${assignmentId}')">
+                  Graded (${gradedCount})
+                </label>
+              </div>
+      
+              <!-- Students List -->
+              <div id="submissions-list" style="max-height: 400px; overflow-y: auto;">
+                ${students && students.length > 0 ? `
                   <div class="list">
-                    ${submissions.map(submission => {
-                      const student = studentMap[submission.student_id] || {};
+                    ${students.map(student => {
+                      const submission = submissionMap[student.id];
+                      const hasSubmitted = !!submission;
+                      const isGraded = submission?.status === 'graded';
+                      
                       return `
-                        <div class="list-item">
+                        <div class="list-item submission-item" 
+                             data-status="${hasSubmitted ? (isGraded ? 'graded' : 'submitted') : 'not-submitted'}"
+                             style="border-left: 4px solid ${hasSubmitted ? (isGraded ? 'var(--accent-2)' : 'var(--accent)') : 'var(--danger)'};">
                           <div class="list-item-content">
                             <div class="list-item-title">
                               ${student.first_name} ${student.last_name}
+                              ${student.grade_level ? `<span style="color: var(--muted); font-size: 12px; margin-left: 10px;">Grade ${student.grade_level}</span>` : ''}
                             </div>
                             <div class="list-item-meta">
-                              Submitted: ${new Date(submission.submitted_at).toLocaleString()}
-                              ${submission.status === 'graded' ? 
-                                ` • Grade: ${submission.grade || 'N/A'}` : 
-                                ' • Status: Pending Review'
+                              ${student.email} • 
+                              ${hasSubmitted ? 
+                                `Submitted: ${new Date(submission.submitted_at).toLocaleDateString()} at ${new Date(submission.submitted_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}` : 
+                                '<span style="color: var(--danger);">Not submitted</span>'
+                              }
+                              ${isGraded ? 
+                                ` • <strong>Grade: ${submission.grade || 'N/A'}</strong> (${submission.points_earned || 0}/${assignment?.max_points || 100})` : 
+                                ''
                               }
                             </div>
                           </div>
-                          <button class="btn btn-primary small" onclick="app.gradeSubmission('${submission.id}', '${assignmentId}')">
-                            ${submission.status === 'graded' ? '✏️ Edit Grade' : '📝 Grade'}
-                          </button>
+                          <div style="display: flex; gap: 10px; align-items: center;">
+                            ${hasSubmitted ? `
+                              <button class="btn btn-secondary small" onclick="app.viewStudentSubmission('${submission.id}', '${assignmentId}')">
+                                👁️ View
+                              </button>
+                              <button class="btn btn-primary small" onclick="app.gradeSubmission('${submission.id}', '${assignmentId}')">
+                                ${isGraded ? '✏️ Edit Grade' : '📝 Grade'}
+                              </button>
+                            ` : `
+                              <span style="color: var(--muted); font-size: 12px;">No submission</span>
+                              <button class="btn btn-secondary small" onclick="app.sendReminderToStudent('${student.id}', '${assignmentId}')">
+                                📧 Send Reminder
+                              </button>
+                            `}
+                          </div>
                         </div>
                       `;
                     }).join('')}
                   </div>
                 ` : `
                   <div class="empty-state">
-                    <p style="color: var(--muted);">No submissions yet</p>
+                    <p style="color: var(--muted);">No students enrolled</p>
                   </div>
                 `}
               </div>
             </div>
       
             <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.downloadSubmissionsReport('${assignmentId}')">
+                📥 Download Report
+              </button>
               <button class="btn btn-secondary" onclick="app.closeModal('view-submissions')">Close</button>
             </div>
           `;
@@ -4941,6 +5062,144 @@
           console.error('Error loading submissions:', error);
           this.showNotification('Error loading submissions: ' + error.message, 'error');
         }
+      }
+
+      // Filter submissions list
+      filterSubmissionsList(filter, assignmentId) {
+        const items = document.querySelectorAll('.submission-item');
+        
+        items.forEach(item => {
+          const status = item.getAttribute('data-status');
+          
+          if (filter === 'all') {
+            item.style.display = 'flex';
+          } else if (filter === 'submitted') {
+            item.style.display = (status === 'submitted' || status === 'graded') ? 'flex' : 'none';
+          } else if (filter === 'not-submitted') {
+            item.style.display = status === 'not-submitted' ? 'flex' : 'none';
+          } else if (filter === 'graded') {
+            item.style.display = status === 'graded' ? 'flex' : 'none';
+          }
+        });
+      }
+      
+      // View individual student submission
+      async viewStudentSubmission(submissionId, assignmentId) {
+        try {
+          const { data: submission } = await this.auth.supabase
+            .from('assignment_submissions')
+            .select('*')
+            .eq('id', submissionId)
+            .single();
+      
+          const { data: student } = await this.auth.supabase
+            .from('user_profiles')
+            .select('first_name, last_name, email')
+            .eq('id', submission.student_id)
+            .single();
+      
+          const { data: assignment } = await this.auth.supabase
+            .from('assignments')
+            .select('title, max_points')
+            .eq('id', assignmentId)
+            .single();
+      
+          const modalContent = `
+            <div>
+              <h3>${student?.first_name} ${student?.last_name}'s Submission</h3>
+              <p style="color: var(--muted);">Assignment: ${assignment?.title}</p>
+              <p style="color: var(--muted);">Submitted: ${new Date(submission.submitted_at).toLocaleString()}</p>
+              
+              <div class="card" style="margin: 20px 0;">
+                <h4>Submission Content</h4>
+                <div style="background: var(--bg); padding: 15px; border-radius: 8px; margin-top: 10px; white-space: pre-wrap; max-height: 400px; overflow-y: auto;">
+                  ${submission.content}
+                </div>
+                
+                ${submission.file_url ? `
+                  <div style="margin-top: 15px;">
+                    <strong>Attached File:</strong>
+                    <a href="${submission.file_url}" target="_blank" class="btn btn-secondary small" style="margin-left: 10px;">
+                      📎 ${submission.file_name || 'View File'}
+                    </a>
+                  </div>
+                ` : ''}
+              </div>
+      
+              ${submission.status === 'graded' ? `
+                <div class="card" style="background: var(--accent-2); color: black; padding: 15px;">
+                  <h4>Grade Information</h4>
+                  <p><strong>Grade:</strong> ${submission.grade || 'N/A'}</p>
+                  <p><strong>Points:</strong> ${submission.points_earned || 0} / ${assignment?.max_points || 100}</p>
+                  ${submission.feedback ? `
+                    <p><strong>Feedback:</strong></p>
+                    <div style="background: white; padding: 10px; border-radius: 5px; margin-top: 5px;">
+                      ${submission.feedback}
+                    </div>
+                  ` : ''}
+                </div>
+              ` : ''}
+            </div>
+      
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              <button class="btn btn-primary" onclick="app.gradeSubmission('${submissionId}', '${assignmentId}')">
+                ${submission.status === 'graded' ? '✏️ Edit Grade' : '📝 Grade'}
+              </button>
+              <button class="btn btn-secondary" onclick="app.closeModal('view-student-submission')">Close</button>
+            </div>
+          `;
+      
+          this.showModal('view-student-submission', '📄 Student Submission', modalContent, true);
+      
+        } catch (error) {
+          console.error('Error viewing submission:', error);
+          this.showNotification('Error viewing submission: ' + error.message, 'error');
+        }
+      }
+      
+      // Send reminder to student
+      async sendReminderToStudent(studentId, assignmentId) {
+        try {
+          const { data: assignment } = await this.auth.supabase
+            .from('assignments')
+            .select('title, due_date')
+            .eq('id', assignmentId)
+            .single();
+      
+          const { data: student } = await this.auth.supabase
+            .from('user_profiles')
+            .select('first_name, last_name')
+            .eq('id', studentId)
+            .single();
+      
+          if (confirm(`Send reminder to ${student?.first_name} ${student?.last_name} about "${assignment?.title}"?`)) {
+            // Send message through the messaging system
+            const { error } = await this.auth.supabase
+              .from('messages')
+              .insert([{
+                sender_id: this.userInfo.user.id,
+                recipient_id: studentId,
+                subject: `Reminder: Assignment "${assignment.title}" Due Soon`,
+                content: `This is a reminder that the assignment "${assignment.title}" is due on ${new Date(assignment.due_date).toLocaleDateString()}. Please submit your work as soon as possible.`,
+                thread_id: crypto.randomUUID(),
+                is_read: false
+              }]);
+      
+            if (error) throw error;
+            
+            this.showNotification(`Reminder sent to ${student?.first_name} ${student?.last_name}`, 'success');
+          }
+        } catch (error) {
+          console.error('Error sending reminder:', error);
+          this.showNotification('Error sending reminder: ' + error.message, 'error');
+        }
+      }
+      
+      // Download submissions report
+      async downloadSubmissionsReport(assignmentId) {
+        this.showNotification('Generating submissions report...', 'info');
+        // You can implement CSV/PDF download of all submissions here
+        // This would be similar to the exportClassData function
       }
 
       async gradeSubmission(submissionId, assignmentId) {
