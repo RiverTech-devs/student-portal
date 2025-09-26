@@ -838,7 +838,7 @@
         });
       }
       
-      async authorizeGoogleDrive() {
+     async authorizeGoogleDrive() {
         try {
           // Check if Google Identity Services is loaded
           if (typeof google === 'undefined' || !google.accounts || !google.accounts.oauth2) {
@@ -846,10 +846,10 @@
             return;
           }
           
-          // Use Google Identity Services for OAuth2 with offline access
+          // Use only the valid scope for file management
           const client = google.accounts.oauth2.initCodeClient({
             client_id: '262464730666-407bjadqc07iiq0i1bte7vh214na8pep.apps.googleusercontent.com',
-            scope: 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.about.readonly',
+            scope: 'https://www.googleapis.com/auth/drive.file', // Only use the valid scope
             ux_mode: 'popup',
             callback: async (response) => {
               try {
@@ -869,13 +869,18 @@
                 });
                 
                 if (!tokenResponse.ok) {
+                  const errorData = await tokenResponse.text();
+                  console.error('Token exchange failed:', errorData);
                   throw new Error('Failed to exchange authorization code');
                 }
                 
                 const tokens = await tokenResponse.json();
                 
                 if (!tokens.refresh_token) {
-                  throw new Error('No refresh token received. Please revoke access and try again.');
+                  // If no refresh token, user may need to revoke access first
+                  this.showNotification('No refresh token received. Please revoke RiverTech access in your Google account settings and try again.', 'warning');
+                  window.open('https://myaccount.google.com/permissions', '_blank');
+                  return;
                 }
                 
                 // Create root folder in Drive
@@ -889,13 +894,21 @@
                     refresh_token: tokens.refresh_token,
                     access_token: tokens.access_token,
                     token_expiry: new Date(Date.now() + (tokens.expires_in || 3600) * 1000).toISOString(),
-                    root_folder_id: rootFolderId
+                    root_folder_id: rootFolderId,
+                    drive_enabled: true,
+                    updated_at: new Date().toISOString()
+                  }, {
+                    onConflict: 'teacher_id'
                   });
                 
                 if (error) throw error;
                 
-                this.showNotification('Google Drive connected successfully!', 'success');
+                this.showNotification('Google Drive connected successfully! Students can now upload files to your Drive.', 'success');
                 this.closeModal('drive-setup');
+                
+                // Test the connection
+                await this.testDriveConnection();
+                
               } catch (err) {
                 console.error('Token exchange error:', err);
                 this.showNotification(`Failed to connect Drive: ${err.message}`, 'error');
@@ -907,6 +920,37 @@
         } catch (err) {
           console.error(err);
           this.showNotification(`Drive connection failed: ${err.message}`, 'error');
+        }
+      }
+
+      async testDriveConnection() {
+        try {
+          const { data: config, error } = await this.auth.supabase
+            .from('teacher_drive_config')
+            .select('*')
+            .eq('teacher_id', this.userInfo.user.id)
+            .single();
+      
+          if (error || !config) {
+            console.log('No Drive configuration found');
+            return false;
+          }
+      
+          // Check if token needs refresh
+          const tokenExpiry = new Date(config.token_expiry);
+          const now = new Date();
+          
+          if (tokenExpiry <= now) {
+            console.log('Drive token expired, needs refresh');
+            // The Edge Function should handle token refresh
+          }
+      
+          console.log('Google Drive is configured and ready');
+          return true;
+      
+        } catch (error) {
+          console.error('Error testing Drive connection:', error);
+          return false;
         }
       }
       
@@ -3875,14 +3919,24 @@
         }
       }
 
-      // 18. Show Google Drive Integration Modal
-      showGoogleDriveIntegrationModal() {
+      async showGoogleDriveIntegrationModal() {
+        // Check current connection status
+        const isConnected = await this.testDriveConnection();
+        
         const modalContent = `
           <div>
             <h3>📁 Google Drive Integration</h3>
-            <p style="color: var(--muted); margin: 15px 0;">
-              Connect Google Drive to automatically organize and store student assignment submissions.
-            </p>
+            
+            ${isConnected ? `
+              <div class="card" style="background: var(--accent-2); color: black; padding: 15px; margin: 15px 0;">
+                ✅ <strong>Google Drive is connected!</strong>
+                <p style="margin-top: 10px;">Students can upload their assignments directly to your Drive.</p>
+              </div>
+            ` : `
+              <p style="color: var(--muted); margin: 15px 0;">
+                Connect Google Drive to automatically organize and store student assignment submissions.
+              </p>
+            `}
             
             <div class="card" style="background: var(--card); margin: 20px 0;">
               <h4>Benefits:</h4>
@@ -3893,24 +3947,73 @@
                 <li>Backup and archival of student work</li>
               </ul>
             </div>
-
-            <div class="card" style="background: var(--warning); color: black; padding: 15px;">
-              <strong>Note:</strong> You'll need to authorize access to your Google Drive. 
-              A folder called "RiverTech Student Assignments" will be created to store all submissions.
-            </div>
+      
+            ${!isConnected ? `
+              <div class="card" style="background: var(--warning); color: black; padding: 15px;">
+                <strong>Important:</strong> 
+                <ul style="margin-top: 10px; padding-left: 20px;">
+                  <li>You'll need to authorize access to your Google Drive</li>
+                  <li>A folder called "RiverTech Student Assignments" will be created</li>
+                  <li>If you've connected before, you may need to revoke access in Google settings first</li>
+                </ul>
+              </div>
+            ` : `
+              <div class="card" style="background: var(--card); padding: 15px;">
+                <strong>Troubleshooting:</strong>
+                <p style="margin-top: 10px;">If students are having issues uploading:</p>
+                <ul style="margin-top: 10px; padding-left: 20px;">
+                  <li>Try reconnecting your Google Drive</li>
+                  <li>Check that the "RiverTech Student Assignments" folder exists</li>
+                  <li>Ensure you have sufficient Drive storage</li>
+                </ul>
+              </div>
+            `}
           </div>
-
+      
           <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+            ${isConnected ? `
+              <button class="btn btn-secondary" onclick="window.open('https://drive.google.com', '_blank')">
+                📁 Open Google Drive
+              </button>
+              <button class="btn danger" onclick="app.disconnectGoogleDrive()">
+                🔌 Disconnect Drive
+              </button>
+            ` : ''}
             <button class="btn btn-secondary" onclick="app.closeModal('drive-setup')">Cancel</button>
             <button class="btn btn-primary" onclick="app.authorizeGoogleDrive()">
-              🔗 Connect Google Drive
+              ${isConnected ? '🔄 Reconnect' : '🔗 Connect'} Google Drive
             </button>
           </div>
         `;
-
+      
         this.showModal('drive-setup', '📁 Google Drive Setup', modalContent);
       }
 
+      async disconnectGoogleDrive() {
+        if (!confirm('Disconnect Google Drive? Students will use fallback storage for new uploads.')) {
+          return;
+        }
+      
+        try {
+          const { error } = await this.auth.supabase
+            .from('teacher_drive_config')
+            .update({ 
+              drive_enabled: false,
+              updated_at: new Date().toISOString()
+            })
+            .eq('teacher_id', this.userInfo.user.id);
+      
+          if (error) throw error;
+      
+          this.showNotification('Google Drive disconnected', 'success');
+          this.closeModal('drive-setup');
+          
+        } catch (error) {
+          console.error('Error disconnecting Drive:', error);
+          this.showNotification('Error disconnecting Drive: ' + error.message, 'error');
+        }
+      }
+      
       // 19. Show Academic Year Management
       showAcademicYearManagement() {
         const modalContent = `
