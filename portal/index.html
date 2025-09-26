@@ -3003,16 +3003,24 @@
         }
       
         try {
+          // Disable form while submitting
+          const replyForm = document.getElementById(`reply-content-${containerId}`);
+          if (replyForm) {
+            replyForm.disabled = true;
+          }
+      
           const replyData = {
             discussion_id: discussionId,
             author_id: this.userInfo.user.id,
             content: content.trim(),
-            parent_id: parentReplyId  // Changed from parent_reply_id to parent_id
+            parent_id: parentReplyId
           };
       
-          const { error } = await this.auth.supabase
+          const { data: newReply, error } = await this.auth.supabase
             .from('discussion_replies')
-            .insert([replyData]);
+            .insert([replyData])
+            .select()
+            .single();
       
           if (error) throw error;
       
@@ -3021,13 +3029,18 @@
           // Clear form
           document.getElementById(`reply-to-${containerId}`).innerHTML = '';
           
-          // Refresh the discussion
-          this.closeModal('discussion-thread');
-          setTimeout(() => this.openDiscussion(discussionId), 100);
+          // Refresh just the replies section
+          await this.refreshDiscussionReplies(discussionId);
       
         } catch (error) {
           console.error('Error posting reply:', error);
           this.showNotification('Error posting reply: ' + error.message, 'error');
+          
+          // Re-enable form on error
+          const replyForm = document.getElementById(`reply-content-${containerId}`);
+          if (replyForm) {
+            replyForm.disabled = false;
+          }
         }
       }
 
@@ -3039,6 +3052,13 @@
         }
       
         try {
+          // Find and hide the reply element immediately for better UX
+          const replyElement = document.querySelector(`#reply-to-reply-${replyId}`)?.closest('.reply-item');
+          if (replyElement) {
+            replyElement.style.opacity = '0.5';
+            replyElement.style.pointerEvents = 'none';
+          }
+      
           // Soft delete the reply
           const { error } = await this.auth.supabase
             .from('discussion_replies')
@@ -3051,15 +3071,98 @@
       
           if (error) throw error;
       
+          // Remove the reply from DOM instead of refreshing entire discussion
+          if (replyElement) {
+            replyElement.style.transition = 'all 0.3s ease';
+            replyElement.style.transform = 'translateX(-20px)';
+            replyElement.style.opacity = '0';
+            
+            setTimeout(() => {
+              replyElement.remove();
+              
+              // Update reply count in the header
+              const replyCountElement = document.querySelector('#replies-container')?.previousElementSibling?.querySelector('h4');
+              if (replyCountElement) {
+                const currentText = replyCountElement.textContent;
+                const match = currentText.match(/\((\d+)/);
+                if (match) {
+                  const currentCount = parseInt(match[1]);
+                  const newCount = Math.max(0, currentCount - 1);
+                  replyCountElement.textContent = `💬 Discussion (${newCount} ${newCount === 1 ? 'comment' : 'comments'})`;
+                }
+              }
+              
+              // Check if no replies left
+              const remainingReplies = document.querySelectorAll('#replies-container .reply-item');
+              if (remainingReplies.length === 0) {
+                const repliesContainer = document.getElementById('replies-container');
+                if (repliesContainer) {
+                  repliesContainer.innerHTML = '<p style="color: var(--muted); text-align: center;">No comments yet. Be the first to respond!</p>';
+                }
+              }
+            }, 300);
+          } else {
+            // Fallback: refresh if element not found
+            this.refreshDiscussionReplies(discussionId);
+          }
+      
           this.showNotification('Reply deleted', 'success');
-          
-          // Refresh discussion
-          this.closeModal('discussion-thread');
-          setTimeout(() => this.openDiscussion(discussionId), 100);
       
         } catch (error) {
           console.error('Error deleting reply:', error);
           this.showNotification('Error deleting reply: ' + error.message, 'error');
+          
+          // Restore element on error
+          if (replyElement) {
+            replyElement.style.opacity = '1';
+            replyElement.style.pointerEvents = 'auto';
+          }
+        }
+      }
+
+      async refreshDiscussionReplies(discussionId) {
+        try {
+          // Load replies without closing modal
+          const { data: replies } = await this.auth.supabase
+            .from('discussion_replies')
+            .select('*')
+            .eq('discussion_id', discussionId)
+            .eq('is_deleted', false)
+            .order('created_at', { ascending: true });
+      
+          // Load profiles
+          let profileMap = {};
+          if (replies && replies.length > 0) {
+            const replyAuthorIds = [...new Set(replies.map(r => r.author_id))];
+            
+            const { data: replyProfiles } = await this.auth.supabase
+              .from('user_profiles')
+              .select('id, first_name, last_name, user_type')
+              .in('id', replyAuthorIds);
+      
+            replyProfiles?.forEach(p => {
+              profileMap[p.id] = p;
+            });
+          }
+      
+          // Update just the replies container
+          const repliesContainer = document.getElementById('replies-container');
+          if (repliesContainer) {
+            const nestedReplies = this.buildNestedReplies(replies || [], profileMap);
+            repliesContainer.innerHTML = nestedReplies || '<p style="color: var(--muted); text-align: center;">No comments yet. Be the first to respond!</p>';
+          }
+      
+          // Update count
+          const replyCountElement = document.querySelector('#replies-container')?.previousElementSibling?.querySelector('h4');
+          if (replyCountElement) {
+            replyCountElement.textContent = `💬 Discussion (${replies?.length || 0} ${replies?.length === 1 ? 'comment' : 'comments'})`;
+          }
+      
+        } catch (error) {
+          console.error('Error refreshing replies:', error);
+          // Fall back to full refresh on error
+          this.closeModal('discussion-thread');
+          setTimeout(() => this.openDiscussion(discussionId), 100);
         }
       }
 
