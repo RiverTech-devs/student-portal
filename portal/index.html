@@ -2602,7 +2602,6 @@
         }
       }
       
-      // Updated submission function with better error handling
       async submitAssignmentSubmission(assignmentId, isEdit) {
         const content = document.getElementById('submission-content').value;
         const fileInput = document.getElementById('submission-file');
@@ -2625,7 +2624,7 @@
             status: 'submitted'
           };
       
-          // Handle file upload if present
+          // Handle file upload if present - DRIVE ONLY
           if (fileInput?.files?.length > 0) {
             const file = fileInput.files[0];
             
@@ -2635,48 +2634,51 @@
               throw new Error('File too large. Maximum size is 10MB.');
             }
       
-            let uploadResult = null;
-            let uploadErrors = [];
+            // Get assignment and class info
+            const { data: assignment } = await this.auth.supabase
+              .from('assignments')
+              .select('class_id, title')
+              .eq('id', assignmentId)
+              .single();
       
-            // Try Drive first
-            try {
-              console.log('Attempting Google Drive upload...');
-              uploadResult = await this.attemptDriveUpload(file, assignmentId);
-              console.log('Drive upload successful');
-            } catch (driveError) {
-              console.log('Drive upload failed:', driveError.message);
-              uploadErrors.push(`Drive: ${driveError.message}`);
+            const { data: classData } = await this.auth.supabase
+              .from('classes')
+              .select('teacher_id, name')
+              .eq('id', assignment.class_id)
+              .single();
+      
+            // Upload to Drive via Edge Function
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('assignmentId', assignmentId);
+            formData.append('teacherId', classData.teacher_id);
+            formData.append('studentName', `${this.userInfo.profile.first_name}_${this.userInfo.profile.last_name}`);
+            formData.append('assignmentTitle', assignment.title);
+            formData.append('className', classData.name);
+      
+            const sessionResult = await this.auth.supabase.auth.getSession();
+            
+            const response = await fetch(`https://joxvhzxkrcigknsdrusr.supabase.co/functions/v1/upload-to-drive`, {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${sessionResult.data.session.access_token}`
+              },
+              body: formData
+            });
+      
+            const result = await response.json();
+            
+            if (!result.success) {
+              throw new Error(result.error || 'Drive upload failed. Please contact your teacher.');
             }
       
-            // Fallback to Supabase
-            if (!uploadResult?.success) {
-              try {
-                console.log('Attempting Supabase storage upload...');
-                uploadResult = await this.uploadToSupabase(file, assignmentId);
-                if (uploadResult.success) {
-                  console.log('Supabase upload successful');
-                }
-              } catch (supabaseError) {
-                console.log('Supabase upload failed:', supabaseError.message);
-                uploadErrors.push(`Storage: ${supabaseError.message}`);
-              }
-            }
-      
-            if (!uploadResult?.success) {
-              // Both methods failed - show detailed error
-              const errorMessage = `File upload failed. ${uploadErrors.join(' | ')}`;
-              throw new Error(errorMessage);
-            }
-      
-            // Add file info to submission
-            submissionData.file_url = uploadResult.url;
+            submissionData.file_url = result.url;
             submissionData.file_name = file.name;
-            submissionData.storage_type = uploadResult.storage_type;
-            submissionData.drive_file_id = uploadResult.drive_file_id || null;
-            submissionData.file_path = uploadResult.file_path || null;
+            submissionData.storage_type = 'google_drive';
+            submissionData.drive_file_id = result.fileId;
           }
       
-          // Submit to database using upsert
+          // Submit to database
           const { error } = await this.auth.supabase
             .from('assignment_submissions')
             .upsert(submissionData, {
@@ -2687,18 +2689,6 @@
       
           this.showNotification(`Assignment ${isEdit ? 'updated' : 'submitted'} successfully!`, 'success');
           this.closeModal('submit-assignment');
-          
-          // Refresh view
-          const { data: assignment } = await this.auth.supabase
-            .from('assignments')
-            .select('class_id')
-            .eq('id', assignmentId)
-            .single();
-            
-          if (assignment) {
-            this.closeModal('assignments');
-            setTimeout(() => this.viewAssignments(assignment.class_id), 100);
-          }
       
         } catch (err) {
           console.error('Submission error:', err);
