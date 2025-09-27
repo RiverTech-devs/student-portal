@@ -840,70 +840,97 @@
       
      async authorizeGoogleDrive() {
         try {
-          if (typeof google === 'undefined' || !google.accounts?.oauth2) {
-            this.showNotification('Google Identity Services not loaded. Please refresh and try again.', 'error');
+          // Check if Google Identity Services is loaded
+          if (typeof google === 'undefined' || !google.accounts || !google.accounts.oauth2) {
+            this.showNotification('Google Identity Services not loaded. Please try again.', 'error');
             return;
           }
           
-          // Use token client instead of code client for simpler flow
-          if (!this.tokenClient) {
-            this.tokenClient = google.accounts.oauth2.initTokenClient({
-              client_id: '262464730666-407bjadqc07iiq0i1bte7vh214na8pep.apps.googleusercontent.com',
-              scope: 'https://www.googleapis.com/auth/drive.file',
-              callback: async (tokenResponse) => {
-                try {
-                  if (!tokenResponse.access_token) {
-                    throw new Error('No access token received');
-                  }
-      
-                  // Create root folder directly with access token
-                  const rootFolderId = await this.createRootFolderWithToken(tokenResponse.access_token);
-                  
-                  // Store configuration (without refresh token - will need reauth periodically)
-                  const { error: configError } = await this.auth.supabase
-                    .from('teacher_drive_config')
-                    .upsert({
-                      teacher_id: this.userInfo.user.id,
-                      access_token: tokenResponse.access_token,
-                      token_expiry: new Date(Date.now() + (tokenResponse.expires_in || 3600) * 1000).toISOString(),
-                      root_folder_id: rootFolderId,
-                      drive_enabled: true,
-                      updated_at: new Date().toISOString()
-                    }, {
-                      onConflict: 'teacher_id'
-                    });
-                  
-                  if (configError) throw configError;
-                  
-                  // Update public settings
-                  await this.auth.supabase
-                    .from('teacher_upload_settings')
-                    .upsert({
-                      teacher_id: this.userInfo.user.id,
-                      drive_enabled: true,
-                      fallback_enabled: true,
-                      updated_at: new Date().toISOString()
-                    }, {
-                      onConflict: 'teacher_id'
-                    });
-                  
-                  this.showNotification('Google Drive connected! Note: You may need to reauthorize periodically.', 'success');
-                  this.closeModal('drive-setup');
-                  
-                } catch (err) {
-                  console.error('Setup error:', err);
-                  this.showNotification(`Connection failed: ${err.message}`, 'error');
+          // Use code client to get refresh token
+          const client = google.accounts.oauth2.initCodeClient({
+            client_id: '262464730666-407bjadqc07iiq0i1bte7vh214na8pep.apps.googleusercontent.com',
+            scope: 'https://www.googleapis.com/auth/drive.file',
+            ux_mode: 'popup',
+            callback: async (response) => {
+              try {
+                // Exchange authorization code for tokens via YOUR Edge Function
+                const sessionResult = await this.auth.supabase.auth.getSession();
+                if (!sessionResult.data || !sessionResult.data.session) {
+                  throw new Error('No active session');
                 }
+                
+                // Call YOUR deployed Edge Function
+                const tokenResponse = await fetch(`${location.origin}/functions/v1/exchange-google-code`, {
+                  method: 'POST',
+                  headers: { 
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${sessionResult.data.session.access_token}`
+                  },
+                  body: JSON.stringify({ code: response.code })
+                });
+                
+                if (!tokenResponse.ok) {
+                  const errorText = await tokenResponse.text();
+                  console.error('Token exchange failed:', errorText);
+                  throw new Error('Failed to exchange authorization code');
+                }
+                
+                const tokens = await tokenResponse.json();
+                
+                if (!tokens.refresh_token) {
+                  this.showNotification('No refresh token received. Please revoke RiverTech access in Google settings and try again.', 'warning');
+                  window.open('https://myaccount.google.com/permissions', '_blank');
+                  return;
+                }
+                
+                // Create root folder in Drive
+                const rootFolderId = await this.createRootFolderWithToken(tokens.access_token);
+                
+                // Store tokens and config in database
+                const { error } = await this.auth.supabase
+                  .from('teacher_drive_config')
+                  .upsert({
+                    teacher_id: this.userInfo.user.id,
+                    refresh_token: tokens.refresh_token,  // This is critical
+                    access_token: tokens.access_token,
+                    token_expiry: new Date(Date.now() + (tokens.expires_in || 3600) * 1000).toISOString(),
+                    root_folder_id: rootFolderId,
+                    drive_enabled: true,
+                    updated_at: new Date().toISOString()
+                  }, {
+                    onConflict: 'teacher_id'
+                  });
+                
+                if (error) throw error;
+                
+                // Update public settings table
+                await this.auth.supabase
+                  .from('teacher_upload_settings')
+                  .upsert({
+                    teacher_id: this.userInfo.user.id,
+                    drive_enabled: true,
+                    fallback_enabled: true,
+                    updated_at: new Date().toISOString()
+                  }, {
+                    onConflict: 'teacher_id'
+                  });
+                
+                this.showNotification('Google Drive connected successfully! Students can now upload files to your Drive.', 'success');
+                this.closeModal('drive-setup');
+                
+              } catch (err) {
+                console.error('Token exchange error:', err);
+                this.showNotification(`Failed to connect Drive: ${err.message}`, 'error');
               }
-            });
-          }
+            }
+          });
           
-          // Request access token
-          this.tokenClient.requestAccessToken();
+          // Request authorization code (not just token)
+          client.requestCode();
           
         } catch (err) {
           console.error(err);
-          this.showNotification(`Setup failed: ${err.message}`, 'error');
+          this.showNotification(`Drive connection failed: ${err.message}`, 'error');
         }
       }
 
