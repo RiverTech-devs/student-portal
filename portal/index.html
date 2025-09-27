@@ -1791,6 +1791,17 @@
             .eq('student_id', this.userInfo.user.id); // Extra safety check
           
           if (error) throw error;
+
+          await this.auth.supabase
+          .from('enrollment_history')
+          .insert({
+            enrollment_id: enrollmentId,
+            student_id: this.userInfo.user.id,
+            class_id: classId,
+            action: 'withdrawn',
+            performed_by: this.userInfo.user.id,
+            notes: 'Student left class voluntarily'
+          });
           
           this.showNotification(`You have left "${className}"`, 'success');
           
@@ -3705,6 +3716,18 @@
             throw new Error('No enrollment was updated. The student may have already been removed.');
           }
       
+          // ADD ENROLLMENT HISTORY HERE - INSIDE THE TRY BLOCK
+          await this.auth.supabase
+            .from('enrollment_history')
+            .insert({
+              enrollment_id: enrollmentId,
+              student_id: data[0].student_id, // from the returned data
+              class_id: classId,
+              action: 'removed',
+              performed_by: this.userInfo.user.id,
+              notes: 'Removed by teacher'
+            });
+      
           this.showNotification('Student removed from class', 'success');
           
           // Reload teacher data to update counts
@@ -4066,25 +4089,52 @@
               .update({ 
                 status: 'active',
                 updated_at: new Date().toISOString(),
-                enrolled_at: new Date().toISOString() // Reset enrollment date
+                enrolled_at: new Date().toISOString()
               })
               .eq('id', existingEnrollment.id);
       
             if (updateError) throw updateError;
             
+            // Add history tracking for rejoin
+            await this.auth.supabase
+              .from('enrollment_history')
+              .insert({
+                enrollment_id: existingEnrollment.id,
+                student_id: this.userInfo.user.id,
+                class_id: classData.id,
+                action: 'rejoined',
+                performed_by: this.userInfo.user.id,
+                notes: 'Student rejoined class'
+              });
+            
             this.showNotification(`Successfully rejoined ${classData.name}!`, 'success');
+            
           } else {
             // Create new enrollment
-            const { error: enrollError } = await this.auth.supabase
+            const { data: newEnrollmentData, error: enrollError } = await this.auth.supabase
               .from('class_enrollments')
               .insert([{
                 class_id: classData.id,
                 student_id: this.userInfo.user.id,
                 status: 'active',
                 enrolled_at: new Date().toISOString()
-              }]);
+              }])
+              .select()
+              .single();
       
             if (enrollError) throw enrollError;
+            
+            // Add history tracking for new enrollment
+            await this.auth.supabase
+              .from('enrollment_history')
+              .insert({
+                enrollment_id: newEnrollmentData.id,
+                student_id: this.userInfo.user.id,
+                class_id: classData.id,
+                action: 'enrolled',
+                performed_by: this.userInfo.user.id,
+                notes: 'Initial enrollment'
+              });
             
             this.showNotification(`Successfully joined ${classData.name}!`, 'success');
           }
