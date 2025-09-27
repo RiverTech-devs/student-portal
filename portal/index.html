@@ -1118,6 +1118,10 @@
         }
         
         console.log('Loaded', this.classes.length, 'classes for student');
+
+        if (this.currentSection === 'home') {
+          this.setupHomeContent();
+        }
       }
 
       async loadMessages() {
@@ -1192,11 +1196,48 @@
       
           this.messages = messages || [];
           console.log('Loaded', this.messageThreads.length, 'conversation threads');
-          
+
+          this.updateNavigationBadges();
         } catch (error) {
           console.error('Error in loadMessages:', error);
           this.messages = [];
           this.messageThreads = [];
+        }
+      }
+
+      updateNavigationBadges() {
+        // Calculate unread messages
+        const unreadCount = this.messageThreads?.reduce((total, thread) => total + thread.unreadCount, 0) || 0;
+        
+        // Update the Messages nav item
+        const messagesNavItem = document.querySelector('.nav-item[data-section="messaging"]');
+        if (messagesNavItem) {
+          const existingBadge = messagesNavItem.querySelector('.nav-badge');
+          
+          if (unreadCount > 0) {
+            if (existingBadge) {
+              existingBadge.textContent = unreadCount;
+            } else {
+              const badge = document.createElement('span');
+              badge.className = 'nav-badge';
+              badge.style.cssText = `
+                background: var(--danger);
+                color: white;
+                font-size: 11px;
+                padding: 2px 6px;
+                border-radius: 10px;
+                margin-left: 5px;
+                min-width: 18px;
+                display: inline-block;
+                text-align: center;
+                font-weight: bold;
+              `;
+              badge.textContent = unreadCount;
+              messagesNavItem.appendChild(badge);
+            }
+          } else if (existingBadge) {
+            existingBadge.remove();
+          }
         }
       }
 
@@ -1387,7 +1428,8 @@
                     <div class="list-item-title">Unread Messages</div>
                     <div class="list-item-meta">New notifications</div>
                   </div>
-                  <div style="font-size: 20px; font-weight: 700; color: var(--warning);">0</div>
+                  <div style="font-size: 20px; font-weight: 700; color: var(--warning);">
+                  ${this.messageThreads?.reduce((total, thread) => total + thread.unreadCount, 0) || 0}
                 </div>
               </div>
             </div>
@@ -1396,6 +1438,14 @@
       }
 
       getStudentHomeContent() {
+        // Load due this week assignments
+        this.loadDueThisWeek().then(dueAssignments => {
+          const dueThisWeekContainer = document.getElementById('due-this-week-container');
+          if (dueThisWeekContainer) {
+            dueThisWeekContainer.innerHTML = this.renderDueThisWeek(dueAssignments);
+          }
+        });
+      
         return `
           <div class="grid grid-2">
             <div class="card">
@@ -1412,7 +1462,7 @@
                 </button>
               </div>
             </div>
-
+      
             <div class="card">
               <h3>📊 Your Overview</h3>
               <div class="list">
@@ -1428,9 +1478,19 @@
                     <div class="list-item-title">Unread Messages</div>
                     <div class="list-item-meta">New notifications</div>
                   </div>
-                  <div style="font-size: 20px; font-weight: 700; color: var(--accent-2);">0</div>
+                  <div style="font-size: 20px; font-weight: 700; color: var(--warning);">
+                    ${this.messageThreads?.reduce((total, thread) => total + thread.unreadCount, 0) || 0}
+                  </div>
                 </div>
               </div>
+            </div>
+          </div>
+      
+          <!-- Due This Week Section -->
+          <div id="due-this-week-container" style="margin-top: 20px;">
+            <div class="card">
+              <div class="loading-spinner" style="margin: 20px auto;"></div>
+              <p style="text-align: center; color: var(--muted);">Loading assignments...</p>
             </div>
           </div>
         `;
@@ -1458,6 +1518,112 @@
                   <div style="font-size: 20px; font-weight: 700; color: var(--accent);">0</div>
                 </div>
               </div>
+            </div>
+          </div>
+        `;
+      }
+
+      renderDueThisWeek(assignments) {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const tomorrow = new Date(today);
+        tomorrow.setDate(today.getDate() + 1);
+        
+        if (!assignments || assignments.length === 0) {
+          return `
+            <div class="card" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+              <h3 style="color: white;">📅 Due This Week</h3>
+              <div style="text-align: center; padding: 40px 20px; color: white;">
+                <div style="font-size: 48px; margin-bottom: 10px;">🎉</div>
+                <p style="font-size: 18px; font-weight: 600;">No assignments due this week!</p>
+                <p style="opacity: 0.9;">Enjoy your free time or get ahead on future work.</p>
+              </div>
+            </div>
+          `;
+        }
+      
+        const assignmentItems = assignments.map(assignment => {
+          const dueDate = new Date(assignment.due_date);
+          const daysUntilDue = Math.ceil((dueDate - today) / (1000 * 60 * 60 * 24));
+          
+          let urgencyColor = 'var(--accent)'; // Default blue
+          let urgencyText = `${daysUntilDue} days`;
+          let urgencyIcon = '📅';
+          
+          if (daysUntilDue === 0) {
+            urgencyColor = 'var(--danger)';
+            urgencyText = 'DUE TODAY';
+            urgencyIcon = '🚨';
+          } else if (daysUntilDue === 1) {
+            urgencyColor = 'var(--warning)';
+            urgencyText = 'Due tomorrow';
+            urgencyIcon = '⏰';
+          } else if (daysUntilDue <= 3) {
+            urgencyColor = 'var(--warning)';
+            urgencyIcon = '⚠️';
+          }
+      
+          const statusBadge = assignment.submission_status === 'submitted' ? 
+            '<span style="background: var(--accent-2); color: black; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600;">✓ Submitted</span>' :
+            assignment.submission_status === 'graded' ?
+            '<span style="background: var(--accent); color: white; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600;">✓ Graded</span>' :
+            '<span style="background: var(--danger); color: white; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600;">Not Submitted</span>';
+      
+          return `
+            <div class="list-item" style="
+              border-left: 4px solid ${urgencyColor}; 
+              padding-left: 16px;
+              background: ${daysUntilDue === 0 ? 'rgba(255, 106, 106, 0.05)' : 'transparent'};
+              cursor: pointer;
+            " onclick="app.submitAssignment('${assignment.id}')">
+              <div class="list-item-content">
+                <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 4px;">
+                  <span style="font-size: 18px;">${urgencyIcon}</span>
+                  <div class="list-item-title" style="font-weight: 600;">
+                    ${assignment.title}
+                  </div>
+                  ${statusBadge}
+                </div>
+                <div class="list-item-meta">
+                  <span style="color: var(--accent);">${assignment.classes.name}</span> • 
+                  ${assignment.classes.subject} • 
+                  Due: ${dueDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
+                  <span style="color: ${urgencyColor}; font-weight: 600; margin-left: 10px;">
+                    (${urgencyText})
+                  </span>
+                </div>
+              </div>
+              <button class="btn ${assignment.submission_status === 'not_submitted' ? 'btn-primary' : 'btn-secondary'} small" 
+                      onclick="event.stopPropagation(); app.submitAssignment('${assignment.id}')">
+                ${assignment.submission_status === 'submitted' ? '✏️ Edit' : 
+                  assignment.submission_status === 'graded' ? '👁️ View' : '📝 Submit'}
+              </button>
+            </div>
+          `;
+        }).join('');
+      
+        const submittedCount = assignments.filter(a => a.submission_status !== 'not_submitted').length;
+        const totalCount = assignments.length;
+        const progressPercent = totalCount > 0 ? (submittedCount / totalCount * 100).toFixed(0) : 0;
+      
+        return `
+          <div class="card" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+              <h3 style="color: white; margin: 0;">📅 Due This Week</h3>
+              <div style="display: flex; align-items: center; gap: 15px;">
+                <div style="color: white; font-size: 14px;">
+                  Progress: ${submittedCount}/${totalCount}
+                </div>
+                <div style="background: rgba(255, 255, 255, 0.2); height: 8px; width: 100px; border-radius: 4px; overflow: hidden;">
+                  <div style="background: var(--accent-2); height: 100%; width: ${progressPercent}%; transition: width 0.3s ease;"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <div class="card" style="margin-top: -1px; border-top-left-radius: 0; border-top-right-radius: 0;">
+            <div class="list">
+              ${assignmentItems}
             </div>
           </div>
         `;
@@ -1597,19 +1763,30 @@
         `;
       }
 
-      // FIX 5: Add ability for students to leave a class
       async leaveClass(classId, enrollmentId) {
         const classData = this.classes.find(c => c.id === classId);
         const className = classData ? classData.name : 'this class';
+        
+        // Debug log
+        console.log('Leaving class:', classId, 'with enrollment:', enrollmentId);
+        
+        if (!enrollmentId) {
+          this.showNotification('Error: Enrollment ID not found. Please refresh and try again.', 'error');
+          return;
+        }
         
         if (!confirm(`Are you sure you want to leave "${className}"?\n\nYou will lose access to all assignments and discussions for this class.`)) {
           return;
         }
         
         try {
+          // Use UPDATE to set status to 'withdrawn' instead of DELETE
           const { error } = await this.auth.supabase
             .from('class_enrollments')
-            .delete()
+            .update({ 
+              status: 'withdrawn',
+              updated_at: new Date().toISOString()
+            })
             .eq('id', enrollmentId)
             .eq('student_id', this.userInfo.user.id); // Extra safety check
           
@@ -1619,6 +1796,7 @@
           
           // Reload student data and refresh view
           await this.loadStudentData();
+          this.setupHomeContent(); // Update home content too
           this.renderClasses();
           
         } catch (error) {
@@ -1891,6 +2069,7 @@
           // Reload messages and refresh the conversation
           await this.loadMessages();
           this.renderMessages();
+          this.updateNavigationBadges();
           this.openConversation(recipientId);
           
         } catch (error) {
@@ -1900,23 +2079,26 @@
       }
 
       async messageStudent(studentId) {
-        this.closeModal();
-        
-        // Pre-fill message form with student
-        this.showSection('messaging');
-        
-        // Load recipients if not loaded
-        if (!this.messageRecipients || this.messageRecipients.length === 0) {
-          await this.loadMessageRecipients();
+        try {
+          // Close the current modal
+          this.closeModal('manage-students');
+          
+          // Wait a moment for modal to close
+          await new Promise(resolve => setTimeout(resolve, 100));
+          
+          // Switch to messaging section
+          this.showSection('messaging');
+          
+          // Wait for section to load
+          await new Promise(resolve => setTimeout(resolve, 100));
+          
+          // Open direct conversation with the student
+          await this.openConversation(studentId);
+          
+        } catch (error) {
+          console.error('Error opening conversation:', error);
+          this.showNotification('Error opening conversation: ' + error.message, 'error');
         }
-        
-        // Set the recipient
-        setTimeout(() => {
-          const dropdown = document.getElementById('message-recipient');
-          if (dropdown) {
-            dropdown.value = studentId;
-          }
-        }, 100);
       }
 
       formatMessageDate(date) {
@@ -3425,29 +3607,65 @@
         }
       }
 
-      // 6. Remove Student from Class
       async removeStudent(enrollmentId, classId) {
+        // Debug logging
+        console.log('Removing student - Enrollment ID:', enrollmentId, 'Class ID:', classId);
+        
+        if (!enrollmentId) {
+          this.showNotification('Error: Enrollment ID not found', 'error');
+          return;
+        }
+        
         if (!confirm('Remove this student from the class?')) {
           return;
         }
-
+      
         try {
-          const { error } = await this.auth.supabase
+          // First verify the teacher owns this class
+          const { data: classCheck, error: classError } = await this.auth.supabase
+            .from('classes')
+            .select('id, name')
+            .eq('id', classId)
+            .eq('teacher_id', this.userInfo.user.id)
+            .single();
+          
+          if (classError || !classCheck) {
+            throw new Error('You do not have permission to manage this class');
+          }
+          
+          // Update the enrollment status to 'removed'
+          const { data, error } = await this.auth.supabase
             .from('class_enrollments')
-            .update({ status: 'removed' })
-            .eq('id', enrollmentId);
-
-          if (error) throw error;
-
+            .update({ 
+              status: 'removed',
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', enrollmentId)
+            .eq('class_id', classId) // Extra safety check
+            .select(); // Return the updated record to verify
+          
+          if (error) {
+            console.error('Remove student error:', error);
+            throw error;
+          }
+          
+          if (!data || data.length === 0) {
+            throw new Error('No enrollment was updated. The student may have already been removed.');
+          }
+      
           this.showNotification('Student removed from class', 'success');
+          
+          // Reload teacher data to update counts
+          await this.loadTeacherData();
+          this.setupHomeContent();  // Update the home content with new totals
           
           // Refresh students list
           this.closeModal('manage-students');
           setTimeout(() => this.manageStudents(classId), 100);
-
+      
         } catch (error) {
           console.error('Error removing student:', error);
-          this.showNotification('Error removing student: ' + error.message, 'error');
+          this.showNotification(`Error removing student: ${error.message}`, 'error');
         }
       }
 
@@ -4578,10 +4796,9 @@
         }
       }
 
-      // Helper function for assignment submission
       async submitAssignment(assignmentId) {
         try {
-          // Load assignment details first
+          // Load assignment details
           const { data: assignment, error: assignmentError } = await this.auth.supabase
             .from('assignments')
             .select('*')
@@ -4590,7 +4807,7 @@
       
           if (assignmentError) throw assignmentError;
       
-          // Try to check for existing submission with better error handling
+          // Check for existing submission
           let existingSubmission = null;
           try {
             const { data, error } = await this.auth.supabase
@@ -4598,14 +4815,12 @@
               .select('*')
               .eq('assignment_id', assignmentId)
               .eq('student_id', this.userInfo.user.id)
-              .maybeSingle(); // Use maybeSingle instead of single to avoid errors when no row exists
+              .maybeSingle();
       
             if (!error && data) {
               existingSubmission = data;
             }
           } catch (checkError) {
-            // If we can't check for existing submission, assume there isn't one
-            console.log('Could not check for existing submission:', checkError);
             existingSubmission = null;
           }
       
@@ -4634,13 +4849,56 @@
                 </div>
                 
                 <div class="form-group">
-                  <label for="submission-file">Attach File (Optional)</label>
-                  <input 
-                    type="file" 
-                    id="submission-file" 
-                    accept=".pdf,.doc,.docx,.txt,.jpg,.png,.jpeg"
-                  >
-                  <small style="color: var(--muted);">Max file size: 10MB. Accepted formats: PDF, DOC, DOCX, TXT, JPG, PNG</small>
+                  <label>Attach File (Optional)</label>
+                  
+                  <!-- Drag and Drop Zone -->
+                  <div id="drop-zone" style="
+                    border: 2px dashed var(--border);
+                    border-radius: 8px;
+                    padding: 30px;
+                    text-align: center;
+                    background: rgba(106, 169, 255, 0.05);
+                    cursor: pointer;
+                    transition: all 0.3s ease;
+                    position: relative;
+                  ">
+                    <div id="drop-zone-content">
+                      <div style="font-size: 48px; margin-bottom: 10px;">📁</div>
+                      <p style="margin: 10px 0; font-size: 16px; font-weight: 600;">
+                        Drag & Drop your file here
+                      </p>
+                      <p style="color: var(--muted); margin: 10px 0;">or</p>
+                      <button type="button" class="btn btn-secondary" onclick="document.getElementById('submission-file').click()">
+                        Browse Files
+                      </button>
+                      <p style="color: var(--muted); font-size: 12px; margin-top: 15px;">
+                        Max file size: 10MB<br>
+                        Accepted: PDF, DOC, DOCX, TXT, JPG, PNG
+                      </p>
+                    </div>
+                    
+                    <!-- Hidden file input -->
+                    <input 
+                      type="file" 
+                      id="submission-file" 
+                      accept=".pdf,.doc,.docx,.txt,.jpg,.png,.jpeg"
+                      style="display: none;"
+                    >
+                    
+                    <!-- File preview (hidden initially) -->
+                    <div id="file-preview" style="display: none;">
+                      <div style="display: flex; align-items: center; justify-content: center; gap: 15px;">
+                        <span style="font-size: 36px;">📄</span>
+                        <div style="text-align: left;">
+                          <div id="file-name" style="font-weight: 600;"></div>
+                          <div id="file-size" style="font-size: 12px; color: var(--muted);"></div>
+                        </div>
+                        <button type="button" class="btn danger small" onclick="app.removeFile()">
+                          ✕ Remove
+                        </button>
+                      </div>
+                    </div>
+                  </div>
                 </div>
       
                 ${existingSubmission?.file_url ? `
@@ -4660,11 +4918,137 @@
           `;
       
           this.showModal('submit-assignment', `📝 ${isEdit ? 'Edit' : 'Submit'} Assignment`, modalContent, true);
+          
+          // Set up drag and drop after modal is created
+          setTimeout(() => this.setupDragAndDrop(), 100);
       
         } catch (error) {
           console.error('Error loading assignment:', error);
           this.showNotification('Error loading assignment: ' + error.message, 'error');
         }
+      }
+      
+      // Add drag and drop functionality
+      setupDragAndDrop() {
+        const dropZone = document.getElementById('drop-zone');
+        const fileInput = document.getElementById('submission-file');
+        
+        if (!dropZone || !fileInput) return;
+      
+        // Prevent default drag behaviors
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+          dropZone.addEventListener(eventName, preventDefaults, false);
+          document.body.addEventListener(eventName, preventDefaults, false);
+        });
+      
+        function preventDefaults(e) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+      
+        // Highlight drop zone when item is dragged over it
+        ['dragenter', 'dragover'].forEach(eventName => {
+          dropZone.addEventListener(eventName, highlight, false);
+        });
+      
+        ['dragleave', 'drop'].forEach(eventName => {
+          dropZone.addEventListener(eventName, unhighlight, false);
+        });
+      
+        function highlight(e) {
+          dropZone.style.borderColor = 'var(--accent)';
+          dropZone.style.background = 'rgba(106, 169, 255, 0.1)';
+          dropZone.style.transform = 'scale(1.02)';
+        }
+      
+        function unhighlight(e) {
+          dropZone.style.borderColor = 'var(--border)';
+          dropZone.style.background = 'rgba(106, 169, 255, 0.05)';
+          dropZone.style.transform = 'scale(1)';
+        }
+      
+        // Handle dropped files
+        dropZone.addEventListener('drop', (e) => {
+          const dt = e.dataTransfer;
+          const files = dt.files;
+          
+          if (files.length > 0) {
+            handleFile(files[0]);
+          }
+        });
+      
+        // Handle file selection via browse button
+        fileInput.addEventListener('change', (e) => {
+          if (e.target.files.length > 0) {
+            handleFile(e.target.files[0]);
+          }
+        });
+      
+        // Handle file
+        const handleFile = (file) => {
+          // Validate file
+          const maxSize = 10 * 1024 * 1024; // 10MB
+          const allowedTypes = [
+            'application/pdf',
+            'application/msword',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'text/plain',
+            'image/jpeg',
+            'image/png'
+          ];
+      
+          if (file.size > maxSize) {
+            app.showNotification('File too large. Maximum size is 10MB.', 'error');
+            return;
+          }
+      
+          if (!allowedTypes.includes(file.type) && !file.name.match(/\.(pdf|doc|docx|txt|jpg|jpeg|png)$/i)) {
+            app.showNotification('Invalid file type. Please upload PDF, DOC, DOCX, TXT, JPG, or PNG files.', 'error');
+            return;
+          }
+      
+          // Update the file input
+          const dataTransfer = new DataTransfer();
+          dataTransfer.items.add(file);
+          fileInput.files = dataTransfer.files;
+      
+          // Show file preview
+          const dropZoneContent = document.getElementById('drop-zone-content');
+          const filePreview = document.getElementById('file-preview');
+          const fileName = document.getElementById('file-name');
+          const fileSize = document.getElementById('file-size');
+      
+          if (dropZoneContent) dropZoneContent.style.display = 'none';
+          if (filePreview) {
+            filePreview.style.display = 'block';
+            if (fileName) fileName.textContent = file.name;
+            if (fileSize) fileSize.textContent = formatFileSize(file.size);
+          }
+      
+          app.showNotification(`File "${file.name}" ready to upload`, 'success');
+        };
+      
+        // Format file size
+        function formatFileSize(bytes) {
+          if (bytes === 0) return '0 Bytes';
+          const k = 1024;
+          const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+          const i = Math.floor(Math.log(bytes) / Math.log(k));
+          return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+        }
+      }
+      
+      // Remove file function
+      removeFile() {
+        const fileInput = document.getElementById('submission-file');
+        const dropZoneContent = document.getElementById('drop-zone-content');
+        const filePreview = document.getElementById('file-preview');
+        
+        if (fileInput) fileInput.value = '';
+        if (dropZoneContent) dropZoneContent.style.display = 'block';
+        if (filePreview) filePreview.style.display = 'none';
+        
+        this.showNotification('File removed', 'info');
       }
 
       // Helper function for viewing submission
@@ -5196,6 +5580,62 @@
         } catch (error) {
           console.error('Error loading submissions:', error);
           this.showNotification('Error loading submissions: ' + error.message, 'error');
+        }
+      }
+
+      async loadDueThisWeek() {
+        try {
+          // Get current date and end of week
+          const today = new Date();
+          today.setHours(0, 0, 0, 0);
+          
+          const endOfWeek = new Date(today);
+          endOfWeek.setDate(today.getDate() + (7 - today.getDay())); // End of current week (Saturday)
+          endOfWeek.setHours(23, 59, 59, 999);
+          
+          // Get all assignments from student's classes
+          const classIds = this.classes.map(c => c.id);
+          if (classIds.length === 0) return [];
+          
+          const { data: assignments, error } = await this.auth.supabase
+            .from('assignments')
+            .select(`
+              *,
+              classes!inner(name, subject)
+            `)
+            .in('class_id', classIds)
+            .eq('is_published', true)
+            .gte('due_date', today.toISOString())
+            .lte('due_date', endOfWeek.toISOString())
+            .order('due_date', { ascending: true });
+      
+          if (error) throw error;
+      
+          // Get student's submissions for these assignments
+          if (assignments && assignments.length > 0) {
+            const assignmentIds = assignments.map(a => a.id);
+            const { data: submissions } = await this.auth.supabase
+              .from('assignment_submissions')
+              .select('assignment_id, status')
+              .in('assignment_id', assignmentIds)
+              .eq('student_id', this.userInfo.user.id);
+      
+            // Add submission status to assignments
+            const submissionMap = {};
+            submissions?.forEach(s => {
+              submissionMap[s.assignment_id] = s.status;
+            });
+      
+            assignments.forEach(assignment => {
+              assignment.submission_status = submissionMap[assignment.id] || 'not_submitted';
+            });
+          }
+      
+          return assignments || [];
+          
+        } catch (error) {
+          console.error('Error loading due this week:', error);
+          return [];
         }
       }
 
