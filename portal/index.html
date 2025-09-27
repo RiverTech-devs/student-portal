@@ -1910,40 +1910,71 @@
       }
 
       async openConversation(otherUserId) {
-        // Get the conversation thread
-        const thread = this.messageThreads?.find(t => t.userId === otherUserId);
-        if (!thread) {
-          // New conversation - get user profile
-          const { data: profile } = await this.auth.supabase
-            .from('user_profiles')
-            .select('id, first_name, last_name, email, user_type')
-            .eq('id', otherUserId)
-            .single();
-          
-          if (profile) {
-            this.showConversationModal({
-              userId: otherUserId,
-              profile: profile,
-              messages: [],
-              unreadCount: 0
-            });
+        try {
+          // Get the conversation thread
+          const thread = this.messageThreads?.find(t => t.userId === otherUserId);
+          if (!thread) {
+            // New conversation - get user profile
+            const { data: profile } = await this.auth.supabase
+              .from('user_profiles')
+              .select('id, first_name, last_name, email, user_type')
+              .eq('id', otherUserId)
+              .single();
+            
+            if (profile) {
+              this.showConversationModal({
+                userId: otherUserId,
+                profile: profile,
+                messages: [],
+                unreadCount: 0
+              });
+            }
+            return;
           }
-          return;
-        }
-        
-        // Mark messages as read
-        if (thread.unreadCount > 0) {
-          const unreadIds = thread.messages
-            .filter(m => m.recipient_id === this.userInfo.user.id && !m.is_read)
-            .map(m => m.id);
           
-          await this.auth.supabase
-            .from('messages')
-            .update({ is_read: true })
-            .in('id', unreadIds);
+          // Mark messages as read FIRST before showing modal
+          if (thread.unreadCount > 0) {
+            const unreadIds = thread.messages
+              .filter(m => m.recipient_id === this.userInfo.user.id && !m.is_read)
+              .map(m => m.id);
+            
+            if (unreadIds.length > 0) {
+              const { error } = await this.auth.supabase
+                .from('messages')
+                .update({ is_read: true })
+                .in('id', unreadIds);
+              
+              if (!error) {
+                // Update the thread's unread count locally
+                thread.unreadCount = 0;
+                
+                // Update the navigation badges immediately
+                this.updateNavigationBadges();
+                
+                // Update home content if on home page
+                if (this.currentSection === 'home') {
+                  const unreadElement = document.querySelector('[data-unread-count]');
+                  if (unreadElement) {
+                    const totalUnread = this.messageThreads?.reduce((total, t) => total + t.unreadCount, 0) || 0;
+                    unreadElement.textContent = totalUnread;
+                  }
+                }
+                
+                // Update the messages list if visible
+                const messagesList = document.getElementById('messages-list');
+                if (messagesList) {
+                  this.renderMessages();
+                }
+              }
+            }
+          }
+          
+          this.showConversationModal(thread);
+          
+        } catch (error) {
+          console.error('Error opening conversation:', error);
+          this.showNotification('Error opening conversation: ' + error.message, 'error');
         }
-        
-        this.showConversationModal(thread);
       }
 
       showConversationModal(thread) {
