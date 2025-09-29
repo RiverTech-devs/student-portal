@@ -5931,8 +5931,11 @@
                               </button>
                             ` : `
                               <span style="color: var(--muted); font-size: 12px;">No submission</span>
+                              <button class="btn btn-primary small" onclick="app.gradeNonSubmitted('${student.id}', '${assignmentId}')">
+                                📝 Grade
+                              </button>
                               <button class="btn btn-secondary small" onclick="app.sendReminderToStudent('${student.id}', '${assignmentId}')">
-                                📧 Send Reminder
+                                📧 Remind
                               </button>
                             `}
                           </div>
@@ -5964,6 +5967,163 @@
         }
       }
 
+      async gradeNonSubmitted(studentId, assignmentId) {
+        try {
+          // Get student and assignment info
+          const { data: student } = await this.auth.supabase
+            .from('user_profiles')
+            .select('first_name, last_name')
+            .eq('id', studentId)
+            .single();
+            
+          const { data: assignment } = await this.auth.supabase
+            .from('assignments')
+            .select('title, max_points')
+            .eq('id', assignmentId)
+            .single();
+          
+          const modalContent = `
+            <div>
+              <h3>Grade Missing Assignment</h3>
+              <p style="margin: 15px 0;">
+                Grade for <strong>${student?.first_name} ${student?.last_name}</strong><br>
+                Assignment: <strong>${assignment?.title}</strong>
+              </p>
+              
+              <div class="card" style="background: var(--danger); color: white; padding: 10px; margin: 15px 0;">
+                <strong>⚠️ No submission received</strong>
+                <p style="margin-top: 5px;">You can assign a grade for this missing assignment.</p>
+              </div>
+              
+              <!-- Excuse Option -->
+              <div class="card" style="background: var(--card); margin: 20px 0;">
+                <label style="display: flex; align-items: center; gap: 10px;">
+                  <input type="checkbox" id="excuse-assignment" onchange="app.toggleExcuseOptions()">
+                  <strong>Excuse this assignment</strong>
+                </label>
+                <div id="excuse-options" style="display: none; margin-top: 10px;">
+                  <div class="form-group">
+                    <label for="excuse-reason">Reason for excusing (optional)</label>
+                    <input type="text" id="excuse-reason" placeholder="e.g., Absent due to illness">
+                  </div>
+                  <p style="color: var(--muted); font-size: 12px;">
+                    Excused assignments won't count towards the student's grade
+                  </p>
+                </div>
+              </div>
+              
+              <div id="grading-section">
+                <form id="grade-form">
+                  <div class="form-group">
+                    <label for="grade-score">Points Earned (Max: ${assignment?.max_points || 100})</label>
+                    <input 
+                      type="number" 
+                      id="grade-score" 
+                      min="0" 
+                      max="${assignment?.max_points || 100}" 
+                      value="0"
+                      placeholder="Enter points"
+                    >
+                  </div>
+                  
+                  <div class="form-group">
+                    <label for="grade-letter">Letter Grade</label>
+                    <select id="grade-letter">
+                      <option value="">Select Grade</option>
+                      <option value="F" selected>F</option>
+                      <option value="D">D</option>
+                      <option value="C-">C-</option>
+                      <option value="C">C</option>
+                      <option value="C+">C+</option>
+                      <option value="B-">B-</option>
+                      <option value="B">B</option>
+                      <option value="B+">B+</option>
+                      <option value="A-">A-</option>
+                      <option value="A">A</option>
+                      <option value="A+">A+</option>
+                    </select>
+                  </div>
+                  
+                  <div class="form-group">
+                    <label for="grade-feedback">Feedback</label>
+                    <textarea 
+                      id="grade-feedback" 
+                      rows="4" 
+                      placeholder="Provide feedback about the missing assignment..."
+                    >Assignment not submitted</textarea>
+                  </div>
+                </form>
+              </div>
+            </div>
+            
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal('grade-non-submitted')">Cancel</button>
+              <button class="btn btn-primary" onclick="app.submitGradeNonSubmitted('${studentId}', '${assignmentId}')">
+                Save Grade
+              </button>
+            </div>
+          `;
+          
+          this.showModal('grade-non-submitted', 'Grade Missing Assignment', modalContent, true);
+          
+        } catch (error) {
+          console.error('Error:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+        }
+      }
+      
+      async submitGradeNonSubmitted(studentId, assignmentId) {
+        try {
+          const isExcused = document.getElementById('excuse-assignment').checked;
+          
+          let submissionData = {
+            assignment_id: assignmentId,
+            student_id: studentId,
+            submitted_at: new Date().toISOString()
+          };
+          
+          if (isExcused) {
+            submissionData = {
+              ...submissionData,
+              content: 'Assignment excused by teacher',
+              status: 'excused',
+              excused_by: this.userInfo.user.id,
+              excused_at: new Date().toISOString(),
+              excuse_reason: document.getElementById('excuse-reason').value || null,
+              grade: null,
+              points_earned: null
+            };
+          } else {
+            submissionData = {
+              ...submissionData,
+              content: 'No submission - graded by teacher',
+              status: 'graded',
+              points_earned: parseInt(document.getElementById('grade-score').value) || 0,
+              grade: document.getElementById('grade-letter').value || 'F',
+              feedback: document.getElementById('grade-feedback').value || 'Assignment not submitted',
+              graded_at: new Date().toISOString()
+            };
+          }
+          
+          const { error } = await this.auth.supabase
+            .from('assignment_submissions')
+            .insert(submissionData);
+          
+          if (error) throw error;
+          
+          this.showNotification(isExcused ? 'Assignment excused' : 'Grade saved successfully', 'success');
+          this.closeModal('grade-non-submitted');
+          
+          // Refresh submissions view
+          this.closeModal('view-submissions');
+          setTimeout(() => this.viewSubmissions(assignmentId), 100);
+          
+        } catch (error) {
+          console.error('Error:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+        }
+      }
+      
       async loadDueThisWeek() {
         try {
           // Get current date and end of week
@@ -6286,6 +6446,88 @@
         } catch (error) {
           console.error('Error loading submission:', error);
           this.showNotification('Error loading submission: ' + error.message, 'error');
+        }
+      }
+
+      async excuseStudent(studentId, assignmentId) {
+        try {
+          // Get student and assignment info
+          const { data: student } = await this.auth.supabase
+            .from('user_profiles')
+            .select('first_name, last_name')
+            .eq('id', studentId)
+            .single();
+            
+          const { data: assignment } = await this.auth.supabase
+            .from('assignments')
+            .select('title')
+            .eq('id', assignmentId)
+            .single();
+          
+          const modalContent = `
+            <div>
+              <h3>Excuse Assignment</h3>
+              <p style="margin: 15px 0;">
+                Excuse <strong>${student?.first_name} ${student?.last_name}</strong> from:<br>
+                <strong>${assignment?.title}</strong>
+              </p>
+              
+              <div class="form-group">
+                <label for="excuse-reason">Reason for excusing (optional)</label>
+                <input type="text" id="excuse-reason" placeholder="e.g., Absent due to illness">
+              </div>
+              
+              <div class="card" style="background: var(--warning); color: black; padding: 10px; margin: 15px 0;">
+                <p>This will mark the assignment as excused and it won't count toward the student's grade.</p>
+              </div>
+            </div>
+            
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal('excuse-student')">Cancel</button>
+              <button class="btn btn-primary" onclick="app.submitExcuseStudent('${studentId}', '${assignmentId}')">
+                Excuse Assignment
+              </button>
+            </div>
+          `;
+          
+          this.showModal('excuse-student', 'Excuse Assignment', modalContent, true);
+          
+        } catch (error) {
+          console.error('Error:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+        }
+      }
+      
+      async submitExcuseStudent(studentId, assignmentId) {
+        try {
+          const excuseReason = document.getElementById('excuse-reason').value;
+          
+          // Create a submission record with excused status
+          const { error } = await this.auth.supabase
+            .from('assignment_submissions')
+            .insert({
+              assignment_id: assignmentId,
+              student_id: studentId,
+              content: 'Assignment excused by teacher',
+              status: 'excused',
+              excused_by: this.userInfo.user.id,
+              excused_at: new Date().toISOString(),
+              excuse_reason: excuseReason || null,
+              submitted_at: new Date().toISOString()
+            });
+          
+          if (error) throw error;
+          
+          this.showNotification('Assignment excused successfully', 'success');
+          this.closeModal('excuse-student');
+          
+          // Refresh submissions view
+          this.closeModal('view-submissions');
+          setTimeout(() => this.viewSubmissions(assignmentId), 100);
+          
+        } catch (error) {
+          console.error('Error excusing student:', error);
+          this.showNotification('Error: ' + error.message, 'error');
         }
       }
 
