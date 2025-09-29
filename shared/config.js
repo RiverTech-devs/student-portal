@@ -116,42 +116,28 @@ class PortalAuth {
             const { data: { user } } = await this.supabase.auth.getUser();
             if (!user) return null;
     
-            // Try to get the profile - use maybeSingle() to avoid errors
-            const { data: profile, error } = await this.supabase
+            // Try to get the profile - don't use .single() here
+            const { data: profiles, error } = await this.supabase
                 .from('user_profiles')
                 .select('*')
-                .eq('id', user.id)
-                .maybeSingle();
+                .eq('id', user.id);
     
-            // If there's a real error (not just missing record), log it
-            if (error && error.code !== 'PGRST116') {
+            if (error) {
                 console.error('Profile fetch error:', error);
+                return null;
             }
     
-            // If profile exists, return it
-            if (profile) {
-                return profile;
+            // Check if profile exists in the array
+            if (profiles && profiles.length > 0) {
+                return profiles[0];
             }
     
-            // Only try to create if truly missing
-            console.log('No profile found, attempting to create for:', user.email);
+            // Profile doesn't exist, create one
+            console.log('No profile found, creating for:', user.email);
             
-            // First check if it really doesn't exist (handle race conditions)
-            const { data: doubleCheck } = await this.supabase
-                .from('user_profiles')
-                .select('*')
-                .eq('id', user.id)
-                .maybeSingle();
-                
-            if (doubleCheck) {
-                console.log('Profile found on double-check');
-                return doubleCheck;
-            }
-    
-            // Now safe to create
             const { data: newProfile, error: createError } = await this.supabase
                 .from('user_profiles')
-                .upsert({  // Use upsert instead of insert to handle edge cases
+                .upsert({
                     id: user.id,
                     email: user.email,
                     username: user.email.split('@')[0],
@@ -160,25 +146,18 @@ class PortalAuth {
                     user_type: 'student',
                     created_at: new Date().toISOString()
                 }, {
-                    onConflict: 'id'
+                    onConflict: 'id',
+                    ignoreDuplicates: false
                 })
-                .select()
-                .single();
+                .select();
     
             if (createError) {
                 console.error('Failed to create/update profile:', createError);
-                
-                // Last attempt - just try to fetch again
-                const { data: finalAttempt } = await this.supabase
-                    .from('user_profiles')
-                    .select('*')
-                    .eq('id', user.id)
-                    .maybeSingle();
-                    
-                return finalAttempt;
+                return null;
             }
     
-            return newProfile;
+            return newProfile?.[0] || null;
+    
         } catch (error) {
             console.error('Profile load error:', error);
             return null;
@@ -573,6 +552,7 @@ if (document.readyState === 'loading') {
     PortalUI.applyTheme(window.portalAuth.config.theme);
 
 }
+
 
 
 
