@@ -116,44 +116,69 @@ class PortalAuth {
             const { data: { user } } = await this.supabase.auth.getUser();
             if (!user) return null;
     
-            // Try to get the profile
+            // Try to get the profile - use maybeSingle() to avoid errors
             const { data: profile, error } = await this.supabase
                 .from('user_profiles')
                 .select('*')
                 .eq('id', user.id)
-                .maybeSingle();  // Use maybeSingle() instead of single()
+                .maybeSingle();
     
+            // If there's a real error (not just missing record), log it
             if (error && error.code !== 'PGRST116') {
-                console.error('Profile load error:', error);
-                return null;
+                console.error('Profile fetch error:', error);
             }
     
-            // If no profile exists, create a basic one
-            if (!profile) {
-                console.log('Creating missing profile for user:', user.email);
+            // If profile exists, return it
+            if (profile) {
+                return profile;
+            }
+    
+            // Only try to create if truly missing
+            console.log('No profile found, attempting to create for:', user.email);
+            
+            // First check if it really doesn't exist (handle race conditions)
+            const { data: doubleCheck } = await this.supabase
+                .from('user_profiles')
+                .select('*')
+                .eq('id', user.id)
+                .maybeSingle();
                 
-                const { data: newProfile, error: createError } = await this.supabase
-                    .from('user_profiles')
-                    .insert({
-                        id: user.id,
-                        email: user.email,
-                        username: user.email.split('@')[0],
-                        first_name: 'User',
-                        last_name: '',
-                        user_type: 'student'  // Default type
-                    })
-                    .select()
-                    .single();
-    
-                if (createError) {
-                    console.error('Failed to create profile:', createError);
-                    return null;
-                }
-    
-                return newProfile;
+            if (doubleCheck) {
+                console.log('Profile found on double-check');
+                return doubleCheck;
             }
     
-            return profile;
+            // Now safe to create
+            const { data: newProfile, error: createError } = await this.supabase
+                .from('user_profiles')
+                .upsert({  // Use upsert instead of insert to handle edge cases
+                    id: user.id,
+                    email: user.email,
+                    username: user.email.split('@')[0],
+                    first_name: 'User',
+                    last_name: '',
+                    user_type: 'student',
+                    created_at: new Date().toISOString()
+                }, {
+                    onConflict: 'id'
+                })
+                .select()
+                .single();
+    
+            if (createError) {
+                console.error('Failed to create/update profile:', createError);
+                
+                // Last attempt - just try to fetch again
+                const { data: finalAttempt } = await this.supabase
+                    .from('user_profiles')
+                    .select('*')
+                    .eq('id', user.id)
+                    .maybeSingle();
+                    
+                return finalAttempt;
+            }
+    
+            return newProfile;
         } catch (error) {
             console.error('Profile load error:', error);
             return null;
@@ -548,5 +573,6 @@ if (document.readyState === 'loading') {
     PortalUI.applyTheme(window.portalAuth.config.theme);
 
 }
+
 
 
