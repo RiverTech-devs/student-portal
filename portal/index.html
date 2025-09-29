@@ -643,6 +643,8 @@
         this.messageRecipients = [];
         this.messageThreads = [];
         this.modalStack = [];
+        this.isProcessing = false; // ADD THIS
+        this.modalTimeouts = {}; // ADD THIS
         this.sessionCheckInterval = null;
         
         this.init();
@@ -682,6 +684,38 @@
         
         this.initialized = true;
         console.log('✅ Classes Portal initialized');
+      }
+
+      // Add processing guard wrapper to prevent overlapping operations
+      async safeExecute(operation, operationName = 'Operation') {
+        if (this.isProcessing) {
+          console.log(`Already processing, skipping ${operationName}`);
+          return;
+        }
+        
+        this.isProcessing = true;
+        
+        try {
+          await operation();
+        } catch (error) {
+          console.error(`${operationName} error:`, error);
+          this.showNotification(`Error: ${error.message}`, 'error');
+        } finally {
+          this.isProcessing = false;
+        }
+      }
+      
+      // Add debounce utility
+      debounce(func, wait) {
+        let timeout;
+        return function executedFunction(...args) {
+          const later = () => {
+            clearTimeout(timeout);
+            func(...args);
+          };
+          clearTimeout(timeout);
+          timeout = setTimeout(later, wait);
+        };
       }
 
       // FIX 2: Session monitoring to prevent timeout issues
@@ -2459,12 +2493,22 @@
           
           // Remove from stack
           this.modalStack = this.modalStack.filter(m => m.id !== modalId);
+
+          if (this.modalTimeouts && this.modalTimeouts[modalId]) {
+            clearTimeout(this.modalTimeouts[modalId]);
+            delete this.modalTimeouts[modalId];
+          }
         } else {
           // Close topmost modal
           if (this.modalStack.length > 0) {
             const topModal = this.modalStack.pop();
             const modal = document.getElementById(`modal-${topModal.id}`);
             if (modal) modal.remove();
+
+            if (this.modalTimeouts && this.modalTimeouts[topModal.id]) {
+              clearTimeout(this.modalTimeouts[topModal.id]);
+              delete this.modalTimeouts[topModal.id];
+            }
           }
         }
       }
@@ -2855,6 +2899,13 @@
           this.showNotification('Please enter your submission content', 'error');
           return;
         }
+
+        if (this.isProcessing) {
+          console.log('Already processing submission, preventing double submit');
+          return;
+        }
+        
+        this.isProcessing = true; 
       
         try {
           if (window.portalLoading) {
@@ -2964,6 +3015,7 @@
           console.error('Submission error:', err);
           this.showNotification(err.message, 'error');
         } finally {
+          this.isProcessing = false;
           if (window.portalLoading) {
             window.portalLoading.hide('submit-assignment');
           }
