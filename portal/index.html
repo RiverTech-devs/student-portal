@@ -1114,9 +1114,10 @@
           cls.enrollment_id = enrollment ? enrollment.id : null;
         });
         
-        // Load assignments for these classes
+        // Load assignments for these classes with selective assignment support
         if (this.classes.length > 0) {
-          const { data: assignments, error: assignmentError } = await this.auth.supabase
+          // First get all assignments for the classes
+          const { data: allAssignments, error: assignmentError } = await this.auth.supabase
             .from('assignments')
             .select('*')
             .in('class_id', classIds)
@@ -1125,9 +1126,31 @@
       
           if (assignmentError) {
             console.error('Error loading assignments:', assignmentError);
-          } else {
+          } else if (allAssignments && allAssignments.length > 0) {
+            // Filter to only assignments assigned to this student
+            let assignments = [];
+            
+            for (const assignment of allAssignments) {
+              if (assignment.assigned_to_all) {
+                // Assignment is for all students
+                assignments.push(assignment);
+              } else {
+                // Check if student is specifically assigned
+                const { data: studentAssignment } = await this.auth.supabase
+                  .from('assignment_students')
+                  .select('id')
+                  .eq('assignment_id', assignment.id)
+                  .eq('student_id', this.userInfo.user.id)
+                  .maybeSingle();
+                  
+                if (studentAssignment) {
+                  assignments.push(assignment);
+                }
+              }
+            }
+            
             // Load student's submissions for these assignments
-            const assignmentIds = assignments?.map(a => a.id) || [];
+            const assignmentIds = assignments.map(a => a.id);
             if (assignmentIds.length > 0) {
               const { data: submissions, error: submissionError } = await this.auth.supabase
                 .from('assignment_submissions')
@@ -1152,7 +1175,8 @@
         }
         
         console.log('Loaded', this.classes.length, 'classes for student');
-
+      
+        // Refresh home content if on home page
         if (this.currentSection === 'home') {
           this.setupHomeContent();
         }
@@ -5351,9 +5375,25 @@
         }
       }
 
-      // Helper function for creating assignment
       async createAssignment(classId) {
         const classData = this.classes.find(c => c.id === classId);
+        
+        // Load students in this class
+        const { data: enrollments } = await this.auth.supabase
+          .from('class_enrollments')
+          .select('student_id')
+          .eq('class_id', classId)
+          .eq('status', 'active');
+          
+        let studentProfiles = [];
+        if (enrollments && enrollments.length > 0) {
+          const { data: profiles } = await this.auth.supabase
+            .from('user_profiles')
+            .select('id, first_name, last_name, grade_level')
+            .in('id', enrollments.map(e => e.student_id))
+            .order('last_name');
+          studentProfiles = profiles || [];
+        }
         
         const modalContent = `
           <form id="create-assignment-form">
@@ -5383,6 +5423,45 @@
                 Publish immediately (visible to students)
               </label>
             </div>
+      
+            <!-- Student Selection Section -->
+            <div class="card" style="background: var(--card); margin: 20px 0; padding: 15px;">
+              <div class="form-group" style="margin: 0;">
+                <label style="display: flex; align-items: center; gap: 10px; font-weight: 600;">
+                  <input type="checkbox" id="assign-to-specific" onchange="app.toggleStudentSelection()">
+                  Assign to specific students only
+                </label>
+                
+                <div id="student-selection-section" style="display: none; margin-top: 15px;">
+                  <p style="color: var(--muted); font-size: 12px; margin-bottom: 10px;">
+                    Select which students should receive this assignment:
+                  </p>
+                  
+                  <div style="margin-bottom: 10px;">
+                    <button type="button" class="btn btn-secondary small" onclick="app.selectAllStudents(true)">
+                      Select All
+                    </button>
+                    <button type="button" class="btn btn-secondary small" onclick="app.selectAllStudents(false)">
+                      Deselect All
+                    </button>
+                  </div>
+                  
+                  <div style="max-height: 200px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; padding: 10px;">
+                    ${studentProfiles.length > 0 ? studentProfiles.map(student => `
+                      <label style="display: flex; align-items: center; gap: 8px; padding: 5px 0; cursor: pointer;">
+                        <input type="checkbox" class="student-checkbox" value="${student.id}" checked>
+                        <span>${student.first_name} ${student.last_name}</span>
+                        ${student.grade_level ? `<span style="color: var(--muted); font-size: 12px;">(Grade ${student.grade_level})</span>` : ''}
+                      </label>
+                    `).join('') : '<p style="color: var(--muted);">No students enrolled in this class</p>'}
+                  </div>
+                  
+                  <p style="color: var(--warning); font-size: 12px; margin-top: 10px;">
+                    Only selected students will see this assignment and be able to submit it.
+                  </p>
+                </div>
+              </div>
+            </div>
           </form>
       
           <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
@@ -5393,40 +5472,92 @@
       
         this.showModal('create-assignment', '➕ Create Assignment', modalContent, true);
       }
-      
-      async submitCreateAssignment(classId) {
-        const assignmentData = {
-          class_id: classId,
-          title: document.getElementById('assignment-title').value,
-          description: document.getElementById('assignment-description').value || null,
-          due_date: document.getElementById('assignment-due-date').value,
-          max_points: parseInt(document.getElementById('assignment-max-points').value) || 100,
-          is_published: document.getElementById('assignment-is-published').checked
-        };
-      
-        if (!assignmentData.title || !assignmentData.due_date) {
-          this.showNotification('Please fill in required fields', 'error');
-          return;
-        }
-      
-        try {
-          const { error } = await this.auth.supabase
-            .from('assignments')
-            .insert([assignmentData]);
-      
-          if (error) throw error;
-      
-          this.showNotification('Assignment created successfully!', 'success');
-          this.closeModal('create-assignment');
-          
-          // Refresh assignments view
-          setTimeout(() => this.viewAssignments(classId), 100);
-      
-        } catch (error) {
-          console.error('Error creating assignment:', error);
-          this.showNotification('Error creating assignment: ' + error.message, 'error');
+
+      toggleStudentSelection() {
+        const checkbox = document.getElementById('assign-to-specific');
+        const section = document.getElementById('student-selection-section');
+        
+        if (checkbox.checked) {
+          section.style.display = 'block';
+        } else {
+          section.style.display = 'none';
         }
       }
+      
+      selectAllStudents(select) {
+        const checkboxes = document.querySelectorAll('.student-checkbox');
+        checkboxes.forEach(cb => {
+          cb.checked = select;
+        });
+      }
+      
+      async submitCreateAssignment(classId) {
+      const assignmentData = {
+        class_id: classId,
+        title: document.getElementById('assignment-title').value,
+        description: document.getElementById('assignment-description').value || null,
+        due_date: document.getElementById('assignment-due-date').value,
+        max_points: parseInt(document.getElementById('assignment-max-points').value) || 100,
+        is_published: document.getElementById('assignment-is-published').checked,
+        assigned_to_all: !document.getElementById('assign-to-specific').checked
+      };
+    
+      if (!assignmentData.title || !assignmentData.due_date) {
+        this.showNotification('Please fill in required fields', 'error');
+        return;
+      }
+    
+      try {
+        // Create the assignment
+        const { data: newAssignment, error: assignmentError } = await this.auth.supabase
+          .from('assignments')
+          .insert([assignmentData])
+          .select()
+          .single();
+    
+        if (assignmentError) throw assignmentError;
+    
+        // If assigning to specific students, create assignment_students records
+        if (!assignmentData.assigned_to_all) {
+          const selectedStudents = Array.from(document.querySelectorAll('.student-checkbox:checked'))
+            .map(cb => cb.value);
+          
+          if (selectedStudents.length === 0) {
+            // If no students selected, delete the assignment and show error
+            await this.auth.supabase
+              .from('assignments')
+              .delete()
+              .eq('id', newAssignment.id);
+              
+            throw new Error('Please select at least one student for this assignment');
+          }
+    
+          const assignmentStudents = selectedStudents.map(studentId => ({
+            assignment_id: newAssignment.id,
+            student_id: studentId
+          }));
+    
+          const { error: studentError } = await this.auth.supabase
+            .from('assignment_students')
+            .insert(assignmentStudents);
+    
+          if (studentError) throw studentError;
+          
+          this.showNotification(`Assignment created for ${selectedStudents.length} student(s)!`, 'success');
+        } else {
+          this.showNotification('Assignment created for all students!', 'success');
+        }
+    
+        this.closeModal('create-assignment');
+        
+        // Refresh assignments view
+        setTimeout(() => this.viewAssignments(classId), 100);
+    
+      } catch (error) {
+        console.error('Error creating assignment:', error);
+        this.showNotification('Error creating assignment: ' + error.message, 'error');
+      }
+    }
 
       // Helper function for editing assignment  
       async editAssignment(assignmentId) {
@@ -5596,7 +5727,6 @@
         }
       }
 
-      // Helper function for viewing submissions
       async viewSubmissions(assignmentId) {
         try {
           // Load assignment details
@@ -5606,12 +5736,40 @@
             .eq('id', assignmentId)
             .single();
       
-          // Get ALL students enrolled in this class
-          const { data: enrollments } = await this.auth.supabase
-            .from('class_enrollments')
-            .select('student_id')
-            .eq('class_id', assignment.class_id)
-            .eq('status', 'active');
+          // Check if this is a selective assignment
+          const isSelectiveAssignment = !assignment.assigned_to_all;
+          let assignedStudentIds = [];
+      
+          if (isSelectiveAssignment) {
+            const { data: assignedStudents } = await this.auth.supabase
+              .from('assignment_students')
+              .select('student_id')
+              .eq('assignment_id', assignmentId);
+            
+            assignedStudentIds = assignedStudents?.map(as => as.student_id) || [];
+          }
+      
+          // Get enrollments based on assignment type
+          let enrollments;
+          if (isSelectiveAssignment) {
+            // For selective assignments, only get enrolled students who are assigned
+            const { data: allEnrollments } = await this.auth.supabase
+              .from('class_enrollments')
+              .select('student_id')
+              .eq('class_id', assignment.class_id)
+              .eq('status', 'active');
+            
+            enrollments = allEnrollments?.filter(e => assignedStudentIds.includes(e.student_id)) || [];
+          } else {
+            // For regular assignments, get all enrolled students
+            const { data: allEnrollments } = await this.auth.supabase
+              .from('class_enrollments')
+              .select('student_id')
+              .eq('class_id', assignment.class_id)
+              .eq('status', 'active');
+            
+            enrollments = allEnrollments || [];
+          }
       
           if (!enrollments || enrollments.length === 0) {
             const modalContent = `
@@ -5619,7 +5777,9 @@
                 <h3>${assignment?.title || 'Assignment'}</h3>
                 <p style="color: var(--muted);">Due: ${new Date(assignment?.due_date).toLocaleDateString()}</p>
                 <div class="empty-state">
-                  <p style="color: var(--muted);">No students enrolled in this class</p>
+                  <p style="color: var(--muted);">
+                    ${isSelectiveAssignment ? 'No students assigned to this assignment' : 'No students enrolled in this class'}
+                  </p>
                 </div>
               </div>
               <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
@@ -5654,6 +5814,7 @@
           const totalStudents = students?.length || 0;
           const submittedCount = submissions?.length || 0;
           const gradedCount = submissions?.filter(s => s.status === 'graded').length || 0;
+          const excusedCount = submissions?.filter(s => s.status === 'excused').length || 0;
           const submissionRate = totalStudents > 0 ? ((submittedCount / totalStudents) * 100).toFixed(0) : 0;
       
           const modalContent = `
@@ -5661,9 +5822,16 @@
               <h3>${assignment?.title || 'Assignment'}</h3>
               <p style="color: var(--muted);">Due: ${new Date(assignment?.due_date).toLocaleDateString()} • Max Points: ${assignment?.max_points || 100}</p>
               
+              ${isSelectiveAssignment ? `
+                <div class="card" style="background: var(--warning); color: black; padding: 10px; margin: 15px 0;">
+                  <strong>📌 Selective Assignment</strong>
+                  <p style="margin-top: 5px;">Only assigned to ${assignedStudentIds.length} specific student(s)</p>
+                </div>
+              ` : ''}
+              
               <!-- Statistics -->
               <div class="card" style="background: var(--card); padding: 15px; margin: 20px 0;">
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px;">
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 15px;">
                   <div>
                     <div style="font-size: 24px; font-weight: bold; color: var(--accent);">${totalStudents}</div>
                     <div style="font-size: 12px; color: var(--muted);">Total Students</div>
@@ -5676,6 +5844,12 @@
                     <div style="font-size: 24px; font-weight: bold; color: var(--warning);">${gradedCount}</div>
                     <div style="font-size: 12px; color: var(--muted);">Graded</div>
                   </div>
+                  ${excusedCount > 0 ? `
+                    <div>
+                      <div style="font-size: 24px; font-weight: bold; color: var(--muted);">${excusedCount}</div>
+                      <div style="font-size: 12px; color: var(--muted);">Excused</div>
+                    </div>
+                  ` : ''}
                   <div>
                     <div style="font-size: 24px; font-weight: bold; color: var(--link);">${submissionRate}%</div>
                     <div style="font-size: 12px; color: var(--muted);">Submission Rate</div>
@@ -5697,10 +5871,16 @@
                   <input type="radio" name="submission-filter" value="not-submitted" onchange="app.filterSubmissionsList('not-submitted', '${assignmentId}')">
                   Not Submitted (${totalStudents - submittedCount})
                 </label>
-                <label>
+                <label style="margin-right: 15px;">
                   <input type="radio" name="submission-filter" value="graded" onchange="app.filterSubmissionsList('graded', '${assignmentId}')">
                   Graded (${gradedCount})
                 </label>
+                ${excusedCount > 0 ? `
+                  <label>
+                    <input type="radio" name="submission-filter" value="excused" onchange="app.filterSubmissionsList('excused', '${assignmentId}')">
+                    Excused (${excusedCount})
+                  </label>
+                ` : ''}
               </div>
       
               <!-- Students List -->
@@ -5711,11 +5891,17 @@
                       const submission = submissionMap[student.id];
                       const hasSubmitted = !!submission;
                       const isGraded = submission?.status === 'graded';
+                      const isExcused = submission?.status === 'excused';
+                      
+                      let statusColor = 'var(--danger)';
+                      if (isExcused) statusColor = 'var(--muted)';
+                      else if (isGraded) statusColor = 'var(--accent-2)';
+                      else if (hasSubmitted) statusColor = 'var(--accent)';
                       
                       return `
                         <div class="list-item submission-item" 
-                             data-status="${hasSubmitted ? (isGraded ? 'graded' : 'submitted') : 'not-submitted'}"
-                             style="border-left: 4px solid ${hasSubmitted ? (isGraded ? 'var(--accent-2)' : 'var(--accent)') : 'var(--danger)'};">
+                             data-status="${isExcused ? 'excused' : (hasSubmitted ? (isGraded ? 'graded' : 'submitted') : 'not-submitted')}"
+                             style="border-left: 4px solid ${statusColor};">
                           <div class="list-item-content">
                             <div class="list-item-title">
                               ${student.first_name} ${student.last_name}
@@ -5723,11 +5909,13 @@
                             </div>
                             <div class="list-item-meta">
                               ${student.email} • 
-                              ${hasSubmitted ? 
-                                `Submitted: ${new Date(submission.submitted_at).toLocaleDateString()} at ${new Date(submission.submitted_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}` : 
-                                '<span style="color: var(--danger);">Not submitted</span>'
+                              ${isExcused ? 
+                                '<span style="color: var(--muted);">Excused</span>' :
+                                hasSubmitted ? 
+                                  `Submitted: ${new Date(submission.submitted_at).toLocaleDateString()} at ${new Date(submission.submitted_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}` : 
+                                  '<span style="color: var(--danger);">Not submitted</span>'
                               }
-                              ${isGraded ? 
+                              ${isGraded && !isExcused ? 
                                 ` • <strong>Grade: ${submission.grade || 'N/A'}</strong> (${submission.points_earned || 0}/${assignment?.max_points || 100})` : 
                                 ''
                               }
@@ -5739,7 +5927,7 @@
                                 👁️ View
                               </button>
                               <button class="btn btn-primary small" onclick="app.gradeSubmission('${submission.id}', '${assignmentId}')">
-                                ${isGraded ? '✏️ Edit Grade' : '📝 Grade'}
+                                ${isExcused ? '✏️ Edit Status' : (isGraded ? '✏️ Edit Grade' : '📝 Grade')}
                               </button>
                             ` : `
                               <span style="color: var(--muted); font-size: 12px;">No submission</span>
@@ -5754,7 +5942,7 @@
                   </div>
                 ` : `
                   <div class="empty-state">
-                    <p style="color: var(--muted);">No students enrolled</p>
+                    <p style="color: var(--muted);">No students found</p>
                   </div>
                 `}
               </div>
@@ -5832,7 +6020,6 @@
         }
       }
 
-      // Filter submissions list
       filterSubmissionsList(filter, assignmentId) {
         const items = document.querySelectorAll('.submission-item');
         
@@ -5842,11 +6029,13 @@
           if (filter === 'all') {
             item.style.display = 'flex';
           } else if (filter === 'submitted') {
-            item.style.display = (status === 'submitted' || status === 'graded') ? 'flex' : 'none';
+            item.style.display = (status === 'submitted' || status === 'graded' || status === 'excused') ? 'flex' : 'none';
           } else if (filter === 'not-submitted') {
             item.style.display = status === 'not-submitted' ? 'flex' : 'none';
           } else if (filter === 'graded') {
             item.style.display = status === 'graded' ? 'flex' : 'none';
+          } else if (filter === 'excused') {
+            item.style.display = status === 'excused' ? 'flex' : 'none';
           }
         });
       }
