@@ -116,7 +116,7 @@ class PortalAuth {
             const { data: { user } } = await this.supabase.auth.getUser();
             if (!user) return null;
     
-            // Try to get the profile - don't use .single() here
+            // Just fetch the profile - no creation attempts here
             const { data: profiles, error } = await this.supabase
                 .from('user_profiles')
                 .select('*')
@@ -127,81 +127,25 @@ class PortalAuth {
                 return null;
             }
     
-            // Check if profile exists in the array
+            // If profile exists, use it
             if (profiles && profiles.length > 0) {
+                this.userProfile = profiles[0];
                 return profiles[0];
             }
     
-            // Profile doesn't exist, create one
-            console.log('No profile found, creating for:', user.email);
+            // No profile found - this shouldn't happen for properly registered users
+            console.warn('⚠️ No profile found for authenticated user:', user.email);
+            console.warn('User may have incomplete registration');
             
-            // Simple insert that ignores conflicts
-            const { data: newProfile, error: createError } = await this.supabase
-                .from('user_profiles')
-                .insert({
-                    id: user.id,
-                    email: user.email,
-                    username: user.email.split('@')[0],
-                    first_name: 'User',
-                    last_name: '',
-                    user_type: 'student'
-                })
-                .select();
-            
-            // If it failed due to conflict, just fetch the existing one
-            if (createError && createError.code === '23505') {
-                const { data: existing } = await this.supabase
-                    .from('user_profiles')
-                    .select('*')
-                    .eq('id', user.id);
-                return existing?.[0] || null;
-            }
-    
-            return newProfile?.[0] || null;
+            // Return null - don't try to create profiles here
+            // Profile creation should only happen during registration
+            this.userProfile = null;
+            return null;
     
         } catch (error) {
             console.error('Profile load error:', error);
             return null;
         }
-    }
-
-    async ensureUserProfile() {
-        const { data: { user } } = await this.supabase.auth.getUser();
-        if (!user) return null;
-    
-        // Check if profile exists
-        const { data: existingProfile } = await this.supabase
-            .from('user_profiles')
-            .select('id')
-            .eq('id', user.id)
-            .maybeSingle();
-    
-        if (!existingProfile) {
-            // Create profile from auth metadata
-            const metadata = user.user_metadata || {};
-            
-            const { data: newProfile, error } = await this.supabase
-                .from('user_profiles')
-                .insert({
-                    id: user.id,
-                    email: user.email,
-                    username: metadata.username || user.email.split('@')[0],
-                    first_name: metadata.first_name || 'User',
-                    last_name: metadata.last_name || '',
-                    user_type: metadata.user_type || 'student'
-                })
-                .select()
-                .single();
-    
-            if (error) {
-                console.error('Profile creation failed:', error);
-                return null;
-            }
-    
-            return newProfile;
-        }
-    
-        return existingProfile;
     }
 
     // Navigation helpers
@@ -227,6 +171,12 @@ class PortalAuth {
     }
 
     isAuthenticated() {
+        // User is authenticated if they have a session, even if profile is missing
+        return !!this.currentUser;
+    }
+    
+    hasCompleteProfile() {
+        // Check if user has both auth and profile
         return !!(this.currentUser && this.userProfile);
     }
 
@@ -234,7 +184,8 @@ class PortalAuth {
         return {
             user: this.currentUser,
             profile: this.userProfile,
-            isAuthenticated: this.isAuthenticated()
+            isAuthenticated: this.isAuthenticated(),
+            hasProfile: !!this.userProfile
         };
     }
 
@@ -553,6 +504,7 @@ if (document.readyState === 'loading') {
     PortalUI.applyTheme(window.portalAuth.config.theme);
 
 }
+
 
 
 
