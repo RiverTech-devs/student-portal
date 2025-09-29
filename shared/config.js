@@ -135,25 +135,26 @@ class PortalAuth {
             // Profile doesn't exist, create one
             console.log('No profile found, creating for:', user.email);
             
+            // Simple insert that ignores conflicts
             const { data: newProfile, error: createError } = await this.supabase
                 .from('user_profiles')
-                .upsert({
+                .insert({
                     id: user.id,
                     email: user.email,
                     username: user.email.split('@')[0],
                     first_name: 'User',
                     last_name: '',
-                    user_type: 'student',
-                    created_at: new Date().toISOString()
-                }, {
-                    onConflict: 'id',
-                    ignoreDuplicates: false
+                    user_type: 'student'
                 })
                 .select();
-    
-            if (createError) {
-                console.error('Failed to create/update profile:', createError);
-                return null;
+            
+            // If it failed due to conflict, just fetch the existing one
+            if (createError && createError.code === '23505') {
+                const { data: existing } = await this.supabase
+                    .from('user_profiles')
+                    .select('*')
+                    .eq('id', user.id);
+                return existing?.[0] || null;
             }
     
             return newProfile?.[0] || null;
@@ -552,6 +553,7 @@ if (document.readyState === 'loading') {
     PortalUI.applyTheme(window.portalAuth.config.theme);
 
 }
+
 
 
 
