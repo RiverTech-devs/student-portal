@@ -277,7 +277,7 @@ class PortalUI {
                 </div>
                 
                 <div class="nav-links">
-                    <a href="${currentPortal === 'classes' ? '../index.html' : 'index.html'}" 
+                    <a href="${currentPortal === 'classes' ? '../index.html' : window.location.pathname}#dashboard" 
                        class="nav-link ${currentPortal === 'main' && currentSection === 'dashboard' ? 'active' : ''}"
                        title="Dashboard">
                         <span class="nav-icon">🏠</span>
@@ -285,14 +285,14 @@ class PortalUI {
                     </a>
                     
                     ${isStudent ? `
-                    <a href="../index.html#games" 
+                    <a href="${window.location.pathname}#games" 
                        class="nav-link ${currentPortal === 'main' && currentSection === 'games' ? 'active' : ''}"
                        title="Educational Games">
                         <span class="nav-icon">🎮</span>
                         <span class="nav-text">Games</span>
                     </a>
                     
-                    <a href="../index.html#skills" 
+                    <a href="${window.location.pathname}#skills" 
                        class="nav-link ${currentPortal === 'main' && currentSection === 'skills' ? 'active' : ''}"
                        title="Skill Trees">
                         <span class="nav-icon">🌟</span>
@@ -483,3 +483,4 @@ if (document.readyState === 'loading') {
     PortalUI.applyTheme(window.portalAuth.config.theme);
 
 }
+
