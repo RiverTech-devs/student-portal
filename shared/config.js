@@ -112,26 +112,91 @@ class PortalAuth {
     }
 
     async loadUserProfile() {
-        if (!this.currentUser) return null;
-        
         try {
-            const { data, error } = await this.supabase
+            const { data: { user } } = await this.supabase.auth.getUser();
+            if (!user) return null;
+    
+            // Try to get the profile
+            const { data: profile, error } = await this.supabase
                 .from('user_profiles')
                 .select('*')
-                .eq('id', this.currentUser.id)
-                .single();
-            
-            if (error) {
-                console.warn('Profile load error:', error.message);
+                .eq('id', user.id)
+                .maybeSingle();  // Use maybeSingle() instead of single()
+    
+            if (error && error.code !== 'PGRST116') {
+                console.error('Profile load error:', error);
                 return null;
             }
-            
-            this.userProfile = data;
-            return data;
+    
+            // If no profile exists, create a basic one
+            if (!profile) {
+                console.log('Creating missing profile for user:', user.email);
+                
+                const { data: newProfile, error: createError } = await this.supabase
+                    .from('user_profiles')
+                    .insert({
+                        id: user.id,
+                        email: user.email,
+                        username: user.email.split('@')[0],
+                        first_name: 'User',
+                        last_name: '',
+                        user_type: 'student'  // Default type
+                    })
+                    .select()
+                    .single();
+    
+                if (createError) {
+                    console.error('Failed to create profile:', createError);
+                    return null;
+                }
+    
+                return newProfile;
+            }
+    
+            return profile;
         } catch (error) {
-            console.warn('Profile load failed:', error.message);
+            console.error('Profile load error:', error);
             return null;
         }
+    }
+
+    async ensureUserProfile() {
+        const { data: { user } } = await this.supabase.auth.getUser();
+        if (!user) return null;
+    
+        // Check if profile exists
+        const { data: existingProfile } = await this.supabase
+            .from('user_profiles')
+            .select('id')
+            .eq('id', user.id)
+            .maybeSingle();
+    
+        if (!existingProfile) {
+            // Create profile from auth metadata
+            const metadata = user.user_metadata || {};
+            
+            const { data: newProfile, error } = await this.supabase
+                .from('user_profiles')
+                .insert({
+                    id: user.id,
+                    email: user.email,
+                    username: metadata.username || user.email.split('@')[0],
+                    first_name: metadata.first_name || 'User',
+                    last_name: metadata.last_name || '',
+                    user_type: metadata.user_type || 'student'
+                })
+                .select()
+                .single();
+    
+            if (error) {
+                console.error('Profile creation failed:', error);
+                return null;
+            }
+    
+            return newProfile;
+        }
+    
+        return existingProfile;
     }
 
     // Navigation helpers
@@ -483,4 +548,5 @@ if (document.readyState === 'loading') {
     PortalUI.applyTheme(window.portalAuth.config.theme);
 
 }
+
 
