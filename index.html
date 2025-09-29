@@ -692,30 +692,33 @@
                 const lastName = document.getElementById('reg-lastname')?.value;
                 const grade = document.getElementById('reg-grade')?.value;
                 const userType = document.getElementById('reg-usertype')?.value;
-
+                const childEmailsTextarea = document.getElementById('child-emails');
+            
                 const registerBtn = document.getElementById('register-submit-btn');
-
+            
                 if (!email || !password || !username || !firstName || !lastName || !userType) {
                     window.PortalUI.showNotification('Please fill in all required fields', 'error');
                     return;
                 }
-
+            
                 if (registerBtn) {
                     registerBtn.disabled = true;
                     registerBtn.textContent = 'Registering...';
                 }
-
+            
                 try {
+                    // Create the auth account
                     const { data: authData, error: authError } = await this.auth.supabase.auth.signUp({
                         email: email,
                         password: password,
                         options: {
-                            emailRedirectTo: `${window.location.origin}/confirm.html`
+                            emailRedirectTo: `${window.location.origin}/student-portal/confirm.html`
                         }
                     });
-
+            
                     if (authError) throw authError;
-
+            
+                    // Create the user profile
                     const { error: profileError } = await this.auth.supabase
                         .from('user_profiles')
                         .insert({
@@ -727,12 +730,24 @@
                             user_type: userType,
                             grade_level: userType === 'student' ? grade : null
                         });
-
+            
                     if (profileError) throw profileError;
-
+            
+                    // If parent, handle child relationships
+                    if (userType === 'parent' && childEmailsTextarea) {
+                        const childEmails = childEmailsTextarea.value
+                            .split('\n')
+                            .map(email => email.trim())
+                            .filter(email => email.length > 0);
+            
+                        if (childEmails.length > 0) {
+                            await this.linkParentToChildren(authData.user.id, childEmails);
+                        }
+                    }
+            
                     window.PortalUI.showNotification('Registration successful! Please check your email to verify your account.', 'success');
                     this.showLoginForm();
-
+            
                 } catch (error) {
                     console.error('Registration error:', error);
                     window.PortalUI.showNotification(error.message, 'error');
@@ -742,6 +757,54 @@
                         registerBtn.textContent = 'Register';
                     }
                 }
+            }
+
+            async linkParentToChildren(parentId, childEmails) {
+                const results = [];
+                
+                for (const childEmail of childEmails) {
+                    try {
+                        // First find the child's user ID
+                        const { data: childProfile, error: childError } = await this.auth.supabase
+                            .from('user_profiles')
+                            .select('id')
+                            .eq('email', childEmail)
+                            .single();
+                        
+                        if (childError || !childProfile) {
+                            console.warn(`Child account not found for email: ${childEmail}`);
+                            continue;
+                        }
+            
+                        // Use UPSERT with the correct table name
+                        const { data, error } = await this.auth.supabase
+                            .from('parent_child_links')  // Correct table name
+                            .upsert({
+                                parent_id: parentId,
+                                child_id: childProfile.id,
+                                created_at: new Date().toISOString()
+                            }, {
+                                onConflict: 'parent_id,child_id',
+                                ignoreDuplicates: false
+                            });
+            
+                        if (error) {
+                            console.error(`Error linking to child ${childEmail}:`, error);
+                        } else {
+                            results.push({ email: childEmail, success: true });
+                        }
+                        
+                    } catch (error) {
+                        console.error(`Failed to link parent to child ${childEmail}:`, error);
+                    }
+                }
+                
+                const successCount = results.filter(r => r.success).length;
+                if (successCount > 0) {
+                    console.log(`Successfully linked to ${successCount} child account(s)`);
+                }
+                
+                return results;
             }
 
             async handlePasswordReset(e) {
