@@ -3921,7 +3921,6 @@
         }
       }
 
-      // 8. View Grades (Student Only)
       async viewGrades(classId) {
         try {
           const classData = this.classes.find(c => c.id === classId);
@@ -3948,25 +3947,33 @@
 
             gradesHtml = assignments.map(assignment => {
               const submission = submissionMap[assignment.id];
-              const grade = submission?.grade || 'Not graded';
-              const points = submission?.points_earned || '-';
+              const isExcused = submission?.status === 'excused';
+              const grade = isExcused ? 'Excused' : (submission?.grade || 'Not graded');
+              const points = isExcused ? '-' : (submission?.points_earned || '-');
               const maxPoints = assignment.max_points || 100;
-
+            
               return `
                 <div class="list-item">
                   <div class="list-item-content">
                     <div class="list-item-title">${assignment.title}</div>
                     <div class="list-item-meta">
                       Due: ${new Date(assignment.due_date).toLocaleDateString()}
+                      ${isExcused ? ' • <span style="color: var(--warning);">Excused from this assignment</span>' : ''}
                     </div>
                   </div>
                   <div style="text-align: right;">
-                    <div style="font-size: 20px; font-weight: bold; color: ${submission?.grade ? 'var(--accent-2)' : 'var(--muted)'};">
+                    <div style="font-size: 20px; font-weight: bold; color: ${isExcused ? 'var(--warning)' : submission?.grade ? 'var(--accent-2)' : 'var(--muted)'};">
                       ${grade}
                     </div>
-                    <div style="font-size: 12px; color: var(--muted);">
-                      ${points} / ${maxPoints} pts
-                    </div>
+                    ${!isExcused ? `
+                      <div style="font-size: 12px; color: var(--muted);">
+                        ${points} / ${maxPoints} pts
+                      </div>
+                    ` : `
+                      <div style="font-size: 12px; color: var(--warning);">
+                        Not counted
+                      </div>
+                    `}
                   </div>
                 </div>
               `;
@@ -5986,10 +5993,19 @@
             .eq('id', assignmentId)
             .single();
       
+          const isExcused = submission.status === 'excused';
+      
           const modalContent = `
             <div>
               <h3>Grade Submission - ${student?.first_name} ${student?.last_name}</h3>
               <p style="color: var(--muted);">Assignment: ${assignment?.title}</p>
+              
+              ${isExcused ? `
+                <div class="card" style="background: var(--warning); color: black; padding: 10px; margin: 15px 0;">
+                  <strong>⚠️ This assignment is currently excused</strong>
+                  ${submission.excuse_reason ? `<p style="margin-top: 5px;">Reason: ${submission.excuse_reason}</p>` : ''}
+                </div>
+              ` : ''}
               
               <div class="card" style="margin: 20px 0;">
                 <h4>Student's Work</h4>
@@ -6005,52 +6021,73 @@
                 ` : ''}
               </div>
       
-              <form id="grade-form">
-                <div class="form-group">
-                  <label for="grade-score">Points Earned (Max: ${assignment?.max_points || 100})</label>
-                  <input 
-                    type="number" 
-                    id="grade-score" 
-                    min="0" 
-                    max="${assignment?.max_points || 100}" 
-                    value="${submission.points_earned || ''}"
-                    placeholder="Enter points"
-                  >
+              <!-- Excuse Option -->
+              <div class="card" style="background: var(--card); margin: 20px 0;">
+                <label style="display: flex; align-items: center; gap: 10px;">
+                  <input type="checkbox" id="excuse-assignment" ${isExcused ? 'checked' : ''} 
+                         onchange="app.toggleExcuseOptions()">
+                  <strong>Excuse this assignment</strong>
+                </label>
+                <div id="excuse-options" style="${isExcused ? '' : 'display: none;'} margin-top: 10px;">
+                  <div class="form-group">
+                    <label for="excuse-reason">Reason for excusing (optional)</label>
+                    <input type="text" id="excuse-reason" placeholder="e.g., Absent due to illness" 
+                           value="${submission.excuse_reason || ''}">
+                  </div>
+                  <p style="color: var(--muted); font-size: 12px;">
+                    Excused assignments won't count towards the student's grade
+                  </p>
                 </div>
-                
-                <div class="form-group">
-                  <label for="grade-letter">Letter Grade</label>
-                  <select id="grade-letter">
-                    <option value="">Select Grade</option>
-                    <option value="A+" ${submission.grade === 'A+' ? 'selected' : ''}>A+</option>
-                    <option value="A" ${submission.grade === 'A' ? 'selected' : ''}>A</option>
-                    <option value="A-" ${submission.grade === 'A-' ? 'selected' : ''}>A-</option>
-                    <option value="B+" ${submission.grade === 'B+' ? 'selected' : ''}>B+</option>
-                    <option value="B" ${submission.grade === 'B' ? 'selected' : ''}>B</option>
-                    <option value="B-" ${submission.grade === 'B-' ? 'selected' : ''}>B-</option>
-                    <option value="C+" ${submission.grade === 'C+' ? 'selected' : ''}>C+</option>
-                    <option value="C" ${submission.grade === 'C' ? 'selected' : ''}>C</option>
-                    <option value="C-" ${submission.grade === 'C-' ? 'selected' : ''}>C-</option>
-                    <option value="D" ${submission.grade === 'D' ? 'selected' : ''}>D</option>
-                    <option value="F" ${submission.grade === 'F' ? 'selected' : ''}>F</option>
-                  </select>
-                </div>
-                
-                <div class="form-group">
-                  <label for="grade-feedback">Feedback</label>
-                  <textarea 
-                    id="grade-feedback" 
-                    rows="4" 
-                    placeholder="Provide feedback to the student..."
-                  >${submission.feedback || ''}</textarea>
-                </div>
-              </form>
+              </div>
+      
+              <div id="grading-section" style="${isExcused ? 'opacity: 0.5; pointer-events: none;' : ''}">
+                <form id="grade-form">
+                  <div class="form-group">
+                    <label for="grade-score">Points Earned (Max: ${assignment?.max_points || 100})</label>
+                    <input 
+                      type="number" 
+                      id="grade-score" 
+                      min="0" 
+                      max="${assignment?.max_points || 100}" 
+                      value="${submission.points_earned || ''}"
+                      placeholder="Enter points"
+                    >
+                  </div>
+                  
+                  <div class="form-group">
+                    <label for="grade-letter">Letter Grade</label>
+                    <select id="grade-letter">
+                      <option value="">Select Grade</option>
+                      <option value="A+" ${submission.grade === 'A+' ? 'selected' : ''}>A+</option>
+                      <option value="A" ${submission.grade === 'A' ? 'selected' : ''}>A</option>
+                      <option value="A-" ${submission.grade === 'A-' ? 'selected' : ''}>A-</option>
+                      <option value="B+" ${submission.grade === 'B+' ? 'selected' : ''}>B+</option>
+                      <option value="B" ${submission.grade === 'B' ? 'selected' : ''}>B</option>
+                      <option value="B-" ${submission.grade === 'B-' ? 'selected' : ''}>B-</option>
+                      <option value="C+" ${submission.grade === 'C+' ? 'selected' : ''}>C+</option>
+                      <option value="C" ${submission.grade === 'C' ? 'selected' : ''}>C</option>
+                      <option value="C-" ${submission.grade === 'C-' ? 'selected' : ''}>C-</option>
+                      <option value="D" ${submission.grade === 'D' ? 'selected' : ''}>D</option>
+                      <option value="F" ${submission.grade === 'F' ? 'selected' : ''}>F</option>
+                    </select>
+                  </div>
+                  
+                  <div class="form-group">
+                    <label for="grade-feedback">Feedback</label>
+                    <textarea 
+                      id="grade-feedback" 
+                      rows="4" 
+                      placeholder="Provide feedback to the student..."
+                    >${submission.feedback || ''}</textarea>
+                  </div>
+                </form>
+              </div>
             </div>
       
             <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
               <button class="btn btn-secondary" onclick="app.closeModal('grade-submission')">Cancel</button>
               <button class="btn btn-primary" onclick="app.submitGrade('${submissionId}', '${assignmentId}')">
-                Save Grade
+                Save
               </button>
             </div>
           `;
@@ -6062,15 +6099,52 @@
           this.showNotification('Error loading submission: ' + error.message, 'error');
         }
       }
+
+      toggleExcuseOptions() {
+        const checkbox = document.getElementById('excuse-assignment');
+        const excuseOptions = document.getElementById('excuse-options');
+        const gradingSection = document.getElementById('grading-section');
+        
+        if (checkbox.checked) {
+          excuseOptions.style.display = 'block';
+          gradingSection.style.opacity = '0.5';
+          gradingSection.style.pointerEvents = 'none';
+        } else {
+          excuseOptions.style.display = 'none';
+          gradingSection.style.opacity = '1';
+          gradingSection.style.pointerEvents = 'auto';
+        }
+      }
       
       async submitGrade(submissionId, assignmentId) {
-        const gradeData = {
-          points_earned: parseInt(document.getElementById('grade-score').value) || null,
-          grade: document.getElementById('grade-letter').value || null,
-          feedback: document.getElementById('grade-feedback').value || null,
-          status: 'graded',
-          graded_at: new Date().toISOString()
-        };
+        const isExcused = document.getElementById('excuse-assignment').checked;
+        
+        let gradeData = {};
+        
+        if (isExcused) {
+          gradeData = {
+            status: 'excused',
+            excused_by: this.userInfo.user.id,
+            excused_at: new Date().toISOString(),
+            excuse_reason: document.getElementById('excuse-reason').value || null,
+            // Clear grade data when excusing
+            grade: null,
+            points_earned: null,
+            graded_at: null
+          };
+        } else {
+          gradeData = {
+            points_earned: parseInt(document.getElementById('grade-score').value) || null,
+            grade: document.getElementById('grade-letter').value || null,
+            feedback: document.getElementById('grade-feedback').value || null,
+            status: 'graded',
+            graded_at: new Date().toISOString(),
+            // Clear excuse data when grading
+            excused_by: null,
+            excused_at: null,
+            excuse_reason: null
+          };
+        }
       
         try {
           const { error } = await this.auth.supabase
@@ -6080,7 +6154,7 @@
       
           if (error) throw error;
       
-          this.showNotification('Grade saved successfully!', 'success');
+          this.showNotification(isExcused ? 'Assignment excused' : 'Grade saved successfully!', 'success');
           this.closeModal('grade-submission');
           
           // Refresh submissions view
@@ -6088,8 +6162,8 @@
           setTimeout(() => this.viewSubmissions(assignmentId), 100);
       
         } catch (error) {
-          console.error('Error saving grade:', error);
-          this.showNotification('Error saving grade: ' + error.message, 'error');
+          console.error('Error saving:', error);
+          this.showNotification('Error: ' + error.message, 'error');
         }
       }
     }
