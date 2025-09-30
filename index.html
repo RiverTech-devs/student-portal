@@ -1175,7 +1175,7 @@
                 `;
             }
 
-            loadParentTeacherDashboard() {
+            async loadParentTeacherDashboard() {
                 const dashboardSection = document.getElementById('dashboard-section');
                 if (!dashboardSection) return;
                 
@@ -1183,12 +1183,293 @@
                 const firstName = userInfo.profile?.first_name || 'User';
                 const userType = userInfo.profile?.user_type || 'user';
                 
+                if (userType === 'parent') {
+                    await this.loadParentDashboard(dashboardSection, userInfo, firstName);
+                } else if (userType === 'teacher') {
+                    await this.loadTeacherDashboard(dashboardSection, userInfo, firstName);
+                }
+            }
+            
+            async loadParentDashboard(dashboardSection, userInfo, firstName) {
+                try {
+                    // Get linked children
+                    const { data: linkedChildren, error } = await this.auth.supabase
+                        .from('parent_child_links')
+                        .select(`
+                            child_id,
+                            user_profiles!parent_child_links_child_id_fkey (
+                                id,
+                                first_name,
+                                last_name,
+                                email,
+                                grade_level
+                            )
+                        `)
+                        .eq('parent_id', userInfo.profile.id);
+                    
+                    if (!linkedChildren || linkedChildren.length === 0) {
+                        dashboardSection.innerHTML = `
+                            <h2>Welcome, ${firstName}</h2>
+                            <div class="card" style="max-width: 600px; margin: 50px auto; text-align: center;">
+                                <h3>👶 No Children Linked</h3>
+                                <p>No children are linked to your account yet.</p>
+                                <p style="font-size: 14px; color: var(--muted);">
+                                    Children must register first, then you can link them using their email address.
+                                </p>
+                            </div>
+                        `;
+                        return;
+                    }
+            
+                    // Create child selector if multiple children
+                    let childSelectorHTML = '';
+                    if (linkedChildren.length > 1) {
+                        childSelectorHTML = `
+                            <div style="margin-bottom: 20px;">
+                                <select id="child-selector" class="form-control" style="max-width: 300px;">
+                                    ${linkedChildren.map((link, index) => `
+                                        <option value="${link.child_id}" ${index === 0 ? 'selected' : ''}>
+                                            ${link.user_profiles.first_name} ${link.user_profiles.last_name}
+                                        </option>
+                                    `).join('')}
+                                </select>
+                            </div>
+                        `;
+                    }
+            
+                    // Default to first child
+                    const selectedChildId = linkedChildren[0].child_id;
+                    
+                    dashboardSection.innerHTML = `
+                        <h2>Parent Dashboard - Welcome, ${firstName}</h2>
+                        ${childSelectorHTML}
+                        <div id="child-info-container">
+                            <div style="text-align: center; padding: 40px;">
+                                <p>Loading child information...</p>
+                            </div>
+                        </div>
+                    `;
+            
+                    // Load first child's info
+                    await this.loadChildInfo(selectedChildId);
+            
+                    // Add listener for child selector
+                    if (linkedChildren.length > 1) {
+                        document.getElementById('child-selector')?.addEventListener('change', async (e) => {
+                            await this.loadChildInfo(e.target.value);
+                        });
+                    }
+            
+                } catch (error) {
+                    console.error('Error loading parent dashboard:', error);
+                    dashboardSection.innerHTML = `
+                        <h2>Welcome, ${firstName}</h2>
+                        <div class="alert alert-error">Failed to load dashboard. Please refresh.</div>
+                    `;
+                }
+            }
+            
+            async loadChildInfo(childId) {
+                const container = document.getElementById('child-info-container');
+                if (!container) return;
+            
+                try {
+                    // Get child's profile
+                    const { data: childProfile } = await this.auth.supabase
+                        .from('user_profiles')
+                        .select('*')
+                        .eq('id', childId)
+                        .single();
+            
+                    // Get child's class enrollments with class details
+                    const { data: enrollments } = await this.auth.supabase
+                        .from('class_enrollments')
+                        .select(`
+                            *,
+                            classes (
+                                id,
+                                name,
+                                subject,
+                                teacher_id,
+                                user_profiles!classes_teacher_id_fkey (
+                                    first_name,
+                                    last_name
+                                )
+                            )
+                        `)
+                        .eq('student_id', childId);
+            
+                    // Get assignments for all enrolled classes
+                    let assignmentsHTML = '';
+                    if (enrollments && enrollments.length > 0) {
+                        const classIds = enrollments.map(e => e.class_id);
+                        
+                        const { data: assignments } = await this.auth.supabase
+                            .from('assignments')
+                            .select(`
+                                *,
+                                submissions!left (
+                                    id,
+                                    student_id,
+                                    grade,
+                                    submitted_at,
+                                    status
+                                )
+                            `)
+                            .in('class_id', classIds)
+                            .order('due_date', { ascending: false });
+            
+                        // Group assignments by class
+                        const assignmentsByClass = {};
+                        enrollments.forEach(enrollment => {
+                            const classAssignments = assignments?.filter(a => a.class_id === enrollment.class_id) || [];
+                            if (classAssignments.length > 0) {
+                                assignmentsByClass[enrollment.classes.name] = classAssignments.map(assignment => {
+                                    const submission = assignment.submissions?.find(s => s.student_id === childId);
+                                    return { ...assignment, submission };
+                                });
+                            }
+                        });
+            
+                        assignmentsHTML = Object.entries(assignmentsByClass).map(([className, classAssignments]) => `
+                            <div class="card" style="margin-top: 20px;">
+                                <h4>📚 ${className}</h4>
+                                <table style="width: 100%; margin-top: 10px;">
+                                    <thead>
+                                        <tr>
+                                            <th>Assignment</th>
+                                            <th>Due Date</th>
+                                            <th>Status</th>
+                                            <th>Grade</th>
+                                            <th>Action</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${classAssignments.map(assignment => {
+                                            const submission = assignment.submission;
+                                            const status = submission?.status || 'Not Started';
+                                            const grade = submission?.grade || '-';
+                                            const dueDate = new Date(assignment.due_date).toLocaleDateString();
+                                            const isPastDue = new Date(assignment.due_date) < new Date() && !submission;
+                                            
+                                            return `
+                                                <tr>
+                                                    <td>${assignment.title}</td>
+                                                    <td>${dueDate}</td>
+                                                    <td>
+                                                        <span style="color: ${
+                                                            status === 'submitted' ? 'var(--accent-2)' : 
+                                                            isPastDue ? 'var(--danger)' : 
+                                                            'var(--warning)'
+                                                        }">
+                                                            ${isPastDue ? 'Past Due' : status}
+                                                        </span>
+                                                    </td>
+                                                    <td>${grade}</td>
+                                                    <td>
+                                                        <button class="btn btn-secondary small" 
+                                                                onclick="portal.viewAssignmentDetails('${assignment.id}')">
+                                                            View Details
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            `;
+                                        }).join('')}
+                                    </tbody>
+                                </table>
+                            </div>
+                        `).join('');
+                    }
+            
+                    // Build the child info display
+                    container.innerHTML = `
+                        <div class="dashboard">
+                            <div class="card">
+                                <h3>👦 ${childProfile.first_name} ${childProfile.last_name}</h3>
+                                <p>Grade Level: ${childProfile.grade_level || 'Not set'}</p>
+                                <p>Email: ${childProfile.email}</p>
+                            </div>
+                            
+                            <div class="card">
+                                <h3>📊 Academic Overview</h3>
+                                <div class="stats">
+                                    <div class="stat">
+                                        <div class="stat-value">${enrollments?.length || 0}</div>
+                                        <div class="stat-label">Enrolled Classes</div>
+                                    </div>
+                                    <div class="stat">
+                                        <div class="stat-value">-</div>
+                                        <div class="stat-label">Overall Grade</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+            
+                        <div style="margin-top: 20px;">
+                            <h3>📚 Enrolled Classes</h3>
+                            ${enrollments && enrollments.length > 0 ? `
+                                <div class="dashboard">
+                                    ${enrollments.map(enrollment => `
+                                        <div class="card">
+                                            <h4>${enrollment.classes.name}</h4>
+                                            <p><strong>Subject:</strong> ${enrollment.classes.subject}</p>
+                                            <p><strong>Teacher:</strong> ${enrollment.classes.user_profiles.first_name} ${enrollment.classes.user_profiles.last_name}</p>
+                                            <p><strong>Current Grade:</strong> ${enrollment.current_grade || 'N/A'}</p>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                            ` : '<p>No class enrollments found.</p>'}
+                        </div>
+            
+                        ${assignmentsHTML ? `
+                            <div style="margin-top: 20px;">
+                                <h3>📝 Assignments</h3>
+                                ${assignmentsHTML}
+                            </div>
+                        ` : ''}
+                    `;
+                } catch (error) {
+                    console.error('Error loading child info:', error);
+                    container.innerHTML = '<div class="alert alert-error">Failed to load child information.</div>';
+                }
+            }
+            
+            async viewAssignmentDetails(assignmentId) {
+                try {
+                    const { data: assignment, error } = await this.auth.supabase
+                        .from('assignments')
+                        .select('*')
+                        .eq('id', assignmentId)
+                        .single();
+            
+                    if (error) throw error;
+            
+                    // Create modal to show assignment details
+                    this.showModal('assignment-details', assignment.title, `
+                        <div style="padding: 20px;">
+                            <p><strong>Description:</strong></p>
+                            <p>${assignment.description || 'No description provided'}</p>
+                            <br>
+                            <p><strong>Due Date:</strong> ${new Date(assignment.due_date).toLocaleDateString()}</p>
+                            <p><strong>Points:</strong> ${assignment.max_points || 'Not specified'}</p>
+                            <br>
+                            <button class="btn btn-secondary" onclick="portal.closeModal()">Close</button>
+                        </div>
+                    `);
+                } catch (error) {
+                    console.error('Error viewing assignment:', error);
+                    window.PortalUI.showNotification('Failed to load assignment details', 'error');
+                }
+            }
+            
+            async loadTeacherDashboard(dashboardSection, userInfo, firstName) {
+                // Keep existing teacher dashboard
                 dashboardSection.innerHTML = `
-                    <h2>Welcome back, ${firstName}!</h2>
+                    <h2>Teacher Dashboard - Welcome, ${firstName}</h2>
                     <div class="dashboard">
                         <div class="card">
-                            <h3>👨‍👩‍👧‍👦 ${userType === 'teacher' ? 'Your Classes' : 'Your Children'}</h3>
-                            <p>${userType === 'teacher' ? 'Manage your classes and students.' : 'View your children\'s progress and communicate with teachers.'}</p>
+                            <h3>👨‍🏫 Your Classes</h3>
+                            <p>Manage your classes, students, and assignments.</p>
                             <button class="btn btn-primary" onclick="window.portalAuth.goToClassesPortal()" style="margin-top: 15px; width: 100%;">
                                 📚 Go to Classes & Messaging
                             </button>
@@ -1198,17 +1479,13 @@
                             <div class="stats">
                                 <div class="stat">
                                     <div class="stat-value">0</div>
-                                    <div class="stat-label">New Messages</div>
+                                    <div class="stat-label">New Submissions</div>
                                 </div>
                                 <div class="stat">
-                                    <div class="stat-value">3</div>
-                                    <div class="stat-label">Active Classes</div>
+                                    <div class="stat-value">0</div>
+                                    <div class="stat-label">Pending Grades</div>
                                 </div>
                             </div>
-                        </div>
-                        <div class="card">
-                            <h3>🔔 Notifications</h3>
-                            <p>No new notifications.</p>
                         </div>
                     </div>
                 `;
