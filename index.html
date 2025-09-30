@@ -1192,79 +1192,103 @@
             
             async loadParentDashboard(dashboardSection, userInfo, firstName) {
                 try {
-                    // Get linked children
-                    const { data: linkedChildren, error } = await this.auth.supabase
+                    console.log('Loading parent dashboard for:', userInfo.profile.id);
+                    
+                    // Step 1: Get child IDs (simple query, no joins)
+                    const { data: links, error: linkError } = await this.auth.supabase
                         .from('parent_child_links')
-                        .select(`
-                            child_id,
-                            user_profiles!parent_child_links_child_id_fkey (
-                                id,
-                                first_name,
-                                last_name,
-                                email,
-                                grade_level
-                            )
-                        `)
+                        .select('child_id')
                         .eq('parent_id', userInfo.profile.id);
                     
-                    if (!linkedChildren || linkedChildren.length === 0) {
+                    console.log('Parent links found:', links);
+                    
+                    if (linkError) {
+                        console.error('Error fetching links:', linkError);
+                        throw linkError;
+                    }
+                    
+                    if (!links || links.length === 0) {
                         dashboardSection.innerHTML = `
                             <h2>Welcome, ${firstName}</h2>
                             <div class="card" style="max-width: 600px; margin: 50px auto; text-align: center;">
                                 <h3>👶 No Children Linked</h3>
                                 <p>No children are linked to your account yet.</p>
-                                <p style="font-size: 14px; color: var(--muted);">
-                                    Children must register first, then you can link them using their email address.
-                                </p>
                             </div>
                         `;
                         return;
                     }
-            
-                    // Create child selector if multiple children
+                    
+                    // Step 2: Get child profiles separately
+                    const childIds = links.map(l => l.child_id);
+                    console.log('Looking for child profiles with IDs:', childIds);
+                    
+                    const { data: childProfiles, error: profileError } = await this.auth.supabase
+                        .from('user_profiles')
+                        .select('id, first_name, last_name, email, grade_level')
+                        .in('id', childIds);
+                    
+                    console.log('Child profiles found:', childProfiles);
+                    
+                    if (!childProfiles || childProfiles.length === 0) {
+                        dashboardSection.innerHTML = `
+                            <h2>Welcome, ${firstName}</h2>
+                            <div class="card" style="max-width: 600px; margin: 50px auto; text-align: center;">
+                                <h3>⚠️ Child Profile Missing</h3>
+                                <p>Child account linked but profile not found. The child may need to complete registration.</p>
+                            </div>
+                        `;
+                        return;
+                    }
+                    
+                    // Build the dashboard with the children data
                     let childSelectorHTML = '';
-                    if (linkedChildren.length > 1) {
+                    if (childProfiles.length > 1) {
                         childSelectorHTML = `
                             <div style="margin-bottom: 20px;">
                                 <select id="child-selector" class="form-control" style="max-width: 300px;">
-                                    ${linkedChildren.map((link, index) => `
-                                        <option value="${link.child_id}" ${index === 0 ? 'selected' : ''}>
-                                            ${link.user_profiles.first_name} ${link.user_profiles.last_name}
+                                    ${childProfiles.map((child, index) => `
+                                        <option value="${child.id}" ${index === 0 ? 'selected' : ''}>
+                                            ${child.first_name} ${child.last_name}
                                         </option>
                                     `).join('')}
                                 </select>
                             </div>
                         `;
                     }
-            
-                    // Default to first child
-                    const selectedChildId = linkedChildren[0].child_id;
                     
+                    // Show the first child's basic info immediately
+                    const firstChild = childProfiles[0];
                     dashboardSection.innerHTML = `
                         <h2>Parent Dashboard - Welcome, ${firstName}</h2>
                         ${childSelectorHTML}
-                        <div id="child-info-container">
-                            <div style="text-align: center; padding: 40px;">
-                                <p>Loading child information...</p>
+                        <div class="dashboard">
+                            <div class="card">
+                                <h3>👶 Linked Child${childProfiles.length > 1 ? 'ren' : ''}</h3>
+                                ${childProfiles.map(child => `
+                                    <div style="padding: 10px; border-bottom: 1px solid var(--border);">
+                                        <strong>${child.first_name} ${child.last_name}</strong><br>
+                                        <small>Grade ${child.grade_level || 'N/A'} • ${child.email}</small>
+                                    </div>
+                                `).join('')}
+                            </div>
+                            <div class="card">
+                                <h3>📚 Quick Actions</h3>
+                                <button class="btn btn-primary" onclick="window.portalAuth.goToClassesPortal()" style="width: 100%; margin-bottom: 10px;">
+                                    View Classes & Messages
+                                </button>
+                                <button class="btn btn-secondary" onclick="portal.loadChildDetails('${firstChild.id}')" style="width: 100%;">
+                                    View ${firstChild.first_name}'s Details
+                                </button>
                             </div>
                         </div>
+                        <div id="child-details-container"></div>
                     `;
-            
-                    // Load first child's info
-                    await this.loadChildInfo(selectedChildId);
-            
-                    // Add listener for child selector
-                    if (linkedChildren.length > 1) {
-                        document.getElementById('child-selector')?.addEventListener('change', async (e) => {
-                            await this.loadChildInfo(e.target.value);
-                        });
-                    }
-            
+                    
                 } catch (error) {
                     console.error('Error loading parent dashboard:', error);
                     dashboardSection.innerHTML = `
                         <h2>Welcome, ${firstName}</h2>
-                        <div class="alert alert-error">Failed to load dashboard. Please refresh.</div>
+                        <div class="alert alert-error">Failed to load dashboard: ${error.message}</div>
                     `;
                 }
             }
