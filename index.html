@@ -731,7 +731,7 @@
                 }
             
                 try {
-                    // Create the auth account
+                    // First, try to sign up with Supabase Auth
                     const { data: authData, error: authError } = await this.auth.supabase.auth.signUp({
                         email: email,
                         password: password,
@@ -740,22 +740,63 @@
                         }
                     });
             
-                    if (authError) throw authError;
+                    // Handle auth errors
+                    if (authError) {
+                        if (authError.message.includes('already registered')) {
+                            throw new Error('This email is already registered. Please login or reset your password.');
+                        }
+                        throw authError;
+                    }
             
-                    // Create the user profile
-                    const { error: profileError } = await this.auth.supabase
+                    // Check if signup actually created a new user or returned existing
+                    if (!authData.user) {
+                        throw new Error('Registration failed. Please try again.');
+                    }
+            
+                    // If user.identities is empty, user already existed
+                    if (authData.user.identities && authData.user.identities.length === 0) {
+                        throw new Error('An account with this email already exists. Please login instead.');
+                    }
+            
+                    // Check if profile already exists (in case of partial registration)
+                    const { data: existingProfile, error: checkError } = await this.auth.supabase
                         .from('user_profiles')
-                        .insert({
-                            id: authData.user.id,
-                            email: email,
-                            username: username,
-                            first_name: firstName,
-                            last_name: lastName,
-                            user_type: userType,
-                            grade_level: userType === 'student' ? grade : null
-                        });
+                        .select('id')
+                        .eq('id', authData.user.id);
             
-                    if (profileError) throw profileError;
+                    if (!checkError && existingProfile && existingProfile.length > 0) {
+                        console.log('Profile already exists for this user, skipping profile creation');
+                    } else {
+                        // Create the user profile
+                        const { error: profileError } = await this.auth.supabase
+                            .from('user_profiles')
+                            .insert({
+                                id: authData.user.id,
+                                email: email,
+                                username: username,
+                                first_name: firstName,
+                                last_name: lastName,
+                                user_type: userType,
+                                grade_level: userType === 'student' ? grade : null
+                            });
+            
+                        if (profileError) {
+                            // If profile creation fails, we have an auth user with no profile
+                            console.error('Profile creation error:', profileError);
+                            
+                            // Try to clean up the auth user
+                            try {
+                                await this.auth.supabase.auth.admin.deleteUser(authData.user.id);
+                            } catch (deleteError) {
+                                console.error('Could not clean up auth user:', deleteError);
+                            }
+                            
+                            if (profileError.message.includes('duplicate key')) {
+                                throw new Error('A profile with this email or username already exists.');
+                            }
+                            throw new Error(`Profile creation failed: ${profileError.message}`);
+                        }
+                    }
             
                     // If parent, handle child relationships
                     if (userType === 'parent' && childEmailsTextarea) {
@@ -765,7 +806,13 @@
                             .filter(email => email.length > 0);
             
                         if (childEmails.length > 0) {
-                            await this.linkParentToChildren(authData.user.id, childEmails);
+                            // Don't let this fail registration
+                            try {
+                                await this.linkParentToChildren(authData.user.id, childEmails);
+                            } catch (linkError) {
+                                console.error('Error linking children:', linkError);
+                                // Continue anyway - they can link children later
+                            }
                         }
                     }
             
@@ -774,7 +821,8 @@
             
                 } catch (error) {
                     console.error('Registration error:', error);
-                    window.PortalUI.showNotification(error.message, 'error');
+                    const errorMessage = error.message || 'Registration failed. Please try again.';
+                    window.PortalUI.showNotification(errorMessage, 'error');
                 } finally {
                     if (registerBtn) {
                         registerBtn.disabled = false;
