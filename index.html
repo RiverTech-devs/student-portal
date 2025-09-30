@@ -897,168 +897,6 @@
                 return results;
             }
 
-            async loadChildDetails(childId) {
-                const container = document.getElementById('child-details-container');
-                if (!container) return;
-                
-                try {
-                    container.innerHTML = '<div style="text-align: center; padding: 20px;">Loading child details...</div>';
-                    
-                    // Get child's profile
-                    const { data: childProfile } = await this.auth.supabase
-                        .from('user_profiles')
-                        .select('*')
-                        .eq('id', childId)
-                        .single();
-            
-                    // Get grade summary
-                    const gradeAverage = await this.getChildGradeSummary(childId);
-            
-                    // Get child's class enrollments
-                    const { data: enrollments } = await this.auth.supabase
-                        .from('class_enrollments')
-                        .select(`
-                            *,
-                            classes (
-                                id,
-                                name,
-                                subject,
-                                teacher_id
-                            )
-                        `)
-                        .eq('student_id', childId);
-            
-                    // Get assignments with submissions
-                    let assignmentsHTML = '';
-                    if (enrollments && enrollments.length > 0) {
-                        const classIds = enrollments.map(e => e.class_id);
-                        
-                        const { data: assignments } = await this.auth.supabase
-                            .from('assignments')
-                            .select(`
-                                *,
-                                submissions!left (
-                                    grade,
-                                    status,
-                                    submitted_at,
-                                    student_id
-                                )
-                            `)
-                            .in('class_id', classIds)
-                            .order('due_date', { ascending: true });
-            
-                        if (assignments && assignments.length > 0) {
-                            // Filter submissions for this child
-                            const childAssignments = assignments.map(a => ({
-                                ...a,
-                                submission: a.submissions?.find(s => s.student_id === childId)
-                            }));
-            
-                            assignmentsHTML = `
-                                <div class="card">
-                                    <h3>📝 Assignments</h3>
-                                    <table style="width: 100%;">
-                                        <thead>
-                                            <tr>
-                                                <th>Assignment</th>
-                                                <th>Class</th>
-                                                <th>Due Date</th>
-                                                <th>Status</th>
-                                                <th>Grade</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            ${childAssignments.map(assignment => {
-                                                const className = enrollments.find(e => e.class_id === assignment.class_id)?.classes.name;
-                                                const status = assignment.submission?.status || 'Not Started';
-                                                const grade = assignment.submission?.grade || '-';
-                                                const isPastDue = new Date(assignment.due_date) < new Date() && !assignment.submission;
-                                                
-                                                return `
-                                                    <tr>
-                                                        <td>${assignment.title}</td>
-                                                        <td>${className}</td>
-                                                        <td>${new Date(assignment.due_date).toLocaleDateString()}</td>
-                                                        <td style="color: ${isPastDue ? 'var(--danger)' : status === 'submitted' ? 'var(--accent-2)' : 'var(--warning)'}">
-                                                            ${isPastDue ? 'Past Due' : status}
-                                                        </td>
-                                                        <td>${grade}</td>
-                                                    </tr>
-                                                `;
-                                            }).join('')}
-                                        </tbody>
-                                    </table>
-                                </div>
-                            `;
-                        }
-                    }
-            
-                    container.innerHTML = `
-                        <div style="margin-top: 20px;">
-                            <h3>Details for ${childProfile.first_name} ${childProfile.last_name}</h3>
-                            
-                            <!-- Grade Summary Card -->
-                            <div class="card" style="background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: white; margin-bottom: 20px;">
-                                <h3>📊 Overall Grade Average</h3>
-                                <div style="font-size: 36px; font-weight: bold; margin: 10px 0;">
-                                    ${gradeAverage}
-                                </div>
-                            </div>
-                            
-                            <div class="dashboard">
-                                <div class="card">
-                                    <h3>📚 Enrolled Classes</h3>
-                                    ${enrollments && enrollments.length > 0 ? `
-                                        <div style="margin-top: 10px;">
-                                            ${enrollments.map(enrollment => `
-                                                <div style="padding: 8px; border-bottom: 1px solid var(--border);">
-                                                    <strong>${enrollment.classes.name}</strong><br>
-                                                    <small>Subject: ${enrollment.classes.subject}</small><br>
-                                                    <small>Current Grade: ${enrollment.current_grade || 'N/A'}</small>
-                                                </div>
-                                            `).join('')}
-                                        </div>
-                                    ` : '<p>No classes enrolled</p>'}
-                                </div>
-                                ${assignmentsHTML}
-                            </div>
-                        </div>
-                    `;
-                } catch (error) {
-                    console.error('Error loading child details:', error);
-                    container.innerHTML = '<div class="alert alert-error">Failed to load child details</div>';
-                }
-            }
-
-            async viewAssignmentDetails(assignmentId) {
-                try {
-                    const { data: assignment, error } = await this.auth.supabase
-                        .from('assignments')
-                        .select('*')
-                        .eq('id', assignmentId)
-                        .single();
-            
-                    if (error) throw error;
-            
-                    // Create modal to show assignment details (read-only for parents)
-                    this.showModal('assignment-details', assignment.title, `
-                        <div style="padding: 20px;">
-                            <h3>${assignment.title}</h3>
-                            <p><strong>Description:</strong></p>
-                            <p>${assignment.description || 'No description provided'}</p>
-                            <br>
-                            <p><strong>Due Date:</strong> ${new Date(assignment.due_date).toLocaleDateString()}</p>
-                            <p><strong>Points:</strong> ${assignment.max_points || 'Not specified'}</p>
-                            <br>
-                            <button class="btn btn-secondary" onclick="portal.closeModal()">Close</button>
-                        </div>
-                    `);
-                } catch (error) {
-                    console.error('Error viewing assignment:', error);
-                    window.PortalUI.showNotification('Failed to load assignment details', 'error');
-                }
-            }
-
             async handlePasswordReset(e) {
                 e.preventDefault();
                 
@@ -1420,25 +1258,19 @@
                     
                     // Show the first child's basic info immediately
                     const firstChild = childProfiles[0];
-                    const gradeAverage = await this.getChildGradeSummary(firstChild.id);
-
                     dashboardSection.innerHTML = `
                         <h2>Parent Dashboard - Welcome, ${firstName}</h2>
                         ${childSelectorHTML}
                         <div class="dashboard">
                             <div class="card">
-                                 <h3>👶 Linked Child${childProfiles.length > 1 ? 'ren' : ''}</h3>
-                                    ${await Promise.all(childProfiles.map(async child => {
-                                        const avg = await this.getChildGradeSummary(child.id);
-                                        return `
-                                            <div style="padding: 10px; border-bottom: 1px solid var(--border);">
-                                                <strong>${child.first_name} ${child.last_name}</strong><br>
-                                                <small>Grade ${child.grade_level || 'N/A'} • ${child.email}</small><br>
-                                                <small>Average: ${avg}</small>
-                                            </div>
-                                        `;
-                                    })).then(htmlArray => htmlArray.join(''))}
-                                </div>
+                                <h3>👶 Linked Child${childProfiles.length > 1 ? 'ren' : ''}</h3>
+                                ${childProfiles.map(child => `
+                                    <div style="padding: 10px; border-bottom: 1px solid var(--border);">
+                                        <strong>${child.first_name} ${child.last_name}</strong><br>
+                                        <small>Grade ${child.grade_level || 'N/A'} • ${child.email}</small>
+                                    </div>
+                                `).join('')}
+                            </div>
                             <div class="card">
                                 <h3>📚 Quick Actions</h3>
                                 <button class="btn btn-primary" onclick="window.portalAuth.goToClassesPortal()" style="width: 100%; margin-bottom: 10px;">
@@ -1626,6 +1458,34 @@
                 }
             }
             
+            async viewAssignmentDetails(assignmentId) {
+                try {
+                    const { data: assignment, error } = await this.auth.supabase
+                        .from('assignments')
+                        .select('*')
+                        .eq('id', assignmentId)
+                        .single();
+            
+                    if (error) throw error;
+            
+                    // Create modal to show assignment details
+                    this.showModal('assignment-details', assignment.title, `
+                        <div style="padding: 20px;">
+                            <p><strong>Description:</strong></p>
+                            <p>${assignment.description || 'No description provided'}</p>
+                            <br>
+                            <p><strong>Due Date:</strong> ${new Date(assignment.due_date).toLocaleDateString()}</p>
+                            <p><strong>Points:</strong> ${assignment.max_points || 'Not specified'}</p>
+                            <br>
+                            <button class="btn btn-secondary" onclick="portal.closeModal()">Close</button>
+                        </div>
+                    `);
+                } catch (error) {
+                    console.error('Error viewing assignment:', error);
+                    window.PortalUI.showNotification('Failed to load assignment details', 'error');
+                }
+            }
+            
             async loadTeacherDashboard(dashboardSection, userInfo, firstName) {
                 // Keep existing teacher dashboard
                 dashboardSection.innerHTML = `
@@ -1653,32 +1513,6 @@
                         </div>
                     </div>
                 `;
-            }
-
-            // Method to show grades/progress summary
-            async getChildGradeSummary(childId) {
-                try {
-                    const { data: submissions } = await this.auth.supabase
-                        .from('submissions')
-                        .select('grade, assignment_id')
-                        .eq('student_id', childId)
-                        .not('grade', 'is', null);
-                    
-                    if (!submissions || submissions.length === 0) return 'No grades yet';
-                    
-                    const total = submissions.reduce((sum, s) => sum + (parseFloat(s.grade) || 0), 0);
-                    const average = (total / submissions.length).toFixed(1);
-                    return `${average}%`;
-                } catch (error) {
-                    console.error('Error calculating grades:', error);
-                    return 'N/A';
-                }
-            }
-            
-            // Method to message a teacher
-            async messageTeacher(teacherId, subject) {
-                // Redirect to messaging portal with teacher pre-selected
-                window.portalAuth.goToClassesPortal(`messaging?recipient=${teacherId}&subject=${subject}`);
             }
 
             addGameCardListeners() {
