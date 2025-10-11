@@ -6272,23 +6272,65 @@
           const classIds = this.classes.map(c => c.id);
           if (classIds.length === 0) return [];
           
+          // Get assignments WITHOUT relationship join
           const { data: assignments, error } = await this.auth.supabase
             .from('assignments')
-            .select(`
-              *,
-              classes!inner(name, subject)
-            `)
+            .select('*')
             .in('class_id', classIds)
             .eq('is_published', true)
             .gte('due_date', today.toISOString())
             .lte('due_date', endOfWeek.toISOString())
             .order('due_date', { ascending: true });
       
-          if (error) throw error;
+          if (error) {
+            console.error('Error loading due this week:', error);
+            return [];
+          }
+      
+          if (!assignments || assignments.length === 0) return [];
+      
+          // Get class info separately
+          const assignmentClassIds = [...new Set(assignments.map(a => a.class_id))];
+          const { data: classes } = await this.auth.supabase
+            .from('classes')
+            .select('id, name, subject')
+            .in('id', assignmentClassIds);
+      
+          // Create class map
+          const classMap = {};
+          classes?.forEach(c => {
+            classMap[c.id] = c;
+          });
+      
+          // Attach class info to assignments
+          assignments.forEach(a => {
+            a.classes = classMap[a.class_id] || { name: 'Unknown Class', subject: 'Unknown' };
+          });
+      
+          // Check for selective assignments - filter to only assigned students
+          const filteredAssignments = [];
+          for (const assignment of assignments) {
+            if (assignment.assigned_to_all) {
+              // Assignment is for all students
+              filteredAssignments.push(assignment);
+            } else {
+              // Check if student is specifically assigned
+              const { data: studentAssignment } = await this.auth.supabase
+                .from('assignment_students')
+                .select('id')
+                .eq('assignment_id', assignment.id)
+                .eq('student_id', this.userInfo.user.id)
+                .maybeSingle();
+                
+              if (studentAssignment) {
+                filteredAssignments.push(assignment);
+              }
+            }
+          }
       
           // Get student's submissions for these assignments
-          if (assignments && assignments.length > 0) {
-            const assignmentIds = assignments.map(a => a.id);
+          if (filteredAssignments.length > 0) {
+            const assignmentIds = filteredAssignments.map(a => a.id);
             const { data: submissions } = await this.auth.supabase
               .from('assignment_submissions')
               .select('assignment_id, status')
@@ -6301,12 +6343,12 @@
               submissionMap[s.assignment_id] = s.status;
             });
       
-            assignments.forEach(assignment => {
+            filteredAssignments.forEach(assignment => {
               assignment.submission_status = submissionMap[assignment.id] || 'not_submitted';
             });
           }
       
-          return assignments || [];
+          return filteredAssignments;
           
         } catch (error) {
           console.error('Error loading due this week:', error);
