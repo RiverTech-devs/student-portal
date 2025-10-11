@@ -2422,7 +2422,6 @@
         }
       }
 
-      // FIX 3: Updated modal handling to prevent full closure
       openClass(classId) {
         const classData = this.classes.find(c => c.id === classId);
         if (!classData) return;
@@ -2463,6 +2462,9 @@
                   <button class="btn btn-secondary" onclick="app.classAnalytics('${classId}')">
                     📊 Analytics
                   </button>
+                  <button class="btn btn-primary" onclick="teacherGrades.showGradeManagementModal('${classId}')">
+                    📊 Manage Grades
+                  </button>
                 ` : `
                   <button class="btn btn-secondary" onclick="app.viewGrades('${classId}')">
                     📊 My Grades
@@ -2470,7 +2472,6 @@
                 `}
               </div>
             </div>
-          </div>
       
           <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
             <button class="btn btn-secondary" onclick="app.closeModal('class-details')">Close</button>
@@ -2481,7 +2482,6 @@
         this.showModal('class-details', '📚 Class Details', modalContent);
       }
 
-      // FIX 3: Improved modal system with stacking support
       showModal(id, title, content, isSecondary = false) {
         // Store modal in stack for proper handling
         const modalData = { id, title, content, isSecondary };
@@ -6613,9 +6613,407 @@
         }
       }
     }
+
+    // ==================== TEACHER GRADE MANAGEMENT ====================
+    class TeacherGradeManagement {
+      constructor() {
+        this.currentClassId = null;
+        this.currentQuarterId = null;
+        this.enrollments = [];
+        this.pendingChanges = {};
+      }
       
+      async showGradeManagementModal(classId) {
+        this.currentClassId = classId;
+        this.pendingChanges = {};
+        
+        const modal = document.getElementById('grade-management-modal');
+        if (!modal) return;
+        
+        modal.style.display = 'block';
+        
+        try {
+          // Get current quarter
+          const { data: quarter, error: quarterError } = await window.app.auth.supabase
+            .from('quarters')
+            .select('*')
+            .eq('is_current', true)
+            .single();
+          
+          if (quarterError || !quarter) {
+            document.getElementById('grade-modal-content').innerHTML = `
+              <div class="card" style="background: rgba(255, 107, 107, 0.1); border: 1px solid var(--danger); padding: 20px; text-align: center;">
+                <h3 style="color: var(--danger);">⚠️ No Active Quarter</h3>
+                <p style="margin: 15px 0;">There is no active grading quarter. Please create one first.</p>
+                <button class="btn btn-primary" onclick="teacherGrades.showCreateQuarterForm()">
+                  ➕ Create Quarter
+                </button>
+              </div>
+            `;
+            return;
+          }
+          
+          this.currentQuarterId = quarter.id;
+          
+          // Get class info
+          const { data: classData } = await window.app.auth.supabase
+            .from('classes')
+            .select('name, subject')
+            .eq('id', classId)
+            .single();
+          
+          document.getElementById('grade-modal-title').textContent = `${classData?.name || 'Class'} - Student Grades`;
+          document.getElementById('grade-modal-subtitle').textContent = `${quarter.name} (${quarter.school_year}) • ${new Date(quarter.start_date).toLocaleDateString()} - ${new Date(quarter.end_date).toLocaleDateString()}`;
+          
+          // Get enrollments with student info
+          const { data: enrollments, error: enrollError } = await window.app.auth.supabase
+            .from('class_enrollments')
+            .select(`
+              *,
+              user_profiles!class_enrollments_student_id_fkey (
+                first_name,
+                last_name,
+                email
+              )
+            `)
+            .eq('class_id', classId)
+            .eq('status', 'active')
+            .order('user_profiles(last_name)');
+          
+          if (enrollError) throw enrollError;
+          
+          this.enrollments = enrollments || [];
+          
+          // Update current_quarter_id and calculate grades for all enrollments
+          for (const enrollment of this.enrollments) {
+            if (enrollment.current_quarter_id !== quarter.id) {
+              await window.app.auth.supabase
+                .from('class_enrollments')
+                .update({ current_quarter_id: quarter.id })
+                .eq('id', enrollment.id);
+            }
+            
+            // Calculate grades
+            await window.app.auth.supabase.rpc('update_enrollment_grades', {
+              p_enrollment_id: enrollment.id
+            });
+          }
+          
+          // Reload with updated grades
+          const { data: updatedEnrollments } = await window.app.auth.supabase
+            .from('class_enrollments')
+            .select(`
+              *,
+              user_profiles!class_enrollments_student_id_fkey (
+                first_name,
+                last_name,
+                email
+              )
+            `)
+            .eq('class_id', classId)
+            .eq('status', 'active')
+            .order('user_profiles(last_name)');
+          
+          this.enrollments = updatedEnrollments || [];
+          
+          this.renderGradeTable();
+          
+        } catch (error) {
+          console.error('Error loading grades:', error);
+          document.getElementById('grade-modal-content').innerHTML = `
+            <div class="card" style="background: rgba(255, 107, 107, 0.1); border: 1px solid var(--danger); padding: 20px;">
+              <strong>Error loading grades:</strong> ${error.message}
+            </div>
+          `;
+        }
+      }
+      
+      renderGradeTable() {
+        const content = document.getElementById('grade-modal-content');
+        
+        if (this.enrollments.length === 0) {
+          content.innerHTML = `
+            <div style="text-align: center; padding: 40px; color: var(--muted-color);">
+              <h3>No Students Enrolled</h3>
+              <p>This class has no enrolled students yet.</p>
+            </div>
+          `;
+          return;
+        }
+        
+        let html = `
+          <div style="margin-bottom: 15px; padding: 12px; background: rgba(106, 169, 255, 0.05); border-radius: 8px; border: 1px solid rgba(106, 169, 255, 0.2);">
+            <strong>📝 How Grades Work:</strong><br>
+            <small style="color: var(--muted-color);">
+              • <strong>Academic:</strong> Auto-calculated from assignment averages (read-only)<br>
+              • <strong>Participation:</strong> Manually set by you (editable)<br>
+              • <strong>Class Grade:</strong> Average of Academic + Participation (auto-calculated)
+            </small>
+          </div>
+          
+          <div style="overflow-x: auto;">
+            <table style="width: 100%; border-collapse: collapse;">
+              <thead>
+                <tr>
+                  <th style="text-align: left; padding: 12px; background: rgba(0,0,0,0.3);">Student</th>
+                  <th style="text-align: center; padding: 12px; background: rgba(0,0,0,0.3);">Academic</th>
+                  <th style="text-align: center; padding: 12px; background: rgba(0,0,0,0.3);">Participation</th>
+                  <th style="text-align: center; padding: 12px; background: rgba(0,0,0,0.3);">Class Grade</th>
+                  <th style="text-align: left; padding: 12px; background: rgba(0,0,0,0.3);">Teacher Notes</th>
+                </tr>
+              </thead>
+              <tbody>
+        `;
+        
+        this.enrollments.forEach(enrollment => {
+          const student = enrollment.user_profiles;
+          const academicGrade = enrollment.academic_grade?.toFixed(1) || '0.0';
+          const participationGrade = enrollment.participation_grade?.toFixed(1) || '';
+          const classGrade = enrollment.class_grade?.toFixed(1) || '0.0';
+          const notes = enrollment.teacher_notes || '';
+          
+          html += `
+            <tr style="border-bottom: 1px solid var(--border-color);">
+              <td style="padding: 12px;">
+                <strong>${student.last_name}, ${student.first_name}</strong><br>
+                <small style="color: var(--muted-color);">${student.email}</small>
+              </td>
+              <td style="text-align: center; padding: 12px;">
+                <div style="display: inline-block; padding: 8px 12px; background: rgba(106, 169, 255, 0.1); border-radius: 6px; color: var(--accent); font-weight: 700; font-size: 16px;">
+                  ${academicGrade}
+                </div>
+                <br><small style="color: var(--muted-color); font-size: 10px;">AUTO</small>
+              </td>
+              <td style="text-align: center; padding: 12px;">
+                <input 
+                  type="number" 
+                  class="grade-input" 
+                  data-enrollment-id="${enrollment.id}"
+                  data-field="participation"
+                  value="${participationGrade}"
+                  placeholder="0-100"
+                  min="0" 
+                  max="100" 
+                  step="0.1"
+                  onchange="teacherGrades.handleGradeChange('${enrollment.id}', 'participation_grade', this.value)"
+                  style="width: 80px; padding: 8px; text-align: center; background: rgba(139, 255, 176, 0.1); border: 1px solid rgba(139, 255, 176, 0.3); border-radius: 6px; color: var(--accent-2); font-weight: 700; font-size: 16px;"
+                >
+                <br><small style="color: var(--muted-color); font-size: 10px;">EDITABLE</small>
+              </td>
+              <td style="text-align: center; padding: 12px;">
+                <div style="display: inline-block; padding: 8px 12px; background: rgba(255, 211, 106, 0.1); border-radius: 6px; color: var(--warning); font-weight: 700; font-size: 18px;">
+                  ${classGrade}
+                </div>
+                <br><small style="color: var(--muted-color); font-size: 10px;">AUTO</small>
+              </td>
+              <td style="padding: 12px;">
+                <textarea 
+                  class="notes-textarea"
+                  data-enrollment-id="${enrollment.id}"
+                  data-field="notes"
+                  placeholder="Optional teacher notes..."
+                  onchange="teacherGrades.handleGradeChange('${enrollment.id}', 'teacher_notes', this.value)"
+                  style="width: 100%; min-width: 200px; min-height: 50px; padding: 8px; background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 6px; color: var(--text-color); font-size: 13px; resize: vertical;"
+                >${notes}</textarea>
+              </td>
+            </tr>
+          `;
+        });
+        
+        html += `
+              </tbody>
+            </table>
+          </div>
+        `;
+        
+        content.innerHTML = html;
+      }
+      
+      handleGradeChange(enrollmentId, field, value) {
+        if (!this.pendingChanges[enrollmentId]) {
+          this.pendingChanges[enrollmentId] = {};
+        }
+        this.pendingChanges[enrollmentId][field] = value;
+        
+        // Visual feedback
+        const inputs = document.querySelectorAll(`[data-enrollment-id="${enrollmentId}"]`);
+        inputs.forEach(input => {
+          input.style.borderColor = 'var(--warning)';
+          input.style.borderWidth = '2px';
+        });
+      }
+      
+      async saveAllGrades() {
+        const changeCount = Object.keys(this.pendingChanges).length;
+        
+        if (changeCount === 0) {
+          window.app.showNotification('No changes to save', 'info');
+          return;
+        }
+        
+        try {
+          window.app.showNotification(`Saving ${changeCount} student grade(s)...`, 'info');
+          
+          for (const [enrollmentId, changes] of Object.entries(this.pendingChanges)) {
+            const updateData = {};
+            
+            if (changes.participation_grade !== undefined) {
+              const grade = parseFloat(changes.participation_grade);
+              updateData.participation_grade = isNaN(grade) || changes.participation_grade === '' ? null : grade;
+            }
+            
+            if (changes.teacher_notes !== undefined) {
+              updateData.teacher_notes = changes.teacher_notes.trim() || null;
+            }
+            
+            // Update the enrollment
+            const { error: updateError } = await window.app.auth.supabase
+              .from('class_enrollments')
+              .update(updateData)
+              .eq('id', enrollmentId);
+            
+            if (updateError) throw updateError;
+            
+            // Recalculate grades
+            await window.app.auth.supabase.rpc('update_enrollment_grades', {
+              p_enrollment_id: enrollmentId
+            });
+          }
+          
+          window.app.showNotification('✅ All grades saved successfully!', 'success');
+          
+          // Reload the modal to show updated grades
+          this.pendingChanges = {};
+          await this.showGradeManagementModal(this.currentClassId);
+          
+        } catch (error) {
+          console.error('Error saving grades:', error);
+          window.app.showNotification(`Failed to save grades: ${error.message}`, 'error');
+        }
+      }
+      
+      showCreateQuarterForm() {
+        const content = document.getElementById('grade-modal-content');
+        content.innerHTML = `
+          <div class="card" style="max-width: 600px; margin: 0 auto;">
+            <h3 style="margin-bottom: 20px;">Create New Quarter</h3>
+            <form id="create-quarter-form" onsubmit="teacherGrades.handleCreateQuarter(event)">
+              <div class="form-group">
+                <label>Quarter Name</label>
+                <input type="text" id="quarter-name" required placeholder="e.g., Quarter 1, Fall Semester">
+              </div>
+              <div class="form-group">
+                <label>School Year</label>
+                <input type="text" id="school-year" required placeholder="e.g., 2024-2025">
+              </div>
+              <div class="form-group">
+                <label>Start Date</label>
+                <input type="date" id="start-date" required>
+              </div>
+              <div class="form-group">
+                <label>End Date</label>
+                <input type="date" id="end-date" required>
+              </div>
+              <div class="form-group">
+                <label style="display: flex; align-items: center; gap: 8px;">
+                  <input type="checkbox" id="set-current" checked>
+                  <span>Set as current quarter</span>
+                </label>
+              </div>
+              <div style="display: flex; gap: 10px; margin-top: 20px;">
+                <button type="submit" class="btn btn-primary" style="flex: 1;">Create Quarter</button>
+                <button type="button" class="btn btn-secondary" onclick="teacherGrades.closeGradeModal()" style="flex: 1;">Cancel</button>
+              </div>
+            </form>
+          </div>
+        `;
+      }
+      
+      async handleCreateQuarter(event) {
+        event.preventDefault();
+        
+        const name = document.getElementById('quarter-name').value;
+        const schoolYear = document.getElementById('school-year').value;
+        const startDate = document.getElementById('start-date').value;
+        const endDate = document.getElementById('end-date').value;
+        const setCurrent = document.getElementById('set-current').checked;
+        
+        try {
+          // If setting as current, unset all other quarters
+          if (setCurrent) {
+            await window.app.auth.supabase
+              .from('quarters')
+              .update({ is_current: false })
+              .neq('id', '00000000-0000-0000-0000-000000000000');
+          }
+          
+          const { error } = await window.app.auth.supabase
+            .from('quarters')
+            .insert({
+              name,
+              school_year: schoolYear,
+              start_date: startDate,
+              end_date: endDate,
+              is_current: setCurrent
+            });
+          
+          if (error) throw error;
+          
+          window.app.showNotification('Quarter created successfully!', 'success');
+          
+          // Reload the grade modal
+          await this.showGradeManagementModal(this.currentClassId);
+          
+        } catch (error) {
+          console.error('Error creating quarter:', error);
+          window.app.showNotification(`Failed to create quarter: ${error.message}`, 'error');
+        }
+      }
+      
+      closeGradeModal() {
+        const modal = document.getElementById('grade-management-modal');
+        if (modal) {
+          modal.style.display = 'none';
+        }
+        this.currentClassId = null;
+        this.currentQuarterId = null;
+        this.enrollments = [];
+        this.pendingChanges = {};
+      }
+    }
+    
+    // Initialize teacher grade management
+    window.teacherGrades = new TeacherGradeManagement();
+    // ==================== END TEACHER GRADE MANAGEMENT ====================
+    
     // Initialize the app
     window.app = new ClassesPortalApp();
   </script>
+
+  <!-- Grade Management Modal -->
+  <div id="grade-management-modal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.85); z-index: 10000; overflow-y: auto; padding: 20px;">
+    <div style="background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 12px; max-width: 1200px; margin: 0 auto; padding: 30px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 25px;">
+        <div>
+          <h2 id="grade-modal-title">Student Grades</h2>
+          <p id="grade-modal-subtitle" style="color: var(--muted-color); margin-top: 5px;"></p>
+        </div>
+        <button class="btn" onclick="teacherGrades.closeGradeModal()" style="font-size: 20px;">✕</button>
+      </div>
+      
+      <div id="grade-modal-content">
+        <div style="text-align: center; padding: 40px;">
+          <div class="loading-spinner"></div>
+          <p>Loading student grades...</p>
+        </div>
+      </div>
+      
+      <div style="margin-top: 25px; display: flex; gap: 10px; justify-content: flex-end;">
+        <button class="btn" onclick="teacherGrades.closeGradeModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="teacherGrades.saveAllGrades()">💾 Save All Changes</button>
+      </div>
+    </div>
+  </div>
+  
 </body>
 </html>
