@@ -248,6 +248,22 @@
           transform: translateY(-2px);
           box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
         }
+
+        /* Loading spinner */
+        .spinner {
+            border: 3px solid var(--border);
+            border-top: 3px solid var(--accent);
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
     </style>
 </head>
 <body>
@@ -463,9 +479,27 @@
                     <!-- Grades Section -->
                     <div id="grades-section" class="hidden">
                         <h2>📊 Grades & Assignments</h2>
-                        <div id="grades-content">
-                            <p>No grades available yet</p>
+                        
+                        <!-- Quarter Selector -->
+                        <div style="margin-bottom: 20px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                            <label for="quarter-select" style="font-weight: 600;">Quarter:</label>
+                            <select id="quarter-select" style="padding: 8px 12px; border-radius: 8px; background: var(--card); color: var(--text); border: 1px solid var(--border); min-width: 200px;">
+                                <option value="current">Current Quarter</option>
+                                <option value="history">View Grade History</option>
+                            </select>
+                            <button class="btn btn-secondary" onclick="portal.refreshGrades()" style="margin-left: auto;">
+                                🔄 Refresh
+                            </button>
                         </div>
+                        
+                        <div id="grades-content">
+                            <p style="text-align: center; color: var(--muted); padding: 40px;">
+                                Loading grades...
+                            </p>
+                        </div>
+                        
+                        <!-- Historical grades container -->
+                        <div id="historical-grades-container" class="hidden"></div>
                     </div>
                 </div>
             </div>
@@ -1116,8 +1150,9 @@
                 if (tabName === 'skills') {
                     this.showSkillsTab();
                 } else if (tabName === 'games') {
-                    // Refresh game cards when navigating to games
                     setTimeout(() => this.addGameCardListeners(), 100);
+                } else if (tabName === 'grades') {
+                    setTimeout(() => this.loadGradesSection(), 100);
                 }
             }
 
@@ -1485,6 +1520,715 @@
                     window.PortalUI.showNotification('Failed to load assignment details', 'error');
                 }
             }
+
+            // ==================== GRADE MANAGEMENT METHODS ====================
+
+           async loadGradesSection() {
+                const quarterSelect = document.getElementById('quarter-select');
+                if (quarterSelect) {
+                    quarterSelect.addEventListener('change', (e) => {
+                        if (e.target.value === 'current') {
+                            this.loadCurrentGrades();
+                        } else if (e.target.value === 'history') {
+                            this.loadGradeHistory();
+                        }
+                    });
+                }
+                
+                // Load current grades by default
+                await this.loadCurrentGrades();
+            }
+
+            async loadGradeHistory() {
+                const gradesContent = document.getElementById('grades-content');
+                const historicalContainer = document.getElementById('historical-grades-container');
+                
+                if (!historicalContainer) return;
+                
+                // Hide current, show historical
+                if (gradesContent) gradesContent.classList.add('hidden');
+                historicalContainer.classList.remove('hidden');
+                
+                historicalContainer.innerHTML = '<div style="text-align: center; padding: 40px;"><div class="spinner"></div><p>Loading grade history...</p></div>';
+                
+                try {
+                    const userInfo = this.auth.getUserInfo();
+                    const userId = userInfo.profile.id;
+                    
+                    // Get all enrollments
+                    const { data: enrollments } = await this.auth.supabase
+                        .from('class_enrollments')
+                        .select(`
+                            id,
+                            classes (
+                                name,
+                                subject
+                            )
+                        `)
+                        .eq('student_id', userId);
+                    
+                    if (!enrollments || enrollments.length === 0) {
+                        historicalContainer.innerHTML = `
+                            <div class="card" style="text-align: center; padding: 40px;">
+                                <h3>📚 No Grade History</h3>
+                                <p>No historical grades available.</p>
+                            </div>
+                        `;
+                        return;
+                    }
+                    
+                    const enrollmentIds = enrollments.map(e => e.id);
+                    
+                    // Get historical grades
+                    const { data: history, error } = await this.auth.supabase
+                        .from('quarter_grade_history')
+                        .select(`
+                            *,
+                            quarters (
+                                name,
+                                school_year,
+                                start_date,
+                                end_date
+                            )
+                        `)
+                        .in('enrollment_id', enrollmentIds)
+                        .order('finalized_at', { ascending: false });
+                    
+                    if (error) throw error;
+                    
+                    if (!history || history.length === 0) {
+                        historicalContainer.innerHTML = `
+                            <div class="card" style="text-align: center; padding: 40px;">
+                                <h3>📅 No Completed Quarters</h3>
+                                <p>No quarters have been finalized yet.</p>
+                            </div>
+                        `;
+                        return;
+                    }
+                    
+                    // Group by quarter
+                    const byQuarter = {};
+                    history.forEach(record => {
+                        const quarterId = record.quarter_id;
+                        if (!byQuarter[quarterId]) {
+                            byQuarter[quarterId] = {
+                                quarter: record.quarters,
+                                grades: []
+                            };
+                        }
+                        
+                        const enrollment = enrollments.find(e => e.id === record.enrollment_id);
+                        byQuarter[quarterId].grades.push({
+                            ...record,
+                            className: enrollment?.classes.name,
+                            subject: enrollment?.classes.subject
+                        });
+                    });
+                    
+                    let html = '<h3 style="margin-bottom: 20px;">Grade History</h3>';
+                    
+                    Object.values(byQuarter).forEach(quarterData => {
+                        const quarter = quarterData.quarter;
+                        const grades = quarterData.grades;
+                        
+                        const totalGrade = grades.reduce((sum, g) => sum + (parseFloat(g.class_grade) || 0), 0);
+                        const avgGPA = grades.length > 0 ? (totalGrade / grades.length).toFixed(2) : '0.00';
+                        
+                        html += `
+                            <div class="card" style="margin-bottom: 20px;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                                    <div>
+                                        <h3>${quarter.name} (${quarter.school_year})</h3>
+                                        <p style="color: var(--muted); font-size: 13px;">
+                                            ${new Date(quarter.start_date).toLocaleDateString()} - ${new Date(quarter.end_date).toLocaleDateString()}
+                                        </p>
+                                    </div>
+                                    <div style="text-align: right;">
+                                        <div style="font-size: 32px; font-weight: 700; color: var(--accent);">${avgGPA}</div>
+                                        <div style="font-size: 11px; color: var(--muted);">Quarter GPA</div>
+                                    </div>
+                                </div>
+                                
+                                <table style="width: 100%; margin-top: 15px;">
+                                    <thead>
+                                        <tr>
+                                            <th>Class</th>
+                                            <th>Academic</th>
+                                            <th>Participation</th>
+                                            <th>Final Grade</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${grades.map(g => `
+                                            <tr>
+                                                <td>
+                                                    <strong>${g.className}</strong><br>
+                                                    <small style="color: var(--muted);">${g.subject}</small>
+                                                </td>
+                                                <td style="color: var(--accent);">${g.academic_grade?.toFixed(1) || '-'}</td>
+                                                <td style="color: var(--accent-2);">${g.participation_grade?.toFixed(1) || '-'}</td>
+                                                <td style="font-weight: 700; color: var(--warning); font-size: 16px;">
+                                                    ${g.class_grade?.toFixed(1) || '-'}
+                                                </td>
+                                            </tr>
+                                        `).join('')}
+                                    </tbody>
+                                </table>
+                            </div>
+                        `;
+                    });
+                    
+                    historicalContainer.innerHTML = html;
+                    
+                } catch (error) {
+                    console.error('Error loading grade history:', error);
+                    historicalContainer.innerHTML = `
+                        <div class="alert alert-error">
+                            Failed to load grade history: ${error.message}
+                        </div>
+                    `;
+                }
+            }
+
+            async loadCurrentGrades() {
+                const gradesContent = document.getElementById('grades-content');
+                const historicalContainer = document.getElementById('historical-grades-container');
+                
+                if (!gradesContent) return;
+                
+                // Hide historical, show current
+                if (historicalContainer) historicalContainer.classList.add('hidden');
+                gradesContent.classList.remove('hidden');
+                
+                gradesContent.innerHTML = '<div style="text-align: center; padding: 40px;"><div class="spinner"></div><p>Loading grades...</p></div>';
+                
+                try {
+                    const userInfo = this.auth.getUserInfo();
+                    const userId = userInfo.profile.id;
+                    
+                    // Get current quarter
+                    const { data: currentQuarter, error: quarterError } = await this.auth.supabase
+                        .from('quarters')
+                        .select('*')
+                        .eq('is_current', true)
+                        .single();
+                    
+                    if (quarterError || !currentQuarter) {
+                        gradesContent.innerHTML = `
+                            <div class="card" style="text-align: center; padding: 40px;">
+                                <h3>📅 No Active Quarter</h3>
+                                <p>There is no active grading quarter at this time.</p>
+                                <p style="color: var(--muted); font-size: 14px; margin-top: 10px;">Contact your teacher or administrator.</p>
+                            </div>
+                        `;
+                        return;
+                    }
+                    
+                    // Get student's class enrollments with grades
+                    const { data: enrollments, error: enrollError } = await this.auth.supabase
+                        .from('class_enrollments')
+                        .select(`
+                            *,
+                            classes (
+                                id,
+                                name,
+                                subject,
+                                teacher_id,
+                                user_profiles!classes_teacher_id_fkey (
+                                    first_name,
+                                    last_name
+                                )
+                            )
+                        `)
+                        .eq('student_id', userId);
+                    
+                    if (enrollError) throw enrollError;
+                    
+                    if (!enrollments || enrollments.length === 0) {
+                        gradesContent.innerHTML = `
+                            <div class="card" style="text-align: center; padding: 40px;">
+                                <h3>📚 No Classes Enrolled</h3>
+                                <p>You are not enrolled in any classes yet.</p>
+                            </div>
+                        `;
+                        return;
+                    }
+                    
+                    // Update current quarter for enrollments if needed and calculate grades
+                    for (const enrollment of enrollments) {
+                        if (enrollment.current_quarter_id !== currentQuarter.id) {
+                            await this.auth.supabase
+                                .from('class_enrollments')
+                                .update({ current_quarter_id: currentQuarter.id })
+                                .eq('id', enrollment.id);
+                        }
+                        
+                        // Trigger grade calculation
+                        await this.auth.supabase.rpc('update_enrollment_grades', {
+                            p_enrollment_id: enrollment.id
+                        });
+                    }
+                    
+                    // Reload enrollments with updated grades
+                    const { data: updatedEnrollments } = await this.auth.supabase
+                        .from('class_enrollments')
+                        .select(`
+                            *,
+                            classes (
+                                id,
+                                name,
+                                subject,
+                                teacher_id,
+                                user_profiles!classes_teacher_id_fkey (
+                                    first_name,
+                                    last_name
+                                )
+                            )
+                        `)
+                        .eq('student_id', userId);
+                    
+                    // Build the display
+                    let html = `
+                        <div style="margin-bottom: 20px;">
+                            <h3>Current Quarter: ${currentQuarter.name} (${currentQuarter.school_year})</h3>
+                            <p style="color: var(--muted); font-size: 14px;">
+                                ${new Date(currentQuarter.start_date).toLocaleDateString()} - ${new Date(currentQuarter.end_date).toLocaleDateString()}
+                            </p>
+                        </div>
+                        <div class="dashboard">
+                    `;
+                    
+                    let totalGrade = 0;
+                    let classCount = 0;
+                    
+                    for (const enrollment of updatedEnrollments) {
+                        const classData = enrollment.classes;
+                        
+                        const academicGrade = enrollment.academic_grade?.toFixed(1) || '-';
+                        const participationGrade = enrollment.participation_grade?.toFixed(1) || '-';
+                        const classGrade = enrollment.class_grade?.toFixed(1) || '-';
+                        const lastUpdated = enrollment.last_calculated_at 
+                            ? new Date(enrollment.last_calculated_at).toLocaleDateString()
+                            : 'Not calculated';
+                        
+                        if (enrollment.class_grade !== null) {
+                            totalGrade += parseFloat(enrollment.class_grade);
+                            classCount++;
+                        }
+                        
+                        html += `
+                            <div class="card">
+                                <h3>${classData.name}</h3>
+                                <p style="color: var(--muted); margin-bottom: 15px;">
+                                    ${classData.subject} • ${classData.user_profiles.first_name} ${classData.user_profiles.last_name}
+                                </p>
+                                
+                                <div style="margin: 20px 0;">
+                                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; text-align: center;">
+                                        <div style="padding: 15px; background: rgba(106, 169, 255, 0.1); border-radius: 8px; border: 1px solid rgba(106, 169, 255, 0.2);">
+                                            <div style="font-size: 11px; color: var(--muted); margin-bottom: 5px; text-transform: uppercase; letter-spacing: 0.5px;">Academic</div>
+                                            <div style="font-size: 28px; font-weight: 700; color: var(--accent);">${academicGrade}</div>
+                                            <div style="font-size: 10px; color: var(--muted); margin-top: 3px;">Assignment Avg</div>
+                                        </div>
+                                        
+                                        <div style="padding: 15px; background: rgba(139, 255, 176, 0.1); border-radius: 8px; border: 1px solid rgba(139, 255, 176, 0.2);">
+                                            <div style="font-size: 11px; color: var(--muted); margin-bottom: 5px; text-transform: uppercase; letter-spacing: 0.5px;">Participation</div>
+                                            <div style="font-size: 28px; font-weight: 700; color: var(--accent-2);">${participationGrade}</div>
+                                            <div style="font-size: 10px; color: var(--muted); margin-top: 3px;">Teacher Set</div>
+                                        </div>
+                                        
+                                        <div style="padding: 15px; background: rgba(255, 211, 106, 0.1); border-radius: 8px; border: 1px solid rgba(255, 211, 106, 0.2);">
+                                            <div style="font-size: 11px; color: var(--muted); margin-bottom: 5px; text-transform: uppercase; letter-spacing: 0.5px;">Class Grade</div>
+                                            <div style="font-size: 28px; font-weight: 700; color: var(--warning);">${classGrade}</div>
+                                            <div style="font-size: 10px; color: var(--muted); margin-top: 3px;">Overall</div>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                                    <small style="color: var(--muted);">Updated: ${lastUpdated}</small>
+                                    <button class="btn btn-secondary small" onclick="portal.viewClassAssignments('${classData.id}', '${currentQuarter.id}')">
+                                        View Assignments
+                                    </button>
+                                </div>
+                                
+                                ${enrollment.teacher_notes ? `
+                                    <div style="margin-top: 15px; padding: 12px; background: rgba(106, 169, 255, 0.05); border-radius: 8px; border-left: 3px solid var(--accent);">
+                                        <strong style="font-size: 12px; color: var(--accent);">📝 Teacher Notes:</strong>
+                                        <p style="margin-top: 8px; font-size: 13px; color: var(--text);">${enrollment.teacher_notes}</p>
+                                    </div>
+                                ` : ''}
+                            </div>
+                        `;
+                    }
+                    
+                    html += '</div>';
+                    
+                    // Calculate overall GPA and prepend
+                    if (classCount > 0) {
+                        const overallGPA = (totalGrade / classCount).toFixed(2);
+                        html = `
+                            <div class="card" style="text-align: center; margin-bottom: 20px; background: linear-gradient(135deg, rgba(106, 169, 255, 0.1), rgba(139, 255, 176, 0.1)); border: 2px solid rgba(106, 169, 255, 0.3);">
+                                <h3 style="margin-bottom: 10px;">Quarter GPA</h3>
+                                <div style="font-size: 56px; font-weight: 700; color: var(--accent); margin: 15px 0;">
+                                    ${overallGPA}
+                                </div>
+                                <p style="color: var(--muted); font-size: 14px;">Based on ${classCount} class${classCount !== 1 ? 'es' : ''}</p>
+                            </div>
+                        ` + html;
+                    }
+                    
+                    gradesContent.innerHTML = html;
+                    
+                } catch (error) {
+                    console.error('Error loading grades:', error);
+                    gradesContent.innerHTML = `
+                        <div class="alert alert-error">
+                            Failed to load grades: ${error.message}
+                        </div>
+                    `;
+                }
+            }
+            
+            async loadQuarters() {
+                try {
+                    const { data: quarters, error } = await this.auth.supabase
+                        .from('quarters')
+                        .select('*')
+                        .order('start_date', { ascending: false });
+                    
+                    if (error) throw error;
+                    
+                    const quarterSelect = document.getElementById('quarter-select');
+                    if (!quarterSelect) return;
+                    
+                    if (!quarters || quarters.length === 0) {
+                        quarterSelect.innerHTML = '<option value="">No quarters available</option>';
+                        return;
+                    }
+                    
+                    quarterSelect.innerHTML = quarters.map(q => `
+                        <option value="${q.id}" ${q.is_current ? 'selected' : ''}>
+                            ${q.name} (${q.school_year})
+                        </option>
+                    `).join('');
+                    
+                    // Load the current quarter or first quarter
+                    const currentQuarter = quarters.find(q => q.is_current) || quarters[0];
+                    if (currentQuarter) {
+                        await this.loadGradesForQuarter(currentQuarter.id);
+                    }
+                    
+                } catch (error) {
+                    console.error('Error loading quarters:', error);
+                    window.PortalUI.showNotification('Failed to load quarters', 'error');
+                }
+            }
+            
+            async loadGradesForQuarter(quarterId) {
+                const gradesContent = document.getElementById('grades-content');
+                if (!gradesContent) return;
+                
+                gradesContent.innerHTML = '<div style="text-align: center; padding: 40px;"><div class="spinner"></div><p>Loading grades...</p></div>';
+                
+                try {
+                    const userInfo = this.auth.getUserInfo();
+                    const userId = userInfo.profile.id;
+                    
+                    // Get student's class enrollments
+                    const { data: enrollments, error: enrollError } = await this.auth.supabase
+                        .from('class_enrollments')
+                        .select(`
+                            *,
+                            classes (
+                                id,
+                                name,
+                                subject,
+                                teacher_id,
+                                user_profiles!classes_teacher_id_fkey (
+                                    first_name,
+                                    last_name
+                                )
+                            )
+                        `)
+                        .eq('student_id', userId);
+                    
+                    if (enrollError) throw enrollError;
+                    
+                    if (!enrollments || enrollments.length === 0) {
+                        gradesContent.innerHTML = `
+                            <div class="card" style="text-align: center; padding: 40px;">
+                                <h3>📚 No Classes Enrolled</h3>
+                                <p>You are not enrolled in any classes yet.</p>
+                            </div>
+                        `;
+                        return;
+                    }
+                    
+                    // Get grades for this quarter
+                    const classIds = enrollments.map(e => e.class_id);
+                    const { data: grades, error: gradesError } = await this.auth.supabase
+                        .from('class_grades')
+                        .select('*')
+                        .eq('student_id', userId)
+                        .eq('quarter_id', quarterId)
+                        .in('class_id', classIds);
+                    
+                    if (gradesError) throw gradesError;
+                    
+                    // Create grades map
+                    const gradesMap = {};
+                    if (grades) {
+                        grades.forEach(g => {
+                            gradesMap[g.class_id] = g;
+                        });
+                    }
+                    
+                    // Build the display
+                    let html = '<div class="dashboard">';
+                    
+                    for (const enrollment of enrollments) {
+                        const classData = enrollment.classes;
+                        const gradeData = gradesMap[classData.id];
+                        
+                        const academicGrade = gradeData?.academic_grade?.toFixed(1) || '-';
+                        const participationGrade = gradeData?.participation_grade?.toFixed(1) || '-';
+                        const classGrade = gradeData?.class_grade?.toFixed(1) || '-';
+                        const lastUpdated = gradeData?.last_calculated_at 
+                            ? new Date(gradeData.last_calculated_at).toLocaleDateString()
+                            : 'Not yet calculated';
+                        
+                        html += `
+                            <div class="card">
+                                <h3>${classData.name}</h3>
+                                <p style="color: var(--muted); margin-bottom: 15px;">
+                                    ${classData.subject} • ${classData.user_profiles.first_name} ${classData.user_profiles.last_name}
+                                </p>
+                                
+                                <div style="margin: 20px 0;">
+                                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; text-align: center;">
+                                        <div style="padding: 15px; background: rgba(106, 169, 255, 0.1); border-radius: 8px; border: 1px solid rgba(106, 169, 255, 0.2);">
+                                            <div style="font-size: 11px; color: var(--muted); margin-bottom: 5px; text-transform: uppercase; letter-spacing: 0.5px;">Academic</div>
+                                            <div style="font-size: 28px; font-weight: 700; color: var(--accent);">${academicGrade}</div>
+                                            <div style="font-size: 10px; color: var(--muted); margin-top: 3px;">Assignment Average</div>
+                                        </div>
+                                        
+                                        <div style="padding: 15px; background: rgba(139, 255, 176, 0.1); border-radius: 8px; border: 1px solid rgba(139, 255, 176, 0.2);">
+                                            <div style="font-size: 11px; color: var(--muted); margin-bottom: 5px; text-transform: uppercase; letter-spacing: 0.5px;">Participation</div>
+                                            <div style="font-size: 28px; font-weight: 700; color: var(--accent-2);">${participationGrade}</div>
+                                            <div style="font-size: 10px; color: var(--muted); margin-top: 3px;">Teacher Assessed</div>
+                                        </div>
+                                        
+                                        <div style="padding: 15px; background: rgba(255, 211, 106, 0.1); border-radius: 8px; border: 1px solid rgba(255, 211, 106, 0.2);">
+                                            <div style="font-size: 11px; color: var(--muted); margin-bottom: 5px; text-transform: uppercase; letter-spacing: 0.5px;">Class Grade</div>
+                                            <div style="font-size: 28px; font-weight: 700; color: var(--warning);">${classGrade}</div>
+                                            <div style="font-size: 10px; color: var(--muted); margin-top: 3px;">Overall Grade</div>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
+                                    <small style="color: var(--muted);">Last updated: ${lastUpdated}</small>
+                                    <button class="btn btn-secondary small" onclick="portal.viewClassAssignments('${classData.id}', '${quarterId}')">
+                                        View Assignments
+                                    </button>
+                                </div>
+                                
+                                ${gradeData?.teacher_notes ? `
+                                    <div style="margin-top: 15px; padding: 12px; background: rgba(106, 169, 255, 0.05); border-radius: 8px; border-left: 3px solid var(--accent);">
+                                        <strong style="font-size: 12px; color: var(--accent);">📝 Teacher Notes:</strong>
+                                        <p style="margin-top: 8px; font-size: 13px; color: var(--text);">${gradeData.teacher_notes}</p>
+                                    </div>
+                                ` : ''}
+                            </div>
+                        `;
+                    }
+                    
+                    html += '</div>';
+                    
+                    // Calculate overall GPA
+                    const validGrades = Object.values(gradesMap).filter(g => g.class_grade !== null);
+                    if (validGrades.length > 0) {
+                        const overallGPA = (validGrades.reduce((sum, g) => sum + parseFloat(g.class_grade), 0) / validGrades.length).toFixed(2);
+                        html = `
+                            <div class="card" style="text-align: center; margin-bottom: 20px; background: linear-gradient(135deg, rgba(106, 169, 255, 0.1), rgba(139, 255, 176, 0.1));">
+                                <h3>Quarter GPA</h3>
+                                <div style="font-size: 48px; font-weight: 700; color: var(--accent); margin: 10px 0;">
+                                    ${overallGPA}
+                                </div>
+                                <p style="color: var(--muted);">Based on ${validGrades.length} class${validGrades.length !== 1 ? 'es' : ''}</p>
+                            </div>
+                        ` + html;
+                    }
+                    
+                    gradesContent.innerHTML = html;
+                    
+                } catch (error) {
+                    console.error('Error loading grades:', error);
+                    gradesContent.innerHTML = `
+                        <div class="alert alert-error">
+                            Failed to load grades: ${error.message}
+                        </div>
+                    `;
+                }
+            }
+            
+            async viewClassAssignments(classId, quarterId) {
+                try {
+                    // Get quarter dates
+                    const { data: quarter } = await this.auth.supabase
+                        .from('quarters')
+                        .select('start_date, end_date, name')
+                        .eq('id', quarterId)
+                        .single();
+                    
+                    if (!quarter) {
+                        window.PortalUI.showNotification('Quarter not found', 'error');
+                        return;
+                    }
+                    
+                    // Get assignments for this class in this quarter
+                    const { data: assignments, error } = await this.auth.supabase
+                        .from('assignments')
+                        .select(`
+                            *,
+                            submissions!left (
+                                id,
+                                student_id,
+                                grade,
+                                submitted_at,
+                                status
+                            )
+                        `)
+                        .eq('class_id', classId)
+                        .gte('due_date', quarter.start_date)
+                        .lte('due_date', quarter.end_date)
+                        .order('due_date', { ascending: false });
+                    
+                    if (error) throw error;
+                    
+                    const userInfo = this.auth.getUserInfo();
+                    const studentId = userInfo.profile.id;
+                    
+                    // Filter submissions for this student
+                    const assignmentsWithGrades = assignments.map(a => {
+                        const submission = a.submissions?.find(s => s.student_id === studentId);
+                        return { ...a, submission };
+                    });
+                    
+                    const modalContent = `
+                        <div style="max-height: 60vh; overflow-y: auto;">
+                            <h4 style="margin-bottom: 20px;">${quarter.name} Assignments</h4>
+                            ${assignmentsWithGrades.length === 0 ? `
+                                <p style="text-align: center; color: var(--muted); padding: 40px;">
+                                    No assignments for this quarter
+                                </p>
+                            ` : `
+                                <table style="width: 100%;">
+                                    <thead>
+                                        <tr>
+                                            <th>Assignment</th>
+                                            <th>Due Date</th>
+                                            <th>Grade</th>
+                                            <th>Status</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${assignmentsWithGrades.map(a => {
+                                            const grade = a.submission?.grade;
+                                            const maxPoints = a.max_points || 100;
+                                            const percentage = grade !== null && grade !== undefined ? ((grade / maxPoints) * 100).toFixed(1) : '-';
+                                            const status = a.submission?.status || 'Not submitted';
+                                            const dueDate = new Date(a.due_date).toLocaleDateString();
+                                            const isPastDue = new Date(a.due_date) < new Date() && !a.submission;
+                                            
+                                            return `
+                                                <tr>
+                                                    <td>
+                                                        <strong>${a.title}</strong>
+                                                        ${a.description ? `<br><small style="color: var(--muted);">${a.description.substring(0, 50)}${a.description.length > 50 ? '...' : ''}</small>` : ''}
+                                                    </td>
+                                                    <td>${dueDate}</td>
+                                                    <td>
+                                                        ${percentage !== '-' ? `
+                                                            <strong style="color: var(--accent-2); font-size: 16px;">${percentage}%</strong>
+                                                            <br><small style="color: var(--muted);">${grade}/${maxPoints}</small>
+                                                        ` : '-'}
+                                                    </td>
+                                                    <td>
+                                                        <span style="padding: 4px 8px; border-radius: 4px; font-size: 11px; text-transform: uppercase; font-weight: 600; background: ${
+                                                            status === 'graded' ? 'rgba(139, 255, 176, 0.2)' : 
+                                                            status === 'submitted' ? 'rgba(106, 169, 255, 0.2)' :
+                                                            isPastDue ? 'rgba(255, 106, 106, 0.2)' : 
+                                                            'rgba(151, 162, 176, 0.2)'
+                                                        }; color: ${
+                                                            status === 'graded' ? 'var(--accent-2)' : 
+                                                            status === 'submitted' ? 'var(--accent)' :
+                                                            isPastDue ? 'var(--danger)' : 
+                                                            'var(--muted)'
+                                                        }">
+                                                            ${isPastDue && !a.submission ? 'Past Due' : status}
+                                                        </span>
+                                                    </td>
+                                                </tr>
+                                            `;
+                                        }).join('')}
+                                    </tbody>
+                                </table>
+                                
+                                <div style="margin-top: 20px; padding: 15px; background: rgba(106, 169, 255, 0.05); border-radius: 8px;">
+                                    <strong>Quarter Summary:</strong><br>
+                                    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-top: 10px;">
+                                        <div style="text-align: center;">
+                                            <div style="font-size: 24px; font-weight: 700; color: var(--accent);">
+                                                ${assignmentsWithGrades.filter(a => a.submission?.grade !== null && a.submission?.grade !== undefined).length}
+                                            </div>
+                                            <div style="font-size: 11px; color: var(--muted);">Graded</div>
+                                        </div>
+                                        <div style="text-align: center;">
+                                            <div style="font-size: 24px; font-weight: 700; color: var(--warning);">
+                                                ${assignmentsWithGrades.filter(a => a.submission && !a.submission.grade).length}
+                                            </div>
+                                            <div style="font-size: 11px; color: var(--muted);">Pending</div>
+                                        </div>
+                                        <div style="text-align: center;">
+                                            <div style="font-size: 24px; font-weight: 700; color: var(--danger);">
+                                                ${assignmentsWithGrades.filter(a => !a.submission && new Date(a.due_date) < new Date()).length}
+                                            </div>
+                                            <div style="font-size: 11px; color: var(--muted);">Missing</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            `}
+                            
+                            <div style="margin-top: 20px; text-align: center;">
+                                <button class="btn btn-secondary" onclick="portal.closeModal()">Close</button>
+                            </div>
+                        </div>
+                    `;
+                    
+                    this.showModal('class-assignments', 'Class Assignments', modalContent);
+                    
+                } catch (error) {
+                    console.error('Error loading assignments:', error);
+                    window.PortalUI.showNotification('Failed to load assignments', 'error');
+                }
+            }
+            
+            async refreshGrades() {
+                window.PortalUI.showNotification('Refreshing grades...', 'info', 2000);
+                
+                const quarterSelect = document.getElementById('quarter-select');
+                if (quarterSelect?.value === 'history') {
+                    await this.loadGradeHistory();
+                } else {
+                    await this.loadCurrentGrades();
+                }
+                
+                window.PortalUI.showNotification('Grades refreshed!', 'success');
+            }
+            
+            // ==================== END GRADE MANAGEMENT METHODS ====================
             
             async loadTeacherDashboard(dashboardSection, userInfo, firstName) {
                 // Keep existing teacher dashboard
