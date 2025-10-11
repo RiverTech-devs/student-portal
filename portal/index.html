@@ -3948,34 +3948,110 @@
       async viewGrades(classId) {
         try {
           const classData = this.classes.find(c => c.id === classId);
-
-          // Load assignments and submissions
+      
+          // Get current quarter
+          const { data: currentQuarter } = await this.auth.supabase
+            .from('quarters')
+            .select('*')
+            .eq('is_current', true)
+            .single();
+      
+          if (!currentQuarter) {
+            const modalContent = `
+              <div>
+                <h3>📊 My Grades - ${classData?.name}</h3>
+                <div class="card" style="background: rgba(255, 107, 107, 0.1); border: 1px solid var(--danger); padding: 20px; text-align: center; margin-top: 20px;">
+                  <h3 style="color: var(--danger);">⚠️ No Active Quarter</h3>
+                  <p>There is no active grading quarter. Grades will be available when your teacher creates a quarter.</p>
+                </div>
+              </div>
+              <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+                <button class="btn btn-secondary" onclick="app.closeModal('grades')">Close</button>
+              </div>
+            `;
+            this.showModal('grades', '📊 My Grades', modalContent, true);
+            return;
+          }
+      
+          // Get the student's enrollment for this class
+          const { data: enrollment } = await this.auth.supabase
+            .from('class_enrollments')
+            .select('*')
+            .eq('class_id', classId)
+            .eq('student_id', this.userInfo.user.id)
+            .eq('status', 'active')
+            .single();
+      
+          if (!enrollment) {
+            const modalContent = `
+              <div>
+                <h3>📊 My Grades - ${classData?.name}</h3>
+                <p style="color: var(--muted); margin-top: 20px;">You are not enrolled in this class.</p>
+              </div>
+              <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+                <button class="btn btn-secondary" onclick="app.closeModal('grades')">Close</button>
+              </div>
+            `;
+            this.showModal('grades', '📊 My Grades', modalContent, true);
+            return;
+          }
+      
+          // Update quarter if needed and recalculate
+          if (enrollment.current_quarter_id !== currentQuarter.id) {
+            await this.auth.supabase
+              .from('class_enrollments')
+              .update({ current_quarter_id: currentQuarter.id })
+              .eq('id', enrollment.id);
+          }
+      
+          // Recalculate grades
+          await this.auth.supabase.rpc('update_enrollment_grades', {
+            p_enrollment_id: enrollment.id
+          });
+      
+          // Reload enrollment with updated grades
+          const { data: updatedEnrollment } = await this.auth.supabase
+            .from('class_enrollments')
+            .select('*')
+            .eq('id', enrollment.id)
+            .single();
+      
+          const academicGrade = updatedEnrollment?.academic_grade?.toFixed(1) || '0.0';
+          const participationGrade = updatedEnrollment?.participation_grade?.toFixed(1) || 'Not Set';
+          const classGrade = updatedEnrollment?.class_grade?.toFixed(1) || '0.0';
+      
+          // Load assignments and submissions for detail view
           const { data: assignments } = await this.auth.supabase
             .from('assignments')
             .select('*')
             .eq('class_id', classId)
-            .order('created_at', { ascending: false });
-
-          let gradesHtml = '';
+            .gte('due_date', currentQuarter.start_date)
+            .lte('due_date', currentQuarter.end_date)
+            .order('due_date', { ascending: false });
+      
+          let assignmentsHtml = '';
           if (assignments && assignments.length > 0) {
             const { data: submissions } = await this.auth.supabase
               .from('assignment_submissions')
               .select('*')
               .in('assignment_id', assignments.map(a => a.id))
               .eq('student_id', this.userInfo.user.id);
-
+      
             const submissionMap = {};
             submissions?.forEach(s => {
               submissionMap[s.assignment_id] = s;
             });
-
-            gradesHtml = assignments.map(assignment => {
+      
+            assignmentsHtml = assignments.map(assignment => {
               const submission = submissionMap[assignment.id];
               const isExcused = submission?.status === 'excused';
-              const grade = isExcused ? 'Excused' : (submission?.grade || 'Not graded');
+              const grade = isExcused ? 'Excused' : (submission?.grade || '-');
               const points = isExcused ? '-' : (submission?.points_earned || '-');
               const maxPoints = assignment.max_points || 100;
-            
+              const percentage = !isExcused && submission?.points_earned !== null && submission?.points_earned !== undefined
+                ? ((submission.points_earned / maxPoints) * 100).toFixed(1) + '%'
+                : '-';
+      
               return `
                 <div class="list-item">
                   <div class="list-item-content">
@@ -3987,7 +4063,7 @@
                   </div>
                   <div style="text-align: right;">
                     <div style="font-size: 20px; font-weight: bold; color: ${isExcused ? 'var(--warning)' : submission?.grade ? 'var(--accent-2)' : 'var(--muted)'};">
-                      ${grade}
+                      ${percentage}
                     </div>
                     ${!isExcused ? `
                       <div style="font-size: 12px; color: var(--muted);">
@@ -4003,23 +4079,66 @@
               `;
             }).join('');
           }
-
+      
           const modalContent = `
             <div>
               <h3>📊 My Grades - ${classData?.name}</h3>
+              <p style="color: var(--muted); margin-bottom: 20px;">
+                ${currentQuarter.name} (${currentQuarter.school_year})
+              </p>
               
-              <div class="list" style="max-height: 60vh; overflow-y: auto; margin-top: 20px;">
-                ${gradesHtml || '<p style="color: var(--muted); text-align: center; padding: 20px;">No grades available yet.</p>'}
+              <!-- Grade Breakdown Card -->
+              <div class="card" style="background: linear-gradient(135deg, rgba(106, 169, 255, 0.1), rgba(139, 255, 176, 0.1)); border: 2px solid rgba(106, 169, 255, 0.3); margin-bottom: 30px;">
+                <h4 style="margin-bottom: 20px; text-align: center;">Quarter Grade Breakdown</h4>
+                
+                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; margin: 20px 0;">
+                  <div style="text-align: center; padding: 20px; background: rgba(106, 169, 255, 0.1); border-radius: 8px; border: 1px solid rgba(106, 169, 255, 0.2);">
+                    <div style="font-size: 11px; color: var(--muted); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">Academic</div>
+                    <div style="font-size: 42px; font-weight: 700; color: var(--accent); line-height: 1;">
+                      ${academicGrade}
+                    </div>
+                    <div style="font-size: 11px; color: var(--muted); margin-top: 8px;">Assignment Average</div>
+                  </div>
+                  
+                  <div style="text-align: center; padding: 20px; background: rgba(139, 255, 176, 0.1); border-radius: 8px; border: 1px solid rgba(139, 255, 176, 0.2);">
+                    <div style="font-size: 11px; color: var(--muted); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">Participation</div>
+                    <div style="font-size: 42px; font-weight: 700; color: var(--accent-2); line-height: 1;">
+                      ${participationGrade}
+                    </div>
+                    <div style="font-size: 11px; color: var(--muted); margin-top: 8px;">Teacher Assessed</div>
+                  </div>
+                  
+                  <div style="text-align: center; padding: 20px; background: rgba(255, 211, 106, 0.1); border-radius: 8px; border: 1px solid rgba(255, 211, 106, 0.2);">
+                    <div style="font-size: 11px; color: var(--muted); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">Class Grade</div>
+                    <div style="font-size: 42px; font-weight: 700; color: var(--warning); line-height: 1;">
+                      ${classGrade}
+                    </div>
+                    <div style="font-size: 11px; color: var(--muted); margin-top: 8px;">Overall Quarter Grade</div>
+                  </div>
+                </div>
+                
+                ${updatedEnrollment?.teacher_notes ? `
+                  <div style="margin-top: 20px; padding: 15px; background: rgba(106, 169, 255, 0.05); border-radius: 8px; border-left: 3px solid var(--accent);">
+                    <strong style="font-size: 12px; color: var(--accent);">📝 Teacher Notes:</strong>
+                    <p style="margin-top: 8px; font-size: 13px; color: var(--text);">${updatedEnrollment.teacher_notes}</p>
+                  </div>
+                ` : ''}
+              </div>
+              
+              <!-- Individual Assignments -->
+              <h4 style="margin: 30px 0 15px 0;">Individual Assignments (${currentQuarter.name})</h4>
+              <div class="list" style="max-height: 400px; overflow-y: auto;">
+                ${assignmentsHtml || '<p style="color: var(--muted); text-align: center; padding: 20px;">No assignments for this quarter yet.</p>'}
               </div>
             </div>
-
+      
             <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
               <button class="btn btn-secondary" onclick="app.closeModal('grades')">Close</button>
             </div>
           `;
-
+      
           this.showModal('grades', '📊 My Grades', modalContent, true);
-
+      
         } catch (error) {
           console.error('Error loading grades:', error);
           this.showNotification('Error loading grades: ' + error.message, 'error');
