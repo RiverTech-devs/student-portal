@@ -6665,24 +6665,57 @@
           document.getElementById('grade-modal-title').textContent = `${classData?.name || 'Class'} - Student Grades`;
           document.getElementById('grade-modal-subtitle').textContent = `${quarter.name} (${quarter.school_year}) • ${new Date(quarter.start_date).toLocaleDateString()} - ${new Date(quarter.end_date).toLocaleDateString()}`;
           
-          // Get enrollments with student info
+          // Get enrollments WITHOUT relationship join
           const { data: enrollments, error: enrollError } = await window.app.auth.supabase
             .from('class_enrollments')
-            .select(`
-              *,
-              user_profiles!class_enrollments_student_id_fkey (
-                first_name,
-                last_name,
-                email
-              )
-            `)
+            .select('*')
             .eq('class_id', classId)
-            .eq('status', 'active')
-            .order('user_profiles(last_name)');
+            .eq('status', 'active');
           
           if (enrollError) throw enrollError;
           
-          this.enrollments = enrollments || [];
+          if (!enrollments || enrollments.length === 0) {
+            document.getElementById('grade-modal-content').innerHTML = `
+              <div style="text-align: center; padding: 40px; color: var(--muted-color);">
+                <h3>No Students Enrolled</h3>
+                <p>This class has no enrolled students yet.</p>
+              </div>
+            `;
+            return;
+          }
+          
+          // Get student profiles separately
+          const studentIds = enrollments.map(e => e.student_id);
+          const { data: students, error: studentError } = await window.app.auth.supabase
+            .from('user_profiles')
+            .select('id, first_name, last_name, email')
+            .in('id', studentIds);
+          
+          if (studentError) throw studentError;
+          
+          // Create student map
+          const studentMap = {};
+          students?.forEach(s => {
+            studentMap[s.id] = s;
+          });
+          
+          // Attach student profiles to enrollments
+          enrollments.forEach(e => {
+            e.user_profiles = studentMap[e.student_id] || {
+              first_name: 'Unknown',
+              last_name: 'User',
+              email: 'N/A'
+            };
+          });
+          
+          // Sort by last name
+          enrollments.sort((a, b) => {
+            const nameA = a.user_profiles.last_name?.toLowerCase() || '';
+            const nameB = b.user_profiles.last_name?.toLowerCase() || '';
+            return nameA.localeCompare(nameB);
+          });
+          
+          this.enrollments = enrollments;
           
           // Update current_quarter_id and calculate grades for all enrollments
           for (const enrollment of this.enrollments) {
@@ -6699,20 +6732,28 @@
             });
           }
           
-          // Reload with updated grades
+          // Reload with updated grades (without relationship join)
           const { data: updatedEnrollments } = await window.app.auth.supabase
             .from('class_enrollments')
-            .select(`
-              *,
-              user_profiles!class_enrollments_student_id_fkey (
-                first_name,
-                last_name,
-                email
-              )
-            `)
+            .select('*')
             .eq('class_id', classId)
-            .eq('status', 'active')
-            .order('user_profiles(last_name)');
+            .eq('status', 'active');
+          
+          // Re-attach student profiles
+          updatedEnrollments?.forEach(e => {
+            e.user_profiles = studentMap[e.student_id] || {
+              first_name: 'Unknown',
+              last_name: 'User',
+              email: 'N/A'
+            };
+          });
+          
+          // Sort by last name
+          updatedEnrollments?.sort((a, b) => {
+            const nameA = a.user_profiles.last_name?.toLowerCase() || '';
+            const nameB = b.user_profiles.last_name?.toLowerCase() || '';
+            return nameA.localeCompare(nameB);
+          });
           
           this.enrollments = updatedEnrollments || [];
           
