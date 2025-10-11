@@ -6791,12 +6791,6 @@
               • <strong>Class Grade:</strong> Average of Academic + Participation (auto-calculated)
             </small>
           </div>
-
-          <div style="margin-bottom: 15px; text-align: right;">
-            <button class="btn btn-secondary" onclick="teacherGrades.recalculateAllGrades()">
-              🔄 Recalculate Academic Grades
-            </button>
-          </div>
           
           <div style="overflow-x: auto;">
             <table style="width: 100%; border-collapse: collapse;">
@@ -6820,7 +6814,7 @@
           const notes = enrollment.teacher_notes || '';
           
           html += `
-            <tr style="border-bottom: 1px solid var(--border-color);">
+            <tr style="border-bottom: 1px solid var(--border-color);" data-enrollment-id="${enrollment.id}">
               <td style="padding: 12px;">
                 <strong>${student.last_name}, ${student.first_name}</strong><br>
                 <small style="color: var(--muted-color);">${student.email}</small>
@@ -6848,7 +6842,7 @@
                 <br><small style="color: var(--muted-color); font-size: 10px;">EDITABLE</small>
               </td>
               <td style="text-align: center; padding: 12px;">
-                <div style="display: inline-block; padding: 8px 12px; background: rgba(255, 211, 106, 0.1); border-radius: 6px; color: var(--warning); font-weight: 700; font-size: 18px;">
+                <div class="class-grade-display" style="display: inline-block; padding: 8px 12px; background: rgba(255, 211, 106, 0.1); border-radius: 6px; color: var(--warning); font-weight: 700; font-size: 18px;">
                   ${classGrade}
                 </div>
                 <br><small style="color: var(--muted-color); font-size: 10px;">AUTO</small>
@@ -6878,6 +6872,20 @@
 
       async recalculateAllGrades() {
         try {
+          // Check if there are unsaved changes
+          const changeCount = Object.keys(this.pendingChanges).length;
+          
+          if (changeCount > 0) {
+            const confirm = window.confirm(`You have ${changeCount} unsaved change(s). Save them before recalculating?`);
+            if (confirm) {
+              // Save changes first
+              await this.saveAllGrades();
+            } else {
+              // User cancelled
+              return;
+            }
+          }
+          
           window.app.showNotification('Recalculating academic grades...', 'info');
           
           for (const enrollment of this.enrollments) {
@@ -6886,7 +6894,7 @@
             });
           }
           
-          window.app.showNotification('Grades recalculated!', 'success');
+          window.app.showNotification('Academic grades recalculated!', 'success');
           
           // Reload the modal
           await this.showGradeManagementModal(this.currentClassId);
@@ -6909,6 +6917,25 @@
           input.style.borderColor = 'var(--warning)';
           input.style.borderWidth = '2px';
         });
+        
+        // If participation grade changed, update class grade display in real-time
+        if (field === 'participation_grade') {
+          const enrollment = this.enrollments.find(e => e.id === enrollmentId);
+          if (enrollment) {
+            const academicGrade = parseFloat(enrollment.academic_grade) || 0;
+            const participationGrade = parseFloat(value) || 0;
+            const classGrade = (academicGrade + participationGrade) / 2;
+            
+            // Find and update the class grade display for this row
+            const row = document.querySelector(`tr[data-enrollment-id="${enrollmentId}"]`);
+            if (row) {
+              const classGradeCell = row.querySelector('.class-grade-display');
+              if (classGradeCell) {
+                classGradeCell.textContent = classGrade.toFixed(1);
+              }
+            }
+          }
+        }
       }
       
       async saveAllGrades() {
@@ -6950,8 +6977,10 @@
           
           window.app.showNotification('✅ All grades saved successfully!', 'success');
           
-          // Reload the modal to show updated grades
+          // Clear pending changes
           this.pendingChanges = {};
+          
+          // Reload the modal to show updated grades
           await this.showGradeManagementModal(this.currentClassId);
           
         } catch (error) {
