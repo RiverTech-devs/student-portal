@@ -6701,6 +6701,30 @@
             .insert(submissionData);
           
           if (error) throw error;
+      
+          // CRITICAL: Recalculate the student's grades
+          const { data: classData } = await this.auth.supabase
+            .from('assignments')
+            .select('class_id')
+            .eq('id', assignmentId)
+            .single();
+      
+          if (classData) {
+            const { data: enrollment } = await this.auth.supabase
+              .from('class_enrollments')
+              .select('id')
+              .eq('student_id', studentId)
+              .eq('class_id', classData.class_id)
+              .eq('status', 'active')
+              .single();
+      
+            if (enrollment) {
+              console.log('Recalculating grades for enrollment:', enrollment.id);
+              await this.auth.supabase.rpc('update_enrollment_grades', {
+                p_enrollment_id: enrollment.id
+              });
+            }
+          }
           
           this.showNotification(isExcused ? 'Assignment excused' : 'Grade saved successfully', 'success');
           this.closeModal('grade-non-submitted');
@@ -7229,12 +7253,34 @@
         }
       
         try {
-          const { error } = await this.auth.supabase
+          const { data: submission, error } = await this.auth.supabase
             .from('assignment_submissions')
             .update(gradeData)
-            .eq('id', submissionId);
+            .eq('id', submissionId)
+            .select()
+            .single();
       
           if (error) throw error;
+      
+          // CRITICAL: Recalculate the student's grades after updating submission
+          const { data: enrollment } = await this.auth.supabase
+            .from('class_enrollments')
+            .select('id')
+            .eq('student_id', submission.student_id)
+            .eq('class_id', (await this.auth.supabase
+              .from('assignments')
+              .select('class_id')
+              .eq('id', assignmentId)
+              .single()).data.class_id)
+            .eq('status', 'active')
+            .single();
+      
+          if (enrollment) {
+            console.log('Recalculating grades for enrollment:', enrollment.id);
+            await this.auth.supabase.rpc('update_enrollment_grades', {
+              p_enrollment_id: enrollment.id
+            });
+          }
       
           this.showNotification(isExcused ? 'Assignment excused' : 'Grade saved successfully!', 'success');
           this.closeModal('grade-submission');
