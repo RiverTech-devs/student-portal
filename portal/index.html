@@ -1722,7 +1722,8 @@
             </div>
           `;
         }
-      
+
+        const categoryName = assignment.category_name || 'Uncategorized';
         const assignmentItems = assignments.map(assignment => {
           const dueDate = new Date(assignment.due_date);
           const daysOverdue = Math.floor((today - dueDate) / (1000 * 60 * 60 * 24));
@@ -1749,6 +1750,7 @@
                 <div class="list-item-meta">
                   <span style="color: var(--accent);">${assignment.classes.name}</span> • 
                   ${assignment.classes.subject} • 
+                  📁 ${categoryName} •
                   Was due: ${dueDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
                   <span style="color: var(--danger); font-weight: 600; margin-left: 10px;">
                     (${overdueText})
@@ -1826,6 +1828,24 @@
           assignments.forEach(a => {
             a.classes = classMap[a.class_id] || { name: 'Unknown Class', subject: 'Unknown' };
           });
+
+          // Load category names
+          const categoryIds = [...new Set(assignments.map(a => a.category_id).filter(id => id))];
+          if (categoryIds.length > 0) {
+            const { data: categories } = await this.auth.supabase
+              .from('grade_categories')
+              .select('id, name')
+              .in('id', categoryIds);
+            
+            const categoryMap = {};
+            categories?.forEach(c => {
+              categoryMap[c.id] = c.name;
+            });
+            
+            assignments.forEach(a => {
+              a.category_name = a.category_id ? categoryMap[a.category_id] : null;
+            });
+          }
       
           // Check for selective assignments - filter to only assigned students
           const filteredAssignments = [];
@@ -3828,6 +3848,16 @@
                 submissionMap[s.assignment_id] = s;
               });
 
+              const { data: categories } = await this.auth.supabase
+                .from('grade_categories')
+                .select('id, name')
+                .eq('class_id', classId);
+              
+              const categoryMap = {};
+              categories?.forEach(cat => {
+                categoryMap[cat.id] = cat.name;
+              });
+
               assignmentsHtml = assignments.map(assignment => {
                 const submission = submissionMap[assignment.id];
                 const dueDate = new Date(assignment.due_date).toLocaleDateString();
@@ -3855,6 +3885,16 @@
               }).join('');
             } else {
               // Teacher view
+              const { data: categories } = await this.auth.supabase
+                .from('grade_categories')
+                .select('id, name')
+                .eq('class_id', classId);
+              
+              const categoryMap = {};
+              categories?.forEach(cat => {
+                categoryMap[cat.id] = cat.name;
+              });
+              
               assignmentsHtml = assignments.map(assignment => {
                 const dueDate = new Date(assignment.due_date).toLocaleDateString();
                 
@@ -4299,12 +4339,87 @@
             }).join('');
           }
       
+          // Load categories for this class
+          const { data: categories } = await this.auth.supabase
+            .from('grade_categories')
+            .select('*')
+            .eq('class_id', classId)
+            .order('display_order');
+          
+          // Calculate category averages for this student
+          const categoryGrades = [];
+          if (categories && categories.length > 0) {
+            for (const category of categories) {
+              // Get assignments in this category for current quarter
+              const { data: categoryAssignments } = await this.auth.supabase
+                .from('assignments')
+                .select('id, title, max_points')
+                .eq('class_id', classId)
+                .eq('category_id', category.id)
+                .eq('is_published', true)
+                .gte('due_date', currentQuarter.start_date)
+                .lte('due_date', currentQuarter.end_date);
+              
+              if (categoryAssignments && categoryAssignments.length > 0) {
+                const assignmentIds = categoryAssignments.map(a => a.id);
+                const { data: categorySubmissions } = await this.auth.supabase
+                  .from('assignment_submissions')
+                  .select('*')
+                  .in('assignment_id', assignmentIds)
+                  .eq('student_id', this.userInfo.user.id)
+                  .eq('status', 'graded');
+                
+                if (categorySubmissions && categorySubmissions.length > 0) {
+                  let totalPercentage = 0;
+                  categorySubmissions.forEach(sub => {
+                    const assignment = categoryAssignments.find(a => a.id === sub.assignment_id);
+                    if (assignment && assignment.max_points > 0) {
+                      totalPercentage += (sub.points_earned / assignment.max_points) * 100;
+                    }
+                  });
+                  
+                  const average = totalPercentage / categorySubmissions.length;
+                  categoryGrades.push({
+                    name: category.name,
+                    weight: category.weight,
+                    average: average.toFixed(1),
+                    count: categorySubmissions.length,
+                    total: categoryAssignments.length
+                  });
+                }
+              }
+            }
+          }
+          
           const modalContent = `
             <div>
               <h3>📊 My Grades - ${classData?.name}</h3>
               <p style="color: var(--muted); margin-bottom: 20px;">
                 ${currentQuarter.name} (${currentQuarter.school_year})
               </p>
+              
+              <!-- Category Breakdown (if categories exist) -->
+              ${categoryGrades.length > 0 ? `
+                <div class="card" style="background: rgba(139, 255, 176, 0.05); border: 1px solid rgba(139, 255, 176, 0.2); margin-bottom: 20px;">
+                  <h4 style="margin-bottom: 15px;">📁 Category Breakdown</h4>
+                  <div style="display: grid; gap: 10px;">
+                    ${categoryGrades.map(cat => `
+                      <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px; background: var(--card-bg); border-radius: 6px;">
+                        <div>
+                          <strong>${cat.name}</strong>
+                          <span style="color: var(--muted); font-size: 12px; margin-left: 10px;">(${cat.weight}% weight)</span>
+                          <div style="font-size: 11px; color: var(--muted); margin-top: 4px;">
+                            ${cat.count} of ${cat.total} graded
+                          </div>
+                        </div>
+                        <div style="font-size: 24px; font-weight: 700; color: var(--accent-2);">
+                          ${cat.average}%
+                        </div>
+                      </div>
+                    `).join('')}
+                  </div>
+                </div>
+              ` : ''}
               
               <!-- Grade Breakdown Card -->
               <div class="card" style="background: linear-gradient(135deg, rgba(106, 169, 255, 0.1), rgba(139, 255, 176, 0.1)); border: 2px solid rgba(106, 169, 255, 0.3); margin-bottom: 30px;">
@@ -5780,6 +5895,13 @@
 
       async createAssignment(classId) {
         const classData = this.classes.find(c => c.id === classId);
+
+        // Load categories for this class
+        const { data: categories } = await this.auth.supabase
+          .from('grade_categories')
+          .select('*')
+          .eq('class_id', classId)
+          .order('display_order');
         
         // Load students in this class
         const { data: enrollments } = await this.auth.supabase
@@ -5818,6 +5940,17 @@
             <div class="form-group">
               <label for="assignment-max-points">Maximum Points</label>
               <input type="number" id="assignment-max-points" min="1" max="1000" value="100">
+            </div>
+
+            <div class="form-group">
+              <label for="assignment-category">Category</label>
+              <select id="assignment-category">
+                ${categories && categories.length > 0 ? categories.map(cat => `
+                  <option value="${cat.id}" ${cat.is_default ? 'selected' : ''}>
+                    ${cat.name}${cat.is_default ? ' (Default)' : ''}
+                  </option>
+                `).join('') : '<option value="">No categories</option>'}
+              </select>
             </div>
             
             <div class="form-group">
@@ -5915,7 +6048,8 @@
         max_points: parseInt(document.getElementById('assignment-max-points').value) || 100,
         is_published: document.getElementById('assignment-is-published').checked,
         assigned_to_all: !document.getElementById('assign-to-specific').checked,
-        graded_offline: document.getElementById('graded-offline').checked
+        graded_offline: document.getElementById('graded-offline').checked,
+        category_id: document.getElementById('assignment-category')?.value || null
       };
     
       if (!assignmentData.title || !assignmentData.due_date) {
@@ -5986,6 +6120,14 @@
             .single();
       
           if (error) throw error;
+
+          // Load categories for this class
+          const { data: categories } = await window.app.auth.supabase
+            .from('grade_categories')
+            .select('*')
+            .eq('class_id', assignment.class_id)
+            .order('display_order');
+          
           if (!assignment) {
             this.showNotification('Assignment not found', 'error');
             return;
@@ -6015,6 +6157,17 @@
               <div class="form-group">
                 <label for="edit-assignment-max-points">Maximum Points</label>
                 <input type="number" id="edit-assignment-max-points" min="1" max="1000" value="${assignment.max_points || 100}">
+              </div>
+
+               <div class="form-group">
+                <label for="edit-assignment-category">Category</label>
+                <select id="edit-assignment-category">
+                  ${categories && categories.length > 0 ? categories.map(cat => `
+                    <option value="${cat.id}" ${cat.id === assignment.category_id ? 'selected' : ''}>
+                      ${cat.name}${cat.is_default ? ' (Default)' : ''}
+                    </option>
+                  `).join('') : '<option value="">No categories</option>'}
+                </select>
               </div>
               
               <div class="form-group">
@@ -6048,6 +6201,7 @@
           due_date: document.getElementById('edit-assignment-due-date').value,
           max_points: parseInt(document.getElementById('edit-assignment-max-points').value) || 100,
           is_published: document.getElementById('edit-assignment-is-published').checked,
+          category_id: document.getElementById('edit-assignment-category')?.value || null,
           updated_at: new Date().toISOString()
         };
       
@@ -6233,10 +6387,28 @@
           const excusedCount = submissions?.filter(s => s.status === 'excused').length || 0;
           const submissionRate = totalStudents > 0 ? ((submittedCount / totalStudents) * 100).toFixed(0) : 0;
       
+          // Load category info
+          let categoryName = 'Uncategorized';
+          if (assignment.category_id) {
+            const { data: category } = await this.auth.supabase
+              .from('grade_categories')
+              .select('name, weight')
+              .eq('id', assignment.category_id)
+              .single();
+            
+            if (category) {
+              categoryName = `${category.name} (${category.weight}% weight)`;
+            }
+          }
+          
           const modalContent = `
             <div>
               <h3>${assignment?.title || 'Assignment'}</h3>
-              <p style="color: var(--muted);">Due: ${new Date(assignment?.due_date).toLocaleDateString()} • Max Points: ${assignment?.max_points || 100}</p>
+              <p style="color: var(--muted);">
+                Due: ${new Date(assignment?.due_date).toLocaleDateString()} • 
+                Max Points: ${assignment?.max_points || 100} • 
+                📁 ${categoryName}
+              </p>
               
               ${isSelectiveAssignment ? `
                 <div class="card" style="background: var(--warning); color: black; padding: 10px; margin: 15px 0;">
@@ -6591,6 +6763,24 @@
           assignments.forEach(a => {
             a.classes = classMap[a.class_id] || { name: 'Unknown Class', subject: 'Unknown' };
           });
+
+          // Load category names
+          const categoryIds = [...new Set(assignments.map(a => a.category_id).filter(id => id))];
+          if (categoryIds.length > 0) {
+            const { data: categories } = await this.auth.supabase
+              .from('grade_categories')
+              .select('id, name')
+              .in('id', categoryIds);
+            
+            const categoryMap = {};
+            categories?.forEach(c => {
+              categoryMap[c.id] = c.name;
+            });
+            
+            assignments.forEach(a => {
+              a.category_name = a.category_id ? categoryMap[a.category_id] : null;
+            });
+          }
       
           // Check for selective assignments - filter to only assigned students
           const filteredAssignments = [];
@@ -7235,6 +7425,7 @@
               • <strong>Academic:</strong> Auto-calculated from assignment averages (read-only)<br>
               • <strong>Participation:</strong> Manually set by you (editable)<br>
               • <strong>Class Grade:</strong> Average of Academic + Participation (auto-calculated)
+              • Categories with no graded assignments are excluded from calculation
             </small>
           </div>
           
@@ -7514,14 +7705,241 @@
       }
       
       closeGradeModal() {
-        const modal = document.getElementById('grade-management-modal');
-        if (modal) {
-          modal.style.display = 'none';
+          const modal = document.getElementById('grade-management-modal');
+          if (modal) {
+            modal.style.display = 'none';
+          }
+          this.currentClassId = null;
+          this.currentQuarterId = null;
+          this.enrollments = [];
+          this.pendingChanges = {};
         }
-        this.currentClassId = null;
-        this.currentQuarterId = null;
-        this.enrollments = [];
-        this.pendingChanges = {};
+        
+        async showCategoryManagement() {
+          try {
+            // Load categories
+            const { data: categories, error } = await window.app.auth.supabase
+              .from('grade_categories')
+              .select('*')
+              .eq('class_id', this.currentClassId)
+              .order('display_order');
+            
+            if (error) throw error;
+            
+            const modalContent = `
+              <div class="card" style="max-width: 800px; margin: 0 auto;">
+                <h3 style="margin-bottom: 20px;">⚙️ Manage Grade Categories</h3>
+                
+                <div style="background: rgba(106, 169, 255, 0.05); border: 1px solid rgba(106, 169, 255, 0.2); padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+                  <strong>📋 How Categories Work:</strong><br>
+                  <small style="color: var(--muted-color);">
+                    • Categories let you weight different types of assignments (Tests, Homework, Projects, etc.)<br>
+                    • Total weight must equal 100%<br>
+                    • Each assignment must be assigned to a category<br>
+                    • Categories with no graded work are excluded from calculations
+                  </small>
+                </div>
+                
+                <div id="categories-list" style="margin-bottom: 20px;">
+                  ${categories && categories.length > 0 ? categories.map((cat, index) => `
+                    <div class="card" style="margin-bottom: 15px; background: var(--card-bg);">
+                      <div style="display: flex; gap: 15px; align-items: center;">
+                        <div style="flex: 1;">
+                          <input 
+                            type="text" 
+                            class="category-name-input"
+                            data-category-id="${cat.id}"
+                            value="${cat.name}"
+                            placeholder="Category name"
+                            style="width: 100%; padding: 8px; background: var(--background); border: 1px solid var(--border-color); border-radius: 6px; color: var(--text-color);"
+                          >
+                        </div>
+                        <div style="width: 120px;">
+                          <input 
+                            type="number" 
+                            class="category-weight-input"
+                            data-category-id="${cat.id}"
+                            data-is-default="${cat.is_default}"
+                            value="${cat.weight}"
+                            min="0"
+                            max="100"
+                            step="0.1"
+                            onchange="teacherGrades.handleWeightChange('${cat.id}', this.value, ${cat.is_default})"
+                            style="width: 100%; padding: 8px; text-align: center; background: var(--background); border: 1px solid var(--border-color); border-radius: 6px; color: var(--text-color); font-weight: 700;"
+                          >
+                          <div style="text-align: center; font-size: 11px; color: var(--muted-color); margin-top: 4px;">Weight %</div>
+                        </div>
+                        ${!cat.is_default ? `
+                          <button class="btn danger small" onclick="teacherGrades.deleteCategory('${cat.id}')">
+                            🗑️
+                          </button>
+                        ` : '<div style="width: 40px;"></div>'}
+                      </div>
+                      ${cat.is_default ? '<div style="margin-top: 8px; font-size: 11px; color: var(--accent);">⭐ Default Category (auto-adjusts to maintain 100%)</div>' : ''}
+                    </div>
+                  `).join('') : '<p style="color: var(--muted-color);">No categories found</p>'}
+                </div>
+                
+                <div id="total-weight-display" style="text-align: center; padding: 15px; background: rgba(139, 255, 176, 0.1); border-radius: 8px; margin-bottom: 20px;">
+                  <strong>Total Weight: <span id="total-weight-value">100</span>%</strong>
+                </div>
+                
+                <button class="btn btn-primary" onclick="teacherGrades.addNewCategory()" style="width: 100%;">
+                  ➕ Add New Category
+                </button>
+              </div>
+              
+              <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+                <button class="btn btn-secondary" onclick="teacherGrades.closeCategoryManagement()">Cancel</button>
+                <button class="btn btn-primary" onclick="teacherGrades.saveCategoryChanges()">💾 Save Categories</button>
+              </div>
+            `;
+            
+            const modal = document.getElementById('grade-management-modal');
+            const content = document.getElementById('grade-modal-content');
+            content.innerHTML = modalContent;
+            
+            this.calculateTotalWeight();
+            
+          } catch (error) {
+            console.error('Error loading categories:', error);
+            window.app.showNotification('Error: ' + error.message, 'error');
+          }
+        }
+        
+        handleWeightChange(categoryId, newWeight, isDefault) {
+          if (isDefault) {
+            window.app.showNotification('Default category weight adjusts automatically', 'info');
+            return;
+          }
+          
+          this.calculateTotalWeight();
+        }
+        
+        calculateTotalWeight() {
+          const inputs = document.querySelectorAll('.category-weight-input');
+          let total = 0;
+          let defaultInput = null;
+          
+          inputs.forEach(input => {
+            const isDefault = input.getAttribute('data-is-default') === 'true';
+            if (isDefault) {
+              defaultInput = input;
+            } else {
+              total += parseFloat(input.value) || 0;
+            }
+          });
+          
+          // Auto-adjust default category
+          if (defaultInput) {
+            const defaultWeight = Math.max(0, 100 - total);
+            defaultInput.value = defaultWeight.toFixed(1);
+            total += defaultWeight;
+          }
+          
+          const display = document.getElementById('total-weight-value');
+          if (display) {
+            display.textContent = total.toFixed(1);
+            display.style.color = Math.abs(total - 100) < 0.1 ? 'var(--accent-2)' : 'var(--danger)';
+          }
+        }
+        
+        async addNewCategory() {
+          const name = prompt('Enter category name (e.g., "Tests", "Homework", "Projects"):');
+          if (!name || !name.trim()) return;
+          
+          try {
+            const { error } = await window.app.auth.supabase
+              .from('grade_categories')
+              .insert({
+                class_id: this.currentClassId,
+                name: name.trim(),
+                weight: 0,
+                is_default: false,
+                display_order: 999
+              });
+            
+            if (error) throw error;
+            
+            window.app.showNotification('Category added!', 'success');
+            await this.showCategoryManagement();
+            
+          } catch (error) {
+            console.error('Error adding category:', error);
+            window.app.showNotification('Error: ' + error.message, 'error');
+          }
+        }
+        
+        async deleteCategory(categoryId) {
+          if (!confirm('Delete this category? Assignments in this category will become uncategorized.')) {
+            return;
+          }
+          
+          try {
+            const { error } = await window.app.auth.supabase
+              .from('grade_categories')
+              .delete()
+              .eq('id', categoryId);
+            
+            if (error) throw error;
+            
+            window.app.showNotification('Category deleted', 'success');
+            await this.showCategoryManagement();
+            
+          } catch (error) {
+            console.error('Error deleting category:', error);
+            window.app.showNotification('Error: ' + error.message, 'error');
+          }
+        }
+        
+        async saveCategoryChanges() {
+          try {
+            const inputs = document.querySelectorAll('.category-name-input');
+            const updates = [];
+            
+            for (const input of inputs) {
+              const categoryId = input.getAttribute('data-category-id');
+              const name = input.value.trim();
+              const weightInput = document.querySelector(`.category-weight-input[data-category-id="${categoryId}"]`);
+              const weight = parseFloat(weightInput.value);
+              
+              if (!name) {
+                window.app.showNotification('All categories must have a name', 'error');
+                return;
+              }
+              
+              updates.push({ id: categoryId, name, weight });
+            }
+            
+            // Verify total weight
+            const totalWeight = updates.reduce((sum, cat) => sum + cat.weight, 0);
+            if (Math.abs(totalWeight - 100) > 0.1) {
+              window.app.showNotification('Total weight must equal 100%', 'error');
+              return;
+            }
+            
+            // Save all updates
+            for (const update of updates) {
+              await window.app.auth.supabase
+                .from('grade_categories')
+                .update({ name: update.name, weight: update.weight })
+                .eq('id', update.id);
+            }
+            
+            window.app.showNotification('Categories saved!', 'success');
+            
+            // Return to grade view and recalculate
+            await this.showGradeManagementModal(this.currentClassId);
+            
+          } catch (error) {
+            console.error('Error saving categories:', error);
+            window.app.showNotification('Error: ' + error.message, 'error');
+          }
+        }
+        
+        closeCategoryManagement() {
+          this.showGradeManagementModal(this.currentClassId);
+        }
       }
     }
     
@@ -7551,9 +7969,12 @@
         </div>
       </div>
       
-      <div style="margin-top: 25px; display: flex; gap: 10px; justify-content: flex-end;">
-        <button class="btn" onclick="teacherGrades.closeGradeModal()">Cancel</button>
-        <button class="btn btn-primary" onclick="teacherGrades.saveAllGrades()">💾 Save All Changes</button>
+      <div style="margin-top: 25px; display: flex; gap: 10px; justify-content: space-between;">
+        <button class="btn btn-secondary" onclick="teacherGrades.showCategoryManagement()">⚙️ Manage Categories</button>
+        <div style="display: flex; gap: 10px;">
+          <button class="btn" onclick="teacherGrades.closeGradeModal()">Cancel</button>
+          <button class="btn btn-primary" onclick="teacherGrades.saveAllGrades()">💾 Save All Changes</button>
+        </div>
       </div>
     </div>
   </div>
