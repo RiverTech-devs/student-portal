@@ -7304,6 +7304,124 @@
         this.enrollments = [];
         this.pendingChanges = {};
       }
+
+      async debugGradeCalculation() {
+        console.clear();
+        console.log('=== MANUAL GRADE DEBUG ===');
+        
+        try {
+          // Get quarter
+          const { data: quarter } = await window.app.auth.supabase
+            .from('quarters')
+            .select('*')
+            .eq('is_current', true)
+            .single();
+          
+          console.log('Quarter:', quarter);
+          
+          // Get categories
+          const { data: categories } = await window.app.auth.supabase
+            .from('grade_categories')
+            .select('*')
+            .eq('class_id', this.currentClassId);
+          
+          console.log('Categories:', categories);
+          console.log('Total category weight:', categories?.reduce((sum, c) => sum + c.weight, 0));
+          
+          // Get assignments
+          const { data: assignments } = await window.app.auth.supabase
+            .from('assignments')
+            .select('*')
+            .eq('class_id', this.currentClassId)
+            .gte('due_date', quarter.start_date)
+            .lte('due_date', quarter.end_date);
+          
+          console.log('Assignments in quarter:', assignments?.length);
+          assignments?.forEach(a => {
+            console.log(`  - ${a.title}: Category ${a.category_id}, ${a.max_points} points`);
+          });
+          
+          // For first student, show detailed calculation
+          if (this.enrollments.length > 0) {
+            const enrollment = this.enrollments[0];
+            const student = enrollment.user_profiles;
+            
+            console.log(`\n=== Detailed calculation for ${student.first_name} ${student.last_name} ===`);
+            
+            // Get submissions
+            const { data: submissions } = await window.app.auth.supabase
+              .from('assignment_submissions')
+              .select('*')
+              .eq('student_id', enrollment.student_id)
+              .in('assignment_id', assignments?.map(a => a.id) || []);
+            
+            console.log('Submissions:', submissions?.length);
+            
+            // Group by category
+            const byCat = {};
+            submissions?.forEach(sub => {
+              if (sub.status === 'graded') {
+                const assignment = assignments?.find(a => a.id === sub.assignment_id);
+                if (assignment?.category_id) {
+                  if (!byCat[assignment.category_id]) byCat[assignment.category_id] = [];
+                  byCat[assignment.category_id].push({
+                    assignment: assignment.title,
+                    points: sub.points_earned,
+                    max: assignment.max_points,
+                    pct: (sub.points_earned / assignment.max_points * 100).toFixed(2)
+                  });
+                }
+              }
+            });
+            
+            console.log('By Category:', byCat);
+            
+            // Calculate expected grade
+            let totalWeighted = 0;
+            let totalWeight = 0;
+            
+            Object.keys(byCat).forEach(catId => {
+              const cat = categories?.find(c => c.id === catId);
+              const scores = byCat[catId];
+              const avg = scores.reduce((sum, s) => sum + parseFloat(s.pct), 0) / scores.length;
+              const weighted = avg * (cat.weight / 100);
+              
+              console.log(`Category ${cat.name}:`);
+              console.log(`  Assignments: ${scores.length}`);
+              console.log(`  Average: ${avg.toFixed(2)}%`);
+              console.log(`  Weight: ${cat.weight}%`);
+              console.log(`  Contribution: ${weighted.toFixed(2)}`);
+              
+              totalWeighted += weighted;
+              totalWeight += cat.weight;
+            });
+            
+            const expected = totalWeight > 0 ? (totalWeighted / totalWeight * 100) : 0;
+            console.log(`\nExpected Academic: ${expected.toFixed(2)}%`);
+            console.log(`Actual from DB: ${enrollment.academic_grade?.toFixed(2) || 'NULL'}%`);
+            
+            // Now force recalculate
+            console.log(`\nForce recalculating...`);
+            await window.app.auth.supabase.rpc('update_enrollment_grades', {
+              p_enrollment_id: enrollment.id
+            });
+            
+            // Reload
+            const { data: updated } = await window.app.auth.supabase
+              .from('class_enrollments')
+              .select('*')
+              .eq('id', enrollment.id)
+              .single();
+            
+            console.log(`After recalc: ${updated.academic_grade?.toFixed(2) || 'NULL'}%`);
+          }
+          
+        } catch (error) {
+          console.error('Debug error:', error);
+        }
+        
+        console.log('=== END DEBUG ===');
+      }
       
       async showGradeManagementModal(classId) {
         this.currentClassId = classId;
@@ -7429,6 +7547,98 @@
               email: 'N/A'
             };
           });
+
+          // COMPREHENSIVE DIAGNOSTICS
+          console.log('=== GRADE CALCULATION DIAGNOSTICS ===');
+          console.log('Current Quarter:', quarter);
+          console.log('Class ID:', classId);
+          
+          // Check categories
+          const { data: categories } = await window.app.auth.supabase
+            .from('grade_categories')
+            .select('*')
+            .eq('class_id', classId);
+          
+          console.log('Categories:', categories);
+          
+          // Check assignments
+          const { data: assignments } = await window.app.auth.supabase
+            .from('assignments')
+            .select('*')
+            .eq('class_id', classId)
+            .gte('due_date', quarter.start_date)
+            .lte('due_date', quarter.end_date);
+          
+          console.log('Assignments in quarter:', assignments);
+          
+          // For each enrollment, check submissions and calculate what grade should be
+          for (const enrollment of updatedEnrollments || []) {
+            const student = studentMap[enrollment.student_id];
+            console.log(`\n--- Student: ${student?.first_name} ${student?.last_name} ---`);
+            console.log(`Enrollment ID: ${enrollment.id}`);
+            console.log(`Current Quarter ID: ${enrollment.current_quarter_id}`);
+            console.log(`Academic Grade (from DB): ${enrollment.academic_grade?.toFixed(2) || 'NULL'}`);
+            console.log(`Participation Grade: ${enrollment.participation_grade?.toFixed(2) || 'NULL'}`);
+            console.log(`Class Grade: ${enrollment.class_grade?.toFixed(2) || 'NULL'}`);
+            
+            // Get student's submissions for this quarter
+            const assignmentIds = assignments?.map(a => a.id) || [];
+            const { data: submissions } = await window.app.auth.supabase
+              .from('assignment_submissions')
+              .select('*')
+              .eq('student_id', enrollment.student_id)
+              .in('assignment_id', assignmentIds);
+            
+            console.log(`Submissions count: ${submissions?.length || 0}`);
+            
+            // Calculate expected grade manually
+            const categoryScores = {};
+            const categoryCounts = {};
+            
+            submissions?.forEach(sub => {
+              if (sub.status === 'graded' && sub.points_earned !== null) {
+                const assignment = assignments?.find(a => a.id === sub.assignment_id);
+                if (assignment && assignment.category_id) {
+                  if (!categoryScores[assignment.category_id]) {
+                    categoryScores[assignment.category_id] = 0;
+                    categoryCounts[assignment.category_id] = 0;
+                  }
+                  const percentage = (sub.points_earned / assignment.max_points) * 100;
+                  categoryScores[assignment.category_id] += percentage;
+                  categoryCounts[assignment.category_id]++;
+                  
+                  console.log(`  Assignment: ${assignment.title}`);
+                  console.log(`    Category: ${assignment.category_id}`);
+                  console.log(`    Points: ${sub.points_earned}/${assignment.max_points} = ${percentage.toFixed(2)}%`);
+                }
+              }
+            });
+            
+            // Calculate weighted average
+            let totalWeightedScore = 0;
+            let totalWeight = 0;
+            
+            Object.keys(categoryScores).forEach(catId => {
+              const category = categories?.find(c => c.id === catId);
+              if (category && categoryCounts[catId] > 0) {
+                const avgScore = categoryScores[catId] / categoryCounts[catId];
+                const weightedScore = avgScore * (category.weight / 100);
+                totalWeightedScore += weightedScore;
+                totalWeight += category.weight;
+                
+                console.log(`  Category ${category.name}:`);
+                console.log(`    Average: ${avgScore.toFixed(2)}%`);
+                console.log(`    Weight: ${category.weight}%`);
+                console.log(`    Weighted Score: ${weightedScore.toFixed(2)}`);
+              }
+            });
+            
+            const expectedAcademic = totalWeight > 0 ? (totalWeightedScore / totalWeight) * 100 : 0;
+            console.log(`Expected Academic Grade: ${expectedAcademic.toFixed(2)}%`);
+            console.log(`Actual Academic Grade: ${enrollment.academic_grade?.toFixed(2) || 'NULL'}%`);
+            console.log(`MATCH: ${Math.abs(expectedAcademic - (enrollment.academic_grade || 0)) < 0.01 ? 'YES' : 'NO'}`);
+          }
+          console.log('\n===================================');
           
           // Sort by last name
           updatedEnrollments?.sort((a, b) => {
@@ -7473,6 +7683,13 @@
               • <strong>Class Grade:</strong> Average of Academic + Participation (auto-calculated)
               • Categories with no graded assignments are excluded from calculation
             </small>
+          </div>
+
+        <!-- DIAGNOSTIC BUTTON -->
+          <div style="margin-bottom: 15px;">
+            <button class="btn btn-secondary" onclick="teacherGrades.debugGradeCalculation()" style="width: 100%;">
+              🔍 Debug Grade Calculation (Check Console)
+            </button>
           </div>
           
           <div style="overflow-x: auto;">
