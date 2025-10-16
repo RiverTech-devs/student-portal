@@ -655,6 +655,13 @@
         
         // Wait for shared auth to be available
         await this.waitForAuth();
+
+        // Verify session is valid before proceeding
+        const sessionValid = await this.checkAndRefreshSession();
+        if (!sessionValid) {
+          this.showAuthRequired();
+          return;
+        }
         
         // Check authentication
         if (!this.auth.isAuthenticated()) {
@@ -718,26 +725,26 @@
         };
       }
 
-      // FIX 2: Session monitoring to prevent timeout issues
       setupSessionMonitoring() {
         // Check session every 30 seconds
         this.sessionCheckInterval = setInterval(async () => {
-          try {
-            const { data: { session } } = await this.auth.supabase.auth.getSession();
-            if (!session) {
-              console.log('Session expired, attempting refresh...');
-              const { data: { session: newSession }, error } = await this.auth.supabase.auth.refreshSession();
-              if (error || !newSession) {
-                console.error('Session refresh failed:', error);
-                this.showAuthRequired();
-              } else {
-                console.log('Session refreshed successfully');
-              }
-            }
-          } catch (error) {
-            console.error('Session check error:', error);
-          }
+          await this.checkAndRefreshSession();
         }, 30000); // Check every 30 seconds
+        
+        // CRITICAL FIX: Handle tab visibility changes
+        document.addEventListener('visibilitychange', async () => {
+          if (!document.hidden) {
+            // Tab became visible again - immediately check session
+            console.log('Tab became visible, checking session...');
+            await this.checkAndRefreshSession();
+          }
+        });
+        
+        // Also check on window focus (backup for some browsers)
+        window.addEventListener('focus', async () => {
+          console.log('Window focused, checking session...');
+          await this.checkAndRefreshSession();
+        });
         
         // Clean up on page unload
         window.addEventListener('beforeunload', () => {
@@ -745,6 +752,48 @@
             clearInterval(this.sessionCheckInterval);
           }
         });
+      }
+      
+      // Extract session checking logic into reusable method
+      async checkAndRefreshSession() {
+        try {
+          const { data: { session } } = await this.auth.supabase.auth.getSession();
+          
+          if (!session) {
+            console.log('No session found, attempting refresh...');
+            const { data: { session: newSession }, error } = await this.auth.supabase.auth.refreshSession();
+            
+            if (error || !newSession) {
+              console.error('Session refresh failed:', error);
+              this.showAuthRequired();
+              return false;
+            } else {
+              console.log('Session refreshed successfully');
+              return true;
+            }
+          }
+          
+          // Check if session is about to expire (within 5 minutes)
+          const expiresAt = session.expires_at;
+          const now = Math.floor(Date.now() / 1000);
+          const timeUntilExpiry = expiresAt - now;
+          
+          if (timeUntilExpiry < 300) { // Less than 5 minutes
+            console.log('Session expiring soon, proactively refreshing...');
+            const { data: { session: newSession }, error } = await this.auth.supabase.auth.refreshSession();
+            
+            if (error) {
+              console.error('Proactive refresh failed:', error);
+              return false;
+            }
+            console.log('Session proactively refreshed');
+          }
+          
+          return true;
+        } catch (error) {
+          console.error('Session check error:', error);
+          return false;
+        }
       }
 
       async waitForAuth() {
