@@ -9,6 +9,10 @@
   <script src="../shared/config.js"></script>
   <script src="../shared/components.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+  <!-- ADD QUILL.JS -->
+  <link href="https://cdn.quilljs.com/1.3.6/quill.snow.css" rel="stylesheet">
+  <script src="https://cdn.quilljs.com/1.3.6/quill.js"></script>
   
   <style>
     :root {
@@ -470,6 +474,104 @@
         opacity: 1 !important;
       }
     }
+
+    /* Quill Editor Styling */
+      .ql-toolbar {
+        background: var(--card);
+        border: 1px solid var(--border) !important;
+        border-radius: 8px 8px 0 0;
+      }
+      
+      .ql-container {
+        background: var(--bg);
+        border: 1px solid var(--border) !important;
+        border-top: none !important;
+        border-radius: 0 0 8px 8px;
+        font-family: inherit;
+        font-size: 14px;
+        min-height: 200px;
+      }
+      
+      .ql-editor {
+        color: var(--text);
+        min-height: 200px;
+      }
+      
+      .ql-editor.ql-blank::before {
+        color: var(--muted);
+        font-style: normal;
+      }
+      
+      .ql-snow .ql-stroke {
+        stroke: var(--text);
+      }
+      
+      .ql-snow .ql-fill {
+        fill: var(--text);
+      }
+      
+      .ql-snow .ql-picker-label {
+        color: var(--text);
+      }
+      
+      /* Rendered HTML content styling */
+      .assignment-content h1, .assignment-content h2, .assignment-content h3 {
+        margin-top: 1em;
+        margin-bottom: 0.5em;
+        color: var(--text);
+      }
+      
+      .assignment-content p {
+        margin-bottom: 0.75em;
+        line-height: 1.6;
+      }
+      
+      .assignment-content ul, .assignment-content ol {
+        margin-left: 1.5em;
+        margin-bottom: 0.75em;
+      }
+      
+      .assignment-content li {
+        margin-bottom: 0.25em;
+      }
+      
+      .assignment-content strong {
+        font-weight: 700;
+        color: var(--accent);
+      }
+      
+      .assignment-content em {
+        font-style: italic;
+      }
+      
+      .assignment-content a {
+        color: var(--link);
+        text-decoration: underline;
+      }
+      
+      .assignment-content blockquote {
+        border-left: 3px solid var(--accent);
+        padding-left: 1em;
+        margin: 1em 0;
+        color: var(--muted);
+        font-style: italic;
+      }
+      
+      .assignment-content code {
+        background: rgba(106, 169, 255, 0.1);
+        padding: 2px 6px;
+        border-radius: 3px;
+        font-family: monospace;
+        font-size: 0.9em;
+      }
+      
+      .assignment-content pre {
+        background: rgba(0, 0, 0, 0.3);
+        padding: 1em;
+        border-radius: 8px;
+        overflow-x: auto;
+        margin: 1em 0;
+      }
   </style>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
   <script src="https://apis.google.com/js/api.js" async defer></script>
@@ -5643,10 +5745,11 @@
             const modalContent = `
               <div>
                 <h3>${assignment.title}</h3>
-                <div class="card" style="background: rgba(106, 169, 255, 0.1); border: 1px solid var(--accent); padding: 20px; margin: 20px 0;">
-                  <h4 style="color: var(--accent);">📋 In-Person Assignment</h4>
-                  <p style="margin-top: 10px;">This assignment was completed offline (in class, presentation, test, etc.). No online submission is required.</p>
-                  
+                <div class="assignment-content" style="color: var(--muted); margin: 15px 0; padding: 15px; background: var(--card); border-radius: 8px; border: 1px solid var(--border);">
+                  ${assignment.description || '<p style="color: var(--muted);">No description provided</p>'}
+                </div>
+                <p style="color: var(--warning); font-size: 14px;">Due: ${new Date(assignment.due_date).toLocaleDateString()}</p>
+                
                   ${submission && submission.status === 'graded' ? `
                     <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--border);">
                       <h4>Your Grade</h4>
@@ -6038,7 +6141,7 @@
 
       async createAssignment(classId) {
         const classData = this.classes.find(c => c.id === classId);
-
+      
         // Load categories for this class
         const { data: categories } = await this.auth.supabase
           .from('grade_categories')
@@ -6071,8 +6174,8 @@
             </div>
             
             <div class="form-group">
-              <label for="assignment-description">Description</label>
-              <textarea id="assignment-description" rows="4" placeholder="Describe the assignment requirements..."></textarea>
+              <label>Description</label>
+              <div id="assignment-description-editor"></div>
             </div>
             
             <div class="form-group">
@@ -6084,7 +6187,7 @@
               <label for="assignment-max-points">Maximum Points</label>
               <input type="number" id="assignment-max-points" min="1" max="1000" value="100">
             </div>
-
+      
             <div class="form-group">
               <label for="assignment-category">Category</label>
               <select id="assignment-category">
@@ -6102,7 +6205,7 @@
                 Publish immediately (visible to students)
               </label>
             </div>
-
+      
             <div class="form-group">
               <label style="display: flex; align-items: center; gap: 10px;">
                 <input type="checkbox" id="graded-offline">
@@ -6162,6 +6265,25 @@
         `;
       
         this.showModal('create-assignment', '➕ Create Assignment', modalContent, true);
+        
+        // Initialize Quill editor after modal is shown
+        setTimeout(() => {
+          this.assignmentDescriptionEditor = new Quill('#assignment-description-editor', {
+            theme: 'snow',
+            placeholder: 'Describe the assignment requirements, instructions, and expectations...',
+            modules: {
+              toolbar: [
+                [{ 'header': [1, 2, 3, false] }],
+                ['bold', 'italic', 'underline', 'strike'],
+                [{ 'list': 'ordered'}, { 'list': 'bullet' }],
+                [{ 'indent': '-1'}, { 'indent': '+1' }],
+                ['blockquote', 'code-block'],
+                ['link'],
+                ['clean']
+              ]
+            }
+          });
+        }, 100);
       }
 
       toggleStudentSelection() {
@@ -6183,17 +6305,17 @@
       }
       
       async submitCreateAssignment(classId) {
-      const assignmentData = {
-        class_id: classId,
-        title: document.getElementById('assignment-title').value,
-        description: document.getElementById('assignment-description').value || null,
-        due_date: document.getElementById('assignment-due-date').value,
-        max_points: parseInt(document.getElementById('assignment-max-points').value) || 100,
-        is_published: document.getElementById('assignment-is-published').checked,
-        assigned_to_all: !document.getElementById('assign-to-specific').checked,
-        graded_offline: document.getElementById('graded-offline').checked,
-        category_id: document.getElementById('assignment-category')?.value || null
-      };
+        const assignmentData = {
+          class_id: classId,
+          title: document.getElementById('assignment-title').value,
+          description: this.assignmentDescriptionEditor ? this.assignmentDescriptionEditor.root.innerHTML : null,
+          due_date: document.getElementById('assignment-due-date').value,
+          max_points: parseInt(document.getElementById('assignment-max-points').value) || 100,
+          is_published: document.getElementById('assignment-is-published').checked,
+          assigned_to_all: !document.getElementById('assign-to-specific').checked,
+          graded_offline: document.getElementById('graded-offline').checked,
+          category_id: document.getElementById('assignment-category')?.value || null
+        };
     
       if (!assignmentData.title || !assignmentData.due_date) {
         this.showNotification('Please fill in required fields', 'error');
@@ -6288,8 +6410,8 @@
               </div>
               
               <div class="form-group">
-                <label for="edit-assignment-description">Description</label>
-                <textarea id="edit-assignment-description" rows="4">${assignment.description || ''}</textarea>
+                <label>Description</label>
+                <div id="edit-assignment-description-editor"></div>
               </div>
               
               <div class="form-group">
@@ -6301,8 +6423,8 @@
                 <label for="edit-assignment-max-points">Maximum Points</label>
                 <input type="number" id="edit-assignment-max-points" min="1" max="1000" value="${assignment.max_points || 100}">
               </div>
-
-               <div class="form-group">
+          
+              <div class="form-group">
                 <label for="edit-assignment-category">Category</label>
                 <select id="edit-assignment-category">
                   ${categories && categories.length > 0 ? categories.map(cat => `
@@ -6320,7 +6442,7 @@
                 </label>
               </div>
             </form>
-      
+          
             <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
               <button class="btn btn-secondary" onclick="app.closeModal('edit-assignment')">Cancel</button>
               <button class="btn btn-primary" onclick="app.submitEditAssignment('${assignmentId}', '${assignment.class_id}')">
@@ -6328,8 +6450,32 @@
               </button>
             </div>
           `;
-      
+          
           this.showModal('edit-assignment', '✏️ Edit Assignment', modalContent, true);
+          
+          // Initialize Quill with existing content
+          setTimeout(() => {
+            this.assignmentDescriptionEditor = new Quill('#edit-assignment-description-editor', {
+              theme: 'snow',
+              placeholder: 'Describe the assignment requirements...',
+              modules: {
+                toolbar: [
+                  [{ 'header': [1, 2, 3, false] }],
+                  ['bold', 'italic', 'underline', 'strike'],
+                  [{ 'list': 'ordered'}, { 'list': 'bullet' }],
+                  [{ 'indent': '-1'}, { 'indent': '+1' }],
+                  ['blockquote', 'code-block'],
+                  ['link'],
+                  ['clean']
+                ]
+              }
+            });
+            
+            // Load existing content
+            if (assignment.description) {
+              this.assignmentDescriptionEditor.root.innerHTML = assignment.description;
+            }
+          }, 100);
       
         } catch (error) {
           console.error('Error loading assignment:', error);
@@ -6340,7 +6486,7 @@
       async submitEditAssignment(assignmentId, classId) {
         const updatedData = {
           title: document.getElementById('edit-assignment-title').value,
-          description: document.getElementById('edit-assignment-description').value || null,
+          description: this.assignmentDescriptionEditor ? this.assignmentDescriptionEditor.root.innerHTML : null,
           due_date: document.getElementById('edit-assignment-due-date').value,
           max_points: parseInt(document.getElementById('edit-assignment-max-points').value) || 100,
           is_published: document.getElementById('edit-assignment-is-published').checked,
