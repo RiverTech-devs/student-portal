@@ -3944,26 +3944,115 @@
                 categoryMap[cat.id] = cat.name;
               });
               
+              // Get submission counts for all assignments at once
+              const assignmentIds = assignments.map(a => a.id);
+              const { data: allSubmissions } = await this.auth.supabase
+                .from('assignment_submissions')
+                .select('assignment_id, status')
+                .in('assignment_id', assignmentIds);
+              
+              // Count submissions by assignment
+              const submissionCounts = {};
+              assignmentIds.forEach(id => {
+                submissionCounts[id] = {
+                  total: 0,
+                  graded: 0,
+                  submitted: 0,
+                  excused: 0
+                };
+              });
+              
+              allSubmissions?.forEach(sub => {
+                if (submissionCounts[sub.assignment_id]) {
+                  submissionCounts[sub.assignment_id].total++;
+                  if (sub.status === 'graded') submissionCounts[sub.assignment_id].graded++;
+                  if (sub.status === 'submitted') submissionCounts[sub.assignment_id].submitted++;
+                  if (sub.status === 'excused') submissionCounts[sub.assignment_id].excused++;
+                }
+              });
+              
+              // Get total enrolled students for comparison
+              const { data: enrollments } = await this.auth.supabase
+                .from('class_enrollments')
+                .select('id')
+                .eq('class_id', classId)
+                .eq('status', 'active');
+              
+              const totalStudents = enrollments?.length || 0;
+              
               assignmentsHtml = assignments.map(assignment => {
                 const dueDate = new Date(assignment.due_date).toLocaleDateString();
+                const categoryName = assignment.category_id ? categoryMap[assignment.category_id] : 'Uncategorized';
+                
+                const counts = submissionCounts[assignment.id] || { total: 0, graded: 0, submitted: 0, excused: 0 };
+                
+                // Determine expected count (for selective assignments, it's different)
+                let expectedCount = totalStudents;
+                if (!assignment.assigned_to_all) {
+                  // For selective assignments, we need to count assigned students
+                  // This is a quick estimate - could be refined with actual count
+                  expectedCount = counts.total + counts.submitted + counts.graded + counts.excused;
+                }
+                
+                const gradedCount = counts.graded + counts.excused; // Excused counts as "handled"
+                const pendingCount = counts.submitted;
+                const missingCount = expectedCount - counts.total;
+                
+                // Determine status color
+                let statusColor = 'var(--danger)'; // Red if not all graded
+                let statusText = `${gradedCount}/${expectedCount} Graded`;
+                
+                if (gradedCount === expectedCount) {
+                  statusColor = 'var(--accent-2)'; // Green if all graded
+                  statusText = `âœ… All Graded (${expectedCount})`;
+                } else if (gradedCount > 0) {
+                  statusColor = 'var(--warning)'; // Yellow if partially graded
+                }
                 
                 return `
-                  <div class="card" style="margin: 10px 0;">
-                    <h4>${assignment.title}</h4>
-                    <p style="color: var(--muted); margin: 10px 0;">${assignment.description || 'No description'}</p>
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
-                      <span style="font-size: 12px; color: var(--muted);">Due: ${dueDate}</span>
-                      <div style="display: flex; gap: 10px;">
-                        <button class="btn btn-secondary small" onclick="app.viewSubmissions('${assignment.id}')">
-                          View Submissions
-                        </button>
-                        <button class="btn btn-primary small" onclick="app.editAssignment('${assignment.id}')">
-                          Edit
-                        </button>
-                        <button class="btn danger small" onclick="app.deleteAssignment('${assignment.id}')">
-                          Delete
-                        </button>
+                  <div class="card" style="margin: 10px 0; border-left: 4px solid ${statusColor};">
+                    <div style="display: flex; justify-content: space-between; align-items: start;">
+                      <div style="flex: 1;">
+                        <h4 style="margin-bottom: 8px;">${assignment.title}</h4>
+                        <p style="color: var(--muted); margin: 8px 0; font-size: 14px;">${assignment.description || 'No description'}</p>
+                        <div style="display: flex; gap: 15px; font-size: 12px; color: var(--muted); margin-top: 8px;">
+                          <span>ðŸ"… Due: ${dueDate}</span>
+                          <span>ðŸ" ${categoryName}</span>
+                          ${assignment.graded_offline ? '<span style="color: var(--accent);">ðŸ"‹ Offline Assignment</span>' : ''}
+                        </div>
                       </div>
+                      
+                      <!-- Grading Status Badge -->
+                      <div style="text-align: center; min-width: 140px; margin: 0 15px;">
+                        <div style="font-size: 24px; font-weight: 700; color: ${statusColor}; margin-bottom: 4px;">
+                          ${gradedCount}/${expectedCount}
+                        </div>
+                        <div style="font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;">
+                          Graded
+                        </div>
+                        ${pendingCount > 0 ? `
+                          <div style="font-size: 11px; color: var(--accent); margin-top: 4px;">
+                            ${pendingCount} pending review
+                          </div>
+                        ` : ''}
+                        ${missingCount > 0 ? `
+                          <div style="font-size: 11px; color: var(--danger); margin-top: 4px;">
+                            ${missingCount} missing
+                          </div>
+                        ` : ''}
+                      </div>
+                    </div>
+                    
+                    <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 15px; padding-top: 15px; border-top: 1px solid var(--border);">
+                      <button class="btn btn-secondary small" onclick="app.viewSubmissions('${assignment.id}')">
+                        ðŸ"‹ View Submissions ${counts.total > 0 ? `(${counts.total})` : ''}
+                      </button>
+                      <button class="btn btn-primary small" onclick="app.editAssignment('${assignment.id}')">
+                        âœï¸ Edit
+                      </button>
+                      <button class="btn danger small" onclick="app.deleteAssignment('${assignment.id}')">
+                        ðŸ—'ï¸ Delete
+                      </button>
                     </div>
                   </div>
                 `;
