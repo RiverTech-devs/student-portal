@@ -1609,12 +1609,12 @@
                 <button class="btn btn-secondary" onclick="app.showGoogleDriveIntegrationModal()">
                   📁 Setup Google Drive
                 </button>
-                <button class="btn btn-secondary" onclick="app.showAcademicYearManagement()">
-                  🎓 Academic Year Management
+                <button class="btn btn-secondary" onclick="app.showQuarterManagement()">
+                  📅 Quarter Management
                 </button>
               </div>
             </div>
-
+      
             <div class="card">
               <h3>📊 Teaching Overview</h3>
               <div class="list">
@@ -1663,7 +1663,32 @@
           }
         });
       
+        // Load current quarter info
+        this.loadCurrentQuarterInfo().then(quarterInfo => {
+          const quarterContainer = document.getElementById('quarter-info-container');
+          if (quarterContainer && quarterInfo) {
+            quarterContainer.innerHTML = `
+              <div style="background: rgba(106, 169, 255, 0.1); border: 1px solid var(--accent); padding: 12px; border-radius: 8px; margin-bottom: 20px;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                  <div>
+                    <strong style="color: var(--accent);">📅 ${quarterInfo.name}</strong>
+                    <span style="color: var(--muted); font-size: 12px; margin-left: 10px;">
+                      ${quarterInfo.school_year} • ${new Date(quarterInfo.start_date).toLocaleDateString()} - ${new Date(quarterInfo.end_date).toLocaleDateString()}
+                    </span>
+                  </div>
+                  <button class="btn btn-secondary small" onclick="app.showStudentQuarterHistory()">
+                    📊 View Past Quarters
+                  </button>
+                </div>
+              </div>
+            `;
+          }
+        });
+      
         return `
+          <!-- Quarter Info Banner -->
+          <div id="quarter-info-container"></div>
+          
           <div class="grid grid-2">
             <div class="card">
               <h3>🎯 Quick Actions</h3>
@@ -3948,14 +3973,30 @@
         try {
           const isTeacher = this.userInfo.profile.user_type === 'teacher';
           const classData = this.classes.find(c => c.id === classId);
-
-          // Load assignments for this class
-          const { data: allAssignments, error } = await this.auth.supabase
+      
+          // Get current quarter
+          const { data: currentQuarter } = await this.auth.supabase
+            .from('quarters')
+            .select('*')
+            .eq('is_current', true)
+            .single();
+      
+          // Load assignments for this class FILTERED by current quarter
+          let query = this.auth.supabase
             .from('assignments')
             .select('*')
             .eq('class_id', classId)
             .order('created_at', { ascending: false });
-
+      
+          // Filter by current quarter if one exists
+          if (currentQuarter) {
+            query = query
+              .gte('due_date', currentQuarter.start_date)
+              .lte('due_date', currentQuarter.end_date);
+          }
+      
+          const { data: allAssignments, error } = await query;
+      
           if (error) throw error;
 
           // For students, filter to only assigned assignments
@@ -4168,21 +4209,34 @@
           }
 
           const modalContent = `
-            <div>
-              <h3>📝 Assignments - ${classData?.name}</h3>
+          <div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+              <div>
+                <h3>📝 Assignments - ${classData?.name}</h3>
+                ${currentQuarter ? `
+                  <p style="color: var(--muted); font-size: 13px; margin-top: 5px;">
+                    Showing: ${currentQuarter.name} (${currentQuarter.school_year})
+                    ${isTeacher ? `
+                      <button class="btn btn-secondary small" onclick="app.viewAllClassAssignments('${classId}')" style="margin-left: 10px;">
+                        📋 View All Assignments
+                      </button>
+                    ` : ''}
+                  </p>
+                ` : `
+                  <p style="color: var(--warning); font-size: 13px; margin-top: 5px;">
+                    ⚠️ No active quarter - showing all assignments
+                  </p>
+                `}
+              </div>
               ${isTeacher ? `
-                <button class="btn btn-primary" onclick="app.createAssignment('${classId}')" style="margin: 15px 0;">
+                <button class="btn btn-primary" onclick="app.createAssignment('${classId}')">
                   ➕ Create New Assignment
                 </button>
-              ` : ''}
-              
-              <div style="max-height: 60vh; overflow-y: auto;">
-                ${assignmentsHtml || '<p style="color: var(--muted); text-align: center; padding: 20px;">No assignments yet.</p>'}
-              </div>
-            </div>
-
-            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
-              <button class="btn btn-secondary" onclick="app.closeModal('assignments')">Close</button>
+              ` : `
+                <button class="btn btn-secondary" onclick="app.showStudentQuarterHistory()">
+                  📊 View Past Quarters
+                </button>
+              `}
             </div>
           `;
 
@@ -4191,6 +4245,196 @@
         } catch (error) {
           console.error('Error loading assignments:', error);
           this.showNotification('Error loading assignments: ' + error.message, 'error');
+        }
+      }
+
+      async viewAllClassAssignments(classId) {
+        try {
+          const isTeacher = this.userInfo.profile.user_type === 'teacher';
+          const classData = this.classes.find(c => c.id === classId);
+      
+          // Load ALL assignments without quarter filter
+          const { data: allAssignments, error } = await this.auth.supabase
+            .from('assignments')
+            .select('*')
+            .eq('class_id', classId)
+            .order('created_at', { ascending: false });
+      
+          if (error) throw error;
+      
+          let assignments = allAssignments || [];
+      
+          // Load categories
+          const { data: categories } = await this.auth.supabase
+            .from('grade_categories')
+            .select('id, name')
+            .eq('class_id', classId);
+          
+          const categoryMap = {};
+          categories?.forEach(cat => {
+            categoryMap[cat.id] = cat.name;
+          });
+          
+          // Get submission counts
+          const assignmentIds = assignments.map(a => a.id);
+          const { data: allSubmissions } = await this.auth.supabase
+            .from('assignment_submissions')
+            .select('assignment_id, status')
+            .in('assignment_id', assignmentIds);
+          
+          const submissionCounts = {};
+          assignmentIds.forEach(id => {
+            submissionCounts[id] = { total: 0, graded: 0, submitted: 0, excused: 0 };
+          });
+          
+          allSubmissions?.forEach(sub => {
+            if (submissionCounts[sub.assignment_id]) {
+              submissionCounts[sub.assignment_id].total++;
+              if (sub.status === 'graded') submissionCounts[sub.assignment_id].graded++;
+              if (sub.status === 'submitted') submissionCounts[sub.assignment_id].submitted++;
+              if (sub.status === 'excused') submissionCounts[sub.assignment_id].excused++;
+            }
+          });
+          
+          const { data: enrollments } = await this.auth.supabase
+            .from('class_enrollments')
+            .select('id')
+            .eq('class_id', classId)
+            .eq('status', 'active');
+          
+          const totalStudents = enrollments?.length || 0;
+          
+          // Group assignments by quarter
+          const { data: quarters } = await this.auth.supabase
+            .from('quarters')
+            .select('*')
+            .order('start_date', { ascending: false });
+          
+          const assignmentsByQuarter = {};
+          const unassignedAssignments = [];
+          
+          assignments.forEach(assignment => {
+            const dueDate = new Date(assignment.due_date);
+            let assigned = false;
+            
+            quarters?.forEach(quarter => {
+              const start = new Date(quarter.start_date);
+              const end = new Date(quarter.end_date);
+              
+              if (dueDate >= start && dueDate <= end) {
+                if (!assignmentsByQuarter[quarter.id]) {
+                  assignmentsByQuarter[quarter.id] = {
+                    quarter: quarter,
+                    assignments: []
+                  };
+                }
+                assignmentsByQuarter[quarter.id].assignments.push(assignment);
+                assigned = true;
+              }
+            });
+            
+            if (!assigned) {
+              unassignedAssignments.push(assignment);
+            }
+          });
+          
+          const modalContent = `
+            <div>
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <div>
+                  <h3>📋 All Assignments - ${classData?.name}</h3>
+                  <p style="color: var(--muted); font-size: 13px; margin-top: 5px;">
+                    Showing ${assignments.length} assignment${assignments.length === 1 ? '' : 's'} across all quarters
+                  </p>
+                </div>
+                <button class="btn btn-secondary" onclick="app.closeModal('all-assignments'); setTimeout(() => app.viewAssignments('${classId}'), 100)">
+                  📅 Back to Current Quarter
+                </button>
+              </div>
+              
+              <div style="max-height: 600px; overflow-y: auto;">
+                ${Object.values(assignmentsByQuarter).map(({ quarter, assignments: quarterAssignments }) => `
+                  <div class="card" style="margin-bottom: 20px; background: rgba(106, 169, 255, 0.05);">
+                    <h4 style="margin-bottom: 15px;">
+                      ${quarter.name} (${quarter.school_year})
+                      ${quarter.is_current ? '<span style="background: var(--accent); color: black; padding: 2px 8px; border-radius: 12px; font-size: 11px; margin-left: 10px;">CURRENT</span>' : ''}
+                      ${quarter.is_archived ? '<span style="background: var(--muted); color: black; padding: 2px 8px; border-radius: 12px; font-size: 11px; margin-left: 10px;">ARCHIVED</span>' : ''}
+                    </h4>
+                    ${quarterAssignments.map(assignment => {
+                      const counts = submissionCounts[assignment.id] || { total: 0, graded: 0 };
+                      const gradedCount = counts.graded + counts.excused;
+                      const statusColor = gradedCount === totalStudents ? 'var(--accent-2)' : (gradedCount > 0 ? 'var(--warning)' : 'var(--danger)');
+                      
+                      return `
+                        <div class="card" style="margin: 10px 0; border-left: 4px solid ${statusColor};">
+                          <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div style="flex: 1;">
+                              <strong>${assignment.title}</strong>
+                              <div style="font-size: 12px; color: var(--muted); margin-top: 4px;">
+                                Due: ${new Date(assignment.due_date).toLocaleDateString()}
+                              </div>
+                            </div>
+                            <div style="text-align: center; margin: 0 15px;">
+                              <div style="font-size: 20px; font-weight: 700; color: ${statusColor};">
+                                ${gradedCount}/${totalStudents}
+                              </div>
+                              <div style="font-size: 10px; color: var(--muted);">GRADED</div>
+                            </div>
+                            <button class="btn btn-secondary small" onclick="app.viewSubmissions('${assignment.id}')">
+                              View
+                            </button>
+                          </div>
+                        </div>
+                      `;
+                    }).join('')}
+                  </div>
+                `).join('')}
+                
+                ${unassignedAssignments.length > 0 ? `
+                  <div class="card" style="background: rgba(255, 211, 106, 0.05);">
+                    <h4 style="margin-bottom: 15px;">⚠️ Unassigned to Quarter</h4>
+                    ${unassignedAssignments.map(assignment => {
+                      const counts = submissionCounts[assignment.id] || { total: 0, graded: 0 };
+                      const gradedCount = counts.graded + counts.excused;
+                      const statusColor = gradedCount === totalStudents ? 'var(--accent-2)' : (gradedCount > 0 ? 'var(--warning)' : 'var(--danger)');
+                      
+                      return `
+                        <div class="card" style="margin: 10px 0; border-left: 4px solid ${statusColor};">
+                          <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div style="flex: 1;">
+                              <strong>${assignment.title}</strong>
+                              <div style="font-size: 12px; color: var(--muted); margin-top: 4px;">
+                                Due: ${new Date(assignment.due_date).toLocaleDateString()}
+                              </div>
+                            </div>
+                            <div style="text-align: center; margin: 0 15px;">
+                              <div style="font-size: 20px; font-weight: 700; color: ${statusColor};">
+                                ${gradedCount}/${totalStudents}
+                              </div>
+                              <div style="font-size: 10px; color: var(--muted);">GRADED</div>
+                            </div>
+                            <button class="btn btn-secondary small" onclick="app.viewSubmissions('${assignment.id}')">
+                              View
+                            </button>
+                          </div>
+                        </div>
+                      `;
+                    }).join('')}
+                  </div>
+                ` : ''}
+              </div>
+            </div>
+            
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal('all-assignments')">Close</button>
+            </div>
+          `;
+          
+          this.showModal('all-assignments', '📋 All Assignments', modalContent, true);
+          
+        } catch (error) {
+          console.error('Error loading all assignments:', error);
+          this.showNotification('Error: ' + error.message, 'error');
         }
       }
 
@@ -5218,6 +5462,710 @@
         `;
 
         this.showModal('academic-year', '🎓 Academic Year Management', modalContent);
+      }
+
+      async showQuarterManagement() {
+        try {
+          // Load all quarters
+          const { data: quarters, error } = await this.auth.supabase
+            .from('quarters')
+            .select('*')
+            .order('start_date', { ascending: false });
+          
+          if (error) throw error;
+          
+          const currentQuarter = quarters?.find(q => q.is_current);
+          const activeQuarters = quarters?.filter(q => !q.is_archived) || [];
+          const archivedQuarters = quarters?.filter(q => q.is_archived) || [];
+          
+          const modalContent = `
+            <div>
+              <h3>📅 Quarter Management</h3>
+              
+              ${currentQuarter ? `
+                <div class="card" style="background: linear-gradient(135deg, rgba(106, 169, 255, 0.2), rgba(139, 255, 176, 0.2)); border: 2px solid var(--accent); margin: 20px 0;">
+                  <h4 style="margin-bottom: 10px;">⭐ Current Quarter</h4>
+                  <div style="font-size: 18px; font-weight: 600; margin-bottom: 5px;">${currentQuarter.name}</div>
+                  <div style="color: var(--muted); font-size: 14px;">
+                    ${currentQuarter.school_year} • 
+                    ${new Date(currentQuarter.start_date).toLocaleDateString()} - ${new Date(currentQuarter.end_date).toLocaleDateString()}
+                  </div>
+                  <div style="margin-top: 15px; display: flex; gap: 10px;">
+                    <button class="btn btn-secondary small" onclick="app.editQuarter('${currentQuarter.id}')">
+                      ✏️ Edit
+                    </button>
+                    <button class="btn btn-secondary small" onclick="app.exportQuarterGrades('${currentQuarter.id}')">
+                      📥 Export Grades
+                    </button>
+                  </div>
+                </div>
+              ` : `
+                <div class="card" style="background: rgba(255, 107, 107, 0.1); border: 1px solid var(--danger); padding: 20px; text-align: center; margin: 20px 0;">
+                  <h4 style="color: var(--danger);">⚠️ No Active Quarter</h4>
+                  <p>Create a quarter to begin tracking grades for this period.</p>
+                </div>
+              `}
+              
+              <!-- Create New Quarter Button -->
+              <button class="btn btn-primary" onclick="app.showCreateQuarterForm()" style="width: 100%; margin-bottom: 20px;">
+                ➕ Create New Quarter
+              </button>
+              
+              <!-- Active Quarters -->
+              ${activeQuarters.length > 0 ? `
+                <div class="card" style="margin-bottom: 20px;">
+                  <h4 style="margin-bottom: 15px;">📋 Active Quarters</h4>
+                  <div class="list">
+                    ${activeQuarters.map(q => `
+                      <div class="list-item">
+                        <div class="list-item-content">
+                          <div class="list-item-title">
+                            ${q.name}
+                            ${q.is_current ? '<span style="background: var(--accent); color: black; padding: 2px 8px; border-radius: 12px; font-size: 11px; margin-left: 10px;">CURRENT</span>' : ''}
+                          </div>
+                          <div class="list-item-meta">
+                            ${q.school_year} • ${new Date(q.start_date).toLocaleDateString()} - ${new Date(q.end_date).toLocaleDateString()}
+                          </div>
+                        </div>
+                        <div style="display: flex; gap: 5px;">
+                          ${!q.is_current ? `
+                            <button class="btn btn-secondary small" onclick="app.setCurrentQuarter('${q.id}')">
+                              ⭐ Set Current
+                            </button>
+                          ` : ''}
+                          <button class="btn btn-secondary small" onclick="app.editQuarter('${q.id}')">
+                            ✏️
+                          </button>
+                          <button class="btn btn-secondary small" onclick="app.archiveQuarter('${q.id}')">
+                            📦 Archive
+                          </button>
+                        </div>
+                      </div>
+                    `).join('')}
+                  </div>
+                </div>
+              ` : ''}
+              
+              <!-- Archived Quarters -->
+              ${archivedQuarters.length > 0 ? `
+                <div class="card">
+                  <h4 style="margin-bottom: 15px;">📦 Archived Quarters</h4>
+                  <div class="list">
+                    ${archivedQuarters.map(q => `
+                      <div class="list-item" style="opacity: 0.7;">
+                        <div class="list-item-content">
+                          <div class="list-item-title">${q.name}</div>
+                          <div class="list-item-meta">
+                            ${q.school_year} • Archived ${q.archived_at ? new Date(q.archived_at).toLocaleDateString() : ''}
+                          </div>
+                        </div>
+                        <div style="display: flex; gap: 5px;">
+                          <button class="btn btn-secondary small" onclick="app.viewQuarterGrades('${q.id}')">
+                            👁️ View Grades
+                          </button>
+                          <button class="btn btn-secondary small" onclick="app.unarchiveQuarter('${q.id}')">
+                            📤 Unarchive
+                          </button>
+                        </div>
+                      </div>
+                    `).join('')}
+                  </div>
+                </div>
+              ` : ''}
+            </div>
+            
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal('quarter-management')">Close</button>
+            </div>
+          `;
+          
+          this.showModal('quarter-management', '📅 Quarter Management', modalContent);
+          
+        } catch (error) {
+          console.error('Error loading quarters:', error);
+          this.showNotification('Error loading quarters: ' + error.message, 'error');
+        }
+      }
+      
+      showCreateQuarterForm() {
+        const content = `
+          <div class="card" style="max-width: 600px; margin: 0 auto;">
+            <h3 style="margin-bottom: 20px;">Create New Quarter</h3>
+            <form id="create-quarter-form" onsubmit="app.handleCreateQuarter(event)">
+              <div class="form-group">
+                <label>Quarter Name *</label>
+                <input type="text" id="quarter-name" required placeholder="e.g., Quarter 1, Fall Semester">
+              </div>
+              <div class="form-group">
+                <label>School Year *</label>
+                <input type="text" id="school-year" required placeholder="e.g., 2024-2025">
+              </div>
+              <div class="form-group">
+                <label>Start Date *</label>
+                <input type="date" id="start-date" required>
+              </div>
+              <div class="form-group">
+                <label>End Date *</label>
+                <input type="date" id="end-date" required>
+              </div>
+              <div class="form-group">
+                <label style="display: flex; align-items: center; gap: 8px;">
+                  <input type="checkbox" id="set-current" checked>
+                  <span>Set as current quarter and transition from previous quarter</span>
+                </label>
+                <p style="color: var(--muted); font-size: 12px; margin-top: 5px;">
+                  This will snapshot the current quarter's grades and update all enrollments to the new quarter.
+                </p>
+              </div>
+              <div style="display: flex; gap: 10px; margin-top: 20px;">
+                <button type="submit" class="btn btn-primary" style="flex: 1;">Create Quarter</button>
+                <button type="button" class="btn btn-secondary" onclick="app.closeModal('create-quarter')" style="flex: 1;">Cancel</button>
+              </div>
+            </form>
+          </div>
+        `;
+        
+        this.showModal('create-quarter', '➕ Create New Quarter', content, true);
+      }
+      
+      async handleCreateQuarter(event) {
+        event.preventDefault();
+        
+        const name = document.getElementById('quarter-name').value;
+        const schoolYear = document.getElementById('school-year').value;
+        const startDate = document.getElementById('start-date').value;
+        const endDate = document.getElementById('end-date').value;
+        const setCurrent = document.getElementById('set-current').checked;
+        
+        try {
+          if (window.portalLoading) {
+            window.portalLoading.show('create-quarter', 'Creating quarter...');
+          }
+          
+          // Get current quarter before creating new one
+          let currentQuarter = null;
+          if (setCurrent) {
+            const { data: existing } = await this.auth.supabase
+              .from('quarters')
+              .select('*')
+              .eq('is_current', true)
+              .single();
+            
+            currentQuarter = existing;
+          }
+          
+          // If setting as current, snapshot current quarter grades first
+          if (setCurrent && currentQuarter) {
+            this.showNotification('Snapshotting current quarter grades...', 'info');
+            
+            const { error: snapshotError } = await this.auth.supabase
+              .rpc('snapshot_quarter_grades', { p_quarter_id: currentQuarter.id });
+            
+            if (snapshotError) {
+              console.error('Snapshot error:', snapshotError);
+              // Continue anyway - this is not critical
+            }
+            
+            // Unset all other quarters
+            await this.auth.supabase
+              .from('quarters')
+              .update({ is_current: false })
+              .eq('is_current', true);
+          }
+          
+          // Create new quarter
+          const { data: newQuarter, error: createError } = await this.auth.supabase
+            .from('quarters')
+            .insert({
+              name,
+              school_year: schoolYear,
+              start_date: startDate,
+              end_date: endDate,
+              is_current: setCurrent
+            })
+            .select()
+            .single();
+          
+          if (createError) throw createError;
+          
+          // If setting as current, update all active enrollments to new quarter
+          if (setCurrent) {
+            this.showNotification('Transitioning enrollments to new quarter...', 'info');
+            
+            const { error: updateError } = await this.auth.supabase
+              .from('class_enrollments')
+              .update({ 
+                current_quarter_id: newQuarter.id,
+                // Reset participation grade for new quarter (optional)
+                participation_grade: null,
+                teacher_notes: null
+              })
+              .eq('status', 'active');
+            
+            if (updateError) throw updateError;
+            
+            // Recalculate all grades for new quarter (they should be empty/null initially)
+            this.showNotification('Recalculating grades for new quarter...', 'info');
+            
+            const { data: enrollments } = await this.auth.supabase
+              .from('class_enrollments')
+              .select('id')
+              .eq('status', 'active');
+            
+            if (enrollments) {
+              for (const enrollment of enrollments) {
+                await this.auth.supabase.rpc('update_enrollment_grades', {
+                  p_enrollment_id: enrollment.id
+                });
+              }
+            }
+          }
+          
+          this.showNotification('Quarter created successfully!', 'success');
+          this.closeModal('create-quarter');
+          
+          // Reload quarter management
+          setTimeout(() => this.showQuarterManagement(), 100);
+          
+        } catch (error) {
+          console.error('Error creating quarter:', error);
+          this.showNotification(`Failed to create quarter: ${error.message}`, 'error');
+        } finally {
+          if (window.portalLoading) {
+            window.portalLoading.hide('create-quarter');
+          }
+        }
+      }
+      
+      async setCurrentQuarter(quarterId) {
+        if (!confirm('Set this as the current quarter? This will transition all enrollments and snapshot the current quarter\'s grades.')) {
+          return;
+        }
+        
+        try {
+          if (window.portalLoading) {
+            window.portalLoading.show('set-current', 'Transitioning to new quarter...');
+          }
+          
+          // Get current quarter to snapshot
+          const { data: currentQuarter } = await this.auth.supabase
+            .from('quarters')
+            .select('*')
+            .eq('is_current', true)
+            .single();
+          
+          // Snapshot current quarter grades
+          if (currentQuarter) {
+            await this.auth.supabase.rpc('snapshot_quarter_grades', { 
+              p_quarter_id: currentQuarter.id 
+            });
+          }
+          
+          // Unset all current quarters
+          await this.auth.supabase
+            .from('quarters')
+            .update({ is_current: false })
+            .eq('is_current', true);
+          
+          // Set new current quarter
+          const { error: updateError } = await this.auth.supabase
+            .from('quarters')
+            .update({ is_current: true })
+            .eq('id', quarterId);
+          
+          if (updateError) throw updateError;
+          
+          // Update all enrollments
+          await this.auth.supabase
+            .from('class_enrollments')
+            .update({ 
+              current_quarter_id: quarterId,
+              participation_grade: null,
+              teacher_notes: null
+            })
+            .eq('status', 'active');
+          
+          // Recalculate grades
+          const { data: enrollments } = await this.auth.supabase
+            .from('class_enrollments')
+            .select('id')
+            .eq('status', 'active');
+          
+          if (enrollments) {
+            for (const enrollment of enrollments) {
+              await this.auth.supabase.rpc('update_enrollment_grades', {
+                p_enrollment_id: enrollment.id
+              });
+            }
+          }
+          
+          this.showNotification('Quarter set as current!', 'success');
+          this.closeModal('quarter-management');
+          setTimeout(() => this.showQuarterManagement(), 100);
+          
+        } catch (error) {
+          console.error('Error setting current quarter:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+        } finally {
+          if (window.portalLoading) {
+            window.portalLoading.hide('set-current');
+          }
+        }
+      }
+      
+      async archiveQuarter(quarterId) {
+        const { data: quarter } = await this.auth.supabase
+          .from('quarters')
+          .select('*')
+          .eq('id', quarterId)
+          .single();
+        
+        if (quarter?.is_current) {
+          this.showNotification('Cannot archive the current quarter. Set a different quarter as current first.', 'error');
+          return;
+        }
+        
+        if (!confirm(`Archive "${quarter?.name}"? You can still view grades but cannot edit them.`)) {
+          return;
+        }
+        
+        try {
+          // Snapshot grades before archiving
+          await this.auth.supabase.rpc('snapshot_quarter_grades', { 
+            p_quarter_id: quarterId 
+          });
+          
+          const { error } = await this.auth.supabase
+            .from('quarters')
+            .update({ 
+              is_archived: true,
+              archived_at: new Date().toISOString(),
+              archived_by: this.userInfo.user.id
+            })
+            .eq('id', quarterId);
+          
+          if (error) throw error;
+          
+          this.showNotification('Quarter archived successfully', 'success');
+          this.closeModal('quarter-management');
+          setTimeout(() => this.showQuarterManagement(), 100);
+          
+        } catch (error) {
+          console.error('Error archiving quarter:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+        }
+      }
+      
+      async unarchiveQuarter(quarterId) {
+        try {
+          const { error } = await this.auth.supabase
+            .from('quarters')
+            .update({ 
+              is_archived: false,
+              archived_at: null,
+              archived_by: null
+            })
+            .eq('id', quarterId);
+          
+          if (error) throw error;
+          
+          this.showNotification('Quarter unarchived', 'success');
+          this.closeModal('quarter-management');
+          setTimeout(() => this.showQuarterManagement(), 100);
+          
+        } catch (error) {
+          console.error('Error unarchiving quarter:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+        }
+      }
+      
+      async viewQuarterGrades(quarterId) {
+        try {
+          // Load quarter info
+          const { data: quarter } = await this.auth.supabase
+            .from('quarters')
+            .select('*')
+            .eq('id', quarterId)
+            .single();
+          
+          // Load snapshots for this quarter
+          const { data: snapshots, error } = await this.auth.supabase
+            .from('quarter_grade_snapshots')
+            .select(`
+              *,
+              class_enrollments!inner(
+                class_id,
+                student_id
+              )
+            `)
+            .eq('quarter_id', quarterId);
+          
+          if (error) throw error;
+          
+          if (!snapshots || snapshots.length === 0) {
+            this.showModal('view-quarter-grades', `📊 ${quarter.name} Grades`, `
+              <div class="card" style="text-align: center; padding: 40px;">
+                <h3>No grade data available</h3>
+                <p style="color: var(--muted);">This quarter has no saved grade snapshots.</p>
+              </div>
+              <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+                <button class="btn btn-secondary" onclick="app.closeModal('view-quarter-grades')">Close</button>
+              </div>
+            `, true);
+            return;
+          }
+          
+          // Get student profiles
+          const studentIds = snapshots.map(s => s.class_enrollments.student_id);
+          const { data: students } = await this.auth.supabase
+            .from('user_profiles')
+            .select('id, first_name, last_name')
+            .in('id', studentIds);
+          
+          const studentMap = {};
+          students?.forEach(s => {
+            studentMap[s.id] = s;
+          });
+          
+          // Get class info
+          const classIds = [...new Set(snapshots.map(s => s.class_enrollments.class_id))];
+          const { data: classes } = await this.auth.supabase
+            .from('classes')
+            .select('id, name')
+            .in('id', classIds);
+          
+          const classMap = {};
+          classes?.forEach(c => {
+            classMap[c.id] = c;
+          });
+          
+          const content = `
+            <div>
+              <h3>📊 ${quarter.name} - Final Grades</h3>
+              <p style="color: var(--muted); margin-bottom: 20px;">
+                ${quarter.school_year} • ${new Date(quarter.start_date).toLocaleDateString()} - ${new Date(quarter.end_date).toLocaleDateString()}
+              </p>
+              
+              <div style="overflow-x: auto;">
+                <table style="width: 100%; border-collapse: collapse;">
+                  <thead>
+                    <tr>
+                      <th style="text-align: left; padding: 12px; background: rgba(0,0,0,0.3);">Student</th>
+                      <th style="text-align: left; padding: 12px; background: rgba(0,0,0,0.3);">Class</th>
+                      <th style="text-align: center; padding: 12px; background: rgba(0,0,0,0.3);">Academic</th>
+                      <th style="text-align: center; padding: 12px; background: rgba(0,0,0,0.3);">Participation</th>
+                      <th style="text-align: center; padding: 12px; background: rgba(0,0,0,0.3);">Final Grade</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${snapshots.map(snap => {
+                      const student = studentMap[snap.class_enrollments.student_id];
+                      const className = classMap[snap.class_enrollments.class_id]?.name || 'Unknown Class';
+                      
+                      return `
+                        <tr style="border-bottom: 1px solid var(--border);">
+                          <td style="padding: 12px;">${student?.first_name} ${student?.last_name}</td>
+                          <td style="padding: 12px;">${className}</td>
+                          <td style="text-align: center; padding: 12px;">${snap.academic_grade?.toFixed(1) || 'N/A'}</td>
+                          <td style="text-align: center; padding: 12px;">${snap.participation_grade?.toFixed(1) || 'N/A'}</td>
+                          <td style="text-align: center; padding: 12px; font-weight: 700; color: var(--accent);">${snap.class_grade?.toFixed(1) || 'N/A'}</td>
+                        </tr>
+                      `;
+                    }).join('')}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.exportQuarterGrades('${quarterId}')">
+                📥 Export to CSV
+              </button>
+              <button class="btn btn-secondary" onclick="app.closeModal('view-quarter-grades')">Close</button>
+            </div>
+          `;
+          
+          this.showModal('view-quarter-grades', `📊 ${quarter.name} Grades`, content, true);
+          
+        } catch (error) {
+          console.error('Error viewing quarter grades:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+        }
+      }
+      
+      async exportQuarterGrades(quarterId) {
+        try {
+          if (window.portalLoading) {
+            window.portalLoading.show('export', 'Generating grade report...');
+          }
+          
+          // Load quarter
+          const { data: quarter } = await this.auth.supabase
+            .from('quarters')
+            .select('*')
+            .eq('id', quarterId)
+            .single();
+          
+          // Load snapshots or current grades
+          let gradeData;
+          if (quarter.is_archived) {
+            const { data: snapshots } = await this.auth.supabase
+              .from('quarter_grade_snapshots')
+              .select(`
+                *,
+                class_enrollments!inner(class_id, student_id)
+              `)
+              .eq('quarter_id', quarterId);
+            gradeData = snapshots;
+          } else {
+            const { data: enrollments } = await this.auth.supabase
+              .from('class_enrollments')
+              .select('*')
+              .eq('current_quarter_id', quarterId)
+              .eq('status', 'active');
+            gradeData = enrollments;
+          }
+          
+          if (!gradeData || gradeData.length === 0) {
+            this.showNotification('No grade data to export', 'warning');
+            return;
+          }
+          
+          // Get students and classes
+          const studentIds = gradeData.map(g => quarter.is_archived ? g.class_enrollments.student_id : g.student_id);
+          const classIds = gradeData.map(g => quarter.is_archived ? g.class_enrollments.class_id : g.class_id);
+          
+          const { data: students } = await this.auth.supabase
+            .from('user_profiles')
+            .select('id, first_name, last_name, email')
+            .in('id', studentIds);
+          
+          const { data: classes } = await this.auth.supabase
+            .from('classes')
+            .select('id, name, subject')
+            .in('id', classIds);
+          
+          const studentMap = {};
+          students?.forEach(s => { studentMap[s.id] = s; });
+          
+          const classMap = {};
+          classes?.forEach(c => { classMap[c.id] = c; });
+          
+          // Generate CSV
+          let csv = `Quarter,School Year,Student Name,Email,Class,Subject,Academic Grade,Participation Grade,Final Grade,Teacher Notes\n`;
+          
+          gradeData.forEach(grade => {
+            const studentId = quarter.is_archived ? grade.class_enrollments.student_id : grade.student_id;
+            const classId = quarter.is_archived ? grade.class_enrollments.class_id : grade.class_id;
+            const student = studentMap[studentId];
+            const classInfo = classMap[classId];
+            
+            csv += `"${quarter.name}","${quarter.school_year}",`;
+            csv += `"${student?.last_name}, ${student?.first_name}","${student?.email}",`;
+            csv += `"${classInfo?.name}","${classInfo?.subject}",`;
+            csv += `"${grade.academic_grade?.toFixed(2) || ''}",`;
+            csv += `"${grade.participation_grade?.toFixed(2) || ''}",`;
+            csv += `"${grade.class_grade?.toFixed(2) || ''}",`;
+            csv += `"${(grade.teacher_notes || '').replace(/"/g, '""')}"\n`;
+          });
+          
+          // Download CSV
+          const blob = new Blob([csv], { type: 'text/csv' });
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = `${quarter.name.replace(/\s+/g, '_')}_Grades_${new Date().toISOString().split('T')[0]}.csv`;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          URL.revokeObjectURL(url);
+          
+          this.showNotification('Grade report exported!', 'success');
+          
+        } catch (error) {
+          console.error('Error exporting grades:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+        } finally {
+          if (window.portalLoading) {
+            window.portalLoading.hide('export');
+          }
+        }
+      }
+      
+      async editQuarter(quarterId) {
+        try {
+          const { data: quarter } = await this.auth.supabase
+            .from('quarters')
+            .select('*')
+            .eq('id', quarterId)
+            .single();
+          
+          const content = `
+            <div class="card" style="max-width: 600px; margin: 0 auto;">
+              <h3 style="margin-bottom: 20px;">Edit Quarter</h3>
+              <form id="edit-quarter-form" onsubmit="app.handleEditQuarter(event, '${quarterId}')">
+                <div class="form-group">
+                  <label>Quarter Name *</label>
+                  <input type="text" id="edit-quarter-name" value="${quarter.name}" required>
+                </div>
+                <div class="form-group">
+                  <label>School Year *</label>
+                  <input type="text" id="edit-school-year" value="${quarter.school_year}" required>
+                </div>
+                <div class="form-group">
+                  <label>Start Date *</label>
+                  <input type="date" id="edit-start-date" value="${quarter.start_date}" required>
+                </div>
+                <div class="form-group">
+                  <label>End Date *</label>
+                  <input type="date" id="edit-end-date" value="${quarter.end_date}" required>
+                </div>
+                <div style="display: flex; gap: 10px; margin-top: 20px;">
+                  <button type="submit" class="btn btn-primary" style="flex: 1;">Save Changes</button>
+                  <button type="button" class="btn btn-secondary" onclick="app.closeModal('edit-quarter')" style="flex: 1;">Cancel</button>
+                </div>
+              </form>
+            </div>
+          `;
+          
+          this.showModal('edit-quarter', '✏️ Edit Quarter', content, true);
+          
+        } catch (error) {
+          console.error('Error loading quarter:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+        }
+      }
+      
+      async handleEditQuarter(event, quarterId) {
+        event.preventDefault();
+        
+        const name = document.getElementById('edit-quarter-name').value;
+        const schoolYear = document.getElementById('edit-school-year').value;
+        const startDate = document.getElementById('edit-start-date').value;
+        const endDate = document.getElementById('edit-end-date').value;
+        
+        try {
+          const { error } = await this.auth.supabase
+            .from('quarters')
+            .update({
+              name,
+              school_year: schoolYear,
+              start_date: startDate,
+              end_date: endDate
+            })
+            .eq('id', quarterId);
+          
+          if (error) throw error;
+          
+          this.showNotification('Quarter updated successfully!', 'success');
+          this.closeModal('edit-quarter');
+          this.closeModal('quarter-management');
+          setTimeout(() => this.showQuarterManagement(), 100);
+          
+        } catch (error) {
+          console.error('Error updating quarter:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+        }
       }
 
       async showDeleteAccountConfirmation() {
@@ -7144,6 +8092,381 @@
         } catch (error) {
           console.error('Error loading upcoming assignments:', error);
           return [];
+        }
+      }
+
+      async loadCurrentQuarterInfo() {
+        try {
+          const { data: quarter, error } = await this.auth.supabase
+            .from('quarters')
+            .select('*')
+            .eq('is_current', true)
+            .single();
+          
+          if (error) {
+            console.error('Error loading current quarter:', error);
+            return null;
+          }
+          
+          return quarter;
+        } catch (error) {
+          console.error('Error loading quarter info:', error);
+          return null;
+        }
+      }
+      
+      async showStudentQuarterHistory() {
+        try {
+          // Load all quarters
+          const { data: quarters, error } = await this.auth.supabase
+            .from('quarters')
+            .select('*')
+            .order('start_date', { ascending: false });
+          
+          if (error) throw error;
+          
+          if (!quarters || quarters.length === 0) {
+            this.showNotification('No quarter history available', 'info');
+            return;
+          }
+          
+          const currentQuarter = quarters.find(q => q.is_current);
+          
+          const modalContent = `
+            <div>
+              <h3>📊 Quarter History</h3>
+              <p style="color: var(--muted); margin-bottom: 20px;">
+                View your grades and assignments from different quarters
+              </p>
+              
+              <div class="list">
+                ${quarters.map(quarter => `
+                  <div class="list-item" style="${quarter.is_current ? 'background: rgba(106, 169, 255, 0.1); border: 1px solid var(--accent);' : ''}">
+                    <div class="list-item-content">
+                      <div class="list-item-title">
+                        ${quarter.name}
+                        ${quarter.is_current ? '<span style="background: var(--accent); color: black; padding: 2px 8px; border-radius: 12px; font-size: 11px; margin-left: 10px;">CURRENT</span>' : ''}
+                        ${quarter.is_archived ? '<span style="background: var(--muted); color: black; padding: 2px 8px; border-radius: 12px; font-size: 11px; margin-left: 10px;">ARCHIVED</span>' : ''}
+                      </div>
+                      <div class="list-item-meta">
+                        ${quarter.school_year} • ${new Date(quarter.start_date).toLocaleDateString()} - ${new Date(quarter.end_date).toLocaleDateString()}
+                      </div>
+                    </div>
+                    <div style="display: flex; gap: 10px;">
+                      <button class="btn btn-secondary small" onclick="app.viewStudentQuarterGrades('${quarter.id}')">
+                        📊 View Grades
+                      </button>
+                      <button class="btn btn-secondary small" onclick="app.viewQuarterAssignments('${quarter.id}')">
+                        📝 View Assignments
+                      </button>
+                    </div>
+                  </div>
+                `).join('')}
+              </div>
+            </div>
+            
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal('quarter-history')">Close</button>
+            </div>
+          `;
+          
+          this.showModal('quarter-history', '📊 Quarter History', modalContent);
+          
+        } catch (error) {
+          console.error('Error loading quarter history:', error);
+          this.showNotification('Error loading quarter history: ' + error.message, 'error');
+        }
+      }
+      
+      async viewStudentQuarterGrades(quarterId) {
+        try {
+          // Load quarter info
+          const { data: quarter } = await this.auth.supabase
+            .from('quarters')
+            .select('*')
+            .eq('id', quarterId)
+            .single();
+          
+          // Load student's enrollments
+          const { data: enrollments, error } = await this.auth.supabase
+            .from('class_enrollments')
+            .select('*')
+            .eq('student_id', this.userInfo.user.id)
+            .eq('current_quarter_id', quarterId)
+            .eq('status', 'active');
+          
+          if (error) throw error;
+          
+          // If quarter is archived, try to load from snapshots instead
+          let gradeData = enrollments;
+          if (quarter.is_archived && (!enrollments || enrollments.length === 0)) {
+            const { data: snapshots } = await this.auth.supabase
+              .from('quarter_grade_snapshots')
+              .select(`
+                *,
+                class_enrollments!inner(
+                  class_id,
+                  student_id
+                )
+              `)
+              .eq('quarter_id', quarterId)
+              .eq('class_enrollments.student_id', this.userInfo.user.id);
+            
+            gradeData = snapshots?.map(snap => ({
+              ...snap,
+              class_id: snap.class_enrollments.class_id
+            })) || [];
+          }
+          
+          if (!gradeData || gradeData.length === 0) {
+            this.showModal('view-quarter-grades', `📊 ${quarter.name} Grades`, `
+              <div class="card" style="text-align: center; padding: 40px;">
+                <h3>No Grade Data</h3>
+                <p style="color: var(--muted);">You weren't enrolled in any classes during this quarter.</p>
+              </div>
+              <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+                <button class="btn btn-secondary" onclick="app.closeModal('view-quarter-grades')">Close</button>
+              </div>
+            `, true);
+            return;
+          }
+          
+          // Load class information
+          const classIds = gradeData.map(e => e.class_id);
+          const { data: classes } = await this.auth.supabase
+            .from('classes')
+            .select('id, name, subject')
+            .in('id', classIds);
+          
+          const classMap = {};
+          classes?.forEach(c => {
+            classMap[c.id] = c;
+          });
+          
+          const modalContent = `
+            <div>
+              <h3>📊 ${quarter.name} - Your Grades</h3>
+              <p style="color: var(--muted); margin-bottom: 20px;">
+                ${quarter.school_year} • ${new Date(quarter.start_date).toLocaleDateString()} - ${new Date(quarter.end_date).toLocaleDateString()}
+              </p>
+              
+              ${quarter.is_archived ? `
+                <div class="card" style="background: rgba(255, 211, 106, 0.1); border: 1px solid var(--warning); padding: 15px; margin-bottom: 20px;">
+                  <strong>📦 Archived Quarter</strong>
+                  <p style="margin-top: 5px; font-size: 13px;">These are final grades from a completed quarter.</p>
+                </div>
+              ` : ''}
+              
+              <div class="grid grid-2">
+                ${gradeData.map(enrollment => {
+                  const classInfo = classMap[enrollment.class_id];
+                  const academicGrade = enrollment.academic_grade?.toFixed(1) || 'N/A';
+                  const participationGrade = enrollment.participation_grade?.toFixed(1) || 'Not Set';
+                  const classGrade = enrollment.class_grade?.toFixed(1) || 'N/A';
+                  
+                  return `
+                    <div class="card" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">
+                      <h4 style="color: white; margin-bottom: 10px;">${classInfo?.name || 'Unknown Class'}</h4>
+                      <p style="color: rgba(255,255,255,0.8); font-size: 13px; margin-bottom: 15px;">${classInfo?.subject || ''}</p>
+                      
+                      <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; margin-top: 15px;">
+                        <div style="text-align: center; padding: 15px; background: rgba(0,0,0,0.2); border-radius: 8px;">
+                          <div style="font-size: 11px; opacity: 0.8; margin-bottom: 5px;">ACADEMIC</div>
+                          <div style="font-size: 28px; font-weight: 700;">${academicGrade}</div>
+                        </div>
+                        <div style="text-align: center; padding: 15px; background: rgba(0,0,0,0.2); border-radius: 8px;">
+                          <div style="font-size: 11px; opacity: 0.8; margin-bottom: 5px;">PARTICIPATION</div>
+                          <div style="font-size: 28px; font-weight: 700;">${participationGrade}</div>
+                        </div>
+                        <div style="text-align: center; padding: 15px; background: rgba(0,0,0,0.3); border-radius: 8px;">
+                          <div style="font-size: 11px; opacity: 0.8; margin-bottom: 5px;">FINAL</div>
+                          <div style="font-size: 28px; font-weight: 700;">${classGrade}</div>
+                        </div>
+                      </div>
+                      
+                      ${enrollment.teacher_notes ? `
+                        <div style="margin-top: 15px; padding: 10px; background: rgba(0,0,0,0.2); border-radius: 8px; border-left: 3px solid rgba(255,255,255,0.5);">
+                          <div style="font-size: 11px; opacity: 0.8; margin-bottom: 5px;">TEACHER NOTES</div>
+                          <p style="font-size: 13px; line-height: 1.4;">${enrollment.teacher_notes}</p>
+                        </div>
+                      ` : ''}
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            </div>
+            
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal('view-quarter-grades')">Close</button>
+            </div>
+          `;
+          
+          this.showModal('view-quarter-grades', `📊 ${quarter.name} Grades`, modalContent, true);
+          
+        } catch (error) {
+          console.error('Error viewing quarter grades:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+        }
+      }
+      
+      async viewQuarterAssignments(quarterId) {
+        try {
+          // Load quarter info
+          const { data: quarter } = await this.auth.supabase
+            .from('quarters')
+            .select('*')
+            .eq('id', quarterId)
+            .single();
+          
+          // Load all student's classes
+          const classIds = this.classes.map(c => c.id);
+          
+          if (classIds.length === 0) {
+            this.showNotification('You are not enrolled in any classes', 'info');
+            return;
+          }
+          
+          // Load assignments for this quarter
+          const { data: assignments, error } = await this.auth.supabase
+            .from('assignments')
+            .select('*')
+            .in('class_id', classIds)
+            .eq('is_published', true)
+            .gte('due_date', quarter.start_date)
+            .lte('due_date', quarter.end_date)
+            .order('due_date', { ascending: false });
+          
+          if (error) throw error;
+          
+          if (!assignments || assignments.length === 0) {
+            this.showModal('view-quarter-assignments', `📝 ${quarter.name} Assignments`, `
+              <div class="card" style="text-align: center; padding: 40px;">
+                <h3>No Assignments</h3>
+                <p style="color: var(--muted);">There were no assignments during this quarter.</p>
+              </div>
+              <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+                <button class="btn btn-secondary" onclick="app.closeModal('view-quarter-assignments')">Close</button>
+              </div>
+            `, true);
+            return;
+          }
+          
+          // Get class info
+          const { data: classes } = await this.auth.supabase
+            .from('classes')
+            .select('id, name, subject')
+            .in('id', classIds);
+          
+          const classMap = {};
+          classes?.forEach(c => {
+            classMap[c.id] = c;
+          });
+          
+          // Filter to only assignments assigned to this student
+          const filteredAssignments = [];
+          for (const assignment of assignments) {
+            if (assignment.assigned_to_all) {
+              filteredAssignments.push(assignment);
+            } else {
+              const { data: studentAssignment } = await this.auth.supabase
+                .from('assignment_students')
+                .select('id')
+                .eq('assignment_id', assignment.id)
+                .eq('student_id', this.userInfo.user.id)
+                .maybeSingle();
+                
+              if (studentAssignment) {
+                filteredAssignments.push(assignment);
+              }
+            }
+          }
+          
+          // Load submissions
+          const assignmentIds = filteredAssignments.map(a => a.id);
+          const { data: submissions } = await this.auth.supabase
+            .from('assignment_submissions')
+            .select('*')
+            .in('assignment_id', assignmentIds)
+            .eq('student_id', this.userInfo.user.id);
+          
+          const submissionMap = {};
+          submissions?.forEach(s => {
+            submissionMap[s.assignment_id] = s;
+          });
+          
+          const modalContent = `
+            <div>
+              <h3>📝 ${quarter.name} - Assignments</h3>
+              <p style="color: var(--muted); margin-bottom: 20px;">
+                ${quarter.school_year} • ${filteredAssignments.length} assignment${filteredAssignments.length === 1 ? '' : 's'}
+              </p>
+              
+              ${quarter.is_archived ? `
+                <div class="card" style="background: rgba(255, 211, 106, 0.1); border: 1px solid var(--warning); padding: 15px; margin-bottom: 20px;">
+                  <strong>📦 Archived Quarter</strong>
+                  <p style="margin-top: 5px; font-size: 13px;">These assignments are from a completed quarter and cannot be submitted.</p>
+                </div>
+              ` : ''}
+              
+              <div style="max-height: 500px; overflow-y: auto;">
+                ${filteredAssignments.map(assignment => {
+                  const classInfo = classMap[assignment.class_id];
+                  const submission = submissionMap[assignment.id];
+                  const dueDate = new Date(assignment.due_date);
+                  const isGraded = submission?.status === 'graded';
+                  const isExcused = submission?.status === 'excused';
+                  
+                  let statusBadge = '';
+                  let statusColor = 'var(--danger)';
+                  
+                  if (isExcused) {
+                    statusBadge = '<span style="background: var(--muted); color: black; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600;">EXCUSED</span>';
+                    statusColor = 'var(--muted)';
+                  } else if (isGraded) {
+                    statusBadge = '<span style="background: var(--accent-2); color: black; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600;">✓ GRADED</span>';
+                    statusColor = 'var(--accent-2)';
+                  } else if (submission) {
+                    statusBadge = '<span style="background: var(--accent); color: white; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600;">✓ SUBMITTED</span>';
+                    statusColor = 'var(--accent)';
+                  } else {
+                    statusBadge = '<span style="background: var(--danger); color: white; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600;">NOT SUBMITTED</span>';
+                  }
+                  
+                  return `
+                    <div class="card" style="margin-bottom: 15px; border-left: 4px solid ${statusColor};">
+                      <div style="display: flex; justify-content: space-between; align-items: start;">
+                        <div style="flex: 1;">
+                          <h4 style="margin-bottom: 8px;">${assignment.title}</h4>
+                          <div style="font-size: 13px; color: var(--muted); margin-bottom: 8px;">
+                            <span style="color: var(--accent);">${classInfo?.name || 'Unknown Class'}</span> • 
+                            ${classInfo?.subject || ''} • 
+                            Due: ${dueDate.toLocaleDateString()}
+                          </div>
+                          ${isGraded && !isExcused ? `
+                            <div style="font-size: 14px; margin-top: 10px;">
+                              <strong>Grade:</strong> ${submission.grade || 'N/A'} 
+                              (${submission.points_earned || 0}/${assignment.max_points} points)
+                            </div>
+                          ` : ''}
+                        </div>
+                        ${statusBadge}
+                      </div>
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            </div>
+            
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal('view-quarter-assignments')">Close</button>
+            </div>
+          `;
+          
+          this.showModal('view-quarter-assignments', `📝 ${quarter.name} Assignments`, modalContent, true);
+          
+        } catch (error) {
+          console.error('Error viewing quarter assignments:', error);
+          this.showNotification('Error: ' + error.message, 'error');
         }
       }
 
