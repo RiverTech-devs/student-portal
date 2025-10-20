@@ -4135,11 +4135,11 @@
                     <div style="display: flex; justify-content: space-between; align-items: start; gap: 20px;">
                       <div style="flex: 1; min-width: 0;">
                         <h4 style="margin-bottom: 8px;">${assignment.title}</h4>
-                        <p style="color: var(--muted); margin: 8px 0; font-size: 14px; 
-                                  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; 
+                        <div class="assignment-content" style="color: var(--muted); margin: 8px 0; font-size: 14px; 
+                                  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; 
                                   overflow: hidden; text-overflow: ellipsis; line-height: 1.4;">
-                          ${assignment.description || 'No description'}
-                        </p>
+                          ${assignment.description || '<p style="color: var(--muted); font-style: italic;">No description</p>'}
+                        </div>
                         <div style="display: flex; flex-wrap: wrap; gap: 15px; font-size: 12px; color: var(--muted); margin-top: 8px;">
                           <span>📅 Due: ${dueDate}</span>
                           <span>📁 ${categoryName}</span>
@@ -6779,171 +6779,235 @@
             .single();
       
           if (assignmentError) throw assignmentError;
-
-          if (assignment.graded_offline) {
-            const { data: submission } = await this.auth.supabase
-              .from('assignment_submissions')
-              .select('*')
-              .eq('assignment_id', assignmentId)
-              .eq('student_id', this.userInfo.user.id)
-              .maybeSingle();
       
-            const modalContent = `
+          // Check if this is an offline/in-person graded assignment
+          if (assignment.graded_offline) {
+            this.showModal('submit-assignment', '📋 View Assignment', `
               <div>
                 <h3>${assignment.title}</h3>
-                <div class="assignment-content" style="color: var(--muted); margin: 15px 0; padding: 15px; background: var(--card); border-radius: 8px; border: 1px solid var(--border);">
+                
+                <div class="assignment-content" style="margin: 15px 0; padding: 20px; background: var(--card); border-radius: 8px; border: 1px solid var(--border); max-height: 400px; overflow-y: auto;">
                   ${assignment.description || '<p style="color: var(--muted);">No description provided</p>'}
                 </div>
-                <p style="color: var(--warning); font-size: 14px;">Due: ${new Date(assignment.due_date).toLocaleDateString()}</p>
                 
-                  ${submission && submission.status === 'graded' ? `
-                    <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--border);">
-                      <h4>Your Grade</h4>
-                      <div style="font-size: 32px; font-weight: bold; color: var(--accent-2); margin: 10px 0;">
-                        ${submission.grade || 'N/A'}
-                      </div>
-                      <p><strong>Points:</strong> ${submission.points_earned || 0} / ${assignment.max_points || 100}</p>
-                      ${submission.feedback ? `
-                        <div style="margin-top: 15px;">
-                          <strong>Teacher Feedback:</strong>
-                          <div style="background: var(--bg); padding: 10px; border-radius: 8px; margin-top: 5px;">
-                            ${submission.feedback}
-                          </div>
-                        </div>
-                      ` : ''}
-                    </div>
-                  ` : `
-                    <p style="margin-top: 15px; color: var(--muted);">Your teacher will grade this assignment and post the grade here.</p>
-                  `}
+                <div style="padding: 15px; background: rgba(106, 169, 255, 0.1); border-radius: 8px; border-left: 3px solid var(--accent); margin: 15px 0;">
+                  <strong style="color: var(--accent);">📋 Offline Assignment</strong>
+                  <p style="margin-top: 8px; font-size: 14px; line-height: 1.5;">
+                    This assignment will be completed and graded in class. No online submission is required. 
+                    Your teacher will enter your grade directly.
+                  </p>
                 </div>
+                
+                <p style="color: var(--warning); font-size: 14px; margin-top: 15px;">
+                  <strong>Due:</strong> ${new Date(assignment.due_date).toLocaleDateString()} at ${new Date(assignment.due_date).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                </p>
+                <p style="color: var(--muted); font-size: 14px; margin-top: 5px;">
+                  <strong>Points:</strong> ${assignment.max_points}
+                </p>
               </div>
+      
+              <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+                <button class="btn btn-secondary" onclick="app.closeModal('submit-assignment')">Close</button>
+              </div>
+            `);
+            return;
+          }
+      
+          // Check for existing submission
+          const { data: existingSubmission } = await this.auth.supabase
+            .from('assignment_submissions')
+            .select('*')
+            .eq('assignment_id', assignmentId)
+            .eq('student_id', this.userInfo.user.id)
+            .maybeSingle();
+      
+          const isGraded = existingSubmission?.status === 'graded';
+          const isExcused = existingSubmission?.status === 'excused';
+          const isSubmitted = existingSubmission?.status === 'submitted';
+      
+          let modalContent = '';
+      
+          if (isExcused) {
+            modalContent = `
+              <div>
+                <h3>${assignment.title}</h3>
+                
+                <div class="assignment-content" style="margin: 15px 0; padding: 20px; background: var(--card); border-radius: 8px; border: 1px solid var(--border); max-height: 400px; overflow-y: auto;">
+                  ${assignment.description || '<p style="color: var(--muted);">No description provided</p>'}
+                </div>
+                
+                <div class="card" style="background: rgba(255, 255, 255, 0.05); padding: 20px; margin: 15px 0;">
+                  <h4 style="color: var(--muted); margin-bottom: 10px;">✓ Excused</h4>
+                  <p style="color: var(--muted);">This assignment has been excused by your teacher.</p>
+                  ${existingSubmission.excuse_reason ? `
+                    <p style="color: var(--muted); margin-top: 10px;"><strong>Reason:</strong> ${existingSubmission.excuse_reason}</p>
+                  ` : ''}
+                </div>
+                
+                <p style="color: var(--muted); font-size: 14px;">
+                  <strong>Due:</strong> ${new Date(assignment.due_date).toLocaleDateString()}
+                </p>
+              </div>
+      
               <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
                 <button class="btn btn-secondary" onclick="app.closeModal('submit-assignment')">Close</button>
               </div>
             `;
-            
-            this.showModal('submit-assignment', '📋 View Assignment', modalContent, true);
-            return;
-          }
-          
-          // Check for existing submission
-          let existingSubmission = null;
-          try {
-            const { data, error } = await this.auth.supabase
-              .from('assignment_submissions')
-              .select('*')
-              .eq('assignment_id', assignmentId)
-              .eq('student_id', this.userInfo.user.id)
-              .maybeSingle();
-      
-            if (!error && data) {
-              existingSubmission = data;
-            }
-          } catch (checkError) {
-            existingSubmission = null;
-          }
-      
-          const isEdit = !!existingSubmission;
-          const modalContent = `
-            <div>
-              <h3>${assignment.title}</h3>
-              <p style="color: var(--muted); margin: 10px 0;">${assignment.description || 'No description provided'}</p>
-              <p style="color: var(--warning); font-size: 14px;">Due: ${new Date(assignment.due_date).toLocaleDateString()}</p>
-              
-              ${isEdit ? `
-                <div class="card" style="background: var(--warning); color: black; padding: 10px; margin: 15px 0;">
-                  <strong>Note:</strong> You have already submitted this assignment. You can update your submission below.
-                </div>
-              ` : ''}
-      
-              <form id="submission-form">
-                <div class="form-group">
-                  <label for="submission-content">Your Answer/Work *</label>
-                  <textarea 
-                    id="submission-content" 
-                    rows="8" 
-                    required
-                    placeholder="Enter your answer or describe your work..."
-                  >${existingSubmission?.content || ''}</textarea>
+          } else if (isGraded) {
+            modalContent = `
+              <div>
+                <h3>${assignment.title}</h3>
+                
+                <div class="assignment-content" style="margin: 15px 0; padding: 20px; background: var(--card); border-radius: 8px; border: 1px solid var(--border); max-height: 400px; overflow-y: auto;">
+                  ${assignment.description || '<p style="color: var(--muted);">No description provided</p>'}
                 </div>
                 
-                <div class="form-group">
-                  <label>Attach File (Optional)</label>
-                  
-                  <!-- Drag and Drop Zone -->
-                  <div id="drop-zone" style="
-                    border: 2px dashed var(--border);
-                    border-radius: 8px;
-                    padding: 30px;
-                    text-align: center;
-                    background: rgba(106, 169, 255, 0.05);
-                    cursor: pointer;
-                    transition: all 0.3s ease;
-                    position: relative;
-                  ">
-                    <div id="drop-zone-content">
-                      <div style="font-size: 48px; margin-bottom: 10px;">📁</div>
-                      <p style="margin: 10px 0; font-size: 16px; font-weight: 600;">
-                        Drag & Drop your file here
-                      </p>
-                      <p style="color: var(--muted); margin: 10px 0;">or</p>
-                      <button type="button" class="btn btn-secondary" onclick="document.getElementById('submission-file').click()">
-                        Browse Files
-                      </button>
-                      <p style="color: var(--muted); font-size: 12px; margin-top: 15px;">
-                        Max file size: 10MB<br>
-                        Accepted: PDF, DOC, DOCX, TXT, JPG, PNG, ZIP, 7Z
-                      </p>
+                <div class="card" style="background: linear-gradient(135deg, rgba(139, 255, 176, 0.1), rgba(106, 169, 255, 0.1)); padding: 20px; margin: 15px 0;">
+                  <h4 style="margin-bottom: 15px;">Your Grade</h4>
+                  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 15px;">
+                    <div>
+                      <div style="font-size: 12px; color: var(--muted); margin-bottom: 5px;">LETTER GRADE</div>
+                      <div style="font-size: 32px; font-weight: 700; color: var(--accent);">${existingSubmission.grade || 'N/A'}</div>
                     </div>
-                    
-                    <!-- Hidden file input -->
-                    <input 
-                      type="file" 
-                      id="submission-file" 
-                      accept=".pdf,.doc,.docx,.txt,.jpg,.png,.jpeg,.zip,.7z"
-                      style="display: none;"
-                    >
-                    
-                    <!-- File preview (hidden initially) -->
-                    <div id="file-preview" style="display: none;">
-                      <div style="display: flex; align-items: center; justify-content: center; gap: 15px;">
-                        <span style="font-size: 36px;">📄</span>
-                        <div style="text-align: left;">
-                          <div id="file-name" style="font-weight: 600;"></div>
-                          <div id="file-size" style="font-size: 12px; color: var(--muted);"></div>
-                        </div>
-                        <button type="button" class="btn danger small" onclick="app.removeFile()">
-                          ✕ Remove
-                        </button>
+                    <div>
+                      <div style="font-size: 12px; color: var(--muted); margin-bottom: 5px;">POINTS</div>
+                      <div style="font-size: 32px; font-weight: 700; color: var(--accent-2);">
+                        ${existingSubmission.points_earned || 0}/${assignment.max_points}
                       </div>
                     </div>
                   </div>
+                  ${existingSubmission.feedback ? `
+                    <div style="padding: 15px; background: rgba(0,0,0,0.2); border-radius: 8px; border-left: 3px solid var(--accent);">
+                      <div style="font-size: 12px; color: var(--muted); margin-bottom: 8px;">TEACHER FEEDBACK</div>
+                      <p style="line-height: 1.6;">${existingSubmission.feedback}</p>
+                    </div>
+                  ` : ''}
                 </div>
       
-                ${existingSubmission?.file_url ? `
-                  <div class="card" style="background: var(--card); padding: 10px; margin: 10px 0;">
-                    <strong>Currently attached file:</strong> ${existingSubmission.file_name || 'File attached'}
+                ${existingSubmission.content ? `
+                  <div class="card" style="margin: 15px 0;">
+                    <h4 style="margin-bottom: 10px;">Your Submission</h4>
+                    <div style="padding: 15px; background: rgba(0,0,0,0.2); border-radius: 8px;">
+                      ${existingSubmission.content.startsWith('http') ? 
+                        `<a href="${existingSubmission.content}" target="_blank" style="color: var(--accent); text-decoration: underline;">View Submission Link</a>` :
+                        `<p style="white-space: pre-wrap; line-height: 1.6;">${existingSubmission.content}</p>`
+                      }
+                    </div>
+                    <p style="color: var(--muted); font-size: 12px; margin-top: 10px;">
+                      Submitted: ${new Date(existingSubmission.submitted_at).toLocaleString()}
+                    </p>
                   </div>
                 ` : ''}
-              </form>
-            </div>
+                
+                <p style="color: var(--muted); font-size: 14px;">
+                  <strong>Due:</strong> ${new Date(assignment.due_date).toLocaleDateString()} • 
+                  <strong>Graded:</strong> ${new Date(existingSubmission.graded_at).toLocaleDateString()}
+                </p>
+              </div>
       
-            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
-              <button class="btn btn-secondary" onclick="app.closeModal('submit-assignment')">Cancel</button>
-              <button class="btn btn-primary" onclick="app.submitAssignmentSubmission('${assignmentId}', ${isEdit})">
-                ${isEdit ? 'Update Submission' : 'Submit Assignment'}
-              </button>
-            </div>
-          `;
+              <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+                <button class="btn btn-secondary" onclick="app.closeModal('submit-assignment')">Close</button>
+              </div>
+            `;
+          } else if (isSubmitted) {
+            modalContent = `
+              <div>
+                <h3>${assignment.title}</h3>
+                
+                <div class="assignment-content" style="margin: 15px 0; padding: 20px; background: var(--card); border-radius: 8px; border: 1px solid var(--border); max-height: 400px; overflow-y: auto;">
+                  ${assignment.description || '<p style="color: var(--muted);">No description provided</p>'}
+                </div>
+                
+                <div class="card" style="background: rgba(106, 169, 255, 0.1); border: 2px solid var(--accent); padding: 20px; margin: 15px 0;">
+                  <h4 style="color: var(--accent); margin-bottom: 10px;">✓ Submitted - Awaiting Grade</h4>
+                  <p style="color: var(--muted);">Your teacher will review and grade your submission soon.</p>
+                </div>
       
-          this.showModal('submit-assignment', `📝 ${isEdit ? 'Edit' : 'Submit'} Assignment`, modalContent, true);
-          
-          // Set up drag and drop after modal is created
-          setTimeout(() => this.setupDragAndDrop(), 100);
+                <div class="card" style="margin: 15px 0;">
+                  <h4 style="margin-bottom: 10px;">Your Submission</h4>
+                  <div style="padding: 15px; background: rgba(0,0,0,0.2); border-radius: 8px;">
+                    ${existingSubmission.content.startsWith('http') ? 
+                      `<a href="${existingSubmission.content}" target="_blank" style="color: var(--accent); text-decoration: underline;">View Submission Link</a>` :
+                      `<p style="white-space: pre-wrap; line-height: 1.6;">${existingSubmission.content}</p>`
+                    }
+                  </div>
+                  <p style="color: var(--muted); font-size: 12px; margin-top: 10px;">
+                    Submitted: ${new Date(existingSubmission.submitted_at).toLocaleString()}
+                  </p>
+                </div>
+                
+                <p style="color: var(--muted); font-size: 14px;">
+                  <strong>Due:</strong> ${new Date(assignment.due_date).toLocaleDateString()} • 
+                  <strong>Points:</strong> ${assignment.max_points}
+                </p>
+              </div>
+      
+              <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+                <button class="btn btn-secondary" onclick="app.closeModal('submit-assignment')">Close</button>
+                <button class="btn btn-primary" onclick="app.resubmitAssignment('${assignmentId}')">Edit Submission</button>
+              </div>
+            `;
+          } else {
+            // Not yet submitted - show submission form
+            const dueDate = new Date(assignment.due_date);
+            const now = new Date();
+            const isOverdue = dueDate < now;
+      
+            modalContent = `
+              <div>
+                <h3>${assignment.title}</h3>
+                
+                <div class="assignment-content" style="margin: 15px 0; padding: 20px; background: var(--card); border-radius: 8px; border: 1px solid var(--border); max-height: 400px; overflow-y: auto;">
+                  ${assignment.description || '<p style="color: var(--muted);">No description provided</p>'}
+                </div>
+                
+                ${isOverdue ? `
+                  <div style="padding: 15px; background: rgba(255, 107, 107, 0.1); border-radius: 8px; border-left: 3px solid var(--danger); margin: 15px 0;">
+                    <strong style="color: var(--danger);">⚠️ This assignment is overdue</strong>
+                    <p style="margin-top: 5px; font-size: 14px;">You can still submit it, but it may receive a late penalty.</p>
+                  </div>
+                ` : ''}
+                
+                <div style="margin: 15px 0;">
+                  <p style="font-size: 14px; margin-bottom: 5px;">
+                    <strong>Due:</strong> ${dueDate.toLocaleDateString()} at ${dueDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                  </p>
+                  <p style="font-size: 14px; color: var(--muted);">
+                    <strong>Points:</strong> ${assignment.max_points}
+                  </p>
+                </div>
+      
+                <form id="submission-form">
+                  <div class="form-group">
+                    <label for="submission-content">Your Work *</label>
+                    <textarea 
+                      id="submission-content" 
+                      rows="8" 
+                      required 
+                      placeholder="Paste your Google Drive link, Docs link, or type your response here..."
+                      style="font-family: inherit;"
+                    ></textarea>
+                    <small style="color: var(--muted); display: block; margin-top: 5px;">
+                      You can paste a link to a Google Doc, Drive file, or type your answer directly.
+                    </small>
+                  </div>
+                </form>
+              </div>
+      
+              <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+                <button class="btn btn-secondary" onclick="app.closeModal('submit-assignment')">Cancel</button>
+                <button class="btn btn-primary" onclick="app.confirmSubmitAssignment('${assignmentId}')">
+                  Submit Assignment
+                </button>
+              </div>
+            `;
+          }
+      
+          this.showModal('submit-assignment', '📝 Assignment', modalContent, true);
       
         } catch (error) {
           console.error('Error loading assignment:', error);
-          this.showNotification('Error loading assignment: ' + error.message, 'error');
+          this.showNotification('Failed to load assignment: ' + error.message, 'error');
         }
       }
       
