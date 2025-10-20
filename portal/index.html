@@ -3981,27 +3981,44 @@
             .eq('is_current', true)
             .single();
       
-          // Load assignments for this class FILTERED by current quarter
+          console.log('Current quarter:', currentQuarter);
+      
+          // Load assignments for this class
           let query = this.auth.supabase
             .from('assignments')
             .select('*')
             .eq('class_id', classId)
-            .order('created_at', { ascending: false });
+            .order('due_date', { ascending: false });
       
           // Filter by current quarter if one exists
           if (currentQuarter) {
+            // Convert dates to ensure proper comparison
+            const startDate = new Date(currentQuarter.start_date).toISOString().split('T')[0];
+            const endDate = new Date(currentQuarter.end_date + 'T23:59:59').toISOString();
+            
+            console.log('Filtering by quarter dates:', startDate, 'to', endDate);
+            
             query = query
-              .gte('due_date', currentQuarter.start_date)
-              .lte('due_date', currentQuarter.end_date);
+              .gte('due_date', startDate)
+              .lte('due_date', endDate);
           }
       
           const { data: allAssignments, error } = await query;
       
           if (error) throw error;
-
-          // For students, filter to only assigned assignments
+      
+          console.log('Assignments loaded:', allAssignments?.length || 0);
+      
           let assignments = allAssignments || [];
-          if (!isTeacher && assignments.length > 0) {
+      
+          // Filter by visibility/access
+          if (isTeacher) {
+            // Teachers see all assignments
+          } else {
+            // Students only see published assignments
+            assignments = assignments.filter(a => a.is_published);
+            
+            // Further filter to only assignments assigned to this student
             const filteredAssignments = [];
             for (const assignment of assignments) {
               if (assignment.assigned_to_all) {
@@ -4022,139 +4039,101 @@
             }
             assignments = filteredAssignments;
           }
-
-          let assignmentsHtml = '';
-          if (assignments && assignments.length > 0) {
-            // For students, load their submissions
-            if (!isTeacher) {
-              const assignmentIds = assignments.map(a => a.id);
-              const { data: submissions } = await this.auth.supabase
-                .from('assignment_submissions')
-                .select('*')
-                .in('assignment_id', assignmentIds)
-                .eq('student_id', this.userInfo.user.id);
-
-              const submissionMap = {};
-              submissions?.forEach(s => {
-                submissionMap[s.assignment_id] = s;
-              });
-
-              const { data: categories } = await this.auth.supabase
-                .from('grade_categories')
-                .select('id, name')
-                .eq('class_id', classId);
-              
-              const categoryMap = {};
-              categories?.forEach(cat => {
-                categoryMap[cat.id] = cat.name;
-              });
-
-              assignmentsHtml = assignments.map(assignment => {
-                const submission = submissionMap[assignment.id];
-                const dueDate = new Date(assignment.due_date).toLocaleDateString();
-                const status = submission ? submission.status : 'not_submitted';
-                const statusColor = status === 'submitted' ? 'var(--accent-2)' : 
-                                   status === 'graded' ? 'var(--accent)' : 'var(--warning)';
-
-                return `
-                  <div class="card" style="margin: 10px 0;">
-                    <h4>${assignment.title}</h4>
-                    <p style="color: var(--muted); margin: 10px 0;">${assignment.description || 'No description'}</p>
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
-                      <div>
-                        <span style="font-size: 12px; color: var(--muted);">Due: ${dueDate}</span>
-                        <span style="margin-left: 15px; color: ${statusColor}; font-weight: bold;">
-                          Status: ${status.replace('_', ' ')}
-                        </span>
-                      </div>
-                      <button class="btn btn-primary small" onclick="app.${submission ? 'viewSubmission' : 'submitAssignment'}('${assignment.id}')">
-                        ${submission ? 'View Submission' : 'Submit'}
-                      </button>
-                    </div>
-                  </div>
-                `;
-              }).join('');
+      
+          let assignmentsHtml;
+      
+          if (isTeacher) {
+            // Teacher view with grading status
+            const { data: categories } = await this.auth.supabase
+              .from('grade_categories')
+              .select('id, name')
+              .eq('class_id', classId);
+            
+            const categoryMap = {};
+            categories?.forEach(cat => {
+              categoryMap[cat.id] = cat.name;
+            });
+            
+            // Get submission counts for all assignments at once
+            const assignmentIds = assignments.map(a => a.id);
+            const { data: allSubmissions } = await this.auth.supabase
+              .from('assignment_submissions')
+              .select('assignment_id, status')
+              .in('assignment_id', assignmentIds);
+            
+            // Count submissions by assignment
+            const submissionCounts = {};
+            assignmentIds.forEach(id => {
+              submissionCounts[id] = {
+                total: 0,
+                graded: 0,
+                submitted: 0,
+                excused: 0
+              };
+            });
+            
+            allSubmissions?.forEach(sub => {
+              if (submissionCounts[sub.assignment_id]) {
+                submissionCounts[sub.assignment_id].total++;
+                if (sub.status === 'graded') submissionCounts[sub.assignment_id].graded++;
+                if (sub.status === 'submitted') submissionCounts[sub.assignment_id].submitted++;
+                if (sub.status === 'excused') submissionCounts[sub.assignment_id].excused++;
+              }
+            });
+            
+            // Get total enrolled students for comparison
+            const { data: enrollments } = await this.auth.supabase
+              .from('class_enrollments')
+              .select('id')
+              .eq('class_id', classId)
+              .eq('status', 'active');
+            
+            const totalStudents = enrollments?.length || 0;
+            
+            if (assignments.length === 0) {
+              assignmentsHtml = `
+                <div class="card" style="text-align: center; padding: 40px;">
+                  <h3>No Assignments</h3>
+                  <p style="color: var(--muted); margin: 10px 0;">
+                    ${currentQuarter ? `There are no assignments for ${currentQuarter.name}.` : 'There are no assignments yet.'}
+                  </p>
+                  <button class="btn btn-primary" onclick="app.createAssignment('${classId}')" style="margin-top: 15px;">
+                    ➕ Create First Assignment
+                  </button>
+                </div>
+              `;
             } else {
-              // Teacher view
-              const { data: categories } = await this.auth.supabase
-                .from('grade_categories')
-                .select('id, name')
-                .eq('class_id', classId);
-              
-              const categoryMap = {};
-              categories?.forEach(cat => {
-                categoryMap[cat.id] = cat.name;
-              });
-              
-              // Get submission counts for all assignments at once
-              const assignmentIds = assignments.map(a => a.id);
-              const { data: allSubmissions } = await this.auth.supabase
-                .from('assignment_submissions')
-                .select('assignment_id, status')
-                .in('assignment_id', assignmentIds);
-              
-              // Count submissions by assignment
-              const submissionCounts = {};
-              assignmentIds.forEach(id => {
-                submissionCounts[id] = {
-                  total: 0,
-                  graded: 0,
-                  submitted: 0,
-                  excused: 0
-                };
-              });
-              
-              allSubmissions?.forEach(sub => {
-                if (submissionCounts[sub.assignment_id]) {
-                  submissionCounts[sub.assignment_id].total++;
-                  if (sub.status === 'graded') submissionCounts[sub.assignment_id].graded++;
-                  if (sub.status === 'submitted') submissionCounts[sub.assignment_id].submitted++;
-                  if (sub.status === 'excused') submissionCounts[sub.assignment_id].excused++;
-                }
-              });
-              
-              // Get total enrolled students for comparison
-              const { data: enrollments } = await this.auth.supabase
-                .from('class_enrollments')
-                .select('id')
-                .eq('class_id', classId)
-                .eq('status', 'active');
-              
-              const totalStudents = enrollments?.length || 0;
-              
               assignmentsHtml = assignments.map(assignment => {
                 const dueDate = new Date(assignment.due_date).toLocaleDateString();
                 const categoryName = assignment.category_id ? categoryMap[assignment.category_id] : 'Uncategorized';
                 
                 const counts = submissionCounts[assignment.id] || { total: 0, graded: 0, submitted: 0, excused: 0 };
                 
-                // Determine expected count (for selective assignments, it's different)
+                // Determine expected count
                 let expectedCount = totalStudents;
                 if (!assignment.assigned_to_all) {
-                  // For selective assignments, we need to count assigned students
-                  // This is a quick estimate - could be refined with actual count
                   expectedCount = counts.total + counts.submitted + counts.graded + counts.excused;
                 }
                 
-                const gradedCount = counts.graded + counts.excused; // Excused counts as "handled"
+                const gradedCount = counts.graded + counts.excused;
                 const pendingCount = counts.submitted;
                 const missingCount = expectedCount - counts.total;
                 
                 // Determine status color
-                let statusColor = 'var(--danger)'; // Red if not all graded
+                let statusColor = 'var(--danger)';
                 let statusText = `${gradedCount}/${expectedCount} Graded`;
                 
-                if (gradedCount === expectedCount) {
-                  statusColor = 'var(--accent-2)'; // Green if all graded
-                  statusText = `âœ… All Graded (${expectedCount})`;
+                if (gradedCount === expectedCount && expectedCount > 0) {
+                  statusColor = 'var(--accent-2)';
+                  statusText = `✅ All Graded (${expectedCount})`;
                 } else if (gradedCount > 0) {
-                  statusColor = 'var(--warning)'; // Yellow if partially graded
+                  statusColor = 'var(--warning)';
                 }
                 
                 return `
                   <div class="card" style="margin: 10px 0; border-left: 4px solid ${statusColor};">
                     <div style="display: flex; justify-content: space-between; align-items: start; gap: 20px;">
-                      <div style="flex: 1; min-width: 0;"> <!-- Added min-width: 0 for proper flex shrinking -->
+                      <div style="flex: 1; min-width: 0;">
                         <h4 style="margin-bottom: 8px;">${assignment.title}</h4>
                         <p style="color: var(--muted); margin: 8px 0; font-size: 14px; 
                                   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; 
@@ -4206,45 +4185,133 @@
                 `;
               }).join('');
             }
+          } else {
+            // Student view
+            if (assignments.length === 0) {
+              assignmentsHtml = `
+                <div class="card" style="text-align: center; padding: 40px;">
+                  <h3>No Assignments</h3>
+                  <p style="color: var(--muted);">
+                    ${currentQuarter ? `There are no assignments for ${currentQuarter.name}.` : 'There are no assignments available yet.'}
+                  </p>
+                </div>
+              `;
+            } else {
+              // Load student's submissions
+              const assignmentIds = assignments.map(a => a.id);
+              const { data: submissions } = await this.auth.supabase
+                .from('assignment_submissions')
+                .select('*')
+                .eq('student_id', this.userInfo.user.id)
+                .in('assignment_id', assignmentIds);
+      
+              const submissionMap = {};
+              submissions?.forEach(sub => {
+                submissionMap[sub.assignment_id] = sub;
+              });
+      
+              assignmentsHtml = assignments.map(assignment => {
+                const submission = submissionMap[assignment.id];
+                const dueDate = new Date(assignment.due_date);
+                const now = new Date();
+                const isOverdue = dueDate < now && !submission;
+                const isGraded = submission?.status === 'graded';
+                const isExcused = submission?.status === 'excused';
+                const isSubmitted = submission?.status === 'submitted';
+      
+                let statusBadge = '';
+                let statusColor = 'var(--danger)';
+      
+                if (isExcused) {
+                  statusBadge = '<span style="background: var(--muted); padding: 4px 10px; border-radius: 12px; font-size: 11px; font-weight: 600;">EXCUSED</span>';
+                  statusColor = 'var(--muted)';
+                } else if (isGraded) {
+                  statusBadge = '<span style="background: var(--accent-2); color: black; padding: 4px 10px; border-radius: 12px; font-size: 11px; font-weight: 600;">✓ GRADED</span>';
+                  statusColor = 'var(--accent-2)';
+                } else if (isSubmitted) {
+                  statusBadge = '<span style="background: var(--accent); color: white; padding: 4px 10px; border-radius: 12px; font-size: 11px; font-weight: 600;">✓ SUBMITTED</span>';
+                  statusColor = 'var(--accent)';
+                } else if (isOverdue) {
+                  statusBadge = '<span style="background: var(--danger); color: white; padding: 4px 10px; border-radius: 12px; font-size: 11px; font-weight: 600;">⚠ OVERDUE</span>';
+                } else {
+                  statusBadge = '<span style="background: rgba(255,255,255,0.1); padding: 4px 10px; border-radius: 12px; font-size: 11px; font-weight: 600;">NOT SUBMITTED</span>';
+                }
+      
+                return `
+                  <div class="card" style="margin: 10px 0; border-left: 4px solid ${statusColor};">
+                    <div style="display: flex; justify-content: space-between; align-items: start;">
+                      <div style="flex: 1;">
+                        <h4 style="margin-bottom: 8px;">${assignment.title}</h4>
+                        <p style="color: var(--muted); font-size: 14px; margin: 8px 0;">
+                          Due: ${dueDate.toLocaleDateString()} at ${dueDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                        </p>
+                        ${isGraded && !isExcused ? `
+                          <div style="margin-top: 10px; padding: 10px; background: rgba(139, 255, 176, 0.1); border-radius: 8px;">
+                            <strong>Grade:</strong> ${submission.grade || 'N/A'} 
+                            (${submission.points_earned || 0}/${assignment.max_points} points)
+                            ${submission.feedback ? `<br><small style="color: var(--muted);">${submission.feedback}</small>` : ''}
+                          </div>
+                        ` : ''}
+                      </div>
+                      <div style="text-align: right;">
+                        ${statusBadge}
+                        <button class="btn btn-primary small" onclick="app.submitAssignment('${assignment.id}')" style="margin-top: 10px;">
+                          ${isGraded || isExcused ? 'View' : (isSubmitted ? 'View Submission' : 'Submit')}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                `;
+              }).join('');
+            }
           }
-
+      
           const modalContent = `
-          <div>
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-              <div>
-                <h3>📝 Assignments - ${classData?.name}</h3>
-                ${currentQuarter ? `
-                  <p style="color: var(--muted); font-size: 13px; margin-top: 5px;">
-                    Showing: ${currentQuarter.name} (${currentQuarter.school_year})
-                    ${isTeacher ? `
-                      <button class="btn btn-secondary small" onclick="app.viewAllClassAssignments('${classId}')" style="margin-left: 10px;">
-                        📋 View All Assignments
-                      </button>
-                    ` : ''}
-                  </p>
+            <div>
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px;">
+                <div>
+                  <h3>📝 Assignments - ${classData?.name}</h3>
+                  ${currentQuarter ? `
+                    <p style="color: var(--muted); font-size: 13px; margin-top: 5px;">
+                      Showing: ${currentQuarter.name} (${currentQuarter.school_year})
+                      ${isTeacher ? `
+                        <button class="btn btn-secondary small" onclick="app.viewAllClassAssignments('${classId}')" style="margin-left: 10px;">
+                          📋 View All Assignments
+                        </button>
+                      ` : ''}
+                    </p>
+                  ` : `
+                    <p style="color: var(--warning); font-size: 13px; margin-top: 5px;">
+                      ⚠️ No active quarter - showing all assignments
+                    </p>
+                  `}
+                </div>
+                ${isTeacher ? `
+                  <button class="btn btn-primary" onclick="app.createAssignment('${classId}')">
+                    ➕ Create New Assignment
+                  </button>
                 ` : `
-                  <p style="color: var(--warning); font-size: 13px; margin-top: 5px;">
-                    ⚠️ No active quarter - showing all assignments
-                  </p>
+                  <button class="btn btn-secondary" onclick="app.showStudentQuarterHistory()">
+                    📊 View Past Quarters
+                  </button>
                 `}
               </div>
-              ${isTeacher ? `
-                <button class="btn btn-primary" onclick="app.createAssignment('${classId}')">
-                  ➕ Create New Assignment
-                </button>
-              ` : `
-                <button class="btn btn-secondary" onclick="app.showStudentQuarterHistory()">
-                  📊 View Past Quarters
-                </button>
-              `}
+      
+              <div style="max-height: 600px; overflow-y: auto;">
+                ${assignmentsHtml}
+              </div>
+            </div>
+      
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal('view-assignments')">Close</button>
             </div>
           `;
-
-          this.showModal('assignments', '📝 Class Assignments', modalContent, true);
-
+      
+          this.showModal('view-assignments', '📝 Class Assignments', modalContent, true);
+      
         } catch (error) {
           console.error('Error loading assignments:', error);
-          this.showNotification('Error loading assignments: ' + error.message, 'error');
+          this.showNotification('Failed to load assignments: ' + error.message, 'error');
         }
       }
 
@@ -4361,28 +4428,42 @@
                       ${quarter.is_archived ? '<span style="background: var(--muted); color: black; padding: 2px 8px; border-radius: 12px; font-size: 11px; margin-left: 10px;">ARCHIVED</span>' : ''}
                     </h4>
                     ${quarterAssignments.map(assignment => {
-                      const counts = submissionCounts[assignment.id] || { total: 0, graded: 0 };
+                      const counts = submissionCounts[assignment.id] || { total: 0, graded: 0, submitted: 0, excused: 0 };
                       const gradedCount = counts.graded + counts.excused;
+                      const pendingCount = counts.submitted;
                       const statusColor = gradedCount === totalStudents ? 'var(--accent-2)' : (gradedCount > 0 ? 'var(--warning)' : 'var(--danger)');
                       
                       return `
                         <div class="card" style="margin: 10px 0; border-left: 4px solid ${statusColor};">
-                          <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <div style="flex: 1;">
+                          <div style="display: flex; justify-content: space-between; align-items: center; gap: 15px;">
+                            <div style="flex: 1; min-width: 0;">
                               <strong>${assignment.title}</strong>
                               <div style="font-size: 12px; color: var(--muted); margin-top: 4px;">
-                                Due: ${new Date(assignment.due_date).toLocaleDateString()}
+                                Due: ${new Date(assignment.due_date).toLocaleDateString()} • ${categoryMap[assignment.category_id] || 'Uncategorized'}
                               </div>
+                              ${pendingCount > 0 ? `
+                                <div style="font-size: 11px; color: var(--accent); margin-top: 4px;">
+                                  ${pendingCount} pending review
+                                </div>
+                              ` : ''}
                             </div>
-                            <div style="text-align: center; margin: 0 15px;">
+                            <div style="text-align: center; min-width: 80px;">
                               <div style="font-size: 20px; font-weight: 700; color: ${statusColor};">
                                 ${gradedCount}/${totalStudents}
                               </div>
-                              <div style="font-size: 10px; color: var(--muted);">GRADED</div>
+                              <div style="font-size: 10px; color: var(--muted); text-transform: uppercase;">GRADED</div>
                             </div>
-                            <button class="btn btn-secondary small" onclick="app.viewSubmissions('${assignment.id}')">
-                              View
-                            </button>
+                            <div style="display: flex; gap: 5px; flex-shrink: 0;">
+                              <button class="btn btn-secondary small" onclick="app.viewSubmissions('${assignment.id}')">
+                                📋 View
+                              </button>
+                              <button class="btn btn-primary small" onclick="app.editAssignment('${assignment.id}')">
+                                ✏️ Edit
+                              </button>
+                              <button class="btn danger small" onclick="app.deleteAssignment('${assignment.id}')">
+                                🗑️
+                              </button>
+                            </div>
                           </div>
                         </div>
                       `;
@@ -4391,31 +4472,48 @@
                 `).join('')}
                 
                 ${unassignedAssignments.length > 0 ? `
-                  <div class="card" style="background: rgba(255, 211, 106, 0.05);">
+                  <div class="card" style="background: rgba(255, 211, 106, 0.05); border: 1px solid var(--warning);">
                     <h4 style="margin-bottom: 15px;">⚠️ Unassigned to Quarter</h4>
+                    <p style="color: var(--muted); font-size: 12px; margin-bottom: 15px;">
+                      These assignments have due dates outside of any defined quarter
+                    </p>
                     ${unassignedAssignments.map(assignment => {
-                      const counts = submissionCounts[assignment.id] || { total: 0, graded: 0 };
+                      const counts = submissionCounts[assignment.id] || { total: 0, graded: 0, submitted: 0, excused: 0 };
                       const gradedCount = counts.graded + counts.excused;
+                      const pendingCount = counts.submitted;
                       const statusColor = gradedCount === totalStudents ? 'var(--accent-2)' : (gradedCount > 0 ? 'var(--warning)' : 'var(--danger)');
                       
                       return `
                         <div class="card" style="margin: 10px 0; border-left: 4px solid ${statusColor};">
-                          <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <div style="flex: 1;">
+                          <div style="display: flex; justify-content: space-between; align-items: center; gap: 15px;">
+                            <div style="flex: 1; min-width: 0;">
                               <strong>${assignment.title}</strong>
                               <div style="font-size: 12px; color: var(--muted); margin-top: 4px;">
-                                Due: ${new Date(assignment.due_date).toLocaleDateString()}
+                                Due: ${new Date(assignment.due_date).toLocaleDateString()} • ${categoryMap[assignment.category_id] || 'Uncategorized'}
                               </div>
+                              ${pendingCount > 0 ? `
+                                <div style="font-size: 11px; color: var(--accent); margin-top: 4px;">
+                                  ${pendingCount} pending review
+                                </div>
+                              ` : ''}
                             </div>
-                            <div style="text-align: center; margin: 0 15px;">
+                            <div style="text-align: center; min-width: 80px;">
                               <div style="font-size: 20px; font-weight: 700; color: ${statusColor};">
                                 ${gradedCount}/${totalStudents}
                               </div>
-                              <div style="font-size: 10px; color: var(--muted);">GRADED</div>
+                              <div style="font-size: 10px; color: var(--muted); text-transform: uppercase;">GRADED</div>
                             </div>
-                            <button class="btn btn-secondary small" onclick="app.viewSubmissions('${assignment.id}')">
-                              View
-                            </button>
+                            <div style="display: flex; gap: 5px; flex-shrink: 0;">
+                              <button class="btn btn-secondary small" onclick="app.viewSubmissions('${assignment.id}')">
+                                📋 View
+                              </button>
+                              <button class="btn btn-primary small" onclick="app.editAssignment('${assignment.id}')">
+                                ✏️ Edit
+                              </button>
+                              <button class="btn danger small" onclick="app.deleteAssignment('${assignment.id}')">
+                                🗑️
+                              </button>
+                            </div>
                           </div>
                         </div>
                       `;
