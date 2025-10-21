@@ -6996,7 +6996,7 @@
       
               <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
                 <button class="btn btn-secondary" onclick="app.closeModal('submit-assignment')">Cancel</button>
-                <button class="btn btn-primary" onclick="app.confirmSubmitAssignment('${assignmentId}')">
+                <button class="btn btn-primary" onclick="app.handleSubmitAssignment('${assignmentId}')">
                   Submit Assignment
                 </button>
               </div>
@@ -7008,6 +7008,171 @@
         } catch (error) {
           console.error('Error loading assignment:', error);
           this.showNotification('Failed to load assignment: ' + error.message, 'error');
+        }
+      }
+
+      async handleSubmitAssignment(assignmentId) {
+        try {
+          const content = document.getElementById('submission-content').value.trim();
+          
+          if (!content) {
+            this.showNotification('Please enter your work before submitting', 'error');
+            return;
+          }
+          
+          if (!confirm('Submit this assignment? You can edit it later if needed.')) {
+            return;
+          }
+          
+          if (window.portalLoading) {
+            window.portalLoading.show('submit', 'Submitting assignment...');
+          }
+          
+          // Create submission
+          const { data, error } = await this.auth.supabase
+            .from('assignment_submissions')
+            .insert({
+              assignment_id: assignmentId,
+              student_id: this.userInfo.user.id,
+              content: content,
+              status: 'submitted',
+              submitted_at: new Date().toISOString()
+            })
+            .select()
+            .single();
+          
+          if (error) throw error;
+          
+          this.showNotification('Assignment submitted successfully!', 'success');
+          this.closeModal('submit-assignment');
+          
+          // Refresh the assignments view if it's open
+          const currentClass = this.classes.find(c => {
+            // Find which class this assignment belongs to
+            return true; // Will need to track current class
+          });
+          
+        } catch (error) {
+          console.error('Error submitting assignment:', error);
+          this.showNotification('Failed to submit assignment: ' + error.message, 'error');
+        } finally {
+          if (window.portalLoading) {
+            window.portalLoading.hide('submit');
+          }
+        }
+      }
+      
+      async resubmitAssignment(assignmentId) {
+        try {
+          // Load existing submission
+          const { data: submission } = await this.auth.supabase
+            .from('assignment_submissions')
+            .select('*')
+            .eq('assignment_id', assignmentId)
+            .eq('student_id', this.userInfo.user.id)
+            .single();
+          
+          if (!submission) {
+            this.showNotification('No existing submission found', 'error');
+            return;
+          }
+          
+          // Load assignment details
+          const { data: assignment } = await this.auth.supabase
+            .from('assignments')
+            .select('*')
+            .eq('id', assignmentId)
+            .single();
+          
+          const modalContent = `
+            <div>
+              <h3>Edit Submission - ${assignment.title}</h3>
+              
+              <div class="assignment-content" style="margin: 15px 0; padding: 20px; background: var(--card); border-radius: 8px; border: 1px solid var(--border); max-height: 300px; overflow-y: auto;">
+                ${assignment.description || '<p style="color: var(--muted);">No description provided</p>'}
+              </div>
+              
+              <div style="padding: 15px; background: rgba(106, 169, 255, 0.1); border-radius: 8px; margin: 15px 0;">
+                <strong style="color: var(--accent);">📝 Editing Your Submission</strong>
+                <p style="margin-top: 5px; font-size: 14px;">Make changes to your work below and resubmit.</p>
+              </div>
+      
+              <form id="resubmit-form">
+                <div class="form-group">
+                  <label for="resubmit-content">Your Work *</label>
+                  <textarea 
+                    id="resubmit-content" 
+                    rows="8" 
+                    required 
+                    style="font-family: inherit;"
+                  >${submission.content}</textarea>
+                </div>
+              </form>
+            </div>
+      
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal('resubmit-assignment')">Cancel</button>
+              <button class="btn btn-primary" onclick="app.confirmResubmit('${assignmentId}', '${submission.id}')">
+                Update Submission
+              </button>
+            </div>
+          `;
+          
+          this.showModal('resubmit-assignment', '✏️ Edit Submission', modalContent, true);
+          
+        } catch (error) {
+          console.error('Error loading submission:', error);
+          this.showNotification('Failed to load submission: ' + error.message, 'error');
+        }
+      }
+      
+      async confirmResubmit(assignmentId, submissionId) {
+        try {
+          const content = document.getElementById('resubmit-content').value.trim();
+          
+          if (!content) {
+            this.showNotification('Please enter your work before submitting', 'error');
+            return;
+          }
+          
+          if (!confirm('Update your submission? This will replace your previous work.')) {
+            return;
+          }
+          
+          if (window.portalLoading) {
+            window.portalLoading.show('resubmit', 'Updating submission...');
+          }
+          
+          // Update submission
+          const { error } = await this.auth.supabase
+            .from('assignment_submissions')
+            .update({
+              content: content,
+              status: 'submitted',
+              submitted_at: new Date().toISOString(),
+              // Clear any previous grade
+              grade: null,
+              points_earned: null,
+              feedback: null,
+              graded_at: null
+            })
+            .eq('id', submissionId);
+          
+          if (error) throw error;
+          
+          this.showNotification('Submission updated successfully!', 'success');
+          this.closeModal('resubmit-assignment');
+          
+          // Reopen the assignment view to show updated status
+          setTimeout(() => this.submitAssignment(assignmentId), 100);
+          
+        } catch (error) {
+          console.error('Error updating submission:', error);
+          this.showNotification('Failed to update submission: ' + error.message, 'error');
+        } finally {
+          if (window.portalLoading) {
+            window.portalLoading.hide('resubmit');
+          }
         }
       }
       
