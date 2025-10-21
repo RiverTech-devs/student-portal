@@ -6983,17 +6983,53 @@
       
                 <form id="submission-form">
                   <div class="form-group">
-                    <label for="submission-content">Your Work *</label>
-                    <textarea 
-                      id="submission-content" 
-                      rows="8" 
-                      required 
-                      placeholder="Paste your Google Drive link, Docs link, or type your response here..."
-                      style="font-family: inherit;"
-                    ></textarea>
-                    <small style="color: var(--muted); display: block; margin-top: 5px;">
-                      You can paste a link to a Google Doc, Drive file, or type your answer directly.
-                    </small>
+                    <label>Submission Method</label>
+                    <div style="display: flex; gap: 10px; margin-bottom: 15px;">
+                      <button type="button" class="btn btn-secondary" onclick="app.showSubmissionType('text')" id="text-submit-btn" style="flex: 1;">
+                        📝 Text/Link
+                      </button>
+                      <button type="button" class="btn btn-secondary" onclick="app.showSubmissionType('file')" id="file-submit-btn" style="flex: 1;">
+                        📎 Upload File
+                      </button>
+                    </div>
+                  </div>
+                
+                  <!-- Text/Link Submission -->
+                  <div id="text-submission" style="display: block;">
+                    <div class="form-group">
+                      <label for="submission-content">Your Work *</label>
+                      <textarea 
+                        id="submission-content" 
+                        rows="8" 
+                        placeholder="Paste your Google Drive link, Docs link, or type your response here..."
+                        style="font-family: inherit;"
+                      ></textarea>
+                      <small style="color: var(--muted); display: block; margin-top: 5px;">
+                        You can paste a link to a Google Doc, Drive file, or type your answer directly.
+                      </small>
+                    </div>
+                  </div>
+                
+                  <!-- File Upload Submission -->
+                  <div id="file-submission" style="display: none;">
+                    <div class="form-group">
+                      <label for="submission-file">Upload File *</label>
+                      <input 
+                        type="file" 
+                        id="submission-file" 
+                        accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.gif,.zip,.ppt,.pptx,.xls,.xlsx"
+                        style="width: 100%; padding: 10px; border: 2px dashed var(--border); border-radius: 8px; background: var(--card);"
+                      />
+                      <small style="color: var(--muted); display: block; margin-top: 5px;">
+                        Accepted: PDF, Word, images, Excel, PowerPoint, text files, and ZIP archives (max 50MB)
+                      </small>
+                      <div id="file-upload-progress" style="display: none; margin-top: 10px;">
+                        <div style="background: rgba(0,0,0,0.3); border-radius: 8px; overflow: hidden; height: 24px;">
+                          <div id="progress-bar" style="background: var(--accent); height: 100%; width: 0%; transition: width 0.3s;"></div>
+                        </div>
+                        <p id="progress-text" style="text-align: center; margin-top: 5px; font-size: 12px; color: var(--muted);"></p>
+                      </div>
+                    </div>
                   </div>
                 </form>
               </div>
@@ -7015,12 +7051,45 @@
         }
       }
 
+      showSubmissionType(type) {
+        const textSection = document.getElementById('text-submission');
+        const fileSection = document.getElementById('file-submission');
+        const textBtn = document.getElementById('text-submit-btn');
+        const fileBtn = document.getElementById('file-submit-btn');
+        
+        if (type === 'text') {
+          textSection.style.display = 'block';
+          fileSection.style.display = 'none';
+          textBtn.classList.add('btn-primary');
+          textBtn.classList.remove('btn-secondary');
+          fileBtn.classList.remove('btn-primary');
+          fileBtn.classList.add('btn-secondary');
+          
+          // Clear file input
+          const fileInput = document.getElementById('submission-file');
+          if (fileInput) fileInput.value = '';
+        } else {
+          textSection.style.display = 'none';
+          fileSection.style.display = 'block';
+          fileBtn.classList.add('btn-primary');
+          fileBtn.classList.remove('btn-secondary');
+          textBtn.classList.remove('btn-primary');
+          textBtn.classList.add('btn-secondary');
+          
+          // Clear text input
+          const textInput = document.getElementById('submission-content');
+          if (textInput) textInput.value = '';
+        }
+      }
+
       async handleSubmitAssignment(assignmentId) {
         try {
-          const content = document.getElementById('submission-content').value.trim();
+          const textContent = document.getElementById('submission-content')?.value.trim();
+          const fileInput = document.getElementById('submission-file');
+          const file = fileInput?.files[0];
           
-          if (!content) {
-            this.showNotification('Please enter your work before submitting', 'error');
+          if (!textContent && !file) {
+            this.showNotification('Please enter your work or upload a file before submitting', 'error');
             return;
           }
           
@@ -7031,6 +7100,60 @@
           if (window.portalLoading) {
             window.portalLoading.show('submit', 'Submitting assignment...');
           }
+
+          let submissionContent = textContent;
+
+          // If file is uploaded, upload to storage
+          if (file) {
+            // Check file size (50MB limit)
+            if (file.size > 50 * 1024 * 1024) {
+              this.showNotification('File is too large. Maximum size is 50MB.', 'error');
+              if (window.portalLoading) {
+                window.portalLoading.hide('submit');
+              }
+              return;
+            }
+            
+            // Show progress
+            const progressDiv = document.getElementById('file-upload-progress');
+            const progressBar = document.getElementById('progress-bar');
+            const progressText = document.getElementById('progress-text');
+            
+            if (progressDiv) {
+              progressDiv.style.display = 'block';
+              progressText.textContent = 'Uploading file...';
+            }
+            
+            // Generate unique filename
+            const timestamp = Date.now();
+            const sanitizedFilename = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
+            const filename = `submissions/${this.userInfo.user.id}/${assignmentId}/${timestamp}_${sanitizedFilename}`;
+            
+            // Upload to Supabase storage
+            const { data: uploadData, error: uploadError } = await this.auth.supabase.storage
+              .from('assignment-files')
+              .upload(filename, file, {
+                cacheControl: '3600',
+                upsert: false
+              });
+            
+            if (uploadError) {
+              console.error('Upload error:', uploadError);
+              throw new Error('Failed to upload file: ' + uploadError.message);
+            }
+            
+            // Get public URL
+            const { data: urlData } = this.auth.supabase.storage
+              .from('assignment-files')
+              .getPublicUrl(filename);
+            
+            submissionContent = urlData.publicUrl;
+            
+            if (progressBar && progressText) {
+              progressBar.style.width = '100%';
+              progressText.textContent = 'Upload complete!';
+            }
+          }
           
           // Create submission
           const { data, error } = await this.auth.supabase
@@ -7038,7 +7161,9 @@
             .insert({
               assignment_id: assignmentId,
               student_id: this.userInfo.user.id,
-              content: content,
+              content: submissionContent,
+              submission_type: file ? 'file' : 'text',
+              file_name: file ? file.name : null,
               status: 'submitted',
               submitted_at: new Date().toISOString()
             })
