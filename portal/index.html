@@ -7100,9 +7100,16 @@
           if (window.portalLoading) {
             window.portalLoading.show('submit', 'Submitting assignment...');
           }
-
-          let submissionContent = textContent;
-
+          
+          let submissionContent = textContent || '';
+          let submissionData = {
+            assignment_id: assignmentId,
+            student_id: this.userInfo.user.id,
+            content: submissionContent,
+            status: 'submitted',
+            submitted_at: new Date().toISOString()
+          };
+          
           // If file is uploaded, upload to storage
           if (file) {
             // Check file size (50MB limit)
@@ -7124,62 +7131,69 @@
               progressText.textContent = 'Uploading file...';
             }
             
-            // Generate unique filename
-            const timestamp = Date.now();
-            const sanitizedFilename = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
-            const filename = `submissions/${this.userInfo.user.id}/${assignmentId}/${timestamp}_${sanitizedFilename}`;
-            
-            // Upload to Supabase storage
-            const { data: uploadData, error: uploadError } = await this.auth.supabase.storage
-              .from('assignment-files')
-              .upload(filename, file, {
-                cacheControl: '3600',
-                upsert: false
-              });
-            
-            if (uploadError) {
-              console.error('Upload error:', uploadError);
-              throw new Error('Failed to upload file: ' + uploadError.message);
+            try {
+              // Generate unique filename
+              const timestamp = Date.now();
+              const sanitizedFilename = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
+              const filename = `submissions/${this.userInfo.user.id}/${assignmentId}/${timestamp}_${sanitizedFilename}`;
+              
+              // Upload to Supabase storage
+              const { data: uploadData, error: uploadError } = await this.auth.supabase.storage
+                .from('assignment-files')
+                .upload(filename, file, {
+                  cacheControl: '3600',
+                  upsert: false
+                });
+              
+              if (uploadError) {
+                console.error('Upload error:', uploadError);
+                throw new Error('Failed to upload file: ' + uploadError.message);
+              }
+              
+              // Get public URL
+              const { data: urlData } = this.auth.supabase.storage
+                .from('assignment-files')
+                .getPublicUrl(filename);
+              
+              submissionContent = urlData.publicUrl;
+              
+              // Add file metadata to submission
+              submissionData.content = submissionContent;
+              submissionData.submission_type = 'file';
+              submissionData.file_name = file.name;
+              
+              if (progressBar && progressText) {
+                progressBar.style.width = '100%';
+                progressText.textContent = 'Upload complete!';
+              }
+            } catch (uploadError) {
+              console.error('File upload failed:', uploadError);
+              this.showNotification('File upload failed: ' + uploadError.message, 'error');
+              if (window.portalLoading) {
+                window.portalLoading.hide('submit');
+              }
+              return;
             }
-            
-            // Get public URL
-            const { data: urlData } = this.auth.supabase.storage
-              .from('assignment-files')
-              .getPublicUrl(filename);
-            
-            submissionContent = urlData.publicUrl;
-            
-            if (progressBar && progressText) {
-              progressBar.style.width = '100%';
-              progressText.textContent = 'Upload complete!';
-            }
+          } else {
+            // Text submission
+            submissionData.submission_type = 'text';
+            submissionData.file_name = null;
           }
           
           // Create submission
           const { data, error } = await this.auth.supabase
             .from('assignment_submissions')
-            .insert({
-              assignment_id: assignmentId,
-              student_id: this.userInfo.user.id,
-              content: submissionContent,
-              submission_type: file ? 'file' : 'text',
-              file_name: file ? file.name : null,
-              status: 'submitted',
-              submitted_at: new Date().toISOString()
-            })
+            .insert(submissionData)
             .select()
             .single();
           
-          if (error) throw error;
+          if (error) {
+            console.error('Submission error:', error);
+            throw error;
+          }
           
           this.showNotification('Assignment submitted successfully!', 'success');
           this.closeModal('submit-assignment');
-          
-          // Refresh the assignments view if it's open
-          const currentClass = this.classes.find(c => {
-            // Find which class this assignment belongs to
-            return true; // Will need to track current class
-          });
           
         } catch (error) {
           console.error('Error submitting assignment:', error);
