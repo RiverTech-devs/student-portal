@@ -7241,15 +7241,52 @@
                 <p style="margin-top: 5px; font-size: 14px;">Make changes to your work below and resubmit.</p>
               </div>
       
+              ${submission.file_name && submission.file_url ? `
+                <div class="card" style="background: rgba(139, 255, 176, 0.1); border: 1px solid var(--accent-2); margin: 15px 0;">
+                  <h4 style="margin-bottom: 10px;">Current File Attachment</h4>
+                  <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="font-size: 24px;">📎</span>
+                    <div style="flex: 1;">
+                      <strong>${submission.file_name}</strong>
+                      <a href="${submission.file_url}" target="_blank" style="display: block; color: var(--accent); font-size: 12px; margin-top: 4px;">
+                        View Current File →
+                      </a>
+                    </div>
+                  </div>
+                  <p style="font-size: 12px; color: var(--muted); margin-top: 10px;">
+                    Upload a new file below to replace this one, or leave blank to keep it.
+                  </p>
+                </div>
+              ` : ''}
+      
               <form id="resubmit-form">
                 <div class="form-group">
-                  <label for="resubmit-content">Your Work *</label>
+                  <label for="resubmit-content">Your Response (Text/Link)</label>
                   <textarea 
                     id="resubmit-content" 
-                    rows="8" 
-                    required 
+                    rows="6" 
                     style="font-family: inherit;"
-                  >${submission.content}</textarea>
+                    placeholder="Type your response, paste links, or add notes..."
+                  >${submission.content || ''}</textarea>
+                </div>
+      
+                <div class="form-group">
+                  <label for="resubmit-file">Upload New File (Optional)</label>
+                  <input 
+                    type="file" 
+                    id="resubmit-file" 
+                    accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.gif,.zip,.ppt,.pptx,.xls,.xlsx"
+                    style="width: 100%; padding: 10px; border: 2px dashed var(--border); border-radius: 8px; background: var(--card);"
+                  />
+                  <small style="color: var(--muted); display: block; margin-top: 5px;">
+                    ${submission.file_name ? 'Upload a new file to replace the existing one, or leave blank to keep current file.' : 'Optionally attach: PDF, Word, images, Excel, PowerPoint, text files, ZIP (max 50MB)'}
+                  </small>
+                  <div id="resubmit-file-upload-progress" style="display: none; margin-top: 10px;">
+                    <div style="background: rgba(0,0,0,0.3); border-radius: 8px; overflow: hidden; height: 24px;">
+                      <div id="resubmit-progress-bar" style="background: var(--accent); height: 100%; width: 0%; transition: width 0.3s;"></div>
+                    </div>
+                    <p id="resubmit-progress-text" style="text-align: center; margin-top: 5px; font-size: 12px; color: var(--muted);"></p>
+                  </div>
                 </div>
               </form>
             </div>
@@ -7272,10 +7309,19 @@
       
       async confirmResubmit(assignmentId, submissionId) {
         try {
-          const content = document.getElementById('resubmit-content').value.trim();
+          const textContent = document.getElementById('resubmit-content')?.value.trim();
+          const fileInput = document.getElementById('resubmit-file');
+          const newFile = fileInput?.files[0];
           
-          if (!content) {
-            this.showNotification('Please enter your work before submitting', 'error');
+          // Load existing submission to preserve file if no new one uploaded
+          const { data: existingSubmission } = await this.auth.supabase
+            .from('assignment_submissions')
+            .select('*')
+            .eq('id', submissionId)
+            .single();
+          
+          if (!textContent && !newFile && !existingSubmission?.file_url) {
+            this.showNotification('Please enter your work or upload a file before submitting', 'error');
             return;
           }
           
@@ -7287,19 +7333,144 @@
             window.portalLoading.show('resubmit', 'Updating submission...');
           }
           
+          let updateData = {
+            content: textContent || '',
+            status: 'submitted',
+            submitted_at: new Date().toISOString(),
+            // Clear any previous grade
+            grade: null,
+            points_earned: null,
+            feedback: null,
+            graded_at: null
+          };
+          
+          // If new file is uploaded, upload to Google Drive
+          if (newFile) {
+            // Check file size (50MB limit)
+            if (newFile.size > 50 * 1024 * 1024) {
+              this.showNotification('File is too large. Maximum size is 50MB.', 'error');
+              if (window.portalLoading) {
+                window.portalLoading.hide('resubmit');
+              }
+              return;
+            }
+            
+            // Check if Google Drive is connected
+            if (!this.googleDrive || !this.googleDrive.accessToken) {
+              this.showNotification('Please connect Google Drive first to upload files', 'error');
+              if (window.portalLoading) {
+                window.portalLoading.hide('resubmit');
+              }
+              return;
+            }
+            
+            // Show progress
+            const progressDiv = document.getElementById('resubmit-file-upload-progress');
+            const progressBar = document.getElementById('resubmit-progress-bar');
+            const progressText = document.getElementById('resubmit-progress-text');
+            
+            if (progressDiv) {
+              progressDiv.style.display = 'block';
+              progressText.textContent = 'Uploading file to Google Drive...';
+            }
+            
+            try {
+              // Get or create Assignment Submissions folder
+              let submissionsFolderId = this.googleDrive.submissionsFolderId;
+              
+              if (!submissionsFolderId) {
+                // Create Assignment Submissions folder
+                const folderMetadata = {
+                  name: 'Assignment Submissions',
+                  mimeType: 'application/vnd.google-apps.folder'
+                };
+                
+                const folderResponse = await fetch('https://www.googleapis.com/drive/v3/files', {
+                  method: 'POST',
+                  headers: {
+                    'Authorization': `Bearer ${this.googleDrive.accessToken}`,
+                    'Content-Type': 'application/json'
+                  },
+                  body: JSON.stringify(folderMetadata)
+                });
+                
+                if (!folderResponse.ok) throw new Error('Failed to create submissions folder');
+                const folderData = await folderResponse.json();
+                submissionsFolderId = folderData.id;
+                this.googleDrive.submissionsFolderId = submissionsFolderId;
+                
+                // Save folder ID to database for future use
+                await this.auth.supabase
+                  .from('user_profiles')
+                  .update({ drive_submissions_folder_id: submissionsFolderId })
+                  .eq('id', this.userInfo.user.id);
+              }
+              
+              // Upload file to Google Drive
+              const metadata = {
+                name: `${Date.now()}_${newFile.name}`,
+                parents: [submissionsFolderId]
+              };
+              
+              const form = new FormData();
+              form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+              form.append('file', newFile);
+              
+              const uploadResponse = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink,webContentLink', {
+                method: 'POST',
+                headers: {
+                  'Authorization': `Bearer ${this.googleDrive.accessToken}`
+                },
+                body: form
+              });
+              
+              if (!uploadResponse.ok) {
+                throw new Error('Failed to upload file to Google Drive');
+              }
+              
+              const fileData = await uploadResponse.json();
+              
+              // Make file accessible (set permissions)
+              await fetch(`https://www.googleapis.com/drive/v3/files/${fileData.id}/permissions`, {
+                method: 'POST',
+                headers: {
+                  'Authorization': `Bearer ${this.googleDrive.accessToken}`,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                  role: 'reader',
+                  type: 'anyone'
+                })
+              });
+              
+              // Add file metadata to update data
+              updateData.submission_type = textContent ? 'text_and_file' : 'file';
+              updateData.file_name = newFile.name;
+              updateData.file_url = fileData.webViewLink || fileData.webContentLink;
+              
+              if (progressBar && progressText) {
+                progressBar.style.width = '100%';
+                progressText.textContent = 'Upload complete!';
+              }
+            } catch (uploadError) {
+              console.error('File upload failed:', uploadError);
+              this.showNotification('File upload failed: ' + uploadError.message, 'error');
+              if (window.portalLoading) {
+                window.portalLoading.hide('resubmit');
+              }
+              return;
+            }
+          } else {
+            // No new file uploaded, keep existing file info
+            updateData.submission_type = existingSubmission.submission_type || 'text';
+            updateData.file_name = existingSubmission.file_name;
+            updateData.file_url = existingSubmission.file_url;
+          }
+          
           // Update submission
           const { error } = await this.auth.supabase
             .from('assignment_submissions')
-            .update({
-              content: content,
-              status: 'submitted',
-              submitted_at: new Date().toISOString(),
-              // Clear any previous grade
-              grade: null,
-              points_earned: null,
-              feedback: null,
-              graded_at: null
-            })
+            .update(updateData)
             .eq('id', submissionId);
           
           if (error) throw error;
