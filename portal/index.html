@@ -7034,55 +7034,51 @@
       }
 
       async handleSubmitAssignment(assignmentId) {
+        const content = document.getElementById('submission-content')?.value.trim();
+        const fileInput = document.getElementById('submission-file');
+      
+        if (!content && !fileInput?.files?.length) {
+          this.showNotification('Please enter your work or upload a file before submitting', 'error');
+          return;
+        }
+      
+        if (!confirm('Submit this assignment? You can edit it later if needed.')) {
+          return;
+        }
+      
+        if (this.isProcessing) {
+          console.log('Already processing submission, preventing double submit');
+          return;
+        }
+        
+        this.isProcessing = true;
+      
         try {
-          const textContent = document.getElementById('submission-content')?.value.trim();
-          const fileInput = document.getElementById('submission-file');
-          const file = fileInput?.files[0];
-          
-          if (!textContent && !file) {
-            this.showNotification('Please enter your work or upload a file before submitting', 'error');
-            return;
-          }
-          
-          if (!confirm('Submit this assignment? You can edit it later if needed.')) {
-            return;
-          }
-          
           if (window.portalLoading) {
             window.portalLoading.show('submit', 'Submitting assignment...');
           }
-          
-          let submissionData = {
+      
+          const submissionData = {
             assignment_id: assignmentId,
             student_id: this.userInfo.user.id,
-            content: textContent || '',
-            status: 'submitted',
+            content: content || '',
             submitted_at: new Date().toISOString(),
+            status: 'submitted',
             submission_type: 'text',
             file_name: null,
             file_url: null
           };
-          
-          // If file is uploaded, upload to Google Drive
-          if (file) {
-            // Check file size (50MB limit)
-            if (file.size > 50 * 1024 * 1024) {
-              this.showNotification('File is too large. Maximum size is 50MB.', 'error');
-              if (window.portalLoading) {
-                window.portalLoading.hide('submit');
-              }
-              return;
-            }
+      
+          // Handle file upload if present - Upload to teacher's Drive via Edge Function
+          if (fileInput?.files?.length > 0) {
+            const file = fileInput.files[0];
             
-            // Check if Google Drive is connected
-            if (!this.googleDrive || !this.googleDrive.accessToken) {
-              this.showNotification('Please connect Google Drive first to upload files', 'error');
-              if (window.portalLoading) {
-                window.portalLoading.hide('submit');
-              }
-              return;
+            // Validate file size
+            const maxSize = 50 * 1024 * 1024; // 50MB
+            if (file.size > maxSize) {
+              throw new Error('File too large. Maximum size is 50MB.');
             }
-            
+      
             // Show progress
             const progressDiv = document.getElementById('file-upload-progress');
             const progressBar = document.getElementById('progress-bar');
@@ -7090,116 +7086,76 @@
             
             if (progressDiv) {
               progressDiv.style.display = 'block';
-              progressText.textContent = 'Uploading file to Google Drive...';
+              progressText.textContent = 'Uploading file to teacher\'s Google Drive...';
             }
+      
+            // Get assignment and class info
+            const { data: assignment } = await this.auth.supabase
+              .from('assignments')
+              .select('class_id, title')
+              .eq('id', assignmentId)
+              .single();
+      
+            const { data: classData } = await this.auth.supabase
+              .from('classes')
+              .select('teacher_id, name')
+              .eq('id', assignment.class_id)
+              .single();
+      
+            // Upload to Drive via Edge Function
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('assignmentId', assignmentId);
+            formData.append('teacherId', classData.teacher_id);
+            formData.append('studentName', `${this.userInfo.profile.first_name}_${this.userInfo.profile.last_name}`);
+            formData.append('assignmentTitle', assignment.title);
+            formData.append('className', classData.name);
+      
+            const sessionResult = await this.auth.supabase.auth.getSession();
             
-            try {
-              // Get or create Assignment Submissions folder
-              let submissionsFolderId = this.googleDrive.submissionsFolderId;
-              
-              if (!submissionsFolderId) {
-                // Create Assignment Submissions folder
-                const folderMetadata = {
-                  name: 'Assignment Submissions',
-                  mimeType: 'application/vnd.google-apps.folder'
-                };
-                
-                const folderResponse = await fetch('https://www.googleapis.com/drive/v3/files', {
-                  method: 'POST',
-                  headers: {
-                    'Authorization': `Bearer ${this.googleDrive.accessToken}`,
-                    'Content-Type': 'application/json'
-                  },
-                  body: JSON.stringify(folderMetadata)
-                });
-                
-                if (!folderResponse.ok) throw new Error('Failed to create submissions folder');
-                const folderData = await folderResponse.json();
-                submissionsFolderId = folderData.id;
-                this.googleDrive.submissionsFolderId = submissionsFolderId;
-                
-                // Save folder ID to database for future use
-                await this.auth.supabase
-                  .from('user_profiles')
-                  .update({ drive_submissions_folder_id: submissionsFolderId })
-                  .eq('id', this.userInfo.user.id);
-              }
-              
-              // Upload file to Google Drive
-              const metadata = {
-                name: `${Date.now()}_${file.name}`,
-                parents: [submissionsFolderId]
-              };
-              
-              const form = new FormData();
-              form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-              form.append('file', file);
-              
-              const uploadResponse = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink,webContentLink', {
-                method: 'POST',
-                headers: {
-                  'Authorization': `Bearer ${this.googleDrive.accessToken}`
-                },
-                body: form
-              });
-              
-              if (!uploadResponse.ok) {
-                throw new Error('Failed to upload file to Google Drive');
-              }
-              
-              const fileData = await uploadResponse.json();
-              
-              // Make file accessible (set permissions)
-              await fetch(`https://www.googleapis.com/drive/v3/files/${fileData.id}/permissions`, {
-                method: 'POST',
-                headers: {
-                  'Authorization': `Bearer ${this.googleDrive.accessToken}`,
-                  'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                  role: 'reader',
-                  type: 'anyone'
-                })
-              });
-              
-              // Add file metadata to submission
-              submissionData.submission_type = textContent ? 'text_and_file' : 'file';
-              submissionData.file_name = file.name;
-              submissionData.file_url = fileData.webViewLink || fileData.webContentLink;
-              
-              if (progressBar && progressText) {
-                progressBar.style.width = '100%';
-                progressText.textContent = 'Upload complete!';
-              }
-            } catch (uploadError) {
-              console.error('File upload failed:', uploadError);
-              this.showNotification('File upload failed: ' + uploadError.message, 'error');
-              if (window.portalLoading) {
-                window.portalLoading.hide('submit');
-              }
-              return;
+            const response = await fetch(`https://joxvhzxkrcigknsdrusr.supabase.co/functions/v1/upload-to-drive`, {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${sessionResult.data.session.access_token}`
+              },
+              body: formData
+            });
+      
+            const result = await response.json();
+            
+            if (!result.success) {
+              throw new Error(result.error || 'Drive upload failed. Please contact your teacher.');
+            }
+      
+            submissionData.file_url = result.url;
+            submissionData.file_name = file.name;
+            submissionData.storage_type = 'google_drive';
+            submissionData.drive_file_id = result.fileId;
+            submissionData.submission_type = content ? 'text_and_file' : 'file';
+      
+            if (progressBar && progressText) {
+              progressBar.style.width = '100%';
+              progressText.textContent = 'Upload complete!';
             }
           }
-          
-          // Create submission
-          const { data, error } = await this.auth.supabase
+      
+          // Submit to database
+          const { error } = await this.auth.supabase
             .from('assignment_submissions')
-            .insert(submissionData)
-            .select()
-            .single();
+            .upsert(submissionData, {
+              onConflict: 'assignment_id,student_id'
+            });
           
-          if (error) {
-            console.error('Submission error:', error);
-            throw error;
-          }
-          
+          if (error) throw error;
+      
           this.showNotification('Assignment submitted successfully!', 'success');
           this.closeModal('submit-assignment');
           
-        } catch (error) {
-          console.error('Error submitting assignment:', error);
-          this.showNotification('Failed to submit assignment: ' + error.message, 'error');
+        } catch (err) {
+          console.error('Submission error:', err);
+          this.showNotification(err.message, 'error');
         } finally {
+          this.isProcessing = false;
           if (window.portalLoading) {
             window.portalLoading.hide('submit');
           }
@@ -7308,33 +7264,39 @@
       }
       
       async confirmResubmit(assignmentId, submissionId) {
+        const content = document.getElementById('resubmit-content')?.value.trim();
+        const fileInput = document.getElementById('resubmit-file');
+        const newFile = fileInput?.files[0];
+      
+        // Load existing submission to preserve file if no new one uploaded
+        const { data: existingSubmission } = await this.auth.supabase
+          .from('assignment_submissions')
+          .select('*')
+          .eq('id', submissionId)
+          .single();
+      
+        if (!content && !newFile && !existingSubmission?.file_url) {
+          this.showNotification('Please enter your work or upload a file before submitting', 'error');
+          return;
+        }
+      
+        if (!confirm('Update your submission? This will replace your previous work.')) {
+          return;
+        }
+      
+        if (this.isProcessing) {
+          return;
+        }
+        
+        this.isProcessing = true;
+      
         try {
-          const textContent = document.getElementById('resubmit-content')?.value.trim();
-          const fileInput = document.getElementById('resubmit-file');
-          const newFile = fileInput?.files[0];
-          
-          // Load existing submission to preserve file if no new one uploaded
-          const { data: existingSubmission } = await this.auth.supabase
-            .from('assignment_submissions')
-            .select('*')
-            .eq('id', submissionId)
-            .single();
-          
-          if (!textContent && !newFile && !existingSubmission?.file_url) {
-            this.showNotification('Please enter your work or upload a file before submitting', 'error');
-            return;
-          }
-          
-          if (!confirm('Update your submission? This will replace your previous work.')) {
-            return;
-          }
-          
           if (window.portalLoading) {
             window.portalLoading.show('resubmit', 'Updating submission...');
           }
-          
+      
           let updateData = {
-            content: textContent || '',
+            content: content || '',
             status: 'submitted',
             submitted_at: new Date().toISOString(),
             // Clear any previous grade
@@ -7343,27 +7305,15 @@
             feedback: null,
             graded_at: null
           };
-          
-          // If new file is uploaded, upload to Google Drive
+      
+          // If new file is uploaded, upload to teacher's Drive via Edge Function
           if (newFile) {
-            // Check file size (50MB limit)
-            if (newFile.size > 50 * 1024 * 1024) {
-              this.showNotification('File is too large. Maximum size is 50MB.', 'error');
-              if (window.portalLoading) {
-                window.portalLoading.hide('resubmit');
-              }
-              return;
+            // Validate file size
+            const maxSize = 50 * 1024 * 1024; // 50MB
+            if (newFile.size > maxSize) {
+              throw new Error('File too large. Maximum size is 50MB.');
             }
-            
-            // Check if Google Drive is connected
-            if (!this.googleDrive || !this.googleDrive.accessToken) {
-              this.showNotification('Please connect Google Drive first to upload files', 'error');
-              if (window.portalLoading) {
-                window.portalLoading.hide('resubmit');
-              }
-              return;
-            }
-            
+      
             // Show progress
             const progressDiv = document.getElementById('resubmit-file-upload-progress');
             const progressBar = document.getElementById('resubmit-progress-bar');
@@ -7371,120 +7321,85 @@
             
             if (progressDiv) {
               progressDiv.style.display = 'block';
-              progressText.textContent = 'Uploading file to Google Drive...';
+              progressText.textContent = 'Uploading file to teacher\'s Google Drive...';
             }
+      
+            // Get assignment and class info
+            const { data: assignment } = await this.auth.supabase
+              .from('assignments')
+              .select('class_id, title')
+              .eq('id', assignmentId)
+              .single();
+      
+            const { data: classData } = await this.auth.supabase
+              .from('classes')
+              .select('teacher_id, name')
+              .eq('id', assignment.class_id)
+              .single();
+      
+            // Upload to Drive via Edge Function
+            const formData = new FormData();
+            formData.append('file', newFile);
+            formData.append('assignmentId', assignmentId);
+            formData.append('teacherId', classData.teacher_id);
+            formData.append('studentName', `${this.userInfo.profile.first_name}_${this.userInfo.profile.last_name}`);
+            formData.append('assignmentTitle', assignment.title);
+            formData.append('className', classData.name);
+      
+            const sessionResult = await this.auth.supabase.auth.getSession();
             
-            try {
-              // Get or create Assignment Submissions folder
-              let submissionsFolderId = this.googleDrive.submissionsFolderId;
-              
-              if (!submissionsFolderId) {
-                // Create Assignment Submissions folder
-                const folderMetadata = {
-                  name: 'Assignment Submissions',
-                  mimeType: 'application/vnd.google-apps.folder'
-                };
-                
-                const folderResponse = await fetch('https://www.googleapis.com/drive/v3/files', {
-                  method: 'POST',
-                  headers: {
-                    'Authorization': `Bearer ${this.googleDrive.accessToken}`,
-                    'Content-Type': 'application/json'
-                  },
-                  body: JSON.stringify(folderMetadata)
-                });
-                
-                if (!folderResponse.ok) throw new Error('Failed to create submissions folder');
-                const folderData = await folderResponse.json();
-                submissionsFolderId = folderData.id;
-                this.googleDrive.submissionsFolderId = submissionsFolderId;
-                
-                // Save folder ID to database for future use
-                await this.auth.supabase
-                  .from('user_profiles')
-                  .update({ drive_submissions_folder_id: submissionsFolderId })
-                  .eq('id', this.userInfo.user.id);
-              }
-              
-              // Upload file to Google Drive
-              const metadata = {
-                name: `${Date.now()}_${newFile.name}`,
-                parents: [submissionsFolderId]
-              };
-              
-              const form = new FormData();
-              form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-              form.append('file', newFile);
-              
-              const uploadResponse = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink,webContentLink', {
-                method: 'POST',
-                headers: {
-                  'Authorization': `Bearer ${this.googleDrive.accessToken}`
-                },
-                body: form
-              });
-              
-              if (!uploadResponse.ok) {
-                throw new Error('Failed to upload file to Google Drive');
-              }
-              
-              const fileData = await uploadResponse.json();
-              
-              // Make file accessible (set permissions)
-              await fetch(`https://www.googleapis.com/drive/v3/files/${fileData.id}/permissions`, {
-                method: 'POST',
-                headers: {
-                  'Authorization': `Bearer ${this.googleDrive.accessToken}`,
-                  'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                  role: 'reader',
-                  type: 'anyone'
-                })
-              });
-              
-              // Add file metadata to update data
-              updateData.submission_type = textContent ? 'text_and_file' : 'file';
-              updateData.file_name = newFile.name;
-              updateData.file_url = fileData.webViewLink || fileData.webContentLink;
-              
-              if (progressBar && progressText) {
-                progressBar.style.width = '100%';
-                progressText.textContent = 'Upload complete!';
-              }
-            } catch (uploadError) {
-              console.error('File upload failed:', uploadError);
-              this.showNotification('File upload failed: ' + uploadError.message, 'error');
-              if (window.portalLoading) {
-                window.portalLoading.hide('resubmit');
-              }
-              return;
+            const response = await fetch(`https://joxvhzxkrcigknsdrusr.supabase.co/functions/v1/upload-to-drive`, {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${sessionResult.data.session.access_token}`
+              },
+              body: formData
+            });
+      
+            const result = await response.json();
+            
+            if (!result.success) {
+              throw new Error(result.error || 'Drive upload failed. Please contact your teacher.');
+            }
+      
+            updateData.file_url = result.url;
+            updateData.file_name = newFile.name;
+            updateData.storage_type = 'google_drive';
+            updateData.drive_file_id = result.fileId;
+            updateData.submission_type = content ? 'text_and_file' : 'file';
+      
+            if (progressBar && progressText) {
+              progressBar.style.width = '100%';
+              progressText.textContent = 'Upload complete!';
             }
           } else {
             // No new file uploaded, keep existing file info
             updateData.submission_type = existingSubmission.submission_type || 'text';
             updateData.file_name = existingSubmission.file_name;
             updateData.file_url = existingSubmission.file_url;
+            updateData.storage_type = existingSubmission.storage_type;
+            updateData.drive_file_id = existingSubmission.drive_file_id;
           }
-          
+      
           // Update submission
           const { error } = await this.auth.supabase
             .from('assignment_submissions')
             .update(updateData)
             .eq('id', submissionId);
-          
+      
           if (error) throw error;
-          
+      
           this.showNotification('Submission updated successfully!', 'success');
           this.closeModal('resubmit-assignment');
-          
+      
           // Reopen the assignment view to show updated status
           setTimeout(() => this.submitAssignment(assignmentId), 100);
-          
-        } catch (error) {
-          console.error('Error updating submission:', error);
-          this.showNotification('Failed to update submission: ' + error.message, 'error');
+      
+        } catch (err) {
+          console.error('Error updating submission:', err);
+          this.showNotification(err.message, 'error');
         } finally {
+          this.isProcessing = false;
           if (window.portalLoading) {
             window.portalLoading.hide('resubmit');
           }
