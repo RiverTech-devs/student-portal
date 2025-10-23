@@ -306,20 +306,20 @@ class PortalUI {
                     </a>
                     
                     ${isStudent ? `
-                    <a href="${window.location.pathname}#games" 
-                       class="nav-link ${currentPortal === 'main' && currentSection === 'games' ? 'active' : ''}"
-                       title="Educational Games">
-                        <span class="nav-icon">🎮</span>
-                        <span class="nav-text">Games</span>
-                    </a>
-                    
-                    <a href="${window.location.pathname}#skills" 
-                       class="nav-link ${currentPortal === 'main' && currentSection === 'skills' ? 'active' : ''}"
-                       title="Skill Trees">
-                        <span class="nav-icon">🌟</span>
-                        <span class="nav-text">Skills</span>
-                    </a>
-                    ` : ''}
+                        <a href="${currentPortal === 'classes' ? '../index.html#games' : window.location.pathname + '#games'}" 
+                           class="nav-link ${currentPortal === 'main' && currentSection === 'games' ? 'active' : ''}"
+                           title="Educational Games">
+                            <span class="nav-icon">🎮</span>
+                            <span class="nav-text">Games</span>
+                        </a>
+                        
+                        <a href="${currentPortal === 'classes' ? '../index.html#skills' : window.location.pathname + '#skills'}" 
+                           class="nav-link ${currentPortal === 'main' && currentSection === 'skills' ? 'active' : ''}"
+                           title="Skill Trees">
+                            <span class="nav-icon">🌟</span>
+                            <span class="nav-text">Skills</span>
+                        </a>
+                        ` : ''}
                     
                     <a href="${currentPortal === 'classes' ? './index.html' : './portal/index.html'}" 
                        class="nav-link ${currentPortal === 'classes' ? 'active' : ''}"
@@ -504,6 +504,7 @@ if (document.readyState === 'loading') {
     PortalUI.applyTheme(window.portalAuth.config.theme);
 
 }
+
 
 
 
