@@ -6779,6 +6779,18 @@
             this.showModal('submit-assignment', '📋 View Assignment', `
               <div>
                 <h3>${assignment.title}</h3>
+
+                ${assignment.grading_type === 'rubric' && assignment.rubric_id ? `
+                  <div class="card" style="margin: 15px 0; background: rgba(106, 169, 255, 0.05);">
+                    <h4 style="margin-bottom: 10px;">📋 Grading Rubric</h4>
+                    <p style="color: var(--muted); font-size: 13px; margin-bottom: 15px;">
+                      Your work will be evaluated using this rubric. Click to view details.
+                    </p>
+                    <button type="button" class="btn btn-secondary" onclick="app.viewAssignmentRubric('${assignment.rubric_id}', '${assignment.max_points}')">
+                      View Full Rubric
+                    </button>
+                  </div>
+                ` : ''}
                 
                 <div class="assignment-content" style="margin: 15px 0; padding: 20px; background: var(--card); border-radius: 8px; border: 1px solid var(--border); max-height: 400px; overflow-y: auto;">
                   ${assignment.description || '<p style="color: var(--muted);">No description provided</p>'}
@@ -7046,6 +7058,65 @@
         } catch (error) {
           console.error('Error loading assignment:', error);
           this.showNotification('Failed to load assignment: ' + error.message, 'error');
+        }
+      }
+
+      async viewAssignmentRubric(rubricId, maxPoints) {
+        try {
+          // Load rubric with criteria
+          const { data: rubric, error: rubricError } = await this.auth.supabase
+            .from('rubrics')
+            .select('*')
+            .eq('id', rubricId)
+            .single();
+      
+          if (rubricError) throw rubricError;
+      
+          const { data: criteria, error: criteriaError } = await this.auth.supabase
+            .from('rubric_criteria')
+            .select('*')
+            .eq('rubric_id', rubricId)
+            .order('sort_order');
+      
+          if (criteriaError) throw criteriaError;
+      
+          const modalContent = `
+            <div>
+              <h3>📋 ${rubric.name}</h3>
+              <p style="color: var(--muted); margin-bottom: 20px;">
+                ${rubric.description || 'This rubric shows how your work will be evaluated.'}
+              </p>
+      
+              <div style="max-height: 500px; overflow-y: auto;">
+                ${criteria.map(criterion => `
+                  <div class="card" style="margin-bottom: 15px; border-left: 4px solid var(--accent);">
+                    <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 8px;">
+                      <strong style="font-size: 18px; color: var(--accent);">${criterion.letter_grade}</strong>
+                      <span style="color: var(--accent-2); font-weight: 600; font-size: 14px;">
+                        ${Math.round((criterion.point_percentage / 100) * maxPoints)}/${maxPoints} points
+                      </span>
+                    </div>
+                    <div style="color: var(--accent); font-size: 14px; font-weight: 500; margin-bottom: 8px;">
+                      ${criterion.summary_level}
+                    </div>
+                    <div style="color: var(--muted); font-size: 13px; line-height: 1.5;">
+                      ${criterion.core_meaning}
+                    </div>
+                  </div>
+                `).join('')}
+              </div>
+            </div>
+      
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal('view-rubric')">Close</button>
+            </div>
+          `;
+      
+          this.showModal('view-rubric', '📋 Grading Rubric', modalContent, true);
+      
+        } catch (error) {
+          console.error('Error loading rubric:', error);
+          this.showNotification('Error loading rubric: ' + error.message, 'error');
         }
       }
 
@@ -7782,6 +7853,24 @@
               <label for="assignment-max-points">Maximum Points</label>
               <input type="number" id="assignment-max-points" min="1" max="1000" value="100">
             </div>
+
+            <div class="form-group">
+              <label for="grading-type">Grading Method:</label>
+              <select id="grading-type" required onchange="app.toggleGradingMethod()">
+                <option value="rubric">Rubric-Based (Recommended)</option>
+                <option value="points">Points Only</option>
+              </select>
+            </div>
+            
+            <div id="rubric-selection" class="form-group">
+              <label for="assignment-rubric">Rubric:</label>
+              <select id="assignment-rubric" required>
+                <option value="">Loading rubrics...</option>
+              </select>
+              <small style="color: var(--muted); display: block; margin-top: 5px;">
+                The rubric defines how work will be evaluated. You can customize grades during grading.
+              </small>
+            </div>
       
             <div class="form-group">
               <label for="assignment-category">Category</label>
@@ -7881,6 +7970,40 @@
         }, 100);
       }
 
+      async toggleGradingMethod() {
+        const gradingType = document.getElementById('grading-type').value;
+        const rubricSelection = document.getElementById('rubric-selection');
+        
+        if (gradingType === 'rubric') {
+          rubricSelection.style.display = 'block';
+          await this.loadRubrics();
+        } else {
+          rubricSelection.style.display = 'none';
+        }
+      }
+      
+      async loadRubrics() {
+        try {
+          const { data: rubrics, error } = await this.auth.supabase
+            .from('rubrics')
+            .select('*')
+            .or(`is_default.eq.true,created_by.eq.${this.userInfo.user.id}`)
+            .order('is_default', { ascending: false });
+          
+          if (error) throw error;
+          
+          const rubricSelect = document.getElementById('assignment-rubric');
+          rubricSelect.innerHTML = rubrics.map(r => `
+            <option value="${r.id}" ${r.is_default ? 'selected' : ''}>
+              ${r.name}${r.is_default ? ' (Default)' : ''}
+            </option>
+          `).join('');
+          
+        } catch (error) {
+          console.error('Error loading rubrics:', error);
+        }
+      }
+
       toggleStudentSelection() {
         const checkbox = document.getElementById('assign-to-specific');
         const section = document.getElementById('student-selection-section');
@@ -7906,6 +8029,10 @@
           description: this.assignmentDescriptionEditor ? this.assignmentDescriptionEditor.root.innerHTML : null,
           due_date: document.getElementById('assignment-due-date').value,
           max_points: parseInt(document.getElementById('assignment-max-points').value) || 100,
+          grading_type: document.getElementById('grading-type').value,
+          rubric_id: document.getElementById('grading-type').value === 'rubric' 
+            ? document.getElementById('assignment-rubric').value 
+            : null,
           is_published: document.getElementById('assignment-is-published').checked,
           assigned_to_all: !document.getElementById('assign-to-specific').checked,
           graded_offline: document.getElementById('graded-offline').checked,
@@ -9437,132 +9564,237 @@
 
       async gradeSubmission(submissionId, assignmentId) {
         try {
-          // Load submission details
-          const { data: submission } = await this.auth.supabase
+          if (window.portalLoading) {
+            window.portalLoading.show('grade', 'Loading submission...');
+          }
+      
+          // Load submission with assignment and student info
+          const { data: submission, error } = await this.auth.supabase
             .from('assignment_submissions')
-            .select('*')
+            .select(`
+              *,
+              assignments!inner(
+                id, title, description, max_points, grading_type, rubric_id,
+                rubrics(id, name, description)
+              ),
+              user_profiles!assignment_submissions_student_id_fkey(
+                first_name, last_name, email
+              )
+            `)
             .eq('id', submissionId)
             .single();
       
-          // Load student profile
-          const { data: student } = await this.auth.supabase
-            .from('user_profiles')
-            .select('first_name, last_name')
-            .eq('id', submission.student_id)
-            .single();
+          if (error) throw error;
       
-          // Load assignment for max points
-          const { data: assignment } = await this.auth.supabase
-            .from('assignments')
-            .select('title, max_points')
-            .eq('id', assignmentId)
-            .single();
+          const assignment = submission.assignments;
+          const student = submission.user_profiles;
+          const isRubricGrading = assignment.grading_type === 'rubric';
       
-          const isExcused = submission.status === 'excused';
+          // Load rubric criteria if using rubric grading
+          let rubricCriteria = [];
+          if (isRubricGrading && assignment.rubric_id) {
+            const { data: criteria } = await this.auth.supabase
+              .from('rubric_criteria')
+              .select('*')
+              .eq('rubric_id', assignment.rubric_id)
+              .order('sort_order');
+            
+            rubricCriteria = criteria || [];
+          }
       
           const modalContent = `
             <div>
-              <h3>Grade Submission - ${student?.first_name} ${student?.last_name}</h3>
-              <p style="color: var(--muted);">Assignment: ${assignment?.title}</p>
-              
-              ${isExcused ? `
-                <div class="card" style="background: var(--warning); color: black; padding: 10px; margin: 15px 0;">
-                  <strong>⚠️ This assignment is currently excused</strong>
-                  ${submission.excuse_reason ? `<p style="margin-top: 5px;">Reason: ${submission.excuse_reason}</p>` : ''}
-                </div>
-              ` : ''}
-              
-              <div class="card" style="margin: 20px 0;">
+              <h3>Grade Submission</h3>
+              <div style="background: rgba(106, 169, 255, 0.1); padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+                <strong>Student:</strong> ${student.first_name} ${student.last_name} (${student.email})<br>
+                <strong>Assignment:</strong> ${assignment.title}<br>
+                <strong>Max Points:</strong> ${assignment.max_points}
+                ${isRubricGrading ? `<br><strong>Rubric:</strong> ${assignment.rubrics?.name || 'Default'}` : ''}
+              </div>
+      
+              <!-- Student Submission -->
+              <div class="card" style="margin-bottom: 20px;">
                 <h4>Student's Work</h4>
-                <div style="background: var(--bg); padding: 15px; border-radius: 8px; margin-top: 10px; max-height: 300px; overflow-y: auto; white-space: pre-wrap;">
-                  ${submission.content}
-                </div>
+                ${submission.content ? `
+                  <div style="padding: 15px; background: rgba(0,0,0,0.2); border-radius: 8px; margin-top: 10px;">
+                    <p style="white-space: pre-wrap; line-height: 1.6;">${submission.content}</p>
+                  </div>
+                ` : '<p style="color: var(--muted);">No text submission</p>'}
+                
                 ${submission.file_url ? `
-                  <div style="margin-top: 10px;">
-                    <a href="${submission.file_url}" target="_blank" class="btn btn-secondary small">
-                      📎 View Attached File
-                    </a>
+                  <div style="margin-top: 10px; padding: 10px; background: rgba(106, 169, 255, 0.1); border-radius: 8px; border-left: 3px solid var(--accent);">
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                      <span style="font-size: 20px;">📎</span>
+                      <div style="flex: 1;">
+                        <strong style="font-size: 13px;">File Attachment:</strong>
+                        <a href="${submission.file_url}" target="_blank" style="display: block; color: var(--accent); font-size: 13px; margin-top: 4px; text-decoration: underline;">
+                          ${submission.file_name || 'View File'} →
+                        </a>
+                      </div>
+                    </div>
                   </div>
                 ` : ''}
+                
+                <p style="color: var(--muted); font-size: 12px; margin-top: 10px;">
+                  Submitted: ${new Date(submission.submitted_at).toLocaleString()}
+                </p>
               </div>
       
-              <!-- Excuse Option -->
-              <div class="card" style="background: var(--card); margin: 20px 0;">
-                <label style="display: flex; align-items: center; gap: 10px;">
-                  <input type="checkbox" id="excuse-assignment" ${isExcused ? 'checked' : ''} 
-                         onchange="app.toggleExcuseOptions()">
-                  <strong>Excuse this assignment</strong>
-                </label>
-                <div id="excuse-options" style="${isExcused ? '' : 'display: none;'} margin-top: 10px;">
+              <!-- Grading Form -->
+              <form id="grade-form" onsubmit="app.submitGrade(event, '${submissionId}', '${assignmentId}')">
+                ${isRubricGrading ? `
+                  <!-- Rubric-Based Grading -->
                   <div class="form-group">
-                    <label for="excuse-reason">Reason for excusing (optional)</label>
-                    <input type="text" id="excuse-reason" placeholder="e.g., Absent due to illness" 
-                           value="${submission.excuse_reason || ''}">
+                    <label>Select Performance Level:</label>
+                    <div id="rubric-options" style="display: grid; gap: 10px; margin-top: 10px;">
+                      ${rubricCriteria.map(criterion => `
+                        <label class="rubric-option" style="display: flex; align-items: start; padding: 12px; border: 2px solid var(--border); border-radius: 8px; cursor: pointer; transition: all 0.2s;">
+                          <input type="radio" name="rubric-grade" value="${criterion.letter_grade}" 
+                                 data-points="${Math.round((criterion.point_percentage / 100) * assignment.max_points)}"
+                                 data-descriptor="${criterion.descriptor}"
+                                 style="margin-top: 4px; margin-right: 12px;"
+                                 onchange="app.updateRubricSelection(this)">
+                          <div style="flex: 1;">
+                            <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 4px;">
+                              <strong style="font-size: 16px;">${criterion.letter_grade}</strong>
+                              <span style="color: var(--accent); font-weight: 600;">${Math.round((criterion.point_percentage / 100) * assignment.max_points)}/${assignment.max_points} pts</span>
+                            </div>
+                            <div style="color: var(--accent); font-size: 13px; font-weight: 500; margin-bottom: 4px;">
+                              ${criterion.summary_level}
+                            </div>
+                            <div style="color: var(--muted); font-size: 12px; line-height: 1.4;">
+                              ${criterion.core_meaning}
+                            </div>
+                          </div>
+                        </label>
+                      `).join('')}
+                    </div>
                   </div>
-                  <p style="color: var(--muted); font-size: 12px;">
-                    Excused assignments won't count towards the student's grade
-                  </p>
+      
+                  <!-- Override Option -->
+                  <div class="form-group" style="margin-top: 20px;">
+                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                      <input type="checkbox" id="grade-override" onchange="app.toggleGradeOverride()">
+                      <span>Override rubric grade (manual points entry)</span>
+                    </label>
+                  </div>
+      
+                  <div id="manual-grade-section" style="display: none;">
+                    <div class="form-group">
+                      <label for="manual-letter-grade">Letter Grade:</label>
+                      <input type="text" id="manual-letter-grade" placeholder="e.g., B+">
+                    </div>
+                    <div class="form-group">
+                      <label for="manual-points">Points Earned:</label>
+                      <input type="number" id="manual-points" min="0" max="${assignment.max_points}" step="0.5">
+                    </div>
+                  </div>
+      
+                  <!-- Hidden fields to store selected values -->
+                  <input type="hidden" id="selected-grade" value="">
+                  <input type="hidden" id="selected-points" value="">
+      
+                ` : `
+                  <!-- Traditional Points-Based Grading -->
+                  <div class="form-group">
+                    <label for="points-earned">Points Earned:</label>
+                    <input type="number" id="points-earned" min="0" max="${assignment.max_points}" step="0.5" required 
+                           value="${submission.points_earned || ''}">
+                  </div>
+                  <div class="form-group">
+                    <label for="letter-grade">Letter Grade:</label>
+                    <input type="text" id="letter-grade" placeholder="e.g., A, B+, C" 
+                           value="${submission.grade || ''}" required>
+                  </div>
+                `}
+      
+                <div class="form-group">
+                  <label for="grade-feedback">Feedback:</label>
+                  <textarea id="grade-feedback" rows="4" placeholder="Provide feedback to the student...">${submission.feedback || ''}</textarea>
                 </div>
-              </div>
       
-              <div id="grading-section" style="${isExcused ? 'opacity: 0.5; pointer-events: none;' : ''}">
-                <form id="grade-form">
-                  <div class="form-group">
-                    <label for="grade-score">Points Earned (Max: ${assignment?.max_points || 100})</label>
-                    <input 
-                      type="number" 
-                      id="grade-score" 
-                      min="0" 
-                      max="${assignment?.max_points || 100}" 
-                      value="${submission.points_earned || ''}"
-                      placeholder="Enter points"
-                    >
-                  </div>
-                  
-                  <div class="form-group">
-                    <label for="grade-letter">Letter Grade</label>
-                    <select id="grade-letter">
-                      <option value="">Select Grade</option>
-                      <option value="A+" ${submission.grade === 'A+' ? 'selected' : ''}>A+</option>
-                      <option value="A" ${submission.grade === 'A' ? 'selected' : ''}>A</option>
-                      <option value="A-" ${submission.grade === 'A-' ? 'selected' : ''}>A-</option>
-                      <option value="B+" ${submission.grade === 'B+' ? 'selected' : ''}>B+</option>
-                      <option value="B" ${submission.grade === 'B' ? 'selected' : ''}>B</option>
-                      <option value="B-" ${submission.grade === 'B-' ? 'selected' : ''}>B-</option>
-                      <option value="C+" ${submission.grade === 'C+' ? 'selected' : ''}>C+</option>
-                      <option value="C" ${submission.grade === 'C' ? 'selected' : ''}>C</option>
-                      <option value="C-" ${submission.grade === 'C-' ? 'selected' : ''}>C-</option>
-                      <option value="D" ${submission.grade === 'D' ? 'selected' : ''}>D</option>
-                      <option value="F" ${submission.grade === 'F' ? 'selected' : ''}>F</option>
-                    </select>
-                  </div>
-                  
-                  <div class="form-group">
-                    <label for="grade-feedback">Feedback</label>
-                    <textarea 
-                      id="grade-feedback" 
-                      rows="4" 
-                      placeholder="Provide feedback to the student..."
-                    >${submission.feedback || ''}</textarea>
-                  </div>
-                </form>
-              </div>
-            </div>
-      
-            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
-              <button class="btn btn-secondary" onclick="app.closeModal('grade-submission')">Cancel</button>
-              <button class="btn btn-primary" onclick="app.submitGrade('${submissionId}', '${assignmentId}')">
-                Save
-              </button>
+                <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+                  <button type="button" class="btn btn-secondary" onclick="app.closeModal('grade-submission')">Cancel</button>
+                  <button type="submit" class="btn btn-primary">Submit Grade</button>
+                </div>
+              </form>
             </div>
           `;
       
           this.showModal('grade-submission', '📝 Grade Submission', modalContent, true);
       
+          // Add CSS for rubric options
+          this.addRubricGradingStyles();
+      
         } catch (error) {
           console.error('Error loading submission:', error);
-          this.showNotification('Error loading submission: ' + error.message, 'error');
+          this.showNotification('Error: ' + error.message, 'error');
+        } finally {
+          if (window.portalLoading) {
+            window.portalLoading.hide('grade');
+          }
         }
+      }
+      
+      // Helper method to update rubric selection
+      updateRubricSelection(radio) {
+        // Remove selected class from all options
+        document.querySelectorAll('.rubric-option').forEach(option => {
+          option.style.borderColor = 'var(--border)';
+          option.style.background = 'transparent';
+        });
+      
+        // Add selected styling
+        const label = radio.closest('.rubric-option');
+        label.style.borderColor = 'var(--accent)';
+        label.style.background = 'rgba(106, 169, 255, 0.1)';
+      
+        // Store values
+        document.getElementById('selected-grade').value = radio.value;
+        document.getElementById('selected-points').value = radio.dataset.points;
+      }
+      
+      // Toggle override mode
+      toggleGradeOverride() {
+        const isOverride = document.getElementById('grade-override').checked;
+        const rubricOptions = document.getElementById('rubric-options');
+        const manualSection = document.getElementById('manual-grade-section');
+      
+        if (isOverride) {
+          rubricOptions.style.display = 'none';
+          manualSection.style.display = 'block';
+          
+          // Clear rubric selection
+          document.querySelectorAll('input[name="rubric-grade"]').forEach(radio => {
+            radio.checked = false;
+          });
+          document.querySelectorAll('.rubric-option').forEach(option => {
+            option.style.borderColor = 'var(--border)';
+            option.style.background = 'transparent';
+          });
+        } else {
+          rubricOptions.style.display = 'grid';
+          manualSection.style.display = 'none';
+        }
+      }
+      
+      // Add styling for rubric grading
+      addRubricGradingStyles() {
+        if (document.getElementById('rubric-grading-styles')) return;
+        
+        const style = document.createElement('style');
+        style.id = 'rubric-grading-styles';
+        style.textContent = `
+          .rubric-option:hover {
+            border-color: var(--accent) !important;
+            background: rgba(106, 169, 255, 0.05) !important;
+          }
+          
+          .rubric-option input[type="radio"]:checked + div {
+            color: var(--text-color);
+          }
+        `;
+        document.head.appendChild(style);
       }
 
       async excuseStudent(studentId, assignmentId) {
@@ -9663,79 +9895,98 @@
         }
       }
       
-      async submitGrade(submissionId, assignmentId) {
-        const isExcused = document.getElementById('excuse-assignment').checked;
-        
-        let gradeData = {};
-        
-        if (isExcused) {
-          gradeData = {
-            status: 'excused',
-            excused_by: this.userInfo.user.id,
-            excused_at: new Date().toISOString(),
-            excuse_reason: document.getElementById('excuse-reason').value || null,
-            // Clear grade data when excusing
-            grade: null,
-            points_earned: null,
-            graded_at: null
-          };
-        } else {
-          const scoreValue = document.getElementById('grade-score').value;
-          const pointsEarned = scoreValue === '' ? null : parseInt(scoreValue);
-          
-          gradeData = {
-            points_earned: pointsEarned, // Allow 0, only set null if empty
-            grade: document.getElementById('grade-letter').value || null,
-            feedback: document.getElementById('grade-feedback').value || null,
-            status: 'graded',
-            graded_at: new Date().toISOString(),
-            // Clear excuse data when grading
-            excused_by: null,
-            excused_at: null,
-            excuse_reason: null
-          };
-        }
+      async submitGrade(event, submissionId, assignmentId) {
+        event.preventDefault();
+      
+        if (this.isProcessing) return;
+        this.isProcessing = true;
       
         try {
-          const { data: submission, error } = await this.auth.supabase
+          if (window.portalLoading) {
+            window.portalLoading.show('submit-grade', 'Submitting grade...');
+          }
+      
+          // Get assignment info to determine grading type
+          const { data: assignment } = await this.auth.supabase
+            .from('assignments')
+            .select('grading_type, max_points')
+            .eq('id', assignmentId)
+            .single();
+      
+          let gradeData;
+      
+          if (assignment.grading_type === 'rubric') {
+            const isOverride = document.getElementById('grade-override')?.checked;
+      
+            if (isOverride) {
+              // Manual override
+              gradeData = {
+                grade: document.getElementById('manual-letter-grade').value.trim(),
+                points_earned: parseFloat(document.getElementById('manual-points').value),
+                grade_override: true
+              };
+            } else {
+              // Rubric selection
+              const selectedGrade = document.getElementById('selected-grade').value;
+              const selectedPoints = document.getElementById('selected-points').value;
+      
+              if (!selectedGrade) {
+                throw new Error('Please select a performance level from the rubric');
+              }
+      
+              gradeData = {
+                grade: selectedGrade,
+                points_earned: parseFloat(selectedPoints),
+                grade_override: false
+              };
+            }
+          } else {
+            // Traditional points-based grading
+            gradeData = {
+              grade: document.getElementById('letter-grade').value.trim(),
+              points_earned: parseFloat(document.getElementById('points-earned').value),
+              grade_override: false
+            };
+          }
+      
+          // Add common fields
+          gradeData.feedback = document.getElementById('grade-feedback').value.trim();
+          gradeData.status = 'graded';
+          gradeData.graded_at = new Date().toISOString();
+      
+          // Validate
+          if (!gradeData.grade || isNaN(gradeData.points_earned)) {
+            throw new Error('Please provide both letter grade and points');
+          }
+      
+          if (gradeData.points_earned < 0 || gradeData.points_earned > assignment.max_points) {
+            throw new Error(`Points must be between 0 and ${assignment.max_points}`);
+          }
+      
+          // Update submission
+          const { error } = await this.auth.supabase
             .from('assignment_submissions')
             .update(gradeData)
-            .eq('id', submissionId)
-            .select()
-            .single();
+            .eq('id', submissionId);
       
           if (error) throw error;
       
-          // CRITICAL: Recalculate the student's grades after updating submission
-          const { data: enrollment } = await this.auth.supabase
-            .from('class_enrollments')
-            .select('id')
-            .eq('student_id', submission.student_id)
-            .eq('class_id', (await this.auth.supabase
-              .from('assignments')
-              .select('class_id')
-              .eq('id', assignmentId)
-              .single()).data.class_id)
-            .eq('status', 'active')
-            .single();
-      
-          if (enrollment) {
-            console.log('Recalculating grades for enrollment:', enrollment.id);
-            await this.auth.supabase.rpc('update_enrollment_grades', {
-              p_enrollment_id: enrollment.id
-            });
-          }
-      
-          this.showNotification(isExcused ? 'Assignment excused' : 'Grade saved successfully!', 'success');
+          this.showNotification('Grade submitted successfully!', 'success');
           this.closeModal('grade-submission');
-          
-          // Refresh submissions view
-          this.closeModal('view-submissions');
-          setTimeout(() => this.viewSubmissions(assignmentId), 100);
+      
+          // Refresh the submissions view
+          setTimeout(() => {
+            this.viewSubmissions(assignmentId);
+          }, 100);
       
         } catch (error) {
-          console.error('Error saving:', error);
+          console.error('Error submitting grade:', error);
           this.showNotification('Error: ' + error.message, 'error');
+        } finally {
+          this.isProcessing = false;
+          if (window.portalLoading) {
+            window.portalLoading.hide('submit-grade');
+          }
         }
       }
     }
