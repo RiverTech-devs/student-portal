@@ -1606,6 +1606,9 @@
                 <button class="btn btn-primary" onclick="app.showSection('classes')">
                   📚 Manage Classes
                 </button>
+                <button class="btn btn-secondary" onclick="app.manageRubrics()">
+                  📋 Manage Rubrics
+                </button>
                 <button class="btn btn-secondary" onclick="app.showSection('messaging')">
                   💬 Send Message
                 </button>
@@ -7864,11 +7867,14 @@
             
             <div id="rubric-selection" class="form-group">
               <label for="assignment-rubric">Rubric:</label>
-              <select id="assignment-rubric" required>
-                <option value="">Select a rubric...</option>
+              <select id="assignment-rubric" required onchange="app.handleRubricSelection(this.value)">
+                <option value="">Loading rubrics...</option>
               </select>
+              <button type="button" class="btn btn-secondary" style="margin-top: 10px; width: 100%;" onclick="app.createInlineRubric()">
+                ➕ Create New Rubric for This Assignment
+              </button>
               <small style="color: var(--muted); display: block; margin-top: 5px;">
-                The rubric defines how work will be evaluated. You can customize grades during grading.
+                Select an existing rubric or create a new one.
               </small>
             </div>
       
@@ -7976,6 +7982,203 @@
         }, 100);
       }
 
+      createInlineRubric() {
+        const modalContent = `
+          <form id="inline-rubric-form" onsubmit="app.saveInlineRubric(event)">
+            <div class="form-group">
+              <label for="inline-rubric-name">Rubric Name:</label>
+              <input type="text" id="inline-rubric-name" required placeholder="e.g., Essay Rubric">
+            </div>
+      
+            <div class="form-group">
+              <label for="inline-rubric-description">Description (optional):</label>
+              <textarea id="inline-rubric-description" rows="2" placeholder="Brief description..."></textarea>
+            </div>
+      
+            <div class="form-group">
+              <label>Quick Setup:</label>
+              <select id="inline-base-rubric" onchange="app.loadInlineRubricTemplate(this.value)">
+                <option value="">Start from scratch</option>
+                <option value="default" selected>Use Default (13 levels)</option>
+              </select>
+            </div>
+      
+            <div class="card" style="background: rgba(106, 169, 255, 0.1); margin: 20px 0; padding: 15px;">
+              <h4 style="margin-bottom: 10px;">Grade Levels</h4>
+              
+              <div id="inline-criteria-container" style="max-height: 400px; overflow-y: auto;">
+                <!-- Criteria will be added here -->
+              </div>
+      
+              <button type="button" class="btn btn-secondary" onclick="app.addInlineCriterionField()" style="margin-top: 10px;">
+                ➕ Add Grade Level
+              </button>
+            </div>
+      
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              <button type="button" class="btn btn-secondary" onclick="app.closeModal('inline-rubric')">Cancel</button>
+              <button type="submit" class="btn btn-primary">Save & Use This Rubric</button>
+            </div>
+          </form>
+        `;
+      
+        this.showModal('inline-rubric', '➕ Create Rubric', modalContent, true);
+        
+        // Auto-load default template
+        setTimeout(() => {
+          this.loadInlineRubricTemplate('default');
+        }, 100);
+      }
+      
+      addInlineCriterionField() {
+        const container = document.getElementById('inline-criteria-container');
+        const index = container.children.length;
+        
+        const criterionDiv = document.createElement('div');
+        criterionDiv.className = 'inline-criterion-field';
+        criterionDiv.style.cssText = 'border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 10px; background: var(--card);';
+        
+        criterionDiv.innerHTML = `
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <strong style="font-size: 14px;">Level ${index + 1}</strong>
+            ${index > 0 ? '<button type="button" class="btn danger small" onclick="this.closest(\'.inline-criterion-field\').remove()">Remove</button>' : ''}
+          </div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
+            <div>
+              <label style="font-size: 12px;">Letter Grade:</label>
+              <input type="text" class="inline-criterion-letter" required placeholder="A+">
+            </div>
+            <div>
+              <label style="font-size: 12px;">Point %:</label>
+              <input type="number" class="inline-criterion-percentage" required min="0" max="100" step="0.1" placeholder="100">
+            </div>
+          </div>
+          <div style="margin-bottom: 8px;">
+            <label style="font-size: 12px;">Summary:</label>
+            <input type="text" class="inline-criterion-summary" required placeholder="Exceptional Mastery">
+          </div>
+          <div>
+            <label style="font-size: 12px;">Description:</label>
+            <textarea class="inline-criterion-description" rows="2" required placeholder="What this level means..."></textarea>
+          </div>
+        `;
+        
+        container.appendChild(criterionDiv);
+      }
+      
+      async loadInlineRubricTemplate(templateType) {
+        if (!templateType) return;
+        
+        try {
+          // Load default rubric criteria
+          const { data: defaultRubric } = await this.auth.supabase
+            .from('rubrics')
+            .select('id')
+            .eq('is_default', true)
+            .single();
+      
+          const { data: criteria } = await this.auth.supabase
+            .from('rubric_criteria')
+            .select('*')
+            .eq('rubric_id', defaultRubric.id)
+            .order('sort_order');
+      
+          // Clear existing criteria
+          document.getElementById('inline-criteria-container').innerHTML = '';
+      
+          // Add each criterion
+          criteria.forEach(criterion => {
+            this.addInlineCriterionField();
+            const fields = document.querySelectorAll('.inline-criterion-field');
+            const lastField = fields[fields.length - 1];
+            
+            lastField.querySelector('.inline-criterion-letter').value = criterion.letter_grade;
+            lastField.querySelector('.inline-criterion-percentage').value = criterion.point_percentage;
+            lastField.querySelector('.inline-criterion-summary').value = criterion.summary_level;
+            lastField.querySelector('.inline-criterion-description').value = criterion.core_meaning;
+          });
+      
+        } catch (error) {
+          console.error('Error loading template:', error);
+        }
+      }
+      
+      async saveInlineRubric(event) {
+        event.preventDefault();
+      
+        if (this.isProcessing) return;
+        this.isProcessing = true;
+      
+        try {
+          if (window.portalLoading) {
+            window.portalLoading.show('save-rubric', 'Saving rubric...');
+          }
+      
+          const name = document.getElementById('inline-rubric-name').value.trim();
+          const description = document.getElementById('inline-rubric-description').value.trim();
+      
+          // Create rubric
+          const { data: rubric, error: rubricError } = await this.auth.supabase
+            .from('rubrics')
+            .insert({
+              name,
+              description,
+              created_by: this.userInfo.user.id,
+              is_default: false
+            })
+            .select()
+            .single();
+      
+          if (rubricError) throw rubricError;
+      
+          // Collect all criteria
+          const criteriaFields = document.querySelectorAll('.inline-criterion-field');
+          const criteria = [];
+          
+          criteriaFields.forEach((field, index) => {
+            criteria.push({
+              rubric_id: rubric.id,
+              letter_grade: field.querySelector('.inline-criterion-letter').value.trim(),
+              descriptor: field.querySelector('.inline-criterion-summary').value.trim(),
+              summary_level: field.querySelector('.inline-criterion-summary').value.trim(),
+              core_meaning: field.querySelector('.inline-criterion-description').value.trim(),
+              point_percentage: parseFloat(field.querySelector('.inline-criterion-percentage').value),
+              sort_order: index + 1
+            });
+          });
+      
+          // Insert criteria
+          const { error: criteriaError } = await this.auth.supabase
+            .from('rubric_criteria')
+            .insert(criteria);
+      
+          if (criteriaError) throw criteriaError;
+      
+          this.showNotification('Rubric created!', 'success');
+          this.closeModal('inline-rubric');
+      
+          // Reload rubrics in the assignment form and select the new one
+          await this.loadRubrics();
+          document.getElementById('assignment-rubric').value = rubric.id;
+      
+        } catch (error) {
+          console.error('Error creating rubric:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+        } finally {
+          this.isProcessing = false;
+          if (window.portalLoading) {
+            window.portalLoading.hide('save-rubric');
+          }
+        }
+      }
+      
+      handleRubricSelection(value) {
+        // Optional: Show rubric preview when selected
+        if (value && value !== 'new') {
+          // Could add a "Preview Rubric" button here
+        }
+      }
+      
       async toggleGradingMethod() {
         const gradingType = document.getElementById('grading-type').value;
         const rubricSelection = document.getElementById('rubric-selection');
@@ -8007,6 +8210,351 @@
           
         } catch (error) {
           console.error('Error loading rubrics:', error);
+        }
+      }
+
+      async manageRubrics() {
+        try {
+          if (window.portalLoading) {
+            window.portalLoading.show('rubrics', 'Loading rubrics...');
+          }
+      
+          // Load teacher's rubrics and default
+          const { data: rubrics, error } = await this.auth.supabase
+            .from('rubrics')
+            .select('*')
+            .or(`is_default.eq.true,created_by.eq.${this.userInfo.user.id}`)
+            .order('is_default', { ascending: false });
+      
+          if (error) throw error;
+      
+          const modalContent = `
+            <div>
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <h3>📋 Manage Rubrics</h3>
+                <button class="btn btn-primary" onclick="app.showCreateRubricForm()">
+                  ➕ Create Custom Rubric
+                </button>
+              </div>
+      
+              <p style="color: var(--muted); margin-bottom: 20px;">
+                Create custom rubrics or use the default European Holistic rubric.
+              </p>
+      
+              <div style="max-height: 500px; overflow-y: auto;">
+                ${rubrics.map(rubric => `
+                  <div class="card" style="margin-bottom: 15px;">
+                    <div style="display: flex; justify-content: space-between; align-items: start;">
+                      <div style="flex: 1;">
+                        <h4 style="margin-bottom: 5px;">
+                          ${rubric.name}
+                          ${rubric.is_default ? '<span style="background: var(--accent); color: white; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; margin-left: 8px;">DEFAULT</span>' : ''}
+                        </h4>
+                        <p style="color: var(--muted); font-size: 13px; margin-bottom: 10px;">
+                          ${rubric.description || 'No description'}
+                        </p>
+                        <small style="color: var(--muted);">
+                          Created: ${new Date(rubric.created_at).toLocaleDateString()}
+                        </small>
+                      </div>
+                      <div style="display: flex; gap: 8px;">
+                        <button class="btn btn-secondary small" onclick="app.viewRubricDetails('${rubric.id}')">
+                          👁️ View
+                        </button>
+                        ${!rubric.is_default ? `
+                          <button class="btn btn-secondary small" onclick="app.editRubric('${rubric.id}')">
+                            ✏️ Edit
+                          </button>
+                          <button class="btn danger small" onclick="app.deleteRubric('${rubric.id}')">
+                            🗑️
+                          </button>
+                        ` : ''}
+                      </div>
+                    </div>
+                  </div>
+                `).join('')}
+              </div>
+            </div>
+      
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal('manage-rubrics')">Close</button>
+            </div>
+          `;
+      
+          this.showModal('manage-rubrics', '📋 Manage Rubrics', modalContent, true);
+      
+        } catch (error) {
+          console.error('Error loading rubrics:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+        } finally {
+          if (window.portalLoading) {
+            window.portalLoading.hide('rubrics');
+          }
+        }
+      }
+      
+      async viewRubricDetails(rubricId) {
+        try {
+          const { data: rubric } = await this.auth.supabase
+            .from('rubrics')
+            .select('*')
+            .eq('id', rubricId)
+            .single();
+      
+          const { data: criteria } = await this.auth.supabase
+            .from('rubric_criteria')
+            .select('*')
+            .eq('rubric_id', rubricId)
+            .order('sort_order');
+      
+          const modalContent = `
+            <div>
+              <h3>📋 ${rubric.name}</h3>
+              <p style="color: var(--muted); margin-bottom: 20px;">
+                ${rubric.description || 'No description'}
+              </p>
+      
+              <div style="max-height: 500px; overflow-y: auto;">
+                ${criteria.map(criterion => `
+                  <div class="card" style="margin-bottom: 12px; border-left: 4px solid var(--accent);">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                      <strong style="font-size: 16px;">${criterion.letter_grade}</strong>
+                      <span style="color: var(--accent); font-weight: 600;">${criterion.point_percentage}%</span>
+                    </div>
+                    <div style="color: var(--accent); font-size: 13px; font-weight: 500; margin-bottom: 5px;">
+                      ${criterion.summary_level}
+                    </div>
+                    <div style="color: var(--muted); font-size: 12px; line-height: 1.4;">
+                      ${criterion.core_meaning}
+                    </div>
+                  </div>
+                `).join('')}
+              </div>
+            </div>
+      
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal('view-rubric-details')">Close</button>
+            </div>
+          `;
+      
+          this.showModal('view-rubric-details', '📋 Rubric Details', modalContent, true);
+      
+        } catch (error) {
+          console.error('Error loading rubric:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+        }
+      }
+      
+      showCreateRubricForm() {
+        const modalContent = `
+          <form id="create-rubric-form" onsubmit="app.createCustomRubric(event)">
+            <div class="form-group">
+              <label for="rubric-name">Rubric Name:</label>
+              <input type="text" id="rubric-name" required placeholder="e.g., Essay Writing Rubric">
+            </div>
+      
+            <div class="form-group">
+              <label for="rubric-description">Description:</label>
+              <textarea id="rubric-description" rows="2" placeholder="Optional description..."></textarea>
+            </div>
+      
+            <div class="form-group">
+              <label>Base on Existing Rubric:</label>
+              <select id="base-rubric" onchange="app.loadRubricTemplate(this.value)">
+                <option value="">Start from scratch</option>
+                <option value="default">European Holistic (Default)</option>
+              </select>
+            </div>
+      
+            <div class="card" style="background: rgba(106, 169, 255, 0.1); margin: 20px 0; padding: 15px;">
+              <h4 style="margin-bottom: 10px;">Grade Levels</h4>
+              <p style="color: var(--muted); font-size: 13px; margin-bottom: 15px;">
+                Add the performance levels for this rubric. You can add as many or as few as needed.
+              </p>
+              
+              <div id="criteria-container">
+                <!-- Criteria will be added here -->
+              </div>
+      
+              <button type="button" class="btn btn-secondary" onclick="app.addCriterionField()">
+                ➕ Add Grade Level
+              </button>
+            </div>
+      
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              <button type="button" class="btn btn-secondary" onclick="app.closeModal('create-rubric')">Cancel</button>
+              <button type="submit" class="btn btn-primary">Create Rubric</button>
+            </div>
+          </form>
+        `;
+      
+        this.showModal('create-rubric', '➕ Create Custom Rubric', modalContent, true);
+        
+        // Add one default criterion field
+        this.addCriterionField();
+      }
+      
+      addCriterionField() {
+        const container = document.getElementById('criteria-container');
+        const index = container.children.length;
+        
+        const criterionDiv = document.createElement('div');
+        criterionDiv.className = 'criterion-field';
+        criterionDiv.style.cssText = 'border: 1px solid var(--border); border-radius: 8px; padding: 15px; margin-bottom: 15px;';
+        
+        criterionDiv.innerHTML = `
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+            <strong>Grade Level ${index + 1}</strong>
+            <button type="button" class="btn danger small" onclick="this.closest('.criterion-field').remove()">Remove</button>
+          </div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+            <div>
+              <label>Letter Grade:</label>
+              <input type="text" class="criterion-letter" required placeholder="e.g., A+, B, C-">
+            </div>
+            <div>
+              <label>Point %:</label>
+              <input type="number" class="criterion-percentage" required min="0" max="100" step="0.1" placeholder="0-100">
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Summary Level:</label>
+            <input type="text" class="criterion-summary" required placeholder="e.g., Exceptional Mastery">
+          </div>
+          <div class="form-group">
+            <label>Description:</label>
+            <textarea class="criterion-description" rows="2" required placeholder="Describe what this grade level means..."></textarea>
+          </div>
+        `;
+        
+        container.appendChild(criterionDiv);
+      }
+      
+      async loadRubricTemplate(templateType) {
+        if (!templateType) return;
+        
+        try {
+          // Load default rubric criteria
+          const { data: defaultRubric } = await this.auth.supabase
+            .from('rubrics')
+            .select('id')
+            .eq('is_default', true)
+            .single();
+      
+          const { data: criteria } = await this.auth.supabase
+            .from('rubric_criteria')
+            .select('*')
+            .eq('rubric_id', defaultRubric.id)
+            .order('sort_order');
+      
+          // Clear existing criteria
+          document.getElementById('criteria-container').innerHTML = '';
+      
+          // Add each criterion
+          criteria.forEach(criterion => {
+            this.addCriterionField();
+            const fields = document.querySelectorAll('.criterion-field');
+            const lastField = fields[fields.length - 1];
+            
+            lastField.querySelector('.criterion-letter').value = criterion.letter_grade;
+            lastField.querySelector('.criterion-percentage').value = criterion.point_percentage;
+            lastField.querySelector('.criterion-summary').value = criterion.summary_level;
+            lastField.querySelector('.criterion-description').value = criterion.core_meaning;
+          });
+      
+          this.showNotification('Template loaded! You can now customize it.', 'success');
+      
+        } catch (error) {
+          console.error('Error loading template:', error);
+          this.showNotification('Error loading template', 'error');
+        }
+      }
+      
+      async createCustomRubric(event) {
+        event.preventDefault();
+      
+        if (this.isProcessing) return;
+        this.isProcessing = true;
+      
+        try {
+          if (window.portalLoading) {
+            window.portalLoading.show('create', 'Creating rubric...');
+          }
+      
+          const name = document.getElementById('rubric-name').value.trim();
+          const description = document.getElementById('rubric-description').value.trim();
+      
+          // Create rubric
+          const { data: rubric, error: rubricError } = await this.auth.supabase
+            .from('rubrics')
+            .insert({
+              name,
+              description,
+              created_by: this.userInfo.user.id,
+              is_default: false
+            })
+            .select()
+            .single();
+      
+          if (rubricError) throw rubricError;
+      
+          // Collect all criteria
+          const criteriaFields = document.querySelectorAll('.criterion-field');
+          const criteria = [];
+          
+          criteriaFields.forEach((field, index) => {
+            criteria.push({
+              rubric_id: rubric.id,
+              letter_grade: field.querySelector('.criterion-letter').value.trim(),
+              descriptor: field.querySelector('.criterion-summary').value.trim(),
+              summary_level: field.querySelector('.criterion-summary').value.trim(),
+              core_meaning: field.querySelector('.criterion-description').value.trim(),
+              point_percentage: parseFloat(field.querySelector('.criterion-percentage').value),
+              sort_order: index + 1
+            });
+          });
+      
+          // Insert criteria
+          const { error: criteriaError } = await this.auth.supabase
+            .from('rubric_criteria')
+            .insert(criteria);
+      
+          if (criteriaError) throw criteriaError;
+      
+          this.showNotification('Custom rubric created successfully!', 'success');
+          this.closeModal('create-rubric');
+          this.manageRubrics(); // Refresh the list
+      
+        } catch (error) {
+          console.error('Error creating rubric:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+        } finally {
+          this.isProcessing = false;
+          if (window.portalLoading) {
+            window.portalLoading.hide('create');
+          }
+        }
+      }
+      
+      async deleteRubric(rubricId) {
+        if (!confirm('Delete this rubric? Assignments using this rubric will fall back to the default.')) {
+          return;
+        }
+      
+        try {
+          const { error } = await this.auth.supabase
+            .from('rubrics')
+            .delete()
+            .eq('id', rubricId);
+      
+          if (error) throw error;
+      
+          this.showNotification('Rubric deleted', 'success');
+          this.manageRubrics(); // Refresh the list
+      
+        } catch (error) {
+          console.error('Error deleting rubric:', error);
+          this.showNotification('Error: ' + error.message, 'error');
         }
       }
 
