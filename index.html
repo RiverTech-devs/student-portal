@@ -247,6 +247,8 @@
                                 <button type="button" class="btn btn-secondary" id="register-btn">Register New Account</button>
                                 <p style="margin-top: 15px; text-align: center;">
                                     <a href="#" id="forgot-password-link" style="color: #4facfe;">Forgot Password?</a>
+                                    <span style="margin: 0 10px; color: var(--muted);">|</span>
+                                    <a href="#" id="activate-account-link" style="color: #4facfe;">Activate Account</a>
                                 </p>
                             </form>
 
@@ -309,6 +311,37 @@
                             </form>
                         </div>
                     </div>
+
+                    <form id="activate-form" class="hidden">
+                        <h3>🔓 Activate Your Account</h3>
+                        <p style="color: var(--muted-color); margin-bottom: 15px;">
+                            Enter your information to activate your student account
+                        </p>
+                        
+                        <div class="form-group">
+                            <label for="activate-username">Username</label>
+                            <input type="text" id="activate-username" required>
+                            <small style="color: var(--muted-color);">The username given to you by your teacher</small>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="activate-email">Email Address</label>
+                            <input type="email" id="activate-email" required>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="activate-password">Create Password</label>
+                            <input type="password" id="activate-password" required minlength="6">
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="activate-password-confirm">Confirm Password</label>
+                            <input type="password" id="activate-password-confirm" required minlength="6">
+                        </div>
+                        
+                        <button type="submit" class="btn btn-primary" id="activate-submit-btn">Activate Account</button>
+                        <button type="button" class="btn btn-secondary" id="back-to-login-from-activate-btn">Back to Login</button>
+                    </form>
 
                     <!-- Dashboard Section -->
                     <div id="dashboard-section" class="hidden">
@@ -544,8 +577,10 @@
                 this.showTab('login');
                 const loginForm = document.getElementById('login-form');
                 const registerForm = document.getElementById('register-form');
+                const activateForm = document.getElementById('activate-form');
                 if (loginForm) loginForm.classList.remove('hidden');
                 if (registerForm) registerForm.classList.add('hidden');
+                if (activateForm) activateForm.classList.add('hidden');
             }
 
             handleHashNavigation() {
@@ -590,6 +625,31 @@
                 this.addGameCardListeners();
                 this.addSkillTreeListeners();
                 this.addSafeEventListener('close-game-btn', 'click', () => this.closeGame());
+
+                // Activate account link
+                const activateLink = document.getElementById('activate-account-link');
+                if (activateLink) {
+                    activateLink.addEventListener('click', (e) => {
+                        e.preventDefault();
+                        this.showActivateForm();
+                    });
+                }
+                
+                // Back to login from activate
+                const backToLoginFromActivate = document.getElementById('back-to-login-from-activate-btn');
+                if (backToLoginFromActivate) {
+                    backToLoginFromActivate.addEventListener('click', () => {
+                        this.showLoginForm();
+                    });
+                }
+                
+                // Activate form submission
+                const activateForm = document.getElementById('activate-form');
+                if (activateForm) {
+                    activateForm.addEventListener('submit', (e) => {
+                        this.handleActivate(e);
+                    });
+                }
                 
                 // Legacy logout
                 this.addSafeEventListener('logout-btn', 'click', () => this.auth.logout());
@@ -881,8 +941,130 @@
             closeForgotPasswordModal() {
                 this.closeModal();
             }
+
+            showActivateForm() {
+                document.getElementById('login-form').classList.add('hidden');
+                document.getElementById('register-form').classList.add('hidden');
+                document.getElementById('activate-form').classList.remove('hidden');
+                
+                // Clear any alerts
+                const alerts = document.getElementById('auth-alerts');
+                if (alerts) alerts.innerHTML = '';
+            }
             
-            // You'll also need to add this method to handle the modal system
+            async handleActivate(e) {
+                e.preventDefault();
+                
+                const username = document.getElementById('activate-username')?.value;
+                const email = document.getElementById('activate-email')?.value;
+                const password = document.getElementById('activate-password')?.value;
+                const passwordConfirm = document.getElementById('activate-password-confirm')?.value;
+                
+                const activateBtn = document.getElementById('activate-submit-btn');
+                const alerts = document.getElementById('auth-alerts');
+                
+                // Clear previous alerts
+                if (alerts) alerts.innerHTML = '';
+                
+                // Validate passwords match
+                if (password !== passwordConfirm) {
+                    if (alerts) {
+                        alerts.innerHTML = '<div class="alert alert-error">Passwords do not match</div>';
+                    }
+                    return;
+                }
+                
+                if (!username || !email || !password) {
+                    if (alerts) {
+                        alerts.innerHTML = '<div class="alert alert-error">Please fill in all fields</div>';
+                    }
+                    return;
+                }
+                
+                if (activateBtn) {
+                    activateBtn.disabled = true;
+                    activateBtn.textContent = 'Activating...';
+                }
+                
+                try {
+                    // Step 1: Find the inactive student profile by username
+                    const { data: profile, error: findError } = await this.auth.supabase
+                        .from('user_profiles')
+                        .select('*')
+                        .eq('username', username)
+                        .eq('account_status', 'inactive')
+                        .eq('user_type', 'student')
+                        .single();
+                    
+                    if (findError || !profile) {
+                        throw new Error('No inactive account found with that username. Please check with your teacher.');
+                    }
+                    
+                    // Step 2: Check if student is eligible for activation
+                    // (You can add grade level checks here if needed)
+                    
+                    // Step 3: Create auth user
+                    const { data: authData, error: authError } = await this.auth.supabase.auth.signUp({
+                        email: email,
+                        password: password
+                    });
+                    
+                    if (authError) throw authError;
+                    
+                    if (!authData.user) {
+                        throw new Error('Failed to create authentication account');
+                    }
+                    
+                    // Step 4: Update the profile to link to auth user and activate
+                    const { error: updateError } = await this.auth.supabase
+                        .from('user_profiles')
+                        .update({
+                            id: authData.user.id,
+                            email: email,
+                            account_status: 'active',
+                            can_login: true,
+                            updated_at: new Date().toISOString()
+                        })
+                        .eq('username', username)
+                        .eq('account_status', 'inactive');
+                    
+                    if (updateError) {
+                        console.error('Profile update error:', updateError);
+                        // Try to clean up the auth user
+                        try {
+                            await this.auth.supabase.auth.admin.deleteUser(authData.user.id);
+                        } catch (cleanupError) {
+                            console.error('Cleanup error:', cleanupError);
+                        }
+                        throw new Error('Failed to activate account. Please contact your teacher.');
+                    }
+                    
+                    // Success!
+                    if (alerts) {
+                        alerts.innerHTML = '<div class="alert alert-success">Account activated! Please check your email to verify, then you can login.</div>';
+                    }
+                    
+                    // Clear form
+                    document.getElementById('activate-form').reset();
+                    
+                    // Show login form after 3 seconds
+                    setTimeout(() => {
+                        this.showLoginForm();
+                    }, 3000);
+                    
+                } catch (error) {
+                    console.error('Activation error:', error);
+                    if (alerts) {
+                        alerts.innerHTML = `<div class="alert alert-error">${error.message || 'Activation failed. Please try again.'}</div>`;
+                    }
+                } finally {
+                    if (activateBtn) {
+                        activateBtn.disabled = false;
+                        activateBtn.textContent = 'Activate Account';
+                    }
+                }
+            }
+            
             showModal(id, title, content) {
                 // Remove existing modal
                 const existingModal = document.getElementById('portal-modal');
