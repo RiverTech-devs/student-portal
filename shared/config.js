@@ -116,11 +116,11 @@ class PortalAuth {
             const { data: { user } } = await this.supabase.auth.getUser();
             if (!user) return null;
     
-            // Just fetch the profile - no creation attempts here
+            // Fetch profile by auth_user_id (for activated accounts) or id (for legacy accounts)
             const { data: profiles, error } = await this.supabase
                 .from('user_profiles')
                 .select('*')
-                .eq('id', user.id);
+                .or(`auth_user_id.eq.${user.id},id.eq.${user.id}`);
     
             if (error) {
                 console.error('Profile fetch error:', error);
@@ -504,6 +504,7 @@ if (document.readyState === 'loading') {
     PortalUI.applyTheme(window.portalAuth.config.theme);
 
 }
+
 
 
 
