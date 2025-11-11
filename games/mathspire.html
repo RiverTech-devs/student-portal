@@ -2486,14 +2486,14 @@
                 <div class="collection-viewer-content">
                     <div class="collection-viewer-header">
                         <h2 class="collection-viewer-title">📚 Card & Relic Collection</h2>
-                        <button class="collection-viewer-close" onclick="game.closeCollection()">✕</button>
+                        <button class="collection-viewer-close" onclick="closeCollectionViewer()">✕</button>
                     </div>
                     
                     <div class="collection-tabs">
-                        <button class="collection-tab active" onclick="game.showCollectionTab('cards')">
+                        <button class="collection-tab active" onclick="showCollectionTabStatic('cards')">
                             🃏 Cards
                         </button>
-                        <button class="collection-tab" onclick="game.showCollectionTab('relics')">
+                        <button class="collection-tab" onclick="showCollectionTabStatic('relics')">
                             ✨ Relics
                         </button>
                     </div>
@@ -4203,6 +4203,7 @@
             constructor(seed, selectedAscension = 0) {
                 // Seed setup
                 this.seed = seed || this.generateSeed();
+                this.seedString = String(this.seed);
                 this.rng = new SeededRNG(this.seed);
                 
                 // Ascension system
@@ -5058,18 +5059,24 @@
                 const accessibleNodes = this.getAccessibleNodes();
                 console.log('Accessible nodes:', accessibleNodes);
                 
-                // Create SVG for connection lines
-                const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-                svg.style.cssText = `
-                    position: absolute;
-                    top: 0;
-                    left: 0;
-                    width: 100%;
-                    height: 100%;
-                    pointer-events: none;
-                    z-index: 0;
-                `;
-                mapGrid.appendChild(svg);
+                // Create SVG for connection lines (remove old one first)
+                let svg = mapGrid.querySelector('svg');
+                if (!svg) {
+                    svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+                    svg.style.cssText = `
+                        position: absolute;
+                        top: 0;
+                        left: 0;
+                        width: 100%;
+                        height: 100%;
+                        pointer-events: none;
+                        z-index: 0;
+                    `;
+                    mapGrid.appendChild(svg);
+                } else {
+                    // Clear existing lines
+                    svg.innerHTML = '';
+                }
                 
                 // Render floors from top (boss) to bottom (start)
                 for (let floorNum = maxFloor; floorNum >= 0; floorNum--) {
@@ -5562,6 +5569,24 @@
                 this.targetingActive = true;
                 this.targetingHandIndex = handIndex;
                 this.targetingEffectiveEnergy = effectiveEnergy;
+
+                // Add escape key handler
+                const escapeHandler = (e) => {
+                    if (e.key === 'Escape') {
+                        this.cancelTargeting();
+                        document.removeEventListener('keydown', escapeHandler);
+                    }
+                };
+                document.addEventListener('keydown', escapeHandler);
+                
+                // Add click-outside-to-cancel
+                const cancelHandler = (e) => {
+                    if (!e.target.closest('.enemy') && !e.target.closest('.card')) {
+                        this.cancelTargeting();
+                        document.removeEventListener('click', cancelHandler);
+                    }
+                };
+                setTimeout(() => document.addEventListener('click', cancelHandler), 100);
                 
                 // Highlight enemies as targetable
                 document.querySelectorAll('.enemy').forEach((enemyEl, index) => {
@@ -5993,16 +6018,12 @@
 
                 // Show appropriate rewards
                 if (wasBoss) {
-                    // Check if this completes Act 1
-                    const currentAct = this.currentAct || 1;
-                    
-                    if (currentAct === 1) {
-                        // Transition to Act 2!
-                        this.showActTransition();
-                    } else {
-                        // Act 2 complete - Victory!
-                        this.victory();
-                    }
+                    // Show boss relic selection FIRST
+                    this.hideAllViews();
+                    document.getElementById('boss-relic-view').classList.add('active');
+                    this.showBossRelicRewards();
+                    // Store that we need to transition after relic selection
+                    this.pendingActTransition = (this.currentAct || 1) === 1;
                 } else if (wasElite) {
                     document.getElementById('elite-reward-view').classList.add('active');
                     this.showRelicRewards();
@@ -6053,6 +6074,19 @@
                 console.log('=== PROCEED AFTER REWARD ===');
                 console.log('Current node before:', this.currentNode);
                 console.log('Entering node:', this.enteringNode);
+
+                // Check if we need to handle act transition
+                if (this.pendingActTransition) {
+                    this.pendingActTransition = false;
+                    this.showActTransition();
+                    return;
+                }
+                
+                // Check if we completed Act 2 (victory)
+                if (this.currentAct === 2 && this.currentNode >= this.map.length - 1) {
+                    this.victory();
+                    return;
+                }
                 
                 // Mark the node we just completed as current
                 if (this.enteringNode !== undefined) {
@@ -7000,8 +7034,10 @@
             // Update tab buttons
             document.querySelectorAll('.collection-tab').forEach(tab => {
                 tab.classList.remove('active');
+                if (tab.textContent.toLowerCase().includes(tabName)) {
+                    tab.classList.add('active');
+                }
             });
-            event.target.classList.add('active');
             
             // Show appropriate content
             document.getElementById('collection-cards-tab').style.display = tabName === 'cards' ? 'block' : 'none';
@@ -7175,12 +7211,16 @@
             });
 
             document.getElementById('view-collection-btn')?.addEventListener('click', () => {
-            // Create temporary game instance to show collection
-            if (!game) {
-                game = new Game('PREVIEW', 0);
+                showCollectionViewer();
+            });
+            
+            // Render relics
+            const relicsGrid = document.getElementById('collection-relics-grid');
+                if (relicsGrid) {
+                    relicsGrid.innerHTML = '';
+                    // ... render logic without needing game instance
+                }
             }
-            game.showCollection();
-        });
             
             // Auto-focus the seed input for quick start
             try {
@@ -7196,31 +7236,20 @@
         if (document.readyState === 'loading') {
             console.log('DOM still loading, waiting for DOMContentLoaded...');
             document.addEventListener('DOMContentLoaded', setupEventHandlers);
+            document.addEventListener('DOMContentLoaded', () => {
+                ascensionController = new AscensionController();
+                
+                // Wait for initialization to complete
+                setTimeout(() => {
+                    ascensionController.initialize();
+                    // Now it's safe to set up other event handlers
+                    setupEventHandlers();
+                }, 100);
+            });
         } else {
             console.log('DOM already loaded, setting up immediately');
             setupEventHandlers();
         }
-
-        
-
-        // Initialize - show only seed view
-        document.addEventListener('DOMContentLoaded', () => {
-            console.log('Initializing game views...');
-            
-            // Hide everything first
-            const allViews = document.querySelectorAll('[id$="-view"]');
-            allViews.forEach(view => {
-                view.style.display = 'none';
-                view.classList.remove('active');
-            });
-            
-            // Show only seed view
-            const seedView = document.getElementById('seed-view');
-            if (seedView) {
-                seedView.style.display = 'flex';
-                console.log('Seed view shown');
-            }
-        });
 
         window.addEventListener('message', function(event) {
             if (event.data.type === 'ENABLE_TOUCH') {
@@ -7230,6 +7259,113 @@
                 document.body.style.pointerEvents = 'auto';
             }
         });
+        // Show collection viewer (doesn't require game instance)
+        function showCollectionViewer() {
+            const viewer = document.getElementById('collection-viewer');
+            if (viewer) {
+                viewer.style.display = 'block';
+                viewer.classList.add('active');
+                
+                // Render using static data
+                renderCollectionStatic();
+            }
+        }
+        // Close collection viewer (doesn't require game instance)
+        function closeCollectionViewer() {
+            const viewer = document.getElementById('collection-viewer');
+            if (viewer) {
+                viewer.style.display = 'none';
+                viewer.classList.remove('active');
+            }
+        }
+        // Switch collection tabs (doesn't require game instance)
+        function showCollectionTabStatic(tabName) {
+            // Update tab buttons
+            document.querySelectorAll('.collection-tab').forEach(tab => {
+                tab.classList.remove('active');
+                if (tab.textContent.toLowerCase().includes(tabName)) {
+                    tab.classList.add('active');
+                }
+            });
+            
+            // Show appropriate content
+            document.getElementById('collection-cards-tab').style.display = tabName === 'cards' ? 'block' : 'none';
+            document.getElementById('collection-relics-tab').style.display = tabName === 'relics' ? 'block' : 'none';
+        }
+        // Standalone collection rendering (doesn't require game instance)
+        function renderCollectionStatic() {
+            // Render cards tab
+            const cardsGrid = document.getElementById('collection-cards-grid');
+            if (cardsGrid) {
+                cardsGrid.innerHTML = '';
+                
+                // Group cards by rarity
+                const rarities = ['starter', 'common', 'uncommon', 'rare'];
+                
+                rarities.forEach(rarity => {
+                    const cards = Object.entries(CARD_DATABASE).filter(([id, card]) => card.rarity === rarity);
+                    
+                    if (cards.length > 0) {
+                        const section = document.createElement('div');
+                        section.style.gridColumn = '1 / -1';
+                        section.style.marginTop = '20px';
+                        section.innerHTML = `<h3 style="color: #9b59b6; text-transform: capitalize; margin-bottom: 15px;">${rarity} Cards (${cards.length})</h3>`;
+                        cardsGrid.appendChild(section);
+                        
+                        cards.forEach(([cardId, card]) => {
+                            const cardEl = document.createElement('div');
+                            cardEl.className = `collection-card ${card.type} ${card.rarity}`;
+                            
+                            const energyDisplay = card.energy < 0 ? 'X' : card.energy;
+                            
+                            cardEl.innerHTML = `
+                                <div class="collection-card-energy">${energyDisplay}</div>
+                                <div class="collection-card-name">${card.name}</div>
+                                <div class="collection-card-type">${card.type}</div>
+                                <div class="collection-card-description">${card.description}</div>
+                            `;
+                            
+                            cardsGrid.appendChild(cardEl);
+                        });
+                    }
+                });
+            }
+            
+            // Render relics tab
+            const relicsGrid = document.getElementById('collection-relics-grid');
+            if (relicsGrid) {
+                relicsGrid.innerHTML = '';
+                
+                // Group relics by tier
+                const tiers = ['common', 'uncommon', 'rare', 'boss'];
+                
+                tiers.forEach(tier => {
+                    const relics = Object.entries(RELICS).filter(([id, relic]) => relic.tier === tier);
+                    
+                    if (relics.length > 0) {
+                        const section = document.createElement('div');
+                        section.style.gridColumn = '1 / -1';
+                        section.style.marginTop = '20px';
+                        section.innerHTML = `<h3 style="color: #f39c12; text-transform: capitalize; margin-bottom: 15px;">${tier} Relics (${relics.length})</h3>`;
+                        relicsGrid.appendChild(section);
+                        
+                        relics.forEach(([relicId, relic]) => {
+                            const relicEl = document.createElement('div');
+                            relicEl.className = `collection-relic ${relic.tier}`;
+                            
+                            relicEl.innerHTML = `
+                                <div class="collection-relic-icon">${relic.icon}</div>
+                                <div class="collection-relic-name">${relic.name}</div>
+                                <div class="collection-relic-tier">${relic.tier}</div>
+                                <div class="collection-relic-desc">${relic.description}</div>
+                            `;
+                            
+                            relicsGrid.appendChild(relicEl);
+                        });
+                    }
+                });
+            }
+        }
     </script>
 </body>
 </html>
