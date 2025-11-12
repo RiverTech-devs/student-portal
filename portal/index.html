@@ -1536,27 +1536,31 @@
       }
 
          async createInactiveStudent(studentData) {
-            const { data, error } = await this.auth.supabase
-                .from('user_profiles')
-                .insert({
-                    id: crypto.randomUUID(), // Generate UUID manually
-                    auth_user_id: null,
-                    email: studentData.email || null,
-                    username: studentData.username,
-                    first_name: studentData.firstName,
-                    last_name: studentData.lastName,
-                    user_type: 'student',
-                    grade_level: studentData.gradeLevel,
-                    account_status: 'inactive',
-                    activation_grade_level: studentData.activationGrade,
-                    can_login: false,
-                    created_at: new Date().toISOString()
-                })
-                .select()
-                .single();
-            
-            return { data, error };
-        }
+          console.log('🔍 Creating inactive student with data:', studentData);
+          
+          const { data, error } = await this.auth.supabase
+              .from('user_profiles')
+              .insert({
+                  id: crypto.randomUUID(), // Generate UUID manually
+                  auth_user_id: null,
+                  email: studentData.email || null,
+                  username: studentData.username,
+                  first_name: studentData.firstName,
+                  last_name: studentData.lastName,
+                  user_type: 'student',
+                  grade_level: studentData.gradeLevel,
+                  account_status: 'inactive',
+                  activation_grade_level: studentData.activationGrade,
+                  can_login: false,
+                  created_at: new Date().toISOString()
+              })
+              .select()
+              .single();
+          
+          console.log('🔍 Create result:', { data, error });
+          
+          return { data, error };
+      }
 
         showCreateInactiveStudentForm() {
             const existingModal = document.getElementById('student-mgmt-modal-overlay');
@@ -1703,33 +1707,92 @@
         }
 
       async handleCreateInactiveStudent(e) {
-          e.preventDefault();
-          
-          const studentData = {
-              firstName: document.getElementById('inactive-firstname').value,
-              lastName: document.getElementById('inactive-lastname').value,
-              username: document.getElementById('inactive-username').value,
-              gradeLevel: document.getElementById('inactive-grade').value,
-              activationGrade: document.getElementById('inactive-activation-grade').value,
-              email: document.getElementById('inactive-email').value || null
-          };
-          
-          try {
-              const result = await this.createInactiveStudent(studentData);
-              
-              if (result.error) {
-                  window.PortalUI.showNotification('Error creating student: ' + result.error.message, 'error');
-                  return;
-              }
-              
-              window.PortalUI.showNotification('✅ Inactive student created successfully!', 'success');
-              document.getElementById('student-management-modal').innerHTML = '';
-              
-          } catch (error) {
-              console.error('Error creating inactive student:', error);
-              window.PortalUI.showNotification('Failed to create student', 'error');
-          }
-      }
+        e.preventDefault();
+        
+        // Get form values
+        const firstName = document.getElementById('inactive-firstname').value.trim();
+        const lastName = document.getElementById('inactive-lastname').value.trim();
+        const username = document.getElementById('inactive-username').value.trim();
+        const gradeLevel = document.getElementById('inactive-grade').value;
+        const activationGrade = document.getElementById('inactive-activation-grade').value;
+        const email = document.getElementById('inactive-email').value.trim() || null;
+        
+        // Debug logging
+        console.log('🔍 Form submission data:', {
+            firstName,
+            lastName,
+            username,
+            gradeLevel,
+            activationGrade,
+            email
+        });
+        
+        // Validation
+        if (!firstName) {
+            window.PortalUI.showNotification('❌ First name is required', 'error');
+            return;
+        }
+        if (!lastName) {
+            window.PortalUI.showNotification('❌ Last name is required', 'error');
+            return;
+        }
+        if (!username) {
+            window.PortalUI.showNotification('❌ Username is required', 'error');
+            return;
+        }
+        if (!gradeLevel) {
+            window.PortalUI.showNotification('❌ Current grade level is required', 'error');
+            return;
+        }
+        if (!activationGrade) {
+            window.PortalUI.showNotification('❌ Activation grade level is required', 'error');
+            return;
+        }
+        
+        const studentData = {
+            firstName,
+            lastName,
+            username,
+            gradeLevel,
+            activationGrade,
+            email
+        };
+        
+        try {
+            const result = await this.createInactiveStudent(studentData);
+            
+            if (result.error) {
+                console.error('Create student error:', result.error);
+                
+                // Check for specific errors
+                if (result.error.code === '23505') {
+                    // Unique constraint violation
+                    const errorMsg = result.error.message;
+                    if (errorMsg.includes('username')) {
+                        window.PortalUI.showNotification('❌ Username already exists. Please choose a different username.', 'error');
+                    } else if (errorMsg.includes('email')) {
+                        window.PortalUI.showNotification('❌ Email already exists. Please use a different email.', 'error');
+                    } else {
+                        window.PortalUI.showNotification('❌ This student already exists in the system.', 'error');
+                    }
+                } else if (result.error.code === '23502') {
+                    // Not-null constraint violation
+                    window.PortalUI.showNotification('❌ Missing required field: ' + result.error.message, 'error');
+                } else {
+                    window.PortalUI.showNotification('❌ Error creating student: ' + result.error.message, 'error');
+                }
+                return;
+            }
+            
+            window.PortalUI.showNotification('✅ Inactive student created successfully!', 'success');
+            const overlay = document.getElementById('student-mgmt-modal-overlay');
+            if (overlay) overlay.remove();
+            
+        } catch (error) {
+            console.error('Error creating inactive student:', error);
+            window.PortalUI.showNotification('❌ Failed to create student: ' + error.message, 'error');
+        }
+    }
 
       async showInactiveStudentsList() {
         const modal = document.getElementById('student-management-modal');
@@ -2205,14 +2268,9 @@
       }
 
       async enrollStudentInClass(classId, studentId, buttonElement) {
-          try {
-              console.log('🔍 === ENROLLMENT DEBUG START ===');
-              console.log('🔍 Class ID:', classId);
-              console.log('🔍 Student ID:', studentId);
-              
+          try {              
               // PREVENT DOUBLE CLICKS
               if (buttonElement && buttonElement.dataset.enrolling === 'true') {
-                  console.log('🔍 BLOCKED: Already processing enrollment');
                   return;
               }
               
@@ -2231,19 +2289,10 @@
                   .eq('student_id', studentId)
                   .maybeSingle();
               
-              console.log('🔍 Existing enrollment:', existing);
-              console.log('🔍 Check error:', checkError);
-              
-              if (checkError) {
-                  console.error('Error checking enrollment:', checkError);
-              }
-              
               if (existing) {
-                  console.log('🔍 Path: Enrollment exists with status:', existing.status);
                   
                   // If enrollment exists
                   if (existing.status === 'active') {
-                      console.log('🔍 Action: Already active, showing warning');
                       // Already active
                       window.PortalUI.showNotification('Student is already enrolled in this class', 'warning');
                       if (buttonElement) {
@@ -2253,7 +2302,6 @@
                       }
                       return;
                   } else {
-                      console.log('🔍 Action: Reactivating enrollment');
                       // Reactivate the removed/inactive enrollment
                       const { error: updateError } = await this.auth.supabase
                           .from('class_enrollments')
@@ -2264,15 +2312,12 @@
                           })
                           .eq('id', existing.id);
                       
-                      console.log('🔍 Update error:', updateError);
                       
                       if (updateError) throw updateError;
                       
-                      console.log('🔍 Success: Re-enrolled');
                       window.PortalUI.showNotification('✅ Student re-enrolled successfully!', 'success');
                   }
               } else {
-                  console.log('🔍 Path: No existing enrollment, creating new');
                   
                   // No enrollment exists, create new one
                   const { error: insertError } = await this.auth.supabase
@@ -2284,12 +2329,9 @@
                           enrolled_at: new Date().toISOString()
                       });
                   
-                  console.log('🔍 Insert error:', insertError);
-                  
                   if (insertError) {
                       // Check if it's a duplicate key error (race condition)
                       if (insertError.code === '23505') {
-                          console.log('🔍 Conflict: Duplicate key detected (409)');
                           window.PortalUI.showNotification('✅ Student enrolled successfully! (detected race condition)', 'success');
                           if (buttonElement) {
                               buttonElement.textContent = '✓ Added';
@@ -2302,11 +2344,9 @@
                       throw insertError;
                   }
                   
-                  console.log('🔍 Success: New enrollment created');
                   window.PortalUI.showNotification('✅ Student enrolled successfully!', 'success');
               }
               
-              console.log('🔍 Action: Updating button to success state');
               // Update button to show success
               if (buttonElement) {
                   buttonElement.textContent = '✓ Added';
@@ -2315,10 +2355,8 @@
                   buttonElement.dataset.enrolling = 'false';
               }
               
-              console.log('🔍 === ENROLLMENT DEBUG END ===');
               
           } catch (error) {
-              console.error('🔍 CATCH BLOCK:', error);
               window.PortalUI.showNotification('Failed to enroll student: ' + error.message, 'error');
               
               if (buttonElement) {
@@ -2898,9 +2936,6 @@
       async leaveClass(classId, enrollmentId) {
         const classData = this.classes.find(c => c.id === classId);
         const className = classData ? classData.name : 'this class';
-        
-        // Debug log
-        console.log('Leaving class:', classId, 'with enrollment:', enrollmentId);
         
         if (!enrollmentId) {
           this.showNotification('Error: Enrollment ID not found. Please refresh and try again.', 'error');
