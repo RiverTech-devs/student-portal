@@ -1535,13 +1535,13 @@
         }
       }
 
-          async createInactiveStudent(studentData) {
+         async createInactiveStudent(studentData) {
             const { data, error } = await this.auth.supabase
                 .from('user_profiles')
                 .insert({
-                    // Remove id field - let database auto-generate it
-                    auth_user_id: null, // No auth user yet
-                    email: studentData.email || null, // Can be null for inactive
+                    id: crypto.randomUUID(), // Generate UUID manually
+                    auth_user_id: null,
+                    email: studentData.email || null,
                     username: studentData.username,
                     first_name: studentData.firstName,
                     last_name: studentData.lastName,
@@ -1552,7 +1552,7 @@
                     can_login: false,
                     created_at: new Date().toISOString()
                 })
-                .select() // Add select to get the created record
+                .select()
                 .single();
             
             return { data, error };
@@ -2043,11 +2043,17 @@
               const enrolledIds = enrolled?.map(e => e.student_id) || [];
               
               // Get all students (both active and inactive)
-              const { data: students, error } = await this.auth.supabase
+              const { data: students, error: enrollError } = await this.auth.supabase
                   .from('user_profiles')
                   .select('*')
                   .eq('user_type', 'student')
                   .order('last_name', { ascending: true });
+
+            // DEBUG LOGGING
+            console.log('Class ID:', classId);
+            console.log('Enrolled query error:', enrollError);
+            console.log('Enrolled students:', enrolled);
+            console.log('Current user ID:', this.userInfo?.user?.id);
               
               const listDiv = document.getElementById('available-students-list');
               
@@ -2128,37 +2134,65 @@
                 buttonElement.textContent = 'Adding...';
             }
             
-            // Check if already enrolled - FIX: Check array length, not just truthiness
+            // Check if enrollment exists (ANY status, including 'removed')
             const { data: existing } = await this.auth.supabase
                 .from('class_enrollments')
-                .select('id')
+                .select('id, status')
                 .eq('class_id', classId)
-                .eq('student_id', studentId);
+                .eq('student_id', studentId)
+                .maybeSingle(); // Use maybeSingle() instead of checking array length
             
-            if (existing && existing.length > 0) {
-                window.PortalUI.showNotification('Student is already enrolled in this class', 'warning');
-                if (buttonElement) {
-                    buttonElement.disabled = false;
-                    buttonElement.textContent = 'Add to Class';
+            if (existing) {
+                // If enrollment exists
+                if (existing.status === 'active') {
+                    // Already active
+                    window.PortalUI.showNotification('Student is already enrolled in this class', 'warning');
+                    if (buttonElement) {
+                        buttonElement.textContent = '✓ Already Enrolled';
+                        buttonElement.disabled = true;
+                    }
+                    return;
+                } else {
+                    // Reactivate the removed enrollment
+                    const { error: updateError } = await this.auth.supabase
+                        .from('class_enrollments')
+                        .update({ 
+                            status: 'active',
+                            enrolled_at: new Date().toISOString(),
+                            updated_at: new Date().toISOString()
+                        })
+                        .eq('id', existing.id);
+                    
+                    if (updateError) throw updateError;
+                    
+                    window.PortalUI.showNotification('✅ Student re-enrolled successfully!', 'success');
                 }
-                return;
+            } else {
+                // No enrollment exists, create new one
+                const { error: insertError } = await this.auth.supabase
+                    .from('class_enrollments')
+                    .insert({
+                        class_id: classId,
+                        student_id: studentId,
+                        status: 'active',
+                        enrolled_at: new Date().toISOString()
+                    });
+                
+                if (insertError) {
+                    // Check if it's a duplicate key error (race condition)
+                    if (insertError.code === '23505') {
+                        window.PortalUI.showNotification('Student is already enrolled in this class', 'warning');
+                        if (buttonElement) {
+                            buttonElement.textContent = '✓ Already Enrolled';
+                            buttonElement.disabled = true;
+                        }
+                        return;
+                    }
+                    throw insertError;
+                }
+                
+                window.PortalUI.showNotification('✅ Student enrolled successfully!', 'success');
             }
-            
-            // Enroll student
-            const { error } = await this.auth.supabase
-                .from('class_enrollments')
-                .insert({
-                    class_id: classId,
-                    student_id: studentId,
-                    status: 'active',
-                    enrolled_at: new Date().toISOString()
-                });
-            
-            if (error) {
-                throw error;
-            }
-            
-            window.PortalUI.showNotification('✅ Student enrolled successfully!', 'success');
             
             // Update button to show success
             if (buttonElement) {
