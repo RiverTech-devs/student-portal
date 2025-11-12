@@ -1648,6 +1648,20 @@
                 transform: translate(-50%, -150%);
             }
         }
+
+        @keyframes feedback-float {
+            0% {
+                opacity: 1;
+                transform: translate(-50%, -50%) scale(1);
+            }
+            50% {
+                transform: translate(-50%, -70%) scale(1.1);
+            }
+            100% {
+                opacity: 0;
+                transform: translate(-50%, -90%) scale(0.8);
+            }
+        }
         
         .damage-flash {
             animation: damage-flash 0.3s;
@@ -2756,13 +2770,17 @@
                         ">
                             ⌫ Clear
                         </button>
-                        <button class="btn" id="evaluate-equation-btn" style="
-                            padding: 12px 30px;
-                            background: linear-gradient(135deg, #2ecc71, #27ae60);
-                            font-size: 18px;
+                        <div id="combo-indicator" style="
+                            padding: 12px 20px;
+                            background: rgba(46, 204, 113, 0.3);
+                            border: 2px solid #2ecc71;
+                            border-radius: 8px;
+                            color: #2ecc71;
+                            font-weight: bold;
+                            display: none;
                         ">
-                            = Evaluate
-                        </button>
+                            Combo Bonus: +0%
+                        </div>
                     </div>
                 </div>
                 
@@ -3030,14 +3048,14 @@
             },
             divisionDot: {
                 name: "Division Dot",
-                hp: 20,
-                maxHp: 20,
+                hp: 40,
+                maxHp: 40,
                 sprite: "•",
                 tier: "basic",
+                canSplit: true,
                 patterns: [
-                    { intent: "attack", value: 3 },
-                    { intent: "attack", value: 3 },
-                    { intent: "attack", value: 6 }
+                    { intent: "attack", value: 5 },
+                    { intent: "split", value: 0 }  // Special split action
                 ]
             },
 
@@ -5423,6 +5441,9 @@
                             utility: '#f39c12'
                         };
                         equationDisplay.style.color = colors[this.currentMode];
+                        
+                        // Clear equation when switching modes
+                        this.clearEquation();
                     };
                 });
                 
@@ -5432,14 +5453,9 @@
                     this.selectedTarget = parseInt(e.target.value);
                 };
                 
-                // Clear button
+                // Clear button - now just clears without penalty
                 document.getElementById('clear-equation-btn').onclick = () => {
                     this.clearEquation();
-                };
-                
-                // Evaluate button
-                document.getElementById('evaluate-equation-btn').onclick = () => {
-                    this.evaluateEquation();
                 };
                 
                 // Initialize target dropdown
@@ -5464,12 +5480,14 @@
             updateEquationDisplay() {
                 const displayEl = document.getElementById('equation-display');
                 const resultEl = document.getElementById('equation-result');
+                const comboIndicator = document.getElementById('combo-indicator');
                 
                 if (!displayEl || !resultEl) return;
                 
                 if (this.currentEquation.length === 0) {
                     displayEl.textContent = '_';
                     resultEl.textContent = '';
+                    if (comboIndicator) comboIndicator.style.display = 'none';
                     return;
                 }
                 
@@ -5490,11 +5508,38 @@
                 
                 displayEl.textContent = displayStr.trim();
                 
-                // Try to preview result (without executing)
+                // Calculate and show combo bonus
+                const operatorCount = this.currentEquation.filter(cardId => {
+                    const card = CARD_DATABASE[cardId];
+                    return card.type === 'operator';
+                }).length;
+                
+                const comboBonus = this.getComboBonus(operatorCount);
+                
+                if (comboIndicator) {
+                    if (operatorCount > 0) {
+                        comboIndicator.style.display = 'block';
+                        comboIndicator.textContent = `Combo Bonus: +${Math.round(comboBonus * 100)}%`;
+                    } else {
+                        comboIndicator.style.display = 'none';
+                    }
+                }
+                
+                // Try to preview result
                 try {
-                    const result = this.calculateEquation(this.currentEquation);
-                    if (result !== null) {
-                        resultEl.textContent = `Preview: ${result}`;
+                    const baseResult = this.calculateEquation(this.currentEquation);
+                    if (baseResult !== null && !isNaN(baseResult)) {
+                        const finalResult = Math.floor(baseResult * (1 + comboBonus));
+                        
+                        if (operatorCount > 0) {
+                            resultEl.innerHTML = `
+                                <span style="color: #888;">${Math.floor(baseResult)}</span>
+                                <span style="color: #2ecc71; margin: 0 5px;">→</span>
+                                <span style="color: #2ecc71; font-weight: bold; font-size: 20px;">${finalResult}</span>
+                            `;
+                        } else {
+                            resultEl.innerHTML = `<span style="color: #888;">Result: ${Math.floor(baseResult)}</span>`;
+                        }
                     } else {
                         resultEl.textContent = '';
                     }
@@ -5503,15 +5548,35 @@
                 }
             }
             
+            getComboBonus(operatorCount) {
+                if (operatorCount === 0) return 0;      // No bonus
+                if (operatorCount === 1) return 0.25;   // +25%
+                if (operatorCount === 2) return 0.5;    // +50%
+                return 1.0;                             // +100% for 3+
+            }
+            
             clearEquation() {
                 this.currentEquation = [];
                 this.updateEquationDisplay();
+                this.renderHand();
             }
 
             setEnemyIntents() {
                 this.enemies.forEach(enemy => {
                     const pattern = enemy.patterns[enemy.patternIndex % enemy.patterns.length];
-                    enemy.nextIntent = pattern;
+                    
+                    // Special handling for split intent - check if enemy can actually split
+                    if (pattern.intent === 'split') {
+                        if (enemy.hp <= 1) {
+                            // Can't split at 1 HP or less, attack instead
+                            enemy.nextIntent = { intent: "attack", value: 5 };
+                        } else {
+                            enemy.nextIntent = pattern;
+                        }
+                    } else {
+                        enemy.nextIntent = pattern;
+                    }
+                    
                     enemy.patternIndex++;
                 });
             }
@@ -5572,9 +5637,10 @@
                         defend: '🛡️',
                         buff: '💪',
                         debuff: '💀',
-                        special: '💥'
+                        special: '💥',
+                        split: '🔀'  // Add split icon
                     }[enemy.nextIntent.intent] || '❓';
-
+                    
                     // Build intent text
                     let intentText = '';
                     if (enemy.nextIntent.intent === 'attack') {
@@ -5590,6 +5656,8 @@
                         intentText = `${enemy.nextIntent.value} ${enemy.nextIntent.debuffName}`;
                     } else if (enemy.nextIntent.intent === 'special') {
                         intentText = enemy.nextIntent.name || 'Special';
+                    } else if (enemy.nextIntent.intent === 'split') {
+                        intentText = 'Split in two!';
                     }
 
                     enemyEl.innerHTML = `
@@ -5825,6 +5893,163 @@
                 this.updateEquationDisplay();
                 this.renderHand();
                 this.updateUI();
+                
+                // AUTO-EVALUATE: Check if equation is complete
+                // Complete = ends with a number (after potentially having operators)
+                if (card.type === 'number' && this.isEquationComplete()) {
+                    // Small delay for visual feedback
+                    setTimeout(() => {
+                        this.autoEvaluateEquation();
+                    }, 300);
+                }
+            }
+            
+            isEquationComplete() {
+                if (this.currentEquation.length === 0) return false;
+                
+                const lastCard = CARD_DATABASE[this.currentEquation[this.currentEquation.length - 1]];
+                
+                // Equation is complete if it ends with a number
+                // and has balanced parentheses (if any)
+                if (lastCard.type !== 'number') return false;
+                
+                // Check parentheses balance
+                let openCount = 0;
+                for (const cardId of this.currentEquation) {
+                    const card = CARD_DATABASE[cardId];
+                    if (card.type === 'grouping') {
+                        if (card.group === 'open') openCount++;
+                        else if (card.group === 'close') openCount--;
+                    }
+                }
+                
+                // Complete if parentheses are balanced
+                return openCount === 0;
+            }
+            
+            autoEvaluateEquation() {
+                if (this.currentEquation.length === 0) return;
+            
+                try {
+                    const baseResult = this.calculateEquation(this.currentEquation);
+                    
+                    if (baseResult === null || isNaN(baseResult)) {
+                        alert('Invalid equation! Clearing...');
+                        this.clearEquation();
+                        return;
+                    }
+            
+                    // Calculate combo bonus
+                    const operatorCount = this.currentEquation.filter(cardId => {
+                        const card = CARD_DATABASE[cardId];
+                        return card.type === 'operator';
+                    }).length;
+                    
+                    const comboBonus = this.getComboBonus(operatorCount);
+                    const finalResult = Math.floor(baseResult * (1 + comboBonus));
+            
+                    console.log(`Equation evaluated: ${baseResult} → ${finalResult} (${operatorCount} operators, +${Math.round(comboBonus * 100)}% bonus)`);
+            
+                    // Check for division in attack mode
+                    const hasDivision = this.currentEquation.some(cardId => {
+                        const card = CARD_DATABASE[cardId];
+                        return card.type === 'operator' && card.operator === '÷';
+                    });
+            
+                    // Apply result based on mode
+                    if (this.currentMode === 'attack') {
+                        if (hasDivision) {
+                            // AoE damage - hit all enemies
+                            this.enemies.forEach((enemy, index) => {
+                                this.dealDamageToEnemy(enemy, finalResult, index);
+                            });
+                            
+                            this.flashScreen('red');
+                            this.shakeScreen();
+                            
+                            // Show feedback
+                            this.showEvaluationFeedback(`${finalResult} AoE Damage!`, operatorCount);
+                        } else {
+                            // Single target damage
+                            const targetEnemy = this.enemies[this.selectedTarget];
+                            if (targetEnemy) {
+                                this.dealDamageToEnemy(targetEnemy, finalResult, this.selectedTarget);
+                                this.flashScreen('red');
+                                this.shakeScreen();
+                                
+                                this.showEvaluationFeedback(`${finalResult} Damage!`, operatorCount);
+                            }
+                        }
+                        
+                        // Check for enemy deaths
+                        this.enemies = this.enemies.filter(enemy => enemy.hp > 0);
+                        if (this.enemies.length === 0) {
+                            this.winCombat();
+                            return;
+                        }
+                        
+                        // Update target dropdown if enemies died
+                        this.updateTargetDropdown();
+                        
+                    } else if (this.currentMode === 'defend') {
+                        this.gainBlock(finalResult);
+                        this.showEvaluationFeedback(`${finalResult} Block!`, operatorCount);
+                        
+                    } else if (this.currentMode === 'utility') {
+                        this.applyUtilityEffect(finalResult);
+                        this.showEvaluationFeedback(`Utility: ${finalResult}`, operatorCount);
+                    }
+            
+                    // Apply special number effects (only if equation has operators)
+                    if (operatorCount > 0) {
+                        this.applySpecialNumberEffects(finalResult);
+                    }
+            
+                    // Clear equation after successful evaluation
+                    setTimeout(() => {
+                        this.clearEquation();
+                    }, 1000);
+                    
+                    this.renderCombat();
+                    this.updateUI();
+                    
+                } catch (error) {
+                    console.error('Equation evaluation error:', error);
+                    alert('Error evaluating equation: ' + error.message);
+                    this.clearEquation();
+                }
+            }
+            
+            showEvaluationFeedback(message, operatorCount) {
+                const feedback = document.createElement('div');
+                feedback.style.cssText = `
+                    position: fixed;
+                    top: 30%;
+                    left: 50%;
+                    transform: translate(-50%, -50%);
+                    background: rgba(0, 0, 0, 0.9);
+                    border: 3px solid #2ecc71;
+                    border-radius: 15px;
+                    padding: 20px 40px;
+                    font-size: 32px;
+                    font-weight: bold;
+                    color: #2ecc71;
+                    z-index: 10000;
+                    pointer-events: none;
+                    animation: feedback-float 1s ease-out forwards;
+                `;
+                
+                let displayText = message;
+                if (operatorCount > 0) {
+                    displayText += ` <span style="font-size: 20px; color: #f39c12;">(+${Math.round(this.getComboBonus(operatorCount) * 100)}% combo!)</span>`;
+                }
+                
+                feedback.innerHTML = displayText;
+                document.body.appendChild(feedback);
+                
+                setTimeout(() => {
+                    feedback.remove();
+                }, 1000);
             }
             
             canPlayCard(card) {
@@ -5867,83 +6092,7 @@
                 }
             
                 return false;
-            }
-
-            evaluateEquation() {
-                if (this.currentEquation.length === 0) {
-                    alert('Build an equation first!');
-                    return;
-                }
-            
-                try {
-                    const result = this.calculateEquation(this.currentEquation);
-                    
-                    if (result === null || isNaN(result)) {
-                        alert('Invalid equation! Check your syntax.');
-                        return;
-                    }
-            
-                    // Round result to integer
-                    const finalResult = Math.floor(result);
-            
-                    // Check for division in attack mode
-                    const hasDivision = this.currentEquation.some(cardId => {
-                        const card = CARD_DATABASE[cardId];
-                        return card.type === 'operator' && card.operator === '÷';
-                    });
-            
-                    // Apply result based on mode
-                    if (this.currentMode === 'attack') {
-                        if (hasDivision) {
-                            // AoE damage - hit all enemies
-                            this.enemies.forEach((enemy, index) => {
-                                this.dealDamageToEnemy(enemy, finalResult, index);
-                            });
-                            
-                            // Visual feedback
-                            this.flashScreen('red');
-                            this.shakeScreen();
-                        } else {
-                            // Single target damage
-                            const targetEnemy = this.enemies[this.selectedTarget];
-                            if (targetEnemy) {
-                                this.dealDamageToEnemy(targetEnemy, finalResult, this.selectedTarget);
-                                this.flashScreen('red');
-                                this.shakeScreen();
-                            }
-                        }
-                        
-                        // Check for enemy deaths
-                        this.enemies = this.enemies.filter(enemy => enemy.hp > 0);
-                        if (this.enemies.length === 0) {
-                            this.winCombat();
-                            return;
-                        }
-                        
-                        // Update target dropdown if enemies died
-                        this.updateTargetDropdown();
-                        
-                    } else if (this.currentMode === 'defend') {
-                        this.gainBlock(finalResult);
-                        
-                    } else if (this.currentMode === 'utility') {
-                        // Utility effects based on result value
-                        this.applyUtilityEffect(finalResult);
-                    }
-            
-                    // Apply special number effects
-                    this.applySpecialNumberEffects(finalResult);
-            
-                    // Clear equation
-                    this.clearEquation();
-                    this.renderCombat();
-                    this.updateUI();
-                    
-                } catch (error) {
-                    console.error('Equation evaluation error:', error);
-                    alert('Error evaluating equation: ' + error.message);
-                }
-            }
+            }s
             
             calculateEquation(equationCards) {
                 // Convert cards to mathematical expression
@@ -6497,16 +6646,12 @@
             
                         // Visual feedback based on damage type
                         if (damageToHealth > 0) {
-                            // Red flash - took damage to HP
                             this.flashScreen('red');
-                            // Shake the screen
                             this.shakeScreen();
                         } else if (damageBlocked > 0) {
-                            // Gray/blue flash - fully blocked
                             this.flashScreen('gray');
                         }
                         
-                        // Update UI to show damage immediately
                         this.updateUI();
             
                         // Apply debuff if attack has debuff attached
@@ -6519,11 +6664,66 @@
                     } else if (intent.intent === 'buff') {
                         enemy.buffs.push({ type: 'strength', value: intent.value });
                     } else if (intent.intent === 'debuff') {
-                        // Pure debuff move
                         this.applyDebuff(intent.debuffType, intent.value);
                         this.renderPlayerDebuffs();
+                    } else if (intent.intent === 'split') {
+                        // SPLIT MECHANIC
+                        if (enemy.hp > 1) {
+                            const newHp = Math.floor(enemy.hp / 2);
+                            
+                            // Update original enemy HP
+                            enemy.hp = newHp;
+                            enemy.maxHp = newHp; // Also update max HP so it shows correctly
+                            
+                            // Create new enemy (copy of original)
+                            const newEnemy = {
+                                ...ENEMY_DATABASE['divisionDot'],
+                                hp: newHp,
+                                maxHp: newHp,
+                                block: 0,
+                                patternIndex: 0,
+                                nextIntent: null,
+                                buffs: [],
+                                persistentBlock: false
+                            };
+                            
+                            // Insert new enemy right after the current one
+                            this.enemies.splice(i + 1, 0, newEnemy);
+                            
+                            // Visual feedback for split
+                            this.flashScreen('blue');
+                            
+                            // Show split animation
+                            const splitFeedback = document.createElement('div');
+                            splitFeedback.style.cssText = `
+                                position: fixed;
+                                top: 30%;
+                                left: 50%;
+                                transform: translate(-50%, -50%);
+                                background: rgba(74, 144, 226, 0.95);
+                                border: 3px solid #3498db;
+                                border-radius: 15px;
+                                padding: 20px 40px;
+                                font-size: 28px;
+                                font-weight: bold;
+                                color: #fff;
+                                z-index: 10000;
+                                pointer-events: none;
+                                animation: feedback-float 1s ease-out forwards;
+                            `;
+                            splitFeedback.textContent = `${enemy.name} split into two!`;
+                            document.body.appendChild(splitFeedback);
+                            
+                            setTimeout(() => {
+                                splitFeedback.remove();
+                            }, 1000);
+                            
+                            console.log(`${enemy.name} split! Both now have ${newHp} HP`);
+                            
+                            // Update target dropdown since we have more enemies
+                            this.updateTargetDropdown();
+                        }
                     } else if (intent.intent === 'special') {
-                        // Special attacks can have multiple debuffs
                         let damage = intent.value;
                         
                         if (this.player.debuffs.exposed > 0) {
@@ -6538,7 +6738,6 @@
             
                         console.log(`Enemy ${enemy.name} used special attack for ${damage} damage (${damageBlocked} blocked, ${damageToHealth} to HP). Player HP: ${this.player.hp}`);
             
-                        // Visual feedback
                         if (damageToHealth > 0) {
                             this.flashScreen('red');
                             this.shakeScreen();
@@ -6575,7 +6774,7 @@
                         console.log('Player died during enemy turn');
                         await this.wait(800);
                         this.gameOver();
-                        return; // Stop processing more enemies
+                        return;
                     }
                 }
             
