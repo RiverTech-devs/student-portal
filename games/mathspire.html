@@ -477,6 +477,21 @@
             background: rgba(192, 57, 43, 0.3);
             animation: pulse 2s infinite;
         }
+
+        @keyframes flash-blue {
+            0% { opacity: 1; }
+            100% { opacity: 0; }
+        }
+        
+        @keyframes flash-red {
+            0% { opacity: 1; }
+            100% { opacity: 0; }
+        }
+        
+        @keyframes flash-gray {
+            0% { opacity: 1; }
+            100% { opacity: 0; }
+        }
         
         @keyframes pulse {
             0%, 100% { box-shadow: 0 0 20px rgba(192, 57, 43, 0.6); }
@@ -1609,6 +1624,12 @@
         @keyframes damage-flash {
             0%, 100% { background-color: transparent; }
             50% { background-color: rgba(231, 76, 60, 0.5); }
+        }
+
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            10%, 30%, 50%, 70%, 90% { transform: translateX(-5px); }
+            20%, 40%, 60%, 80% { transform: translateX(5px); }
         }
         
         .damage-flash {
@@ -5929,7 +5950,40 @@
                 }
                 
                 this.player.block += finalBlock;
+                
+                // Blue flash effect for gaining block
+                this.flashScreen('blue');
+                
                 this.updateUI();
+            }
+            
+            flashScreen(color) {
+                const flash = document.createElement('div');
+                flash.style.cssText = `
+                    position: fixed;
+                    top: 0;
+                    left: 0;
+                    width: 100%;
+                    height: 100%;
+                    pointer-events: none;
+                    z-index: 9999;
+                    animation: flash-${color} 0.3s ease-out;
+                `;
+                
+                // Add color-specific styles
+                if (color === 'blue') {
+                    flash.style.background = 'rgba(52, 152, 219, 0.5)';
+                } else if (color === 'red') {
+                    flash.style.background = 'rgba(231, 76, 60, 0.6)';
+                } else if (color === 'gray') {
+                    flash.style.background = 'rgba(149, 165, 166, 0.4)';
+                }
+                
+                document.body.appendChild(flash);
+                
+                setTimeout(() => {
+                    flash.remove();
+                }, 300);
             }
 
             addModifier(type, value) {
@@ -5941,7 +5995,7 @@
                 }
             }
 
-            endTurn() {
+            async endTurn() {
                 // Apply Pain curse damage for each Pain in hand
                 const painCount = this.hand.filter(cardId => cardId === 'pain').length;
                 if (painCount > 0) {
@@ -5951,10 +6005,15 @@
                 // Discard hand
                 this.discardPile.push(...this.hand);
                 this.hand = [];
-
-                // Enemy turn
-                this.enemyTurn();
-
+            
+                // Enemy turn - now async
+                await this.enemyTurn();
+                
+                // Only continue if player is still alive
+                if (this.player.hp <= 0) {
+                    return;
+                }
+            
                 // Start new turn
                 let maxEnergy = this.player.maxEnergy;
                 
@@ -5968,7 +6027,7 @@
                 this.turnCount++;
                 this.attacksPlayedThisTurn = 0;
                 this.hasPlayedCardThisTurn = false; // Reset for Recursive Ring relic
-
+            
                 // Decay debuffs
                 Object.keys(this.player.debuffs).forEach(debuffType => {
                     this.player.debuffs[debuffType]--;
@@ -5976,7 +6035,7 @@
                         delete this.player.debuffs[debuffType];
                     }
                 });
-
+            
                 // Apply relic effects
                 if (this.hasRelic('calculatorWatch') && this.turnCount % 5 === 0) {
                     this.player.energy++;
@@ -5985,7 +6044,7 @@
                 if (this.hasRelic('fractionPendant')) {
                     this.player.block += this.enemies.length;
                 }
-
+            
                 // Decay turn-based modifiers
                 for (let key in this.modifiers) {
                     if (this.modifiers[key] > 0 && key !== 'remainderBoost') {
@@ -5995,7 +6054,7 @@
                         }
                     }
                 }
-
+            
                 this.drawCards(5);
                 
                 // Study Guide relic - draw 1 additional card
@@ -6008,9 +6067,28 @@
                 this.updateUI();
             }
 
-            enemyTurn() {
-                this.enemies.forEach(enemy => {
+            async enemyTurn() {
+                // Disable end turn button during enemy turn
+                const endTurnBtn = document.querySelector('.btn-end-turn');
+                if (endTurnBtn) {
+                    endTurnBtn.disabled = true;
+                    endTurnBtn.style.opacity = '0.5';
+                }
+                
+                // Process each enemy sequentially (left to right)
+                for (let i = 0; i < this.enemies.length; i++) {
+                    const enemy = this.enemies[i];
                     const intent = enemy.nextIntent;
+                    
+                    // Highlight the attacking enemy
+                    const enemyElements = document.querySelectorAll('.enemy');
+                    if (enemyElements[i]) {
+                        enemyElements[i].style.boxShadow = '0 0 30px rgba(231, 76, 60, 1)';
+                        enemyElements[i].style.transform = 'scale(1.1)';
+                    }
+                    
+                    // Wait a moment to show which enemy is acting
+                    await this.wait(400);
                     
                     if (intent.intent === 'attack') {
                         let damage = intent.value;
@@ -6020,19 +6098,39 @@
                             damage = Math.floor(damage / 2);
                             this.modifiers.halfDamage--;
                         }
-
+            
                         // Apply Exposed debuff - player takes 50% more damage
                         if (this.player.debuffs.exposed > 0) {
                             damage = Math.floor(damage * 1.5);
                         }
-
-                        let finalDamage = Math.max(0, damage - this.player.block);
+            
+                        // Calculate damage blocked vs actual damage taken
+                        const damageBlocked = Math.min(damage, this.player.block);
+                        const damageToHealth = Math.max(0, damage - this.player.block);
+                        
                         this.player.block = Math.max(0, this.player.block - damage);
-                        this.player.hp = Math.max(0, this.player.hp - finalDamage);
-
+                        this.player.hp = Math.max(0, this.player.hp - damageToHealth);
+            
+                        console.log(`Enemy ${enemy.name} dealt ${damage} damage (${damageBlocked} blocked, ${damageToHealth} to HP). Player HP: ${this.player.hp}`);
+            
+                        // Visual feedback based on damage type
+                        if (damageToHealth > 0) {
+                            // Red flash - took damage to HP
+                            this.flashScreen('red');
+                            // Shake the screen
+                            this.shakeScreen();
+                        } else if (damageBlocked > 0) {
+                            // Gray/blue flash - fully blocked
+                            this.flashScreen('gray');
+                        }
+                        
+                        // Update UI to show damage immediately
+                        this.updateUI();
+            
                         // Apply debuff if attack has debuff attached
                         if (intent.debuff) {
                             this.applyDebuff(intent.debuff, intent.debuffStacks);
+                            this.renderPlayerDebuffs();
                         }
                     } else if (intent.intent === 'defend') {
                         enemy.block += intent.value;
@@ -6041,6 +6139,7 @@
                     } else if (intent.intent === 'debuff') {
                         // Pure debuff move
                         this.applyDebuff(intent.debuffType, intent.value);
+                        this.renderPlayerDebuffs();
                     } else if (intent.intent === 'special') {
                         // Special attacks can have multiple debuffs
                         let damage = intent.value;
@@ -6048,23 +6147,75 @@
                         if (this.player.debuffs.exposed > 0) {
                             damage = Math.floor(damage * 1.5);
                         }
-
-                        let finalDamage = Math.max(0, damage - this.player.block);
+            
+                        const damageBlocked = Math.min(damage, this.player.block);
+                        const damageToHealth = Math.max(0, damage - this.player.block);
+                        
                         this.player.block = Math.max(0, this.player.block - damage);
-                        this.player.hp = Math.max(0, this.player.hp - finalDamage);
-
+                        this.player.hp = Math.max(0, this.player.hp - damageToHealth);
+            
+                        console.log(`Enemy ${enemy.name} used special attack for ${damage} damage (${damageBlocked} blocked, ${damageToHealth} to HP). Player HP: ${this.player.hp}`);
+            
+                        // Visual feedback
+                        if (damageToHealth > 0) {
+                            this.flashScreen('red');
+                            this.shakeScreen();
+                        } else if (damageBlocked > 0) {
+                            this.flashScreen('gray');
+                        }
+                        
+                        this.updateUI();
+            
                         if (intent.debuff) {
                             this.applyDebuff(intent.debuff, intent.debuffStacks);
+                            this.renderPlayerDebuffs();
                         }
                         if (intent.additionalDebuff) {
                             this.applyDebuff(intent.additionalDebuff, intent.additionalStacks);
+                            this.renderPlayerDebuffs();
                         }
                     }
-                });
-
-                // Check player death
-                if (this.player.hp <= 0) {
-                    this.gameOver();
+                    
+                    // Remove highlight from enemy
+                    if (enemyElements[i]) {
+                        enemyElements[i].style.boxShadow = '';
+                        enemyElements[i].style.transform = '';
+                    }
+                    
+                    // Wait between enemy attacks
+                    await this.wait(600);
+                    
+                    // Update combat display after each enemy
+                    this.renderCombat();
+                    
+                    // Check if player died
+                    if (this.player.hp <= 0) {
+                        console.log('Player died during enemy turn');
+                        await this.wait(800);
+                        this.gameOver();
+                        return; // Stop processing more enemies
+                    }
+                }
+            
+                // Re-enable end turn button
+                if (endTurnBtn) {
+                    endTurnBtn.disabled = false;
+                    endTurnBtn.style.opacity = '1';
+                }
+            }
+            
+            // Helper function to wait/delay
+            wait(ms) {
+                return new Promise(resolve => setTimeout(resolve, ms));
+            }
+            
+            shakeScreen() {
+                const container = document.getElementById('game-container');
+                if (container) {
+                    container.style.animation = 'shake 0.3s ease-in-out';
+                    setTimeout(() => {
+                        container.style.animation = '';
+                    }, 300);
                 }
             }
 
@@ -6668,18 +6819,11 @@
                 const index = this.deck.indexOf(cardId);
                 
                 if (index > -1) {
-                    // Create upgraded version (simple: add + to name and improve stats)
+                    // Create upgraded version with ACTUAL improved effect
                     const upgradedId = cardId + '+';
                     
-                    // If upgraded version doesn't exist in database, create it dynamically
-                    if (!CARD_DATABASE[upgradedId]) {
-                        CARD_DATABASE[upgradedId] = {
-                            ...card,
-                            name: card.name + '+',
-                            description: this.getUpgradedDescription(card),
-                            upgraded: true
-                        };
-                    }
+                    // Create upgraded card with improved effect function
+                    CARD_DATABASE[upgradedId] = this.createUpgradedCard(card, cardId);
                     
                     // Replace in deck
                     this.deck[index] = upgradedId;
@@ -6689,6 +6833,150 @@
                     document.body.removeChild(modal);
                     this.proceedAfterReward();
                 }
+            }
+            
+            createUpgradedCard(baseCard, baseId) {
+                const upgraded = {
+                    ...baseCard,
+                    name: baseCard.name + '+',
+                    upgraded: true
+                };
+                
+                // Improve description and effect based on card type and specific card
+                if (baseCard.type === 'attack') {
+                    // Increase damage in description
+                    upgraded.description = baseCard.description.replace(/(\d+) damage/gi, (match, num) => {
+                        return (parseInt(num) + 3) + ' damage';
+                    });
+                    
+                    // Create improved effect function
+                    if (baseId === 'strike') {
+                        upgraded.effect = (game) => {
+                            game.dealDamage(9); // Was 6, now 9
+                        };
+                    } else if (baseId === 'powerStrike') {
+                        upgraded.effect = (game) => {
+                            game.dealDamage(13); // Was 10, now 13
+                        };
+                    } else if (baseId === 'cumulativeStrike') {
+                        upgraded.effect = (game) => {
+                            let damage = 7 + (game.attacksPlayedThisTurn * 2); // Was 4, now 7
+                            game.dealDamage(damage);
+                            game.attacksPlayedThisTurn++;
+                        };
+                    } else if (baseId === 'overflow') {
+                        upgraded.effect = baseCard.effect; // Doesn't need damage boost
+                    } else if (baseId === 'evenSplit') {
+                        upgraded.effect = (game) => {
+                            const damagePerEnemy = Math.ceil(11 / game.enemies.length); // Was 8, now 11
+                            game.enemies.forEach(enemy => {
+                                game.dealDamageToEnemy(enemy, damagePerEnemy);
+                            });
+                        };
+                    } else if (baseId === 'equationBurst') {
+                        upgraded.effect = (game) => {
+                            for (let i = 0; i < 3; i++) {
+                                game.dealDamage(10); // Was 7, now 10
+                            }
+                        };
+                    } else {
+                        // Generic attack upgrade
+                        upgraded.effect = (game) => {
+                            game.dealDamage(parseInt(baseCard.description.match(/\d+/)[0]) + 3);
+                        };
+                    }
+                } else if (baseCard.type === 'skill') {
+                    // Increase block in description
+                    upgraded.description = baseCard.description.replace(/(\d+) Block/gi, (match, num) => {
+                        return (parseInt(num) + 3) + ' Block';
+                    });
+                    
+                    // Create improved effect function
+                    if (baseId === 'defend') {
+                        upgraded.effect = (game) => {
+                            game.gainBlock(8); // Was 5, now 8
+                        };
+                    } else if (baseId === 'subtractBlock') {
+                        upgraded.effect = (game) => {
+                            game.gainBlock(10); // Was 7, now 10
+                        };
+                    } else if (baseId === 'negativeSpace') {
+                        upgraded.effect = baseCard.effect; // Doesn't scale with numbers
+                    } else if (baseId === 'reduceFraction') {
+                        upgraded.effect = (game) => {
+                            game.removeDebuff();
+                            game.gainBlock(9); // Was 6, now 9
+                        };
+                    } else if (baseId === 'cleanse') {
+                        upgraded.effect = (game) => {
+                            game.player.debuffs = {};
+                            game.gainBlock(7); // Was 4, now 7
+                        };
+                    } else {
+                        // Generic skill upgrade
+                        upgraded.effect = baseCard.effect;
+                    }
+                } else if (baseCard.type === 'utility') {
+                    // Improve utility effects
+                    upgraded.description = baseCard.description.replace(/\+(\d+)/g, (match, num) => {
+                        return '+' + (parseInt(num) + 2);
+                    }).replace(/(\d+) card/gi, (match, num) => {
+                        return (parseInt(num) + 1) + ' card';
+                    });
+                    
+                    if (baseId === 'sumItUp') {
+                        upgraded.effect = (game) => {
+                            game.addModifier('numericBonus', 4); // Was 2, now 4
+                        };
+                    } else if (baseId === 'sequenceStep') {
+                        upgraded.effect = (game) => {
+                            game.drawCards(3); // Was 2, now 3
+                        };
+                    } else if (baseId === 'parenthesis') {
+                        upgraded.effect = baseCard.effect; // Already powerful
+                    } else if (baseId === 'cancelOut') {
+                        upgraded.effect = baseCard.effect; // Effect doesn't scale
+                    } else {
+                        upgraded.effect = baseCard.effect;
+                    }
+                } else if (baseCard.type === 'power') {
+                    // Improve power duration/strength
+                    upgraded.description = baseCard.description.replace(/(\d+) turn/gi, (match, num) => {
+                        return (parseInt(num) + 1) + ' turn';
+                    });
+                    
+                    if (baseId === 'exponentialBurst') {
+                        upgraded.effect = (game) => {
+                            game.addModifier('doubleAttack', 3); // Was 2, now 3
+                        };
+                    } else if (baseId === 'remainderBoost') {
+                        upgraded.effect = baseCard.effect; // Already permanent
+                    } else if (baseId === 'chainMultiply') {
+                        upgraded.effect = (game) => {
+                            game.addModifier('damageMultiplier', 0.75); // Was 0.5, now 0.75
+                        };
+                    } else {
+                        upgraded.effect = baseCard.effect;
+                    }
+                } else {
+                    // Keep original effect for other types
+                    upgraded.effect = baseCard.effect;
+                }
+                
+                return upgraded;
+            }
+            
+            getUpgradeDetails(card) {
+                if (card.type === 'attack') {
+                    return 'Damage increased by 3!';
+                } else if (card.type === 'skill') {
+                    return 'Block increased by 3!';
+                } else if (card.type === 'power') {
+                    return 'Duration or power increased!';
+                } else if (card.type === 'utility') {
+                    return 'Effects enhanced by 2!';
+                }
+                return 'Card improved!';
             }
             
             getUpgradedDescription(card) {
@@ -6786,8 +7074,14 @@
             takeDamage(amount) {
                 this.player.hp = Math.max(0, this.player.hp - amount);
                 this.updateUI();
+                
+                console.log('Player took', amount, 'damage. HP:', this.player.hp);
+                
                 if (this.player.hp <= 0) {
-                    this.gameOver();
+                    console.log('Player HP reached 0, triggering game over');
+                    setTimeout(() => {
+                        this.gameOver();
+                    }, 500); // Small delay so player can see HP reach 0
                 }
             }
 
@@ -7123,8 +7417,72 @@
                     const relicEl = document.createElement('div');
                     relicEl.className = 'relic';
                     relicEl.textContent = relic.icon;
+                    relicEl.setAttribute('data-relic-name', relic.name);
+                    relicEl.setAttribute('data-relic-desc', relic.description);
+                    
+                    // Desktop hover
                     relicEl.title = `${relic.name}: ${relic.description}`;
-                    relicEl.onclick = () => this.showRelicViewer();
+                    
+                    // Mobile tap to show tooltip
+                    const showTooltip = (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        
+                        // Remove any existing tooltips
+                        document.querySelectorAll('.relic-tooltip').forEach(tt => tt.remove());
+                        
+                        // Create tooltip
+                        const tooltip = document.createElement('div');
+                        tooltip.className = 'relic-tooltip';
+                        tooltip.style.cssText = `
+                            position: fixed;
+                            top: 50%;
+                            left: 50%;
+                            transform: translate(-50%, -50%);
+                            background: rgba(0, 0, 0, 0.95);
+                            border: 3px solid #f39c12;
+                            border-radius: 15px;
+                            padding: 20px;
+                            max-width: 90%;
+                            z-index: 3000;
+                            text-align: center;
+                        `;
+                        
+                        tooltip.innerHTML = `
+                            <div style="font-size: 48px; margin-bottom: 15px;">${relic.icon}</div>
+                            <div style="font-size: 22px; color: #f39c12; margin-bottom: 10px; font-weight: bold;">${relic.name}</div>
+                            <div style="font-size: 16px; color: #ccc; line-height: 1.5; margin-bottom: 20px;">${relic.description}</div>
+                            <button class="btn btn-end-turn" style="padding: 10px 30px;">Close</button>
+                        `;
+                        
+                        // Backdrop
+                        const backdrop = document.createElement('div');
+                        backdrop.style.cssText = `
+                            position: fixed;
+                            top: 0;
+                            left: 0;
+                            width: 100%;
+                            height: 100%;
+                            background: rgba(0, 0, 0, 0.7);
+                            z-index: 2999;
+                        `;
+                        
+                        const closeTooltip = () => {
+                            tooltip.remove();
+                            backdrop.remove();
+                        };
+                        
+                        tooltip.querySelector('button').onclick = closeTooltip;
+                        backdrop.onclick = closeTooltip;
+                        
+                        document.body.appendChild(backdrop);
+                        document.body.appendChild(tooltip);
+                    };
+                    
+                    // Use touchstart for mobile, click for desktop
+                    relicEl.addEventListener('click', showTooltip);
+                    relicEl.addEventListener('touchstart', showTooltip);
+                    
                     relicsEl.appendChild(relicEl);
                 });
             }
@@ -7142,6 +7500,31 @@
             
                 // Update Gold
                 document.getElementById('player-gold').textContent = `💰 ${this.player.gold}`;
+                
+                // Update Block Display (show shield next to HP)
+                const hpStat = document.querySelector('.stat');
+                if (hpStat && this.player.block > 0) {
+                    // Add block display if it doesn't exist
+                    let blockDisplay = hpStat.querySelector('.block-display');
+                    if (!blockDisplay) {
+                        blockDisplay = document.createElement('span');
+                        blockDisplay.className = 'block-display';
+                        blockDisplay.style.cssText = `
+                            color: #2ecc71;
+                            font-weight: bold;
+                            margin-left: 8px;
+                            font-size: 14px;
+                        `;
+                        hpStat.appendChild(blockDisplay);
+                    }
+                    blockDisplay.textContent = `🛡️ ${this.player.block}`;
+                } else {
+                    // Remove block display if block is 0
+                    const blockDisplay = hpStat?.querySelector('.block-display');
+                    if (blockDisplay) {
+                        blockDisplay.remove();
+                    }
+                }
                 
                 // Update seed display
                 const seedDisplayContainer = document.getElementById('seed-display-container');
@@ -7215,8 +7598,20 @@
             }
 
             gameOver() {
+                console.log('=== GAME OVER ===');
+                console.log('Player HP:', this.player.hp);
+                
+                this.hideAllViews();
+                
                 document.getElementById('defeat-seed-value').textContent = this.seedString;
-                document.getElementById('defeat-screen').classList.add('active');
+                
+                const defeatScreen = document.getElementById('defeat-screen');
+                if (defeatScreen) {
+                    defeatScreen.style.display = 'flex';
+                    defeatScreen.classList.add('active');
+                }
+                
+                console.log('Defeat screen shown');
             }
 
             copySeed() {
@@ -7622,7 +8017,9 @@
             // Start with seed button
             const startBtn = document.getElementById('start-with-seed-btn');
             if (startBtn) {
-                startBtn.onclick = () => {
+                const startHandler = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
                     const seedInput = document.getElementById('seed-input');
                     const seed = seedInput.value.trim() || game.generateSeed();
                     const selectedAscension = ascensionController ? ascensionController.getSelectedAscension() : 0;
@@ -7633,13 +8030,18 @@
                     
                     game.startWithSeed(seed, selectedAscension);
                 };
+                
+                startBtn.addEventListener('click', startHandler);
+                startBtn.addEventListener('touchend', startHandler);
                 console.log('Start button handler attached');
             }
             
             // Random seed button
             const randomBtn = document.getElementById('random-seed-btn');
             if (randomBtn) {
-                randomBtn.onclick = () => {
+                const randomHandler = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
                     const seed = game.generateSeed();
                     const selectedAscension = ascensionController ? ascensionController.getSelectedAscension() : 0;
                     
@@ -7649,49 +8051,74 @@
                     
                     game.startWithSeed(seed, selectedAscension);
                 };
+                
+                randomBtn.addEventListener('click', randomHandler);
+                randomBtn.addEventListener('touchend', randomHandler);
                 console.log('Random button handler attached');
             }
             
             // View collection button
             const collectionBtn = document.getElementById('view-collection-btn');
             if (collectionBtn) {
-                collectionBtn.onclick = () => {
+                const collectionHandler = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
                     console.log('Collection button clicked');
                     showCollectionViewer();
                 };
+                
+                collectionBtn.addEventListener('click', collectionHandler);
+                collectionBtn.addEventListener('touchend', collectionHandler);
                 console.log('Collection button handler attached');
             }
             
-            // View deck button
+            // View deck button - use both click and touchend
             const deckBtn = document.getElementById('view-deck-btn');
             if (deckBtn) {
-                deckBtn.onclick = () => {
+                const deckHandler = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    console.log('Deck button clicked/touched');
                     if (game && game.showDeckViewer) {
                         game.showDeckViewer();
                     }
                 };
+                
+                deckBtn.addEventListener('click', deckHandler);
+                deckBtn.addEventListener('touchend', deckHandler);
                 console.log('Deck button handler attached');
             }
             
-            // View relics button
+            // View relics button - use both click and touchend
             const relicsBtn = document.getElementById('view-relics-btn');
             if (relicsBtn) {
-                relicsBtn.onclick = () => {
+                const relicsHandler = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    console.log('Relics button clicked/touched');
                     if (game && game.showRelicViewer) {
                         game.showRelicViewer();
                     }
                 };
+                
+                relicsBtn.addEventListener('click', relicsHandler);
+                relicsBtn.addEventListener('touchend', relicsHandler);
                 console.log('Relics button handler attached');
             }
             
             // Seed display click to copy
             const seedDisplay = document.getElementById('seed-display');
             if (seedDisplay) {
-                seedDisplay.onclick = () => {
+                const seedHandler = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
                     if (game && game.copySeed) {
                         game.copySeed();
                     }
                 };
+                
+                seedDisplay.addEventListener('click', seedHandler);
+                seedDisplay.addEventListener('touchend', seedHandler);
             }
             
             console.log('All event handlers setup complete');
