@@ -5485,9 +5485,15 @@
                 
                 if (!displayEl || !resultEl) return;
                 
-                // Always show evaluate button if there's any equation
+                // Only show evaluate button if equation is valid and complete
                 if (evaluateBtn) {
-                    evaluateBtn.style.display = this.currentEquation.length > 0 ? 'block' : 'none';
+                    if (this.currentEquation.length === 0) {
+                        evaluateBtn.style.display = 'none';
+                    } else {
+                        // Check if equation is valid before showing button
+                        const testResult = this.calculateEquation(this.currentEquation);
+                        evaluateBtn.style.display = (testResult !== null) ? 'block' : 'none';
+                    }
                 }
                 
                 if (this.currentEquation.length === 0) {
@@ -5547,10 +5553,13 @@
                             resultEl.innerHTML = `<span style="color: #888;">Result: ${Math.floor(baseResult)}</span>`;
                         }
                     } else {
-                        resultEl.innerHTML = '<span style="color: #f39c12;">Build equation...</span>';
+                        // Invalid/incomplete equation
+                        resultEl.innerHTML = '<span style="color: #f39c12;">Building equation...</span>';
                     }
                 } catch (e) {
-                    resultEl.innerHTML = '<span style="color: #f39c12;">Build equation...</span>';
+                    // Safely handle any errors during preview
+                    console.log('Preview error (handled):', e.message);
+                    resultEl.innerHTML = '<span style="color: #f39c12;">Building equation...</span>';
                 }
             }
             
@@ -6018,25 +6027,34 @@
             }
             
             autoEvaluateEquation() {
-                if (this.currentEquation.length === 0) return;
+                if (this.currentEquation.length === 0) {
+                    alert('⚠️ No equation to evaluate!');
+                    return;
+                }
 
                 // Store the equation for processing
                 const equationToEvaluate = [...this.currentEquation];
                 
-                // Immediately discard all cards and clear the equation array
-                equationToEvaluate.forEach(cardId => {
-                    this.discardPile.push(cardId);
-                });
-                this.currentEquation = [];
-                
                 try {
                     const baseResult = this.calculateEquation(this.currentEquation);
                     
-                    if (baseResult === null || isNaN(baseResult)) {
-                        alert('Invalid equation! Clearing...');
-                        this.clearEquation();
+                    if (baseResult === null || isNaN(baseResult) || !isFinite(baseResult)) {
+                        // Invalid equation - return cards to hand, don't discard
+                        alert('⚠️ Invalid equation! Cards returned to hand.');
+                        this.currentEquation.forEach(cardId => {
+                            this.hand.push(cardId);
+                        });
+                        this.currentEquation = [];
+                        this.updateEquationDisplay();
+                        this.renderHand();
                         return;
                     }
+                    
+                    // NOW that we know it's valid, discard the cards
+                    equationToEvaluate.forEach(cardId => {
+                        this.discardPile.push(cardId);
+                    });
+                    this.currentEquation = [];
             
                     // Calculate combo bonus
                     const operatorCount = this.currentEquation.filter(cardId => {
@@ -6219,24 +6237,49 @@
                             expression = `Math.sqrt(${expression})`;
                         } else if (card.func === 'factorial') {
                             // Factorial needs special handling
-                            const num = eval(expression);
-                            let fact = 1;
-                            for (let i = 2; i <= num; i++) {
-                                fact *= i;
+                            try {
+                                const num = eval(expression);
+                                if (!Number.isInteger(num) || num < 0) {
+                                    return null;
+                                }
+                                let fact = 1;
+                                for (let i = 2; i <= num; i++) {
+                                    fact *= i;
+                                }
+                                return fact;
+                            } catch (e) {
+                                return null;
                             }
-                            return fact;
                         }
                     } else if (card.type === 'grouping') {
                         expression += card.name;
                     }
                 });
             
-                // Evaluate the expression
+                // Check if expression is empty or ends with an operator (incomplete)
+                if (!expression || /[\+\-\*\/]$/.test(expression.trim())) {
+                    return null; // Incomplete expression
+                }
+            
+                // Check for unbalanced parentheses
+                let openCount = (expression.match(/\(/g) || []).length;
+                let closeCount = (expression.match(/\)/g) || []).length;
+                if (openCount !== closeCount) {
+                    return null; // Unbalanced parentheses
+                }
+            
+                // Evaluate the expression safely
                 try {
                     const result = eval(expression);
+                    
+                    // Check for invalid results
+                    if (result === undefined || result === null || isNaN(result) || !isFinite(result)) {
+                        return null;
+                    }
+                    
                     return result;
                 } catch (e) {
-                    console.error('Evaluation error:', e);
+                    console.log('Evaluation error (safe):', e.message);
                     return null;
                 }
             }
