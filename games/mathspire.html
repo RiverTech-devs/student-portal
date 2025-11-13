@@ -2769,13 +2769,15 @@
                             background: linear-gradient(135deg, #95a5a6, #7f8c8d);
                         ">
                             ⌫ Clear
-                        </button>
                         <button class="btn" id="evaluate-equation-btn" style="
                             padding: 12px 30px;
                             background: linear-gradient(135deg, #2ecc71, #27ae60);
+                            font-size: 16px;
+                            font-weight: bold;
                             display: none;
+                            box-shadow: 0 4px 15px rgba(46, 204, 113, 0.4);
                         ">
-                            ✓ Evaluate
+                            ✓ Evaluate Equation
                         </button>
                         <div id="combo-indicator" style="
                             padding: 12px 20px;
@@ -5426,8 +5428,8 @@
                         };
                         equationDisplay.style.color = colors[this.currentMode];
                         
-                        // Clear equation when switching modes
-                        this.clearEquation();
+                        // DON'T clear equation when switching modes - just update display
+                        this.updateEquationDisplay();
                     };
                 });
                 
@@ -5483,11 +5485,15 @@
                 
                 if (!displayEl || !resultEl) return;
                 
+                // Always show evaluate button if there's any equation
+                if (evaluateBtn) {
+                    evaluateBtn.style.display = this.currentEquation.length > 0 ? 'block' : 'none';
+                }
+                
                 if (this.currentEquation.length === 0) {
                     displayEl.textContent = '_';
                     resultEl.textContent = '';
                     if (comboIndicator) comboIndicator.style.display = 'none';
-                    if (evaluateBtn) evaluateBtn.style.display = 'none';
                     return;
                 }
                 
@@ -5528,7 +5534,7 @@
                 // Try to preview result
                 try {
                     const baseResult = this.calculateEquation(this.currentEquation);
-                    if (baseResult !== null && !isNaN(baseResult)) {
+                    if (baseResult !== null && !isNaN(baseResult) && isFinite(baseResult)) {
                         const finalResult = Math.floor(baseResult * (1 + comboBonus));
                         
                         if (operatorCount > 0) {
@@ -5541,12 +5547,10 @@
                             resultEl.innerHTML = `<span style="color: #888;">Result: ${Math.floor(baseResult)}</span>`;
                         }
                     } else {
-                        resultEl.textContent = '';
-                        if (evaluateBtn) evaluateBtn.style.display = 'none';
+                        resultEl.innerHTML = '<span style="color: #f39c12;">Build equation...</span>';
                     }
                 } catch (e) {
-                    resultEl.textContent = '';
-                    if (evaluateBtn) evaluateBtn.style.display = 'none';
+                    resultEl.innerHTML = '<span style="color: #f39c12;">Build equation...</span>';
                 }
             }
             
@@ -5558,6 +5562,11 @@
             }
             
             clearEquation() {
+                // Return cards to hand
+                this.currentEquation.forEach(cardId => {
+                    this.hand.push(cardId);
+                });
+                
                 this.currentEquation = [];
                 this.updateEquationDisplay();
                 this.renderHand();
@@ -5892,15 +5901,54 @@
                 const cardId = this.hand[handIndex];
                 const card = CARD_DATABASE[cardId];
             
-                // Check energy cost
+                 // Check energy cost
                 if (card.energy > this.player.energy) {
                     console.log('Not enough energy');
+                    
+                    // Visual feedback
+                    const feedback = document.createElement('div');
+                    feedback.style.cssText = `
+                        position: fixed;
+                        top: 50%;
+                        left: 50%;
+                        transform: translate(-50%, -50%);
+                        background: rgba(231, 76, 60, 0.95);
+                        border: 3px solid #e74c3c;
+                        border-radius: 10px;
+                        padding: 15px 30px;
+                        font-size: 18px;
+                        color: #fff;
+                        z-index: 10000;
+                        pointer-events: none;
+                        animation: feedback-float 0.5s ease-out forwards;
+                    `;
+                    feedback.textContent = '⚠️ Not enough energy!';
+                    document.body.appendChild(feedback);
+                    setTimeout(() => feedback.remove(), 500);
                     return;
                 }
             
                 // Validate card placement in equation
                 if (!this.canPlayCard(card)) {
-                    alert('Cannot play this card here! Check your equation syntax.');
+                    const feedback = document.createElement('div');
+                    feedback.style.cssText = `
+                        position: fixed;
+                        top: 50%;
+                        left: 50%;
+                        transform: translate(-50%, -50%);
+                        background: rgba(231, 76, 60, 0.95);
+                        border: 3px solid #e74c3c;
+                        border-radius: 10px;
+                        padding: 15px 30px;
+                        font-size: 18px;
+                        color: #fff;
+                        z-index: 10000;
+                        pointer-events: none;
+                        animation: feedback-float 0.5s ease-out forwards;
+                    `;
+                    feedback.textContent = '⚠️ Cannot play this card here!';
+                    document.body.appendChild(feedback);
+                    setTimeout(() => feedback.remove(), 500);
                     return;
                 }
             
@@ -5910,9 +5958,29 @@
                 // Add to equation
                 this.currentEquation.push(cardId);
                 
-                // Remove from hand
+                // Remove from hand (but don't discard yet - that happens on evaluation)
                 this.hand.splice(handIndex, 1);
-                this.discardPile.push(cardId);
+            
+                // Visual feedback - success
+                const feedback = document.createElement('div');
+                feedback.style.cssText = `
+                    position: fixed;
+                    top: 30%;
+                    left: 50%;
+                    transform: translate(-50%, -50%);
+                    background: rgba(46, 204, 113, 0.95);
+                    border: 3px solid #2ecc71;
+                    border-radius: 10px;
+                    padding: 10px 20px;
+                    font-size: 16px;
+                    color: #fff;
+                    z-index: 10000;
+                    pointer-events: none;
+                    animation: feedback-float 0.4s ease-out forwards;
+                `;
+                feedback.textContent = `✓ ${card.name} added`;
+                document.body.appendChild(feedback);
+                setTimeout(() => feedback.remove(), 400);
             
                 // Update displays
                 this.updateEquationDisplay();
@@ -5945,7 +6013,12 @@
             
             autoEvaluateEquation() {
                 if (this.currentEquation.length === 0) return;
-            
+
+                // Discard all cards used in the equation
+                this.currentEquation.forEach(cardId => {
+                    this.discardPile.push(cardId);
+                });
+                
                 try {
                     const baseResult = this.calculateEquation(this.currentEquation);
                     
@@ -6762,8 +6835,12 @@
                             
                             console.log(`${enemy.name} split! Both now have ${newHp} HP`);
                             
-                            // Update target dropdown since we have more enemies
+                            // IMPORTANT: Update target dropdown and re-render enemies
                             this.updateTargetDropdown();
+                            this.renderCombat(); // ADD THIS LINE - immediately update display
+                            
+                            // Wait a bit so player can see the split
+                            await this.wait(800);
                         }
                     } else if (intent.intent === 'special') {
                         let damage = intent.value;
