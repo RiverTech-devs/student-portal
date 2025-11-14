@@ -4898,7 +4898,7 @@
                 const isSubmitted = submission?.status === 'submitted';
       
                 let statusBadge = '';
-                let statusColor = 'var(--danger)';
+                let statusColor = '#6b7280';
       
                 if (isExcused) {
                   statusBadge = '<span style="background: var(--muted); padding: 4px 10px; border-radius: 12px; font-size: 11px; font-weight: 600;">EXCUSED</span>';
@@ -4911,8 +4911,10 @@
                   statusColor = 'var(--accent)';
                 } else if (isOverdue) {
                   statusBadge = '<span style="background: var(--danger); color: white; padding: 4px 10px; border-radius: 12px; font-size: 11px; font-weight: 600;">⚠ OVERDUE</span>';
+                  statusColor = 'var(--danger)';
                 } else {
-                  statusBadge = '<span style="background: rgba(255,255,255,0.1); padding: 4px 10px; border-radius: 12px; font-size: 11px; font-weight: 600;">NOT SUBMITTED</span>';
+                  statusBadge = '<span style="background: #6b7280; color: white; padding: 4px 10px; border-radius: 12px; font-size: 11px; font-weight: 600;">NOT SUBMITTED</span>';
+                  statuscolor = '#6b7280';
                 }
       
                 return `
@@ -9349,7 +9351,7 @@
             .single();
       
           if (error) throw error;
-
+      
           // Load categories for this class
           const { data: categories } = await window.app.auth.supabase
             .from('grade_categories')
@@ -9360,6 +9362,36 @@
           if (!assignment) {
             this.showNotification('Assignment not found', 'error');
             return;
+          }
+      
+          // Load enrolled students for this class
+          const { data: enrollments } = await this.auth.supabase
+            .from('class_enrollments')
+            .select('student_id')
+            .eq('class_id', assignment.class_id)
+            .eq('status', 'active');
+      
+          const studentIds = enrollments?.map(e => e.student_id) || [];
+      
+          // Load student profiles
+          let studentProfiles = [];
+          if (studentIds.length > 0) {
+            const { data: students } = await this.auth.supabase
+              .from('user_profiles')
+              .select('id, first_name, last_name, grade_level')
+              .in('id', studentIds)
+              .order('last_name', { ascending: true });
+            studentProfiles = students || [];
+          }
+      
+          // If selective assignment, load assigned students
+          let assignedStudentIds = [];
+          if (!assignment.assigned_to_all) {
+            const { data: assignedStudents } = await this.auth.supabase
+              .from('assignment_students')
+              .select('student_id')
+              .eq('assignment_id', assignmentId);
+            assignedStudentIds = assignedStudents?.map(s => s.student_id) || [];
           }
       
           // Convert datetime for input field
@@ -9405,6 +9437,45 @@
                   Published (visible to students)
                 </label>
               </div>
+      
+              <!-- Student Selection Section -->
+              <div class="card" style="background: var(--card); margin: 20px 0; padding: 15px;">
+                <div class="form-group" style="margin: 0;">
+                  <label style="display: flex; align-items: center; gap: 10px; font-weight: 600;">
+                    <input type="checkbox" id="edit-assign-to-specific" ${!assignment.assigned_to_all ? 'checked' : ''} onchange="app.toggleEditStudentSelection()">
+                    Assign to specific students only
+                  </label>
+                  
+                  <div id="edit-student-selection-section" style="display: ${!assignment.assigned_to_all ? 'block' : 'none'}; margin-top: 15px;">
+                    <p style="color: var(--muted); font-size: 12px; margin-bottom: 10px;">
+                      Select which students should receive this assignment:
+                    </p>
+                    
+                    <div style="margin-bottom: 10px;">
+                      <button type="button" class="btn btn-secondary small" onclick="app.selectAllEditStudents(true)">
+                        Select All
+                      </button>
+                      <button type="button" class="btn btn-secondary small" onclick="app.selectAllEditStudents(false)">
+                        Deselect All
+                      </button>
+                    </div>
+                    
+                    <div style="max-height: 200px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; padding: 10px;">
+                      ${studentProfiles.length > 0 ? studentProfiles.map(student => `
+                        <label style="display: flex; align-items: center; gap: 8px; padding: 5px 0; cursor: pointer;">
+                          <input type="checkbox" class="edit-student-checkbox" value="${student.id}" ${!assignment.assigned_to_all && assignedStudentIds.includes(student.id) ? 'checked' : (!assignment.assigned_to_all ? '' : 'checked')}>
+                          <span>${student.first_name} ${student.last_name}</span>
+                          ${student.grade_level ? `<span style="color: var(--muted); font-size: 12px;">(Grade ${student.grade_level})</span>` : ''}
+                        </label>
+                      `).join('') : '<p style="color: var(--muted);">No students enrolled in this class</p>'}
+                    </div>
+                    
+                    <p style="color: var(--warning); font-size: 12px; margin-top: 10px;">
+                      Only selected students will see this assignment and be able to submit it.
+                    </p>
+                  </div>
+                </div>
+              </div>
             </form>
           
             <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
@@ -9446,8 +9517,22 @@
           this.showNotification('Error loading assignment: ' + error.message, 'error');
         }
       }
+
+      toggleEditStudentSelection() {
+        const checkbox = document.getElementById('edit-assign-to-specific');
+        const section = document.getElementById('edit-student-selection-section');
+        section.style.display = checkbox.checked ? 'block' : 'none';
+      }
+      
+      selectAllEditStudents(select) {
+        document.querySelectorAll('.edit-student-checkbox').forEach(cb => {
+          cb.checked = select;
+        });
+      }
       
       async submitEditAssignment(assignmentId, classId) {
+        const isSelectiveAssignment = document.getElementById('edit-assign-to-specific').checked;
+        
         const updatedData = {
           title: document.getElementById('edit-assignment-title').value,
           description: this.assignmentDescriptionEditor ? this.assignmentDescriptionEditor.root.innerHTML : null,
@@ -9455,6 +9540,7 @@
           max_points: parseInt(document.getElementById('edit-assignment-max-points').value) || 100,
           is_published: document.getElementById('edit-assignment-is-published').checked,
           category_id: document.getElementById('edit-assignment-category')?.value || null,
+          assigned_to_all: !isSelectiveAssignment,
           updated_at: new Date().toISOString()
         };
       
@@ -9464,12 +9550,49 @@
         }
       
         try {
+          // Update assignment
           const { error } = await this.auth.supabase
             .from('assignments')
             .update(updatedData)
             .eq('id', assignmentId);
       
           if (error) throw error;
+      
+          // Handle selective assignment student list
+          if (isSelectiveAssignment) {
+            const selectedStudents = Array.from(document.querySelectorAll('.edit-student-checkbox:checked'))
+              .map(cb => cb.value);
+      
+            if (selectedStudents.length === 0) {
+              this.showNotification('Please select at least one student', 'error');
+              return;
+            }
+      
+            // Delete existing assignments
+            await this.auth.supabase
+              .from('assignment_students')
+              .delete()
+              .eq('assignment_id', assignmentId);
+      
+            // Insert new assignments
+            const assignmentStudents = selectedStudents.map(studentId => ({
+              assignment_id: assignmentId,
+              student_id: studentId,
+              assigned_at: new Date().toISOString()
+            }));
+      
+            const { error: insertError } = await this.auth.supabase
+              .from('assignment_students')
+              .insert(assignmentStudents);
+      
+            if (insertError) throw insertError;
+          } else {
+            // If changing from selective to all students, delete assignment_students records
+            await this.auth.supabase
+              .from('assignment_students')
+              .delete()
+              .eq('assignment_id', assignmentId);
+          }
       
           this.showNotification('Assignment updated successfully!', 'success');
           this.closeModal('edit-assignment');
