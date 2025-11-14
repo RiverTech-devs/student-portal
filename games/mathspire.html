@@ -5467,6 +5467,12 @@
             }
 
            drawCards(count) {
+                console.log(`=== DRAW CARDS: Requested ${count} ===`);
+                console.log(`Draw pile before: ${this.drawPile.length}, Discard pile: ${this.discardPile.length}`);
+                
+                // Check max hand size (default 10, can be modified by relics)
+                const maxHandSize = this.maxHandSize || 10;
+                
                 // Check for Burden curse - draw 1 less card
                 let drawCount = count;
                
@@ -5474,25 +5480,32 @@
                     drawCount = Math.max(1, count - 1);
                 }
                 
-                // Check for starting draw penalty from Overachiever's Ambition
-                if (this.startingDrawPenalty) {
-                    drawCount = Math.max(1, drawCount - this.startingDrawPenalty);
-                }
-                
                 for (let i = 0; i < drawCount; i++) {
+                    // Check if hand is full
+                    if (this.hand.length >= maxHandSize) {
+                        console.log(`Hand is full (${this.hand.length}/${maxHandSize})`);
+                        break;
+                    }
+                    
+                    // If draw pile is empty, shuffle discard into draw pile
                     if (this.drawPile.length === 0) {
-                        if (this.discardPile.length === 0) break;
-                        this.drawPile = this.rng.shuffle(this.discardPile);
+                        if (this.discardPile.length === 0) {
+                            console.log('No cards left to draw!');
+                            break;
+                        }
+                        console.log(`Shuffling discard pile (${this.discardPile.length} cards) into draw pile`);
+                        this.drawPile = this.rng.shuffle([...this.discardPile]);
                         this.discardPile = [];
                     }
                     
                     if (this.drawPile.length > 0) {
                         const card = this.drawPile.pop();
                         this.hand.push(card);
-                        console.log('Drew card:', card);
+                        console.log(`Drew card: ${card} (${CARD_DATABASE[card]?.name || 'UNKNOWN'})`);
                     }
                 }
-               console.log('Final hand:', this.hand);
+                
+                console.log(`Draw pile after: ${this.drawPile.length}, Hand size: ${this.hand.length}`);
                 this.renderHand();
             }
 
@@ -6495,6 +6508,16 @@
             }
 
             async endTurn() {
+                // Discard any cards still in the equation builder (user didn't evaluate)
+                if (this.currentEquation.length > 0) {
+                    console.log('Discarding unevaluated equation cards:', this.currentEquation);
+                    this.currentEquation.forEach(cardId => {
+                        this.discardPile.push(cardId);
+                    });
+                    this.currentEquation = [];
+                    this.updateEquationDisplay();
+                }
+                
                 // Apply Pain curse damage for each Pain in hand
                 const painCount = this.hand.filter(cardId => cardId === 'pain').length;
                 if (painCount > 0) {
@@ -6520,10 +6543,11 @@
                     }
                 });
             
+                // Start new turn
                 this.player.block = 0; // Block doesn't carry over
                 this.turnCount++;
                 this.attacksPlayedThisTurn = 0;
-                this.hasPlayedCardThisTurn = false; // Reset for Recursive Ring relic
+                this.hasPlayedCardThisTurn = false;
             
                 // Decay debuffs
                 Object.keys(this.player.debuffs).forEach(debuffType => {
@@ -6533,11 +6557,10 @@
                     }
                 });
             
-                // Apply relic effects
                 if (this.hasRelic('fractionPendant')) {
                     this.player.block += this.enemies.length;
                 }
-                // Apply Axiom Amulet boss relic - gain 10 block at turn start
+                
                 if (this.hasRelic('axiomAmulet')) {
                     this.player.block += 10;
                 }
@@ -6552,17 +6575,32 @@
                     }
                 }
             
-                this.drawCards(5);
+                // Calculate draw count
+                let drawCount = 5;
                 
                 // Study Guide relic - draw 1 additional card
                 if (this.hasRelic('studyGuide')) {
-                    this.drawCards(1);
+                    drawCount += 1;
                 }
                 
-                // Perfect Formula boss relic - draw 2 extra cards
-                if (this.hasRelic('perfectFormula')) {
-                    this.drawCards(2);
+                // Starting draw bonus from character selection
+                if (this.startingDrawBonus) {
+                    drawCount += this.startingDrawBonus;
                 }
+                
+                // Calculus Codex boss relic - draw 2 extra cards
+                if (this.hasRelic('calculusCodex')) {
+                    drawCount += 2;
+                }
+                
+                // Slowed debuff - draw 1 less card
+                if (this.player.debuffs.slowed > 0) {
+                    drawCount = Math.max(1, drawCount - 1);
+                }
+                
+                console.log(`Drawing ${drawCount} cards. Draw pile: ${this.drawPile.length}, Discard pile: ${this.discardPile.length}`);
+                
+                this.drawCards(drawCount);
                 
                 this.setEnemyIntents();
                 this.renderCombat();
@@ -6646,13 +6684,12 @@
                         this.applyDebuff(intent.debuffType, intent.value);
                         this.renderPlayerDebuffs();
                     } else if (intent.intent === 'split') {
-                        // SPLIT MECHANIC
                         if (enemy.hp > 1) {
                             const newHp = Math.floor(enemy.hp / 2);
                             
                             // Update original enemy HP
                             enemy.hp = newHp;
-                            enemy.maxHp = newHp; // Also update max HP so it shows correctly
+                            enemy.maxHp = newHp;
                             
                             // Create new enemy (copy of original)
                             const newEnemy = {
@@ -6668,6 +6705,10 @@
                             
                             // Insert new enemy right after the current one
                             this.enemies.splice(i + 1, 0, newEnemy);
+                            
+                            // Set intent for the new enemy immediately
+                            const newEnemyPattern = newEnemy.patterns[0];
+                            newEnemy.nextIntent = newEnemyPattern;
                             
                             // Visual feedback for split
                             this.flashScreen('blue');
@@ -6697,14 +6738,17 @@
                                 splitFeedback.remove();
                             }, 1000);
                             
-                            console.log(`${enemy.name} split! Both now have ${newHp} HP`);
+                            console.log(`${enemy.name} split! Both now have ${newHp} HP. Total enemies: ${this.enemies.length}`);
                             
-                            // IMPORTANT: Update target dropdown and re-render enemies
+                            // CRITICAL: Update target dropdown and force render IMMEDIATELY
                             this.updateTargetDropdown();
-                            this.renderCombat(); // ADD THIS LINE - immediately update display
+                            this.renderCombat();
                             
-                            // Wait a bit so player can see the split
+                            // Wait so player can see the split
                             await this.wait(800);
+                            
+                            // DON'T increment i - we want to continue the loop normally
+                            // The new enemy will act on the next turn
                         }
                     } else if (intent.intent === 'special') {
                         let damage = intent.value;
