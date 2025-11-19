@@ -932,10 +932,58 @@
       }
 
       setupUnifiedNavigation() {
+        const userType = this.userInfo.profile.user_type;
+        const isAdmin = userType === 'admin';
+        const isTeacher = userType === 'teacher' || isAdmin; // Admins can also teach
+        const isStudent = userType === 'student';
+        
         const navContainer = document.getElementById('unified-nav-container');
-        if (navContainer && window.PortalUI) {
-          navContainer.innerHTML = window.PortalUI.createUnifiedNavigation('classes', this.currentSection);
+        if (!navContainer) return;
+      
+        let navItems = [];
+      
+        if (isAdmin) {
+          // Admin sections
+          navItems.push(
+            { icon: '📊', label: 'Admin Dashboard', section: 'admin-dashboard' },
+            { icon: '🏫', label: 'All Classes', section: 'admin-classes' },
+            { icon: '👥', label: 'All Users', section: 'admin-users' },
+            { icon: '⚙️', label: 'System Settings', section: 'admin-settings' },
+            { divider: true }
+          );
         }
+      
+        if (isTeacher) {
+          navItems.push(
+            { icon: '🏠', label: 'Home', section: 'home' },
+            { icon: '📚', label: 'My Classes', section: 'classes' },
+            { icon: '👥', label: 'Students', section: 'student-management' },
+            { icon: '💬', label: 'Messages', section: 'messaging' },
+            { icon: '👤', label: 'Profile', section: 'profile' }
+          );
+        } else if (isStudent) {
+          navItems.push(
+            { icon: '🏠', label: 'Home', section: 'home' },
+            { icon: '📚', label: 'Classes', section: 'classes' },
+            { icon: '💬', label: 'Messages', section: 'messaging' },
+            { icon: '👤', label: 'Profile', section: 'profile' }
+          );
+        }
+      
+        navContainer.innerHTML = navItems.map(item => {
+          if (item.divider) {
+            return '<div style="border-top: 2px solid var(--border); margin: 10px 0;"></div>';
+          }
+          
+          return `
+            <button class="nav-item ${this.currentSection === item.section ? 'active' : ''}" 
+                    data-section="${item.section}"
+                    onclick="app.showSection('${item.section}')">
+              <span style="font-size: 18px;">${item.icon}</span>
+              <span>${item.label}</span>
+            </button>
+          `;
+        }).join('');
       }
 
       setupEventListeners() {
@@ -1155,22 +1203,28 @@
       async loadTeacherData() {
         console.log('Loading teacher classes...');
         
-        // Simple query without complex relationships
-        const { data: classes, error } = await this.auth.supabase
+        const isAdmin = this.userInfo.profile.user_type === 'admin';
+        
+        let query = this.auth.supabase
           .from('classes')
-          .select('*')
-          .eq('teacher_id', this.userInfo.user.id)
-          .eq('is_active', true)
-          .order('created_at', { ascending: false });
-
-        if (error) {
-          console.error('Error loading teacher classes:', error);
+          .select('*');
+        
+        if (!isAdmin) {
+          // Teachers only see their classes
+          query = query.eq('teacher_id', this.userInfo.user.id);
+        }
+        // Admins see ALL classes (no filter)
+        
+        const { data: classes, error: classError } = await query.order('name');
+      
+        if (classError) {
+          console.error('Error loading classes:', classError);
           if (window.PortalUI) {
-            window.PortalUI.showNotification('Error loading classes: ' + error.message, 'error');
+            window.PortalUI.showNotification('Error loading classes: ' + classError.message, 'error');
           }
           return;
         }
-
+      
         this.classes = classes || [];
         
         // Get enrollment counts separately
@@ -1184,7 +1238,7 @@
           cls.student_count = enrollments ? enrollments.length : 0;
         }
         
-        console.log('Loaded', this.classes.length, 'classes for teacher');
+        console.log('Loaded', this.classes.length, 'classes for', isAdmin ? 'admin' : 'teacher');
       }
 
       async loadStudentData() {
@@ -2829,6 +2883,19 @@
             break;
           case 'profile':
             this.renderProfile();
+            break;
+          // Admin sections
+          case 'admin-dashboard':
+            this.renderAdminDashboard();
+            break;
+          case 'admin-classes':
+            this.renderAdminClasses();
+            break;
+          case 'admin-users':
+            this.renderAdminUsers();
+            break;
+          case 'admin-settings':
+            this.renderAdminSettings();
             break;
         }
       }
@@ -12075,6 +12142,403 @@
         closeCategoryManagement() {
           this.showGradeManagementModal(this.currentClassId);
         }
+
+      // ==================== ADMIN FUNCTIONS ====================
+
+      async renderAdminDashboard() {
+        const content = document.getElementById('classes-content');
+        const actions = document.getElementById('classes-actions');
+        
+        actions.innerHTML = '';
+        
+        content.innerHTML = '<div style="text-align: center; padding: 40px;"><div class="loading-spinner"></div><p>Loading dashboard...</p></div>';
+        
+        try {
+          // Get statistics
+          const { data: allUsers } = await this.auth.supabase
+            .from('user_profiles')
+            .select('user_type');
+          
+          const { data: allClasses } = await this.auth.supabase
+            .from('classes')
+            .select('id');
+          
+          const { data: activeEnrollments } = await this.auth.supabase
+            .from('class_enrollments')
+            .select('id')
+            .eq('status', 'active');
+          
+          const { data: allAssignments } = await this.auth.supabase
+            .from('assignments')
+            .select('id');
+          
+          const students = allUsers?.filter(u => u.user_type === 'student').length || 0;
+          const teachers = allUsers?.filter(u => u.user_type === 'teacher').length || 0;
+          const admins = allUsers?.filter(u => u.user_type === 'admin').length || 0;
+          
+          content.innerHTML = `
+            <div>
+              <h2 style="margin-bottom: 20px;">📊 Admin Dashboard</h2>
+              
+              <div class="grid grid-3" style="margin-bottom: 30px;">
+                <div class="card" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); cursor: pointer;" onclick="app.showSection('admin-users')">
+                  <h3 style="color: white; font-size: 36px; margin-bottom: 10px;">${students}</h3>
+                  <p style="color: white; opacity: 0.9;">Students</p>
+                </div>
+                
+                <div class="card" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); cursor: pointer;" onclick="app.showSection('admin-users')">
+                  <h3 style="color: white; font-size: 36px; margin-bottom: 10px;">${teachers}</h3>
+                  <p style="color: white; opacity: 0.9;">Teachers</p>
+                </div>
+                
+                <div class="card" style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); cursor: pointer;" onclick="app.showSection('admin-users')">
+                  <h3 style="color: white; font-size: 36px; margin-bottom: 10px;">${admins}</h3>
+                  <p style="color: white; opacity: 0.9;">Admins</p>
+                </div>
+              </div>
+              
+              <div class="grid grid-3">
+                <div class="card" style="cursor: pointer;" onclick="app.showSection('admin-classes')">
+                  <h3 style="color: var(--accent); font-size: 36px; margin-bottom: 10px;">${allClasses?.length || 0}</h3>
+                  <p style="color: var(--muted);">Total Classes</p>
+                </div>
+                
+                <div class="card">
+                  <h3 style="color: var(--accent-2); font-size: 36px; margin-bottom: 10px;">${activeEnrollments?.length || 0}</h3>
+                  <p style="color: var(--muted);">Active Enrollments</p>
+                </div>
+                
+                <div class="card">
+                  <h3 style="color: var(--accent); font-size: 36px; margin-bottom: 10px;">${allAssignments?.length || 0}</h3>
+                  <p style="color: var(--muted);">Total Assignments</p>
+                </div>
+              </div>
+              
+              <div class="card" style="margin-top: 30px;">
+                <h3>Quick Actions</h3>
+                <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-top: 15px;">
+                  <button class="btn btn-primary" onclick="app.showSection('admin-users')">
+                    👥 Manage Users
+                  </button>
+                  <button class="btn btn-primary" onclick="app.showSection('admin-classes')">
+                    🏫 View All Classes
+                  </button>
+                  <button class="btn btn-secondary" onclick="app.showCreateInactiveStudentForm()">
+                    ➕ Add Inactive Student
+                  </button>
+                  <button class="btn btn-secondary" onclick="app.showSection('admin-settings')">
+                    ⚙️ System Settings
+                  </button>
+                </div>
+              </div>
+            </div>
+          `;
+        } catch (error) {
+          console.error('Error loading admin dashboard:', error);
+          content.innerHTML = '<div class="card"><p style="color: var(--danger);">Error loading dashboard</p></div>';
+        }
+      }
+      
+      async renderAdminClasses() {
+        const content = document.getElementById('classes-content');
+        const actions = document.getElementById('classes-actions');
+        
+        actions.innerHTML = `
+          <button class="btn btn-primary" onclick="app.createNewClass()">
+            ➕ Create New Class
+          </button>
+        `;
+        
+        content.innerHTML = '<div style="text-align: center; padding: 40px;"><div class="loading-spinner"></div><p>Loading all classes...</p></div>';
+        
+        try {
+          // Load ALL classes with teacher info
+          const { data: allClasses, error } = await this.auth.supabase
+            .from('classes')
+            .select(`
+              *,
+              teacher:user_profiles!teacher_id(first_name, last_name)
+            `)
+            .order('name');
+          
+          if (error) throw error;
+          
+          // Get enrollment counts
+          for (let cls of allClasses) {
+            const { data: enrollments } = await this.auth.supabase
+              .from('class_enrollments')
+              .select('id')
+              .eq('class_id', cls.id)
+              .eq('status', 'active');
+            
+            cls.student_count = enrollments?.length || 0;
+          }
+          
+          if (allClasses.length === 0) {
+            content.innerHTML = `
+              <div class="empty-state">
+                <h3>🏫 No Classes Yet</h3>
+                <p>Create the first class to get started.</p>
+              </div>
+            `;
+          } else {
+            content.innerHTML = `
+              <div>
+                <h2 style="margin-bottom: 20px;">🏫 All Classes (${allClasses.length})</h2>
+                <div class="grid grid-3">
+                  ${allClasses.map(cls => `
+                    <div class="class-card" onclick="app.openClass('${cls.id}')" style="cursor: pointer;">
+                      <h3>${cls.name}</h3>
+                      <p>${cls.description || 'No description available'}</p>
+                      <div class="class-stats">
+                        <span>📚 ${cls.subject}</span>
+                        <span>🎓 ${cls.grade_level || 'All Grades'}</span>
+                      </div>
+                      <div class="class-stats" style="margin-top: 8px;">
+                        <span>👥 ${cls.student_count}/${cls.max_students || 30}</span>
+                        <span>👨‍🏫 ${cls.teacher?.first_name} ${cls.teacher?.last_name}</span>
+                      </div>
+                    </div>
+                  `).join('')}
+                </div>
+              </div>
+            `;
+          }
+        } catch (error) {
+          console.error('Error loading all classes:', error);
+          content.innerHTML = '<div class="card"><p style="color: var(--danger);">Error loading classes</p></div>';
+        }
+      }
+      
+      async renderAdminUsers() {
+        const content = document.getElementById('classes-content');
+        const actions = document.getElementById('classes-actions');
+        
+        actions.innerHTML = `
+          <button class="btn btn-primary" onclick="app.showCreateInactiveStudentForm()">
+            ➕ Add Inactive Student
+          </button>
+        `;
+        
+        content.innerHTML = '<div style="text-align: center; padding: 40px;"><div class="loading-spinner"></div><p>Loading users...</p></div>';
+        
+        try {
+          const { data: allUsers, error } = await this.auth.supabase
+            .from('user_profiles')
+            .select('*')
+            .order('last_name');
+          
+          if (error) throw error;
+          
+          const admins = allUsers.filter(u => u.user_type === 'admin');
+          const teachers = allUsers.filter(u => u.user_type === 'teacher');
+          const activeStudents = allUsers.filter(u => u.user_type === 'student' && u.account_status === 'active');
+          const inactiveStudents = allUsers.filter(u => u.user_type === 'student' && u.account_status === 'inactive');
+          
+          content.innerHTML = `
+            <div>
+              <h2 style="margin-bottom: 20px;">👥 All Users</h2>
+              
+              <!-- Admins -->
+              <div class="card" style="margin-bottom: 20px;">
+                <h3 style="margin-bottom: 15px;">🔑 Admins (${admins.length})</h3>
+                ${admins.length > 0 ? `
+                  <table style="width: 100%;">
+                    <thead>
+                      <tr>
+                        <th>Name</th>
+                        <th>Email</th>
+                        <th>Username</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${admins.map(user => `
+                        <tr>
+                          <td>${user.first_name} ${user.last_name}</td>
+                          <td>${user.email || 'N/A'}</td>
+                          <td>${user.username}</td>
+                          <td>
+                            ${user.id !== this.userInfo.user.id ? `
+                              <button class="btn danger small" onclick="app.demoteFromAdmin('${user.id}', '${user.first_name} ${user.last_name}')">
+                                Demote to Teacher
+                              </button>
+                            ` : '<span style="color: var(--muted); font-size: 12px;">You</span>'}
+                          </td>
+                        </tr>
+                      `).join('')}
+                    </tbody>
+                  </table>
+                ` : '<p style="color: var(--muted);">No admins</p>'}
+              </div>
+              
+              <!-- Teachers -->
+              <div class="card" style="margin-bottom: 20px;">
+                <h3 style="margin-bottom: 15px;">👨‍🏫 Teachers (${teachers.length})</h3>
+                ${teachers.length > 0 ? `
+                  <table style="width: 100%;">
+                    <thead>
+                      <tr>
+                        <th>Name</th>
+                        <th>Email</th>
+                        <th>Username</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${teachers.map(user => `
+                        <tr>
+                          <td>${user.first_name} ${user.last_name}</td>
+                          <td>${user.email || 'N/A'}</td>
+                          <td>${user.username}</td>
+                          <td>
+                            <button class="btn btn-primary small" onclick="app.promoteToAdmin('${user.id}', '${user.first_name} ${user.last_name}')">
+                              Promote to Admin
+                            </button>
+                          </td>
+                        </tr>
+                      `).join('')}
+                    </tbody>
+                  </table>
+                ` : '<p style="color: var(--muted);">No teachers</p>'}
+              </div>
+              
+              <!-- Active Students -->
+              <div class="card" style="margin-bottom: 20px;">
+                <h3 style="margin-bottom: 15px;">👨‍🎓 Active Students (${activeStudents.length})</h3>
+                ${activeStudents.length > 0 ? `
+                  <div style="max-height: 400px; overflow-y: auto;">
+                    <table style="width: 100%;">
+                      <thead>
+                        <tr>
+                          <th>Name</th>
+                          <th>Email</th>
+                          <th>Grade</th>
+                          <th>Username</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${activeStudents.map(user => `
+                          <tr>
+                            <td>${user.first_name} ${user.last_name}</td>
+                            <td>${user.email || 'N/A'}</td>
+                            <td>${user.grade_level || 'N/A'}</td>
+                            <td>${user.username}</td>
+                          </tr>
+                        `).join('')}
+                      </tbody>
+                    </table>
+                  </div>
+                ` : '<p style="color: var(--muted);">No active students</p>'}
+              </div>
+              
+              <!-- Inactive Students -->
+              <div class="card">
+                <h3 style="margin-bottom: 15px;">⊘ Inactive Students (${inactiveStudents.length})</h3>
+                ${inactiveStudents.length > 0 ? `
+                  <div style="max-height: 400px; overflow-y: auto;">
+                    <table style="width: 100%;">
+                      <thead>
+                        <tr>
+                          <th>Name</th>
+                          <th>Current Grade</th>
+                          <th>Activation Grade</th>
+                          <th>Username</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${inactiveStudents.map(user => `
+                          <tr>
+                            <td>${user.first_name} ${user.last_name}</td>
+                            <td>${user.grade_level || 'N/A'}</td>
+                            <td>${user.activation_grade_level || 'N/A'}</td>
+                            <td>${user.username}</td>
+                          </tr>
+                        `).join('')}
+                      </tbody>
+                    </table>
+                  </div>
+                ` : '<p style="color: var(--muted);">No inactive students</p>'}
+              </div>
+            </div>
+          `;
+        } catch (error) {
+          console.error('Error loading users:', error);
+          content.innerHTML = '<div class="card"><p style="color: var(--danger);">Error loading users</p></div>';
+        }
+      }
+      
+      async promoteToAdmin(userId, userName) {
+        if (!confirm(`Promote ${userName} to Admin?\n\nAdmins have full access to all classes, students, and system settings.`)) {
+          return;
+        }
+        
+        try {
+          const { error } = await this.auth.supabase
+            .from('user_profiles')
+            .update({ user_type: 'admin' })
+            .eq('id', userId);
+          
+          if (error) throw error;
+          
+          this.showNotification(`✅ ${userName} promoted to Admin!`, 'success');
+          this.renderAdminUsers(); // Refresh the view
+        } catch (error) {
+          console.error('Error promoting user:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+        }
+      }
+      
+      async demoteFromAdmin(userId, userName) {
+        if (!confirm(`Demote ${userName} from Admin to Teacher?\n\nThey will lose admin privileges but retain their classes.`)) {
+          return;
+        }
+        
+        try {
+          const { error } = await this.auth.supabase
+            .from('user_profiles')
+            .update({ user_type: 'teacher' })
+            .eq('id', userId);
+          
+          if (error) throw error;
+          
+          this.showNotification(`${userName} demoted to Teacher`, 'success');
+          this.renderAdminUsers(); // Refresh the view
+        } catch (error) {
+          console.error('Error demoting user:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+        }
+      }
+      
+      async renderAdminSettings() {
+        const content = document.getElementById('classes-content');
+        const actions = document.getElementById('classes-actions');
+        
+        actions.innerHTML = '';
+        
+        content.innerHTML = `
+          <div>
+            <h2 style="margin-bottom: 20px;">⚙️ System Settings</h2>
+            
+            <div class="card">
+              <h3>🏫 School Information</h3>
+              <p style="color: var(--muted); margin: 10px 0;">Coming soon: School name, year settings, etc.</p>
+            </div>
+            
+            <div class="card" style="margin-top: 20px;">
+              <h3>📊 Quarters & Grading Periods</h3>
+              <p style="color: var(--muted); margin: 10px 0;">Coming soon: Manage quarters, semesters, and grading periods.</p>
+            </div>
+            
+            <div class="card" style="margin-top: 20px;">
+              <h3>🔐 Security & Permissions</h3>
+              <p style="color: var(--muted); margin: 10px 0;">Coming soon: Advanced permission settings.</p>
+            </div>
+          </div>
+        `;
+      }
+      
+      // ==================== END ADMIN FUNCTIONS ====================
       }
     
     // Initialize teacher grade management
