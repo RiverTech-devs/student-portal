@@ -1497,13 +1497,84 @@
         }
       }
 
-      // FIX 1: Fixed message recipients loading and dropdown population
       async loadMessageRecipients() {
         try {
           const userType = this.userInfo.profile.user_type;
           let recipients = [];
       
-          if (userType === 'teacher') {
+          if (userType === 'admin') {
+            // ADMINS can message EVERYONE
+            
+            // Get all teachers
+            const { data: teachers } = await this.auth.supabase
+              .from('user_profiles')
+              .select('id, first_name, last_name, email, user_type')
+              .eq('user_type', 'teacher');
+            
+            if (teachers) {
+              teachers.forEach(teacher => {
+                recipients.push({
+                  id: teacher.id,
+                  name: `${teacher.first_name} ${teacher.last_name}`,
+                  email: teacher.email,
+                  type: 'Teacher'
+                });
+              });
+            }
+            
+            // Get all students
+            const { data: students } = await this.auth.supabase
+              .from('user_profiles')
+              .select('id, first_name, last_name, email, user_type')
+              .eq('user_type', 'student');
+            
+            if (students) {
+              students.forEach(student => {
+                recipients.push({
+                  id: student.id,
+                  name: `${student.first_name} ${student.last_name}`,
+                  email: student.email,
+                  type: 'Student'
+                });
+              });
+            }
+            
+            // Get other admins (excluding self)
+            const { data: admins } = await this.auth.supabase
+              .from('user_profiles')
+              .select('id, first_name, last_name, email, user_type')
+              .eq('user_type', 'admin')
+              .neq('id', this.userInfo.user.id);
+            
+            if (admins) {
+              admins.forEach(admin => {
+                recipients.push({
+                  id: admin.id,
+                  name: `${admin.first_name} ${admin.last_name}`,
+                  email: admin.email,
+                  type: 'Admin'
+                });
+              });
+            }
+            
+            // Get all parents
+            const { data: parents } = await this.auth.supabase
+              .from('user_profiles')
+              .select('id, first_name, last_name, email, user_type')
+              .eq('user_type', 'parent');
+            
+            if (parents) {
+              parents.forEach(parent => {
+                recipients.push({
+                  id: parent.id,
+                  name: `${parent.first_name} ${parent.last_name}`,
+                  email: parent.email,
+                  type: 'Parent'
+                });
+              });
+            }
+      
+          } else if (userType === 'teacher') {
             // Get class IDs for teacher's classes
             const classIds = this.classes.map(c => c.id);
             
@@ -1593,12 +1664,39 @@
                 });
               });
             }
+            
+          } else if (userType === 'parent') {
+            // Parents can message teachers and admins
+            const { data: staff } = await this.auth.supabase
+              .from('user_profiles')
+              .select('id, first_name, last_name, email, user_type')
+              .in('user_type', ['teacher', 'admin']);
+            
+            if (staff) {
+              staff.forEach(person => {
+                recipients.push({
+                  id: person.id,
+                  name: `${person.first_name} ${person.last_name}`,
+                  email: person.email,
+                  type: person.user_type === 'admin' ? 'Admin' : 'Teacher'
+                });
+              });
+            }
           }
       
           // Remove duplicates
           const uniqueRecipients = recipients.filter((recipient, index, self) =>
             index === self.findIndex(r => r.id === recipient.id)
           );
+          
+          // Sort by type, then by name
+          uniqueRecipients.sort((a, b) => {
+            if (a.type !== b.type) {
+              const typeOrder = { 'Admin': 0, 'Teacher': 1, 'Parent': 2, 'Student': 3 };
+              return typeOrder[a.type] - typeOrder[b.type];
+            }
+            return a.name.localeCompare(b.name);
+          });
       
           this.messageRecipients = uniqueRecipients;
           this.updateMessageRecipientsDropdown();
@@ -2981,7 +3079,7 @@
 
       renderClassCard(cls) {
         const userType = this.userInfo.profile.user_type;
-        const isTeacher = userType === 'teacher';
+        const isTeacher = userType === 'teacher' || userType === 'admin';
         const isStudent = userType === 'student';
         
         return `
@@ -3602,7 +3700,7 @@
         const classData = this.classes.find(c => c.id === classId);
         if (!classData) return;
       
-        const isTeacher = this.userInfo.profile.user_type === 'teacher';
+        const isTeacher = this.userInfo.profile.user_type === 'teacher' || this.userInfo.profile.user_type === 'admin';
         
         const modalContent = `
           <div style="margin-bottom: 20px;">
