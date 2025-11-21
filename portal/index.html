@@ -743,6 +743,11 @@
             <section id="admin-student-management-section" class="hidden">
               <!-- Will be populated by renderStudentManagement() -->
             </section>
+
+            <!-- Admin Reports Section (Admin only) -->
+            <section id="admin-reports-section" class="hidden">
+              <!-- Will be populated by renderAdminReports() -->
+            </section>
           </div>
         </div>
       </div>
@@ -3063,6 +3068,9 @@
             break;
           case 'admin-settings':
             this.renderAdminSettings();
+            break;
+          case 'admin-reports':
+            this.renderAdminReports();
             break;
           default:
             console.warn('Unknown section:', sectionName);
@@ -11854,6 +11862,25 @@
                     <span>✓ Permissions</span>
                   </div>
                 </div>
+
+                <!-- Reports -->
+                <div class="card" style="cursor: pointer; border: 2px solid var(--accent); transition: all 0.2s;" 
+                     onmouseover="this.style.background='rgba(106, 169, 255, 0.1)'" 
+                     onmouseout="this.style.background='var(--card)'"
+                     onclick="app.showAdminSection('reports')">
+                  <div style="display: flex; align-items: center; gap: 15px; margin-bottom: 15px;">
+                    <div style="font-size: 48px;">📊</div>
+                    <div>
+                      <h3 style="margin: 0;">Grade Reports</h3>
+                      <p style="color: var(--muted); margin: 5px 0 0 0; font-size: 13px;">View comprehensive grade reports by quarter</p>
+                    </div>
+                  </div>
+                  <div style="display: flex; gap: 10px; font-size: 12px; color: var(--muted);">
+                    <span>✓ By Quarter</span>
+                    <span>✓ All Classes</span>
+                    <span>✓ Export Data</span>
+                  </div>
+                </div>
               </div>
             </div>
           `;
@@ -11885,6 +11912,10 @@
           case 'settings':
             this.showSection('admin-settings');
             this.renderAdminSettings();
+            break;
+          case 'reports':
+            this.showSection('admin-reports');
+            this.renderAdminReports();
             break;
           default:
             console.warn('Unknown admin section:', section);
@@ -12778,6 +12809,467 @@
         // This could show detailed grades and assignments for this specific student in this class
         // For now, just open the class
         this.openClass(classId);
+      }
+
+      async renderAdminReports() {
+        const section = document.getElementById('admin-reports-section');
+        if (!section) {
+          console.error('❌ Admin reports section not found!');
+          return;
+        }
+        
+        section.innerHTML = `
+          <div style="padding: 20px;">
+            <h2 style="margin-bottom: 20px;">📊 Grade Reports</h2>
+            
+            <!-- Report Controls -->
+            <div class="card" style="margin-bottom: 20px;">
+              <h3 style="margin-bottom: 15px;">Report Filters</h3>
+              <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; align-items: end;">
+                <div>
+                  <label style="display: block; margin-bottom: 5px; font-weight: bold;">Quarter</label>
+                  <select id="report-quarter" class="form-control" style="width: 100%; padding: 8px;">
+                    <option value="Q1">Quarter 1</option>
+                    <option value="Q2">Quarter 2</option>
+                    <option value="Q3">Quarter 3</option>
+                    <option value="Q4">Quarter 4</option>
+                    <option value="S1">Semester 1 (Q1+Q2)</option>
+                    <option value="S2">Semester 2 (Q3+Q4)</option>
+                    <option value="YEAR">Full Year</option>
+                  </select>
+                </div>
+                <div>
+                  <label style="display: block; margin-bottom: 5px; font-weight: bold;">Class</label>
+                  <select id="report-class" class="form-control" style="width: 100%; padding: 8px;">
+                    <option value="all">All Classes</option>
+                  </select>
+                </div>
+                <div>
+                  <label style="display: block; margin-bottom: 5px; font-weight: bold;">Student</label>
+                  <select id="report-student" class="form-control" style="width: 100%; padding: 8px;">
+                    <option value="all">All Students</option>
+                  </select>
+                </div>
+                <button class="btn btn-primary" onclick="app.generateGradeReport()">
+                  Generate Report
+                </button>
+                <button class="btn btn-secondary" onclick="app.exportGradeReport()">
+                  📥 Export CSV
+                </button>
+              </div>
+            </div>
+            
+            <!-- Report Display Area -->
+            <div id="report-display" class="card">
+              <p style="color: var(--muted); text-align: center; padding: 40px;">
+                Select filters and click "Generate Report" to view grades
+              </p>
+            </div>
+          </div>
+        `;
+        
+        // Load classes and students for filters
+        await this.loadReportFilters();
+      }
+      
+      async loadReportFilters() {
+        try {
+          // Load all classes
+          const { data: classes } = await this.auth.supabase
+            .from('classes')
+            .select('id, name, subject')
+            .order('name');
+          
+          const classSelect = document.getElementById('report-class');
+          if (classSelect && classes) {
+            classes.forEach(cls => {
+              const option = document.createElement('option');
+              option.value = cls.id;
+              option.textContent = `${cls.name} (${cls.subject})`;
+              classSelect.appendChild(option);
+            });
+          }
+          
+          // Load all active students
+          const { data: students } = await this.auth.supabase
+            .from('user_profiles')
+            .select('id, first_name, last_name, grade_level')
+            .eq('user_type', 'student')
+            .eq('account_status', 'active')
+            .order('last_name');
+          
+          const studentSelect = document.getElementById('report-student');
+          if (studentSelect && students) {
+            students.forEach(student => {
+              const option = document.createElement('option');
+              option.value = student.id;
+              option.textContent = `${student.last_name}, ${student.first_name} (Grade ${student.grade_level || 'N/A'})`;
+              studentSelect.appendChild(option);
+            });
+          }
+          
+        } catch (error) {
+          console.error('Error loading report filters:', error);
+        }
+      }
+      
+      async generateGradeReport() {
+        const quarter = document.getElementById('report-quarter').value;
+        const classId = document.getElementById('report-class').value;
+        const studentId = document.getElementById('report-student').value;
+        const reportDisplay = document.getElementById('report-display');
+        
+        reportDisplay.innerHTML = '<div style="text-align: center; padding: 40px;"><div class="loading-spinner"></div><p>Generating report...</p></div>';
+        
+        try {
+          // Build query based on filters
+          let gradesQuery = this.auth.supabase
+            .from('grades')
+            .select(`
+              *,
+              student:user_profiles!student_id(id, first_name, last_name, grade_level),
+              assignment:assignments(
+                id,
+                title,
+                quarter,
+                class_id,
+                class:classes(id, name, subject)
+              )
+            `)
+            .eq('assignment.quarter', quarter === 'YEAR' ? null : quarter);
+          
+          // Apply filters
+          if (classId !== 'all') {
+            gradesQuery = gradesQuery.eq('assignment.class_id', classId);
+          }
+          
+          if (studentId !== 'all') {
+            gradesQuery = gradesQuery.eq('student_id', studentId);
+          }
+          
+          // Handle semester and full year queries
+          let grades;
+          if (quarter === 'S1') {
+            const { data: q1Grades } = await this.auth.supabase
+              .from('grades')
+              .select(`
+                *,
+                student:user_profiles!student_id(id, first_name, last_name, grade_level),
+                assignment:assignments(
+                  id,
+                  title,
+                  quarter,
+                  class_id,
+                  class:classes(id, name, subject)
+                )
+              `)
+              .eq('assignment.quarter', 'Q1');
+            
+            const { data: q2Grades } = await this.auth.supabase
+              .from('grades')
+              .select(`
+                *,
+                student:user_profiles!student_id(id, first_name, last_name, grade_level),
+                assignment:assignments(
+                  id,
+                  title,
+                  quarter,
+                  class_id,
+                  class:classes(id, name, subject)
+                )
+              `)
+              .eq('assignment.quarter', 'Q2');
+            
+            grades = [...(q1Grades || []), ...(q2Grades || [])];
+          } else if (quarter === 'S2') {
+            const { data: q3Grades } = await this.auth.supabase
+              .from('grades')
+              .select(`
+                *,
+                student:user_profiles!student_id(id, first_name, last_name, grade_level),
+                assignment:assignments(
+                  id,
+                  title,
+                  quarter,
+                  class_id,
+                  class:classes(id, name, subject)
+                )
+              `)
+              .eq('assignment.quarter', 'Q3');
+            
+            const { data: q4Grades } = await this.auth.supabase
+              .from('grades')
+              .select(`
+                *,
+                student:user_profiles!student_id(id, first_name, last_name, grade_level),
+                assignment:assignments(
+                  id,
+                  title,
+                  quarter,
+                  class_id,
+                  class:classes(id, name, subject)
+                )
+              `)
+              .eq('assignment.quarter', 'Q4');
+            
+            grades = [...(q3Grades || []), ...(q4Grades || [])];
+          } else if (quarter === 'YEAR') {
+            const { data: allGrades } = await this.auth.supabase
+              .from('grades')
+              .select(`
+                *,
+                student:user_profiles!student_id(id, first_name, last_name, grade_level),
+                assignment:assignments(
+                  id,
+                  title,
+                  quarter,
+                  class_id,
+                  class:classes(id, name, subject)
+                )
+              `);
+            grades = allGrades || [];
+          } else {
+            const { data: quarterGrades } = await gradesQuery;
+            grades = quarterGrades || [];
+          }
+          
+          // Apply class filter if needed
+          if (classId !== 'all') {
+            grades = grades.filter(g => g.assignment?.class_id === classId);
+          }
+          
+          // Apply student filter if needed
+          if (studentId !== 'all') {
+            grades = grades.filter(g => g.student_id === studentId);
+          }
+          
+          // Organize data by student and class
+          const reportData = this.organizeGradeReportData(grades);
+          
+          // Store for export
+          this.currentReportData = reportData;
+          
+          // Render the report
+          this.renderGradeReportTable(reportData, quarter);
+          
+        } catch (error) {
+          console.error('Error generating report:', error);
+          reportDisplay.innerHTML = `<div class="card"><p style="color: var(--danger);">Error generating report: ${error.message}</p></div>`;
+        }
+      }
+      
+      organizeGradeReportData(grades) {
+        const data = {};
+        
+        grades.forEach(grade => {
+          const studentId = grade.student_id;
+          const studentName = `${grade.student?.last_name}, ${grade.student?.first_name}`;
+          const gradeLevel = grade.student?.grade_level;
+          const classId = grade.assignment?.class_id;
+          const className = grade.assignment?.class?.name || 'Unknown';
+          const subject = grade.assignment?.class?.subject || '';
+          const category = grade.category || 'Academic'; // Default to Academic
+          
+          // Initialize student
+          if (!data[studentId]) {
+            data[studentId] = {
+              name: studentName,
+              gradeLevel: gradeLevel,
+              classes: {}
+            };
+          }
+          
+          // Initialize class for student
+          if (!data[studentId].classes[classId]) {
+            data[studentId].classes[classId] = {
+              name: className,
+              subject: subject,
+              academic: [],
+              participation: [],
+              all: []
+            };
+          }
+          
+          const gradeValue = parseFloat(grade.grade) || 0;
+          
+          // Categorize grade
+          if (category === 'Academic') {
+            data[studentId].classes[classId].academic.push(gradeValue);
+          } else if (category === 'Participation') {
+            data[studentId].classes[classId].participation.push(gradeValue);
+          }
+          
+          data[studentId].classes[classId].all.push(gradeValue);
+        });
+        
+        return data;
+      }
+      
+      renderGradeReportTable(reportData, quarter) {
+        const reportDisplay = document.getElementById('report-display');
+        
+        if (Object.keys(reportData).length === 0) {
+          reportDisplay.innerHTML = '<p style="color: var(--muted); text-align: center; padding: 40px;">No grades found for selected filters</p>';
+          return;
+        }
+        
+        const quarterName = {
+          'Q1': 'Quarter 1',
+          'Q2': 'Quarter 2',
+          'Q3': 'Quarter 3',
+          'Q4': 'Quarter 4',
+          'S1': 'Semester 1',
+          'S2': 'Semester 2',
+          'YEAR': 'Full Year'
+        }[quarter] || quarter;
+        
+        let html = `
+          <div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+              <h3>Grade Report - ${quarterName}</h3>
+              <span style="color: var(--muted);">${Object.keys(reportData).length} students</span>
+            </div>
+            
+            <div style="overflow-x: auto;">
+              <table style="width: 100%; border-collapse: collapse;">
+                <thead>
+                  <tr style="background: var(--accent); color: white;">
+                    <th style="padding: 12px; text-align: left; position: sticky; left: 0; background: var(--accent);">Student</th>
+                    <th style="padding: 12px; text-align: left;">Grade</th>
+                    <th style="padding: 12px; text-align: left;">Class</th>
+                    <th style="padding: 12px; text-align: center;">Academic</th>
+                    <th style="padding: 12px; text-align: center;">Participation</th>
+                    <th style="padding: 12px; text-align: center; background: rgba(0,0,0,0.1);">Average</th>
+                  </tr>
+                </thead>
+                <tbody>
+        `;
+        
+        // Sort students by name
+        const sortedStudents = Object.entries(reportData).sort((a, b) => 
+          a[1].name.localeCompare(b[1].name)
+        );
+        
+        sortedStudents.forEach(([studentId, studentData]) => {
+          const classes = Object.values(studentData.classes);
+          const studentRowSpan = classes.length;
+          
+          classes.forEach((classData, index) => {
+            const academicAvg = classData.academic.length > 0
+              ? (classData.academic.reduce((a, b) => a + b, 0) / classData.academic.length).toFixed(1)
+              : 'N/A';
+            
+            const participationAvg = classData.participation.length > 0
+              ? (classData.participation.reduce((a, b) => a + b, 0) / classData.participation.length).toFixed(1)
+              : 'N/A';
+            
+            const overallAvg = classData.all.length > 0
+              ? (classData.all.reduce((a, b) => a + b, 0) / classData.all.length).toFixed(1)
+              : 'N/A';
+            
+            // Color code the average
+            let avgColor = 'var(--text)';
+            if (overallAvg !== 'N/A') {
+              const numAvg = parseFloat(overallAvg);
+              if (numAvg >= 90) avgColor = 'var(--success)';
+              else if (numAvg >= 80) avgColor = 'var(--accent)';
+              else if (numAvg >= 70) avgColor = 'var(--warning)';
+              else avgColor = 'var(--danger)';
+            }
+            
+            html += `
+              <tr style="border-bottom: 1px solid var(--border);">
+                ${index === 0 ? `
+                  <td rowspan="${studentRowSpan}" style="padding: 12px; font-weight: bold; position: sticky; left: 0; background: var(--bg); border-right: 2px solid var(--border);">
+                    ${studentData.name}
+                  </td>
+                  <td rowspan="${studentRowSpan}" style="padding: 12px;">${studentData.gradeLevel || 'N/A'}</td>
+                ` : ''}
+                <td style="padding: 12px;">
+                  ${classData.name}
+                  <br><span style="font-size: 12px; color: var(--muted);">${classData.subject}</span>
+                </td>
+                <td style="padding: 12px; text-align: center;">
+                  <strong>${academicAvg}${academicAvg !== 'N/A' ? '%' : ''}</strong>
+                  <br><span style="font-size: 11px; color: var(--muted);">(${classData.academic.length} grades)</span>
+                </td>
+                <td style="padding: 12px; text-align: center;">
+                  <strong>${participationAvg}${participationAvg !== 'N/A' ? '%' : ''}</strong>
+                  <br><span style="font-size: 11px; color: var(--muted);">(${classData.participation.length} grades)</span>
+                </td>
+                <td style="padding: 12px; text-align: center; background: rgba(0,0,0,0.05);">
+                  <strong style="font-size: 18px; color: ${avgColor};">${overallAvg}${overallAvg !== 'N/A' ? '%' : ''}</strong>
+                  <br><span style="font-size: 11px; color: var(--muted);">(${classData.all.length} total)</span>
+                </td>
+              </tr>
+            `;
+          });
+        });
+        
+        html += `
+                </tbody>
+              </table>
+            </div>
+          </div>
+        `;
+        
+        reportDisplay.innerHTML = html;
+      }
+      
+      exportGradeReport() {
+        if (!this.currentReportData) {
+          this.showNotification('Generate a report first before exporting', 'error');
+          return;
+        }
+        
+        const quarter = document.getElementById('report-quarter').value;
+        const quarterName = {
+          'Q1': 'Quarter_1',
+          'Q2': 'Quarter_2',
+          'Q3': 'Quarter_3',
+          'Q4': 'Quarter_4',
+          'S1': 'Semester_1',
+          'S2': 'Semester_2',
+          'YEAR': 'Full_Year'
+        }[quarter] || quarter;
+        
+        // Build CSV
+        let csv = 'Student,Grade Level,Class,Subject,Academic Average,Participation Average,Overall Average\n';
+        
+        const sortedStudents = Object.entries(this.currentReportData).sort((a, b) => 
+          a[1].name.localeCompare(b[1].name)
+        );
+        
+        sortedStudents.forEach(([studentId, studentData]) => {
+          Object.values(studentData.classes).forEach(classData => {
+            const academicAvg = classData.academic.length > 0
+              ? (classData.academic.reduce((a, b) => a + b, 0) / classData.academic.length).toFixed(1)
+              : '';
+            
+            const participationAvg = classData.participation.length > 0
+              ? (classData.participation.reduce((a, b) => a + b, 0) / classData.participation.length).toFixed(1)
+              : '';
+            
+            const overallAvg = classData.all.length > 0
+              ? (classData.all.reduce((a, b) => a + b, 0) / classData.all.length).toFixed(1)
+              : '';
+            
+            csv += `"${studentData.name}","${studentData.gradeLevel || ''}","${classData.name}","${classData.subject}","${academicAvg}","${participationAvg}","${overallAvg}"\n`;
+          });
+        });
+        
+        // Download CSV
+        const blob = new Blob([csv], { type: 'text/csv' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `Grade_Report_${quarterName}_${new Date().toISOString().split('T')[0]}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+        
+        this.showNotification('Report exported successfully!', 'success');
       }
       // ==================== END ADMIN FUNCTIONS ====================
     } // ============================= END OF CLASSAPP ===================================
