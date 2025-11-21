@@ -12517,13 +12517,48 @@
             }
           }
           
-          // Load total grade count for this student
-          const { data: grades, error: gradesError } = await this.auth.supabase
+          // Load all grades for this student
+          const { data: allGrades, error: gradesError } = await this.auth.supabase
             .from('grades')
-            .select('id')
+            .select('*')
             .eq('student_id', studentId);
       
-          const totalGrades = grades?.length || 0;
+          if (gradesError) {
+            console.error('Error loading grades:', gradesError);
+          }
+      
+          // Match grades to classes using subject and teacher_id
+          const gradesByClass = {};
+          
+          if (allGrades && enrollments) {
+            enrollments.forEach(enrollment => {
+              const cls = enrollment.class;
+              if (!cls) return;
+              
+              // Find grades that match this class by subject and/or teacher
+              const matchingGrades = allGrades.filter(grade => {
+                // Match by both subject and teacher (most reliable)
+                if (grade.subject === cls.subject && grade.teacher_id === cls.teacher_id) {
+                  return true;
+                }
+                // Match by teacher only (if subject is missing or different)
+                if (grade.teacher_id === cls.teacher_id) {
+                  return true;
+                }
+                return false;
+              });
+              
+              if (matchingGrades.length > 0) {
+                gradesByClass[cls.id] = {
+                  grades: matchingGrades,
+                  count: matchingGrades.length,
+                  average: this.calculateGradeAverage(matchingGrades)
+                };
+              }
+            });
+          }
+          
+          const totalGrades = allGrades?.length || 0;
           
           const modalContent = `
             <div style="margin-bottom: 20px;">
@@ -12547,16 +12582,64 @@
                     ${enrollments.map(enrollment => {
                       const cls = enrollment.class;
                       if (!cls) return '';
+                      const classGrades = gradesByClass[cls.id];
                       return `
-                        <div style="border: 1px solid var(--border); padding: 15px; border-radius: 8px; display: flex; justify-content: space-between; align-items: center;">
-                          <div>
-                            <h4 style="margin: 0 0 5px 0;">${cls.name}</h4>
-                            <div style="font-size: 13px; color: var(--muted);">
-                              <span>📚 ${cls.subject}</span>
-                              <span style="margin-left: 15px;">👨‍🏫 ${cls.teacher?.first_name || 'Unknown'} ${cls.teacher?.last_name || ''}</span>
+                        <div style="border: 1px solid var(--border); padding: 15px; border-radius: 8px;">
+                          <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 10px;">
+                            <div>
+                              <h4 style="margin: 0 0 5px 0;">${cls.name}</h4>
+                              <div style="font-size: 13px; color: var(--muted);">
+                                <span>📚 ${cls.subject}</span>
+                                <span style="margin-left: 15px;">👨‍🏫 ${cls.teacher?.first_name || 'Unknown'} ${cls.teacher?.last_name || ''}</span>
+                              </div>
+                            </div>
+                            <div style="text-align: right;">
+                              ${classGrades ? `
+                                <div style="font-size: 24px; font-weight: bold; color: var(--accent);">
+                                  ${classGrades.average}%
+                                </div>
+                                <div style="font-size: 12px; color: var(--muted);">
+                                  ${classGrades.count} grade${classGrades.count !== 1 ? 's' : ''}
+                                </div>
+                              ` : `
+                                <div style="font-size: 14px; color: var(--muted);">
+                                  No grades yet
+                                </div>
+                              `}
                             </div>
                           </div>
-                          <div style="display: flex; gap: 5px;">
+                          
+                          ${classGrades && classGrades.grades.length > 0 ? `
+                            <details style="margin-top: 10px;">
+                              <summary style="cursor: pointer; color: var(--accent); font-size: 13px;">
+                                View all ${classGrades.count} grades
+                              </summary>
+                              <div style="margin-top: 10px; max-height: 200px; overflow-y: auto;">
+                                <table style="width: 100%; font-size: 12px;">
+                                  <thead>
+                                    <tr style="border-bottom: 1px solid var(--border);">
+                                      <th style="text-align: left; padding: 5px;">Assignment</th>
+                                      <th style="text-align: center; padding: 5px;">Grade</th>
+                                      <th style="text-align: center; padding: 5px;">Points</th>
+                                      <th style="text-align: left; padding: 5px;">Date</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    ${classGrades.grades.map(grade => `
+                                      <tr style="border-bottom: 1px solid var(--border);">
+                                        <td style="padding: 5px;">${grade.assignment_name || 'Unnamed'}</td>
+                                        <td style="text-align: center; padding: 5px; font-weight: bold;">${grade.grade || 'N/A'}</td>
+                                        <td style="text-align: center; padding: 5px;">${grade.points_earned || 0}/${grade.points_possible || 0}</td>
+                                        <td style="padding: 5px;">${grade.date_graded ? new Date(grade.date_graded).toLocaleDateString() : 'Not graded'}</td>
+                                      </tr>
+                                    `).join('')}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </details>
+                          ` : ''}
+                          
+                          <div style="display: flex; gap: 5px; margin-top: 10px;">
                             <button class="btn btn-secondary small" onclick="app.openClass('${cls.id}')">
                               View Class
                             </button>
@@ -12608,6 +12691,32 @@
           console.error('Error loading student details:', error);
           this.showNotification('Error loading student details: ' + error.message, 'error');
         }
+      }
+      
+      calculateGradeAverage(grades) {
+        if (!grades || grades.length === 0) return 'N/A';
+        
+        // Try to calculate from percentage grades
+        const percentGrades = grades
+          .map(g => {
+            // If grade is already a percentage (like "85" or "85%")
+            const gradeStr = String(g.grade).replace('%', '').trim();
+            const num = parseFloat(gradeStr);
+            if (!isNaN(num)) return num;
+            
+            // If we have points, calculate percentage
+            if (g.points_earned && g.points_possible && g.points_possible > 0) {
+              return (g.points_earned / g.points_possible) * 100;
+            }
+            
+            return null;
+          })
+          .filter(g => g !== null);
+        
+        if (percentGrades.length === 0) return 'N/A';
+        
+        const avg = percentGrades.reduce((a, b) => a + b, 0) / percentGrades.length;
+        return avg.toFixed(1);
       }
 
       async removeStudentFromClass(studentId, classId, studentName, className) {
