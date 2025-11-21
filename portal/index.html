@@ -12464,7 +12464,7 @@
           
           if (studentError) throw studentError;
           
-          // Load enrollments
+          // Load enrollments with grade data
           const { data: enrollments, error: enrollError } = await this.auth.supabase
             .from('class_enrollments')
             .select('*')
@@ -12517,64 +12517,6 @@
             }
           }
           
-          // Load graded assignment submissions (this is where grades are stored!)
-          const { data: submissions, error: submissionsError } = await this.auth.supabase
-            .from('assignment_submissions')
-            .select('*')
-            .eq('student_id', studentId)
-            .not('grade', 'is', null)
-            .not('graded_at', 'is', null);
-      
-          if (submissionsError) {
-            console.error('Error loading submissions:', submissionsError);
-          }
-      
-          console.log('📊 Graded submissions for student:', submissions);
-      
-          // Load assignment info to link submissions to classes
-          let gradesByClass = {};
-          if (submissions && submissions.length > 0) {
-            const assignmentIds = [...new Set(submissions.map(s => s.assignment_id))];
-            const { data: assignments } = await this.auth.supabase
-              .from('assignments')
-              .select('id, title, class_id, points_possible')
-              .in('id', assignmentIds);
-            
-            // Create assignment map
-            const assignmentMap = {};
-            assignments?.forEach(a => {
-              assignmentMap[a.id] = a;
-            });
-            
-            // Attach assignment info to submissions
-            submissions.forEach(s => {
-              s.assignment = assignmentMap[s.assignment_id];
-            });
-            
-            // Group submissions by class
-            submissions.forEach(submission => {
-              const classId = submission.assignment?.class_id;
-              if (!classId) return;
-              
-              if (!gradesByClass[classId]) {
-                gradesByClass[classId] = {
-                  submissions: [],
-                  count: 0
-                };
-              }
-              
-              gradesByClass[classId].submissions.push(submission);
-              gradesByClass[classId].count++;
-            });
-            
-            // Calculate averages for each class
-            Object.keys(gradesByClass).forEach(classId => {
-              gradesByClass[classId].average = this.calculateGradeAverage(gradesByClass[classId].submissions);
-            });
-          }
-          
-          const totalGrades = submissions?.length || 0;
-          
           const modalContent = `
             <div style="margin-bottom: 20px;">
               <!-- Student Header -->
@@ -12585,7 +12527,6 @@
                   <span>👤 ${student.username}</span>
                   <span>🎓 Grade ${student.grade_level || 'N/A'}</span>
                   <span>📊 ${student.account_status === 'active' ? '✅ Active' : '⊘ Inactive'}</span>
-                  <span>📝 ${totalGrades} total grades</span>
                 </div>
               </div>
               
@@ -12593,14 +12534,18 @@
               <div class="card" style="margin-bottom: 20px;">
                 <h3 style="margin-bottom: 15px;">📚 Enrolled Classes (${enrollments?.length || 0})</h3>
                 ${enrollments && enrollments.length > 0 ? `
-                  <div style="display: grid; gap: 10px;">
+                  <div style="display: grid; gap: 15px;">
                     ${enrollments.map(enrollment => {
                       const cls = enrollment.class;
                       if (!cls) return '';
-                      const classGrades = gradesByClass[cls.id];
+                      
+                      const academicGrade = enrollment.academic_grade?.toFixed(1) || 'N/A';
+                      const participationGrade = enrollment.participation_grade?.toFixed(1) || 'N/A';
+                      const classGrade = enrollment.class_grade?.toFixed(1) || 'N/A';
+                      
                       return `
                         <div style="border: 1px solid var(--border); padding: 15px; border-radius: 8px;">
-                          <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 10px;">
+                          <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 15px;">
                             <div>
                               <h4 style="margin: 0 0 5px 0;">${cls.name}</h4>
                               <div style="font-size: 13px; color: var(--muted);">
@@ -12608,58 +12553,54 @@
                                 <span style="margin-left: 15px;">👨‍🏫 ${cls.teacher?.first_name || 'Unknown'} ${cls.teacher?.last_name || ''}</span>
                               </div>
                             </div>
-                            <div style="text-align: right;">
-                              ${classGrades ? `
-                                <div style="font-size: 24px; font-weight: bold; color: var(--accent);">
-                                  ${classGrades.average}%
-                                </div>
-                                <div style="font-size: 12px; color: var(--muted);">
-                                  ${classGrades.count} grade${classGrades.count !== 1 ? 's' : ''}
-                                </div>
-                              ` : `
-                                <div style="font-size: 14px; color: var(--muted);">
-                                  No grades yet
-                                </div>
-                              `}
+                          </div>
+                          
+                          <!-- Three Grade Display -->
+                          <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 15px;">
+                            <!-- Academic Grade -->
+                            <div style="text-align: center; padding: 12px; background: rgba(106, 169, 255, 0.1); border-radius: 6px; border: 1px solid rgba(106, 169, 255, 0.3);">
+                              <div style="font-size: 24px; font-weight: bold; color: var(--accent); margin-bottom: 5px;">
+                                ${academicGrade}${academicGrade !== 'N/A' ? '%' : ''}
+                              </div>
+                              <div style="font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;">
+                                Academic
+                              </div>
+                            </div>
+                            
+                            <!-- Participation Grade -->
+                            <div style="text-align: center; padding: 12px; background: rgba(139, 255, 176, 0.1); border-radius: 6px; border: 1px solid rgba(139, 255, 176, 0.3);">
+                              <div style="font-size: 24px; font-weight: bold; color: var(--accent-2); margin-bottom: 5px;">
+                                ${participationGrade}${participationGrade !== 'N/A' ? '%' : ''}
+                              </div>
+                              <div style="font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;">
+                                Participation
+                              </div>
+                            </div>
+                            
+                            <!-- Class Grade (Overall) -->
+                            <div style="text-align: center; padding: 12px; background: rgba(255, 211, 106, 0.1); border-radius: 6px; border: 1px solid rgba(255, 211, 106, 0.3);">
+                              <div style="font-size: 24px; font-weight: bold; color: var(--warning); margin-bottom: 5px;">
+                                ${classGrade}${classGrade !== 'N/A' ? '%' : ''}
+                              </div>
+                              <div style="font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;">
+                                Class Grade
+                              </div>
                             </div>
                           </div>
                           
-                          ${classGrades && classGrades.submissions.length > 0 ? `
-                            <details style="margin-top: 10px;">
-                              <summary style="cursor: pointer; color: var(--accent); font-size: 13px;">
-                                View all ${classGrades.count} grades
-                              </summary>
-                              <div style="margin-top: 10px; max-height: 200px; overflow-y: auto;">
-                                <table style="width: 100%; font-size: 12px;">
-                                  <thead>
-                                    <tr style="border-bottom: 1px solid var(--border);">
-                                      <th style="text-align: left; padding: 5px;">Assignment</th>
-                                      <th style="text-align: center; padding: 5px;">Grade</th>
-                                      <th style="text-align: center; padding: 5px;">Points</th>
-                                      <th style="text-align: left; padding: 5px;">Date</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    ${classGrades.submissions.map(sub => `
-                                      <tr style="border-bottom: 1px solid var(--border);">
-                                        <td style="padding: 5px;">${sub.assignment?.title || 'Unnamed'}</td>
-                                        <td style="text-align: center; padding: 5px; font-weight: bold;">${sub.grade || 'N/A'}</td>
-                                        <td style="text-align: center; padding: 5px;">${sub.points_earned || 0}/${sub.assignment?.points_possible || 0}</td>
-                                        <td style="padding: 5px;">${sub.graded_at ? new Date(sub.graded_at).toLocaleDateString() : 'Not graded'}</td>
-                                      </tr>
-                                    `).join('')}
-                                  </tbody>
-                                </table>
-                              </div>
-                            </details>
+                          ${enrollment.teacher_notes ? `
+                            <div style="padding: 10px; background: rgba(255, 211, 106, 0.05); border-left: 3px solid var(--warning); border-radius: 4px; margin-bottom: 10px;">
+                              <div style="font-size: 11px; color: var(--muted); margin-bottom: 5px; text-transform: uppercase; letter-spacing: 0.5px;">Teacher Notes:</div>
+                              <div style="font-size: 13px;">${enrollment.teacher_notes}</div>
+                            </div>
                           ` : ''}
                           
-                          <div style="display: flex; gap: 5px; margin-top: 10px;">
+                          <div style="display: flex; gap: 5px;">
                             <button class="btn btn-secondary small" onclick="app.openClass('${cls.id}')">
                               View Class
                             </button>
                             <button class="btn danger small" onclick="app.removeStudentFromClass('${studentId}', '${cls.id}', '${student.first_name} ${student.last_name}', '${cls.name}')">
-                              Remove
+                              Remove from Class
                             </button>
                           </div>
                         </div>
