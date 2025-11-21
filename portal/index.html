@@ -3053,6 +3053,9 @@
           case 'admin-users':
             this.renderAdminUsers();
             break;
+          case 'admin-student-management':
+            this.renderStudentManagement();
+            break;
           case 'admin-settings':
             this.renderAdminSettings();
             break;
@@ -3719,13 +3722,52 @@
         }
       }
 
-      openClass(classId) {
-        const classData = this.classes.find(c => c.id === classId);
-        if (!classData) return;
-      
-        const isTeacher = this.userInfo.profile.user_type === 'teacher' || this.userInfo.profile.user_type === 'admin';
+      async openClass(classId) {
+        console.log('🔍 Opening class:', classId);
+        
+        const isAdmin = this.userInfo.profile.user_type === 'admin';
+        const isTeacher = this.userInfo.profile.user_type === 'teacher' || isAdmin;
+        let classData;
+        
+        // Try to find class in our loaded classes first
+        const classToOpen = this.classes.find(c => c.id === classId);
+        
+        if (classToOpen) {
+          classData = classToOpen;
+        } else {
+          // Class not in our list - load it from database (admin can view any class)
+          if (!isAdmin) {
+            this.showNotification('Class not found', 'error');
+            return;
+          }
+          
+          const { data: fetchedClass, error } = await this.auth.supabase
+            .from('classes')
+            .select('*')
+            .eq('id', classId)
+            .single();
+          
+          if (error || !fetchedClass) {
+            this.showNotification('Error loading class', 'error');
+            return;
+          }
+          
+          classData = fetchedClass;
+        }
+        
+        this.currentClass = classData;
+        
+        // Build the modal content
+        const isOwnClass = classData.teacher_id === this.userInfo.user.id;
+        const showTeacherFeatures = isTeacher && (isOwnClass || isAdmin);
         
         const modalContent = `
+          ${isAdmin && !isOwnClass ? `
+            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 12px 20px; border-radius: 8px; margin-bottom: 20px;">
+              <strong>👑 Admin View</strong> - This is another teacher's class
+            </div>
+          ` : ''}
+          
           <div style="margin-bottom: 20px;">
             <h3 style="color: var(--accent); margin-bottom: 10px;">${classData.name}</h3>
             <p style="color: var(--muted); margin-bottom: 15px;">${classData.description || 'No description available'}</p>
@@ -3734,12 +3776,12 @@
               <div>
                 <strong>Subject:</strong> ${classData.subject}<br>
                 <strong>Grade Level:</strong> ${classData.grade_level || 'All Grades'}<br>
-                ${isTeacher ? `<strong>Class Code:</strong> <span style="background: var(--accent); color: black; padding: 2px 6px; border-radius: 4px; font-weight: bold;">${classData.class_code}</span>` : ''}
+                ${showTeacherFeatures ? `<strong>Class Code:</strong> <span style="background: var(--accent); color: black; padding: 2px 6px; border-radius: 4px; font-weight: bold;">${classData.class_code}</span>` : ''}
               </div>
               <div>
                 <strong>Max Students:</strong> ${classData.max_students || 30}<br>
                 <strong>Created:</strong> ${new Date(classData.created_at).toLocaleDateString()}<br>
-                ${isTeacher ? `<strong>Current Students:</strong> ${classData.student_count || 0}` : ''}
+                ${showTeacherFeatures ? `<strong>Current Students:</strong> ${classData.student_count || 0}` : ''}
               </div>
             </div>
       
@@ -3752,12 +3794,12 @@
                 <button class="btn btn-primary" onclick="app.viewDiscussions('${classId}')">
                   💬 Discussions
                 </button>
-                ${isTeacher ? `
+                ${showTeacherFeatures ? `
                   <button class="btn btn-secondary" onclick="app.manageStudents('${classId}')">
                     👥 Students
                   </button>
                   <button class="btn btn-primary" data-action="add-students-to-class" data-class-id="${classId}">
-                      ➕ Add Students to Class
+                    ➕ Add Students to Class
                   </button>
                   <button class="btn btn-secondary" onclick="app.classAnalytics('${classId}')">
                     📊 Analytics
@@ -3773,15 +3815,48 @@
               </div>
             </div>
       
-          <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
-            <button class="btn btn-secondary" onclick="app.closeModal('class-details')">Close</button>
-            ${isTeacher ? `<button class="btn btn-primary" onclick="app.editClass('${classId}')">✏️ Edit Class</button>` : ''}
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal('class-details')">Close</button>
+              ${isOwnClass ? `<button class="btn btn-primary" onclick="app.editClass('${classId}')">✏️ Edit Class</button>` : ''}
+            </div>
+      
+            <div id="student-management-modal"></div>
           </div>
-
-          <div id="student-management-modal"></div>
         `;
       
         this.showModal('class-details', '📚 Class Details', modalContent);
+      }
+
+      async loadClassAsAdmin(classId) {
+        console.log('👑 Admin viewing class:', classId);
+        
+        // Load full class data
+        const { data: classData, error } = await this.auth.supabase
+          .from('classes')
+          .select('*')
+          .eq('id', classId)
+          .single();
+        
+        if (error || !classData) {
+          this.showNotification('Error loading class', 'error');
+          return;
+        }
+        
+        // Get teacher info
+        const { data: teacher } = await this.auth.supabase
+          .from('user_profiles')
+          .select('first_name, last_name')
+          .eq('id', classData.teacher_id)
+          .single();
+        
+        classData.teacher = teacher;
+        this.currentClass = classData;
+        
+        // Show the class view section
+        this.showSection('class-view');
+        
+        // Render class view with admin notice
+        this.renderClassView(true); // Pass true to indicate admin view
       }
 
       showModal(id, title, content, isSecondary = false) {
@@ -11658,29 +11733,29 @@
               <!-- Statistics Overview -->
               <h3 style="margin-bottom: 15px;">📊 System Overview</h3>
               <div class="grid grid-4" style="margin-bottom: 40px;">
-                <div class="card" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); cursor: pointer;" onclick="app.showAdminSection('users')">
+                <div class="card" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); cursor: pointer;">
                   <h3 style="color: white; font-size: 36px; margin-bottom: 10px;">${students}</h3>
                   <p style="color: white; opacity: 0.9;">Students</p>
                 </div>
                 
-                <div class="card" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); cursor: pointer;" onclick="app.showAdminSection('users')">
+                <div class="card" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); cursor: pointer;">
                   <h3 style="color: white; font-size: 36px; margin-bottom: 10px;">${teachers}</h3>
                   <p style="color: white; opacity: 0.9;">Teachers</p>
                 </div>
                 
-                <div class="card" style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); cursor: pointer;" onclick="app.showAdminSection('users')">
+                <div class="card" style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); cursor: pointer;">
                   <h3 style="color: white; font-size: 36px; margin-bottom: 10px;">${parents}</h3>
                   <p style="color: white; opacity: 0.9;">Parents</p>
                 </div>
                 
-                <div class="card" style="background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%); cursor: pointer;" onclick="app.showAdminSection('users')">
+                <div class="card" style="background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%); cursor: pointer;">
                   <h3 style="color: white; font-size: 36px; margin-bottom: 10px;">${admins}</h3>
                   <p style="color: white; opacity: 0.9;">Admins</p>
                 </div>
               </div>
               
               <div class="grid grid-3" style="margin-bottom: 40px;">
-                <div class="card" style="cursor: pointer;" onclick="app.showAdminSection('classes')">
+                <div class="card">
                   <h3 style="color: var(--accent); font-size: 36px; margin-bottom: 10px;">${allClasses?.length || 0}</h3>
                   <p style="color: var(--muted);">Total Classes</p>
                 </div>
