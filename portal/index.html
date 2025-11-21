@@ -12401,9 +12401,383 @@
       }
       
       async viewStudentDetails(studentId) {
-        // This will show detailed info about a student
-        // For now, just show their classes
-        alert('Student details view - coming soon!');
+        console.log('🔍 Loading student details:', studentId);
+        
+        try {
+          // Load student profile
+          const { data: student, error: studentError } = await this.auth.supabase
+            .from('user_profiles')
+            .select('*')
+            .eq('id', studentId)
+            .single();
+          
+          if (studentError) throw studentError;
+          
+          // Load enrollments with class info
+          const { data: enrollments, error: enrollError } = await this.auth.supabase
+            .from('class_enrollments')
+            .select(`
+              *,
+              class:classes(
+                id,
+                name,
+                subject,
+                grade_level,
+                teacher_id
+              )
+            `)
+            .eq('student_id', studentId)
+            .eq('status', 'active');
+          
+          if (enrollError) throw enrollError;
+          
+          // Load teacher names for each class
+          if (enrollments) {
+            for (let enrollment of enrollments) {
+              if (enrollment.class?.teacher_id) {
+                const { data: teacher } = await this.auth.supabase
+                  .from('user_profiles')
+                  .select('first_name, last_name')
+                  .eq('id', enrollment.class.teacher_id)
+                  .single();
+                enrollment.class.teacher = teacher;
+              }
+            }
+          }
+          
+          // Load grades summary
+          const { data: grades } = await this.auth.supabase
+            .from('grades')
+            .select('grade, assignment:assignments(title, class_id)')
+            .eq('student_id', studentId);
+          
+          // Calculate average grade per class
+          const gradesByClass = {};
+          if (grades) {
+            grades.forEach(g => {
+              const classId = g.assignment?.class_id;
+              if (classId) {
+                if (!gradesByClass[classId]) {
+                  gradesByClass[classId] = [];
+                }
+                gradesByClass[classId].push(parseFloat(g.grade) || 0);
+              }
+            });
+          }
+          
+          // Calculate averages
+          Object.keys(gradesByClass).forEach(classId => {
+            const classGrades = gradesByClass[classId];
+            const avg = classGrades.reduce((a, b) => a + b, 0) / classGrades.length;
+            gradesByClass[classId] = avg.toFixed(1);
+          });
+          
+          const modalContent = `
+            <div style="margin-bottom: 20px;">
+              <!-- Student Header -->
+              <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+                <h2 style="margin: 0 0 10px 0; color: white;">${student.first_name} ${student.last_name}</h2>
+                <div style="display: flex; gap: 20px; flex-wrap: wrap; font-size: 14px;">
+                  <span>📧 ${student.email || 'No email'}</span>
+                  <span>👤 ${student.username}</span>
+                  <span>🎓 Grade ${student.grade_level || 'N/A'}</span>
+                  <span>📊 ${student.account_status === 'active' ? '✅ Active' : '⊘ Inactive'}</span>
+                </div>
+              </div>
+              
+              <!-- Enrolled Classes -->
+              <div class="card" style="margin-bottom: 20px;">
+                <h3 style="margin-bottom: 15px;">📚 Enrolled Classes (${enrollments?.length || 0})</h3>
+                ${enrollments && enrollments.length > 0 ? `
+                  <div style="display: grid; gap: 10px;">
+                    ${enrollments.map(enrollment => {
+                      const cls = enrollment.class;
+                      const avgGrade = gradesByClass[cls.id];
+                      return `
+                        <div style="border: 1px solid var(--border); padding: 15px; border-radius: 8px; display: flex; justify-content: space-between; align-items: center;">
+                          <div>
+                            <h4 style="margin: 0 0 5px 0;">${cls.name}</h4>
+                            <div style="font-size: 13px; color: var(--muted);">
+                              <span>📚 ${cls.subject}</span>
+                              <span style="margin-left: 15px;">👨‍🏫 ${cls.teacher?.first_name} ${cls.teacher?.last_name}</span>
+                              ${avgGrade ? `<span style="margin-left: 15px;">📊 Avg: ${avgGrade}%</span>` : ''}
+                            </div>
+                          </div>
+                          <div style="display: flex; gap: 5px;">
+                            <button class="btn btn-secondary small" onclick="app.viewStudentClassDetails('${studentId}', '${cls.id}')">
+                              View Details
+                            </button>
+                            <button class="btn danger small" onclick="app.removeStudentFromClass('${studentId}', '${cls.id}', '${student.first_name} ${student.last_name}', '${cls.name}')">
+                              Remove
+                            </button>
+                          </div>
+                        </div>
+                      `;
+                    }).join('')}
+                  </div>
+                ` : '<p style="color: var(--muted);">Not enrolled in any classes</p>'}
+              </div>
+              
+              <!-- Quick Actions -->
+              <div class="card">
+                <h3 style="margin-bottom: 15px;">⚡ Quick Actions</h3>
+                <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                  <button class="btn btn-primary" onclick="app.editStudentProfile('${studentId}')">
+                    ✏️ Edit Profile
+                  </button>
+                  <button class="btn btn-secondary" onclick="app.enrollStudentInClass('${studentId}')">
+                    ➕ Enroll in Class
+                  </button>
+                  ${student.account_status === 'inactive' ? `
+                    <button class="btn btn-primary" onclick="app.activateStudent('${studentId}', '${student.first_name} ${student.last_name}')">
+                      ✅ Activate Account
+                    </button>
+                  ` : `
+                    <button class="btn btn-secondary" onclick="app.changeStudentGrade('${studentId}', '${student.first_name} ${student.last_name}')">
+                      🎓 Change Grade Level
+                    </button>
+                  `}
+                  <button class="btn danger" onclick="app.deactivateStudent('${studentId}', '${student.first_name} ${student.last_name}')">
+                    ⊘ Deactivate Account
+                  </button>
+                </div>
+              </div>
+            </div>
+            
+            <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px;">
+              <button class="btn btn-secondary" onclick="app.closeModal('student-details')">Close</button>
+            </div>
+          `;
+          
+          this.showModal('student-details', '👨‍🎓 Student Details', modalContent);
+          
+        } catch (error) {
+          console.error('Error loading student details:', error);
+          this.showNotification('Error loading student details: ' + error.message, 'error');
+        }
+      }
+
+      async removeStudentFromClass(studentId, classId, studentName, className) {
+        if (!confirm(`Remove ${studentName} from ${className}?\n\nThis will remove all their grades and assignments for this class.`)) {
+          return;
+        }
+        
+        try {
+          // Update enrollment status to removed
+          const { error } = await this.auth.supabase
+            .from('class_enrollments')
+            .update({ status: 'removed' })
+            .eq('student_id', studentId)
+            .eq('class_id', classId);
+          
+          if (error) throw error;
+          
+          this.showNotification(`${studentName} removed from ${className}`, 'success');
+          
+          // Refresh the student details view
+          this.closeModal('student-details');
+          this.viewStudentDetails(studentId);
+          
+        } catch (error) {
+          console.error('Error removing student from class:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+        }
+      }
+      
+      async enrollStudentInClass(studentId) {
+        // Get all available classes
+        const { data: allClasses } = await this.auth.supabase
+          .from('classes')
+          .select('id, name, subject, teacher_id')
+          .order('name');
+        
+        // Get classes student is already in
+        const { data: currentEnrollments } = await this.auth.supabase
+          .from('class_enrollments')
+          .select('class_id')
+          .eq('student_id', studentId)
+          .eq('status', 'active');
+        
+        const enrolledClassIds = currentEnrollments?.map(e => e.class_id) || [];
+        const availableClasses = allClasses?.filter(c => !enrolledClassIds.includes(c.id)) || [];
+        
+        if (availableClasses.length === 0) {
+          this.showNotification('Student is already enrolled in all available classes', 'info');
+          return;
+        }
+        
+        const classOptions = availableClasses.map(c => 
+          `<option value="${c.id}">${c.name} (${c.subject})</option>`
+        ).join('');
+        
+        const enrollContent = `
+          <div>
+            <label style="display: block; margin-bottom: 10px;">Select a class to enroll in:</label>
+            <select id="enroll-class-select" class="form-control" style="width: 100%; padding: 10px; margin-bottom: 20px;">
+              <option value="">-- Select Class --</option>
+              ${classOptions}
+            </select>
+            <button class="btn btn-primary" onclick="app.confirmStudentEnrollment('${studentId}')">
+              Enroll Student
+            </button>
+          </div>
+        `;
+        
+        this.showModal('enroll-student', 'Enroll in Class', enrollContent);
+      }
+      
+      async confirmStudentEnrollment(studentId) {
+        const classSelect = document.getElementById('enroll-class-select');
+        const classId = classSelect.value;
+        
+        if (!classId) {
+          this.showNotification('Please select a class', 'error');
+          return;
+        }
+        
+        try {
+          const { error } = await this.auth.supabase
+            .from('class_enrollments')
+            .insert({
+              student_id: studentId,
+              class_id: classId,
+              status: 'active',
+              enrolled_at: new Date().toISOString()
+            });
+          
+          if (error) throw error;
+          
+          this.showNotification('Student enrolled successfully!', 'success');
+          this.closeModal('enroll-student');
+          this.closeModal('student-details');
+          this.viewStudentDetails(studentId);
+          
+        } catch (error) {
+          console.error('Error enrolling student:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+        }
+      }
+      
+      async changeStudentGrade(studentId, studentName) {
+        const newGrade = prompt(`Change grade level for ${studentName}:\n\nEnter new grade (K-12):`, '');
+        
+        if (newGrade === null) return;
+        
+        try {
+          const { error } = await this.auth.supabase
+            .from('user_profiles')
+            .update({ grade_level: newGrade })
+            .eq('id', studentId);
+          
+          if (error) throw error;
+          
+          this.showNotification(`Grade level updated to ${newGrade}`, 'success');
+          this.closeModal('student-details');
+          this.viewStudentDetails(studentId);
+          
+        } catch (error) {
+          console.error('Error updating grade:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+        }
+      }
+      
+      async deactivateStudent(studentId, studentName) {
+        if (!confirm(`Deactivate ${studentName}'s account?\n\nThey will not be able to log in until reactivated.`)) {
+          return;
+        }
+        
+        try {
+          const { error } = await this.auth.supabase
+            .from('user_profiles')
+            .update({ account_status: 'inactive' })
+            .eq('id', studentId);
+          
+          if (error) throw error;
+          
+          this.showNotification(`${studentName}'s account deactivated`, 'success');
+          this.closeModal('student-details');
+          this.renderStudentManagement();
+          
+        } catch (error) {
+          console.error('Error deactivating student:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+        }
+      }
+      
+      async editStudentProfile(studentId) {
+        // Load current student data
+        const { data: student } = await this.auth.supabase
+          .from('user_profiles')
+          .select('*')
+          .eq('id', studentId)
+          .single();
+        
+        const editContent = `
+          <div>
+            <div style="margin-bottom: 15px;">
+              <label style="display: block; margin-bottom: 5px;">First Name</label>
+              <input type="text" id="edit-first-name" value="${student.first_name}" class="form-control" style="width: 100%; padding: 8px;">
+            </div>
+            <div style="margin-bottom: 15px;">
+              <label style="display: block; margin-bottom: 5px;">Last Name</label>
+              <input type="text" id="edit-last-name" value="${student.last_name}" class="form-control" style="width: 100%; padding: 8px;">
+            </div>
+            <div style="margin-bottom: 15px;">
+              <label style="display: block; margin-bottom: 5px;">Email</label>
+              <input type="email" id="edit-email" value="${student.email || ''}" class="form-control" style="width: 100%; padding: 8px;">
+            </div>
+            <div style="margin-bottom: 15px;">
+              <label style="display: block; margin-bottom: 5px;">Grade Level</label>
+              <input type="text" id="edit-grade" value="${student.grade_level || ''}" class="form-control" style="width: 100%; padding: 8px;">
+            </div>
+            <button class="btn btn-primary" onclick="app.saveStudentProfile('${studentId}')">
+              Save Changes
+            </button>
+          </div>
+        `;
+        
+        this.showModal('edit-student', 'Edit Student Profile', editContent);
+      }
+      
+      async saveStudentProfile(studentId) {
+        const firstName = document.getElementById('edit-first-name').value.trim();
+        const lastName = document.getElementById('edit-last-name').value.trim();
+        const email = document.getElementById('edit-email').value.trim();
+        const gradeLevel = document.getElementById('edit-grade').value.trim();
+        
+        if (!firstName || !lastName) {
+          this.showNotification('First and last name are required', 'error');
+          return;
+        }
+        
+        try {
+          const { error } = await this.auth.supabase
+            .from('user_profiles')
+            .update({
+              first_name: firstName,
+              last_name: lastName,
+              email: email || null,
+              grade_level: gradeLevel || null
+            })
+            .eq('id', studentId);
+          
+          if (error) throw error;
+          
+          this.showNotification('Profile updated successfully!', 'success');
+          this.closeModal('edit-student');
+          this.closeModal('student-details');
+          this.viewStudentDetails(studentId);
+          
+        } catch (error) {
+          console.error('Error updating profile:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+        }
+      }
+      
+      async viewStudentClassDetails(studentId, classId) {
+        // This could show detailed grades and assignments for this specific student in this class
+        // For now, just open the class
+        this.openClass(classId);
       }
       // ==================== END ADMIN FUNCTIONS ====================
     } // ============================= END OF CLASSAPP ===================================
