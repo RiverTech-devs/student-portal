@@ -12517,55 +12517,63 @@
             }
           }
           
-          // Load all grades for this student
-          const { data: allGrades, error: gradesError } = await this.auth.supabase
-            .from('grades')
+          // Load graded assignment submissions (this is where grades are stored!)
+          const { data: submissions, error: submissionsError } = await this.auth.supabase
+            .from('assignment_submissions')
             .select('*')
-            .eq('student_id', studentId);
+            .eq('student_id', studentId)
+            .not('grade', 'is', null)
+            .not('graded_at', 'is', null);
       
-          if (gradesError) {
-            console.error('Error loading grades:', gradesError);
+          if (submissionsError) {
+            console.error('Error loading submissions:', submissionsError);
           }
-
-          console.log('📊 All grades for student:', allGrades);
-          console.log('📚 Student classes:', enrollments?.map(e => ({
-            className: e.class?.name,
-            subject: e.class?.subject,
-            teacherId: e.class?.teacher_id
-          })));
       
-          // Match grades to classes using subject and teacher_id
-          const gradesByClass = {};
-          
-          if (allGrades && enrollments) {
-            enrollments.forEach(enrollment => {
-              const cls = enrollment.class;
-              if (!cls) return;
+          console.log('📊 Graded submissions for student:', submissions);
+      
+          // Load assignment info to link submissions to classes
+          let gradesByClass = {};
+          if (submissions && submissions.length > 0) {
+            const assignmentIds = [...new Set(submissions.map(s => s.assignment_id))];
+            const { data: assignments } = await this.auth.supabase
+              .from('assignments')
+              .select('id, title, class_id, points_possible')
+              .in('id', assignmentIds);
+            
+            // Create assignment map
+            const assignmentMap = {};
+            assignments?.forEach(a => {
+              assignmentMap[a.id] = a;
+            });
+            
+            // Attach assignment info to submissions
+            submissions.forEach(s => {
+              s.assignment = assignmentMap[s.assignment_id];
+            });
+            
+            // Group submissions by class
+            submissions.forEach(submission => {
+              const classId = submission.assignment?.class_id;
+              if (!classId) return;
               
-              // Find grades that match this class by subject and/or teacher
-              const matchingGrades = allGrades.filter(grade => {
-                // Match by both subject and teacher (most reliable)
-                if (grade.subject === cls.subject && grade.teacher_id === cls.teacher_id) {
-                  return true;
-                }
-                // Match by teacher only (if subject is missing or different)
-                if (grade.teacher_id === cls.teacher_id) {
-                  return true;
-                }
-                return false;
-              });
-              
-              if (matchingGrades.length > 0) {
-                gradesByClass[cls.id] = {
-                  grades: matchingGrades,
-                  count: matchingGrades.length,
-                  average: this.calculateGradeAverage(matchingGrades)
+              if (!gradesByClass[classId]) {
+                gradesByClass[classId] = {
+                  submissions: [],
+                  count: 0
                 };
               }
+              
+              gradesByClass[classId].submissions.push(submission);
+              gradesByClass[classId].count++;
+            });
+            
+            // Calculate averages for each class
+            Object.keys(gradesByClass).forEach(classId => {
+              gradesByClass[classId].average = this.calculateGradeAverage(gradesByClass[classId].submissions);
             });
           }
           
-          const totalGrades = allGrades?.length || 0;
+          const totalGrades = submissions?.length || 0;
           
           const modalContent = `
             <div style="margin-bottom: 20px;">
@@ -12616,7 +12624,7 @@
                             </div>
                           </div>
                           
-                          ${classGrades && classGrades.grades.length > 0 ? `
+                          ${classGrades && classGrades.submissions.length > 0 ? `
                             <details style="margin-top: 10px;">
                               <summary style="cursor: pointer; color: var(--accent); font-size: 13px;">
                                 View all ${classGrades.count} grades
@@ -12632,12 +12640,12 @@
                                     </tr>
                                   </thead>
                                   <tbody>
-                                    ${classGrades.grades.map(grade => `
+                                    ${classGrades.submissions.map(sub => `
                                       <tr style="border-bottom: 1px solid var(--border);">
-                                        <td style="padding: 5px;">${grade.assignment_name || 'Unnamed'}</td>
-                                        <td style="text-align: center; padding: 5px; font-weight: bold;">${grade.grade || 'N/A'}</td>
-                                        <td style="text-align: center; padding: 5px;">${grade.points_earned || 0}/${grade.points_possible || 0}</td>
-                                        <td style="padding: 5px;">${grade.date_graded ? new Date(grade.date_graded).toLocaleDateString() : 'Not graded'}</td>
+                                        <td style="padding: 5px;">${sub.assignment?.title || 'Unnamed'}</td>
+                                        <td style="text-align: center; padding: 5px; font-weight: bold;">${sub.grade || 'N/A'}</td>
+                                        <td style="text-align: center; padding: 5px;">${sub.points_earned || 0}/${sub.assignment?.points_possible || 0}</td>
+                                        <td style="padding: 5px;">${sub.graded_at ? new Date(sub.graded_at).toLocaleDateString() : 'Not graded'}</td>
                                       </tr>
                                     `).join('')}
                                   </tbody>
@@ -12700,20 +12708,19 @@
         }
       }
       
-      calculateGradeAverage(grades) {
-        if (!grades || grades.length === 0) return 'N/A';
+      calculateGradeAverage(submissions) {
+        if (!submissions || submissions.length === 0) return 'N/A';
         
-        // Try to calculate from percentage grades
-        const percentGrades = grades
-          .map(g => {
+        const percentGrades = submissions
+          .map(sub => {
             // If grade is already a percentage (like "85" or "85%")
-            const gradeStr = String(g.grade).replace('%', '').trim();
+            const gradeStr = String(sub.grade).replace('%', '').trim();
             const num = parseFloat(gradeStr);
             if (!isNaN(num)) return num;
             
             // If we have points, calculate percentage
-            if (g.points_earned && g.points_possible && g.points_possible > 0) {
-              return (g.points_earned / g.points_possible) * 100;
+            if (sub.points_earned && sub.assignment?.points_possible && sub.assignment.points_possible > 0) {
+              return (sub.points_earned / sub.assignment.points_possible) * 100;
             }
             
             return null;
