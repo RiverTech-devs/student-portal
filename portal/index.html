@@ -6179,129 +6179,126 @@
       }
 
       async enrollInClass() {
-        const modalContent = `
-          <form id="enroll-form">
-            <div class="form-group">
-              <label for="class-code">Enter Class Code</label>
-              <input type="text" id="class-code" placeholder="e.g. ABC123" required 
-                     style="text-transform: uppercase;">
-            </div>
-            <p style="color: var(--muted); font-size: 14px;">
-              Ask your teacher for the class enrollment code.
-            </p>
-          </form>
-
-          <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
-            <button class="btn btn-secondary" onclick="app.closeModal('enroll')">Cancel</button>
-            <button class="btn btn-primary" onclick="app.submitEnrollment()">Join Class</button>
+        const enrollContent = `
+          <div>
+            <p style="margin-bottom: 20px;">Enter the class code provided by your teacher:</p>
+            <input type="text" 
+                   id="class-code-input" 
+                   placeholder="Enter class code (e.g., ABC123)" 
+                   class="form-control" 
+                   style="width: 100%; padding: 12px; margin-bottom: 20px; text-transform: uppercase; font-size: 16px; letter-spacing: 2px;">
+            <button class="btn btn-primary" onclick="app.submitEnrollment()">
+              Join Class
+            </button>
           </div>
         `;
-
-        this.showModal('enroll', '➕ Join a Class', modalContent);
+        
+        this.showModal('enroll-class', '➕ Join a Class', enrollContent);
+        
+        // Focus the input after modal appears
+        setTimeout(() => {
+          const input = document.getElementById('class-code-input');
+          if (input) {
+            input.focus();
+            // Allow Enter key to submit
+            input.addEventListener('keypress', (e) => {
+              if (e.key === 'Enter') {
+                this.submitEnrollment();
+              }
+            });
+          }
+        }, 100);
       }
-
+      
       async submitEnrollment() {
-        const classCode = document.getElementById('class-code')?.value?.toUpperCase();
+        const input = document.getElementById('class-code-input');
+        const classCode = input?.value.trim().toUpperCase();
         
         if (!classCode) {
           this.showNotification('Please enter a class code', 'error');
           return;
         }
-      
+        
         try {
           // Find class by code
-          const { data: classData, error: findError } = await this.auth.supabase
+          const { data: classData, error: classError } = await this.auth.supabase
             .from('classes')
-            .select('*')
+            .select('id, name, subject, teacher_id, max_students')
             .eq('class_code', classCode)
-            .eq('is_active', true)
             .single();
-      
-          if (findError || !classData) {
-            this.showNotification('Invalid class code', 'error');
+          
+          if (classError || !classData) {
+            this.showNotification('Invalid class code. Please check and try again.', 'error');
             return;
           }
-      
-          // Check for ANY existing enrollment (active, withdrawn, etc.)
+          
+          // Check if already enrolled
           const { data: existingEnrollment } = await this.auth.supabase
             .from('class_enrollments')
-            .select('*')
+            .select('id, status')
             .eq('class_id', classData.id)
             .eq('student_id', this.userInfo.user.id)
-            .single();
-      
+            .maybeSingle();
+          
           if (existingEnrollment) {
             if (existingEnrollment.status === 'active') {
-              this.showNotification('You are already enrolled in this class', 'error');
+              this.showNotification('You are already enrolled in this class', 'info');
+              return;
+            } else if (existingEnrollment.status === 'removed') {
+              // Reactivate enrollment
+              const { error: updateError } = await this.auth.supabase
+                .from('class_enrollments')
+                .update({ 
+                  status: 'active',
+                  enrolled_at: new Date().toISOString()
+                })
+                .eq('id', existingEnrollment.id);
+              
+              if (updateError) throw updateError;
+              
+              this.showNotification(`Successfully re-enrolled in ${classData.name}!`, 'success');
+              this.closeModal('enroll-class');
+              await this.loadTeacherOrAdminData();
+              this.renderClasses();
               return;
             }
-            
-            // Reactivate the existing enrollment
-            const { error: updateError } = await this.auth.supabase
-              .from('class_enrollments')
-              .update({ 
-                status: 'active',
-                updated_at: new Date().toISOString(),
-                enrolled_at: new Date().toISOString()
-              })
-              .eq('id', existingEnrollment.id);
-      
-            if (updateError) throw updateError;
-            
-            // Add history tracking for rejoin
-            await this.auth.supabase
-              .from('enrollment_history')
-              .insert({
-                enrollment_id: existingEnrollment.id,
-                student_id: this.userInfo.user.id,
-                class_id: classData.id,
-                action: 'rejoined',
-                performed_by: this.userInfo.user.id,
-                notes: 'Student rejoined class'
-              });
-            
-            this.showNotification(`Successfully rejoined ${classData.name}!`, 'success');
-            
-          } else {
-            // Create new enrollment
-            const { data: newEnrollmentData, error: enrollError } = await this.auth.supabase
-              .from('class_enrollments')
-              .insert([{
-                class_id: classData.id,
-                student_id: this.userInfo.user.id,
-                status: 'active',
-                enrolled_at: new Date().toISOString()
-              }])
-              .select()
-              .single();
-      
-            if (enrollError) throw enrollError;
-            
-            // Add history tracking for new enrollment
-            await this.auth.supabase
-              .from('enrollment_history')
-              .insert({
-                enrollment_id: newEnrollmentData.id,
-                student_id: this.userInfo.user.id,
-                class_id: classData.id,
-                action: 'enrolled',
-                performed_by: this.userInfo.user.id,
-                notes: 'Initial enrollment'
-              });
-            
-            this.showNotification(`Successfully joined ${classData.name}!`, 'success');
           }
-      
-          this.closeModal('enroll');
+          
+          // Check class capacity
+          const { data: enrollments } = await this.auth.supabase
+            .from('class_enrollments')
+            .select('id')
+            .eq('class_id', classData.id)
+            .eq('status', 'active');
+          
+          const currentEnrollment = enrollments?.length || 0;
+          if (classData.max_students && currentEnrollment >= classData.max_students) {
+            this.showNotification('This class is full. Please contact your teacher.', 'error');
+            return;
+          }
+          
+          // Enroll student
+          const { error: enrollError } = await this.auth.supabase
+            .from('class_enrollments')
+            .insert({
+              student_id: this.userInfo.user.id,
+              class_id: classData.id,
+              status: 'active',
+              enrolled_at: new Date().toISOString()
+            });
+          
+          if (enrollError) throw enrollError;
+          
+          this.showNotification(`Successfully enrolled in ${classData.name}!`, 'success');
+          this.closeModal('enroll-class');
           
           // Reload student data
           await this.loadStudentData();
-          this.setupHomeContent();
           this.renderClasses();
-      
+          
         } catch (error) {
           console.error('Error enrolling in class:', error);
-          this.showNotification('Error joining class: ' + error.message, 'error');
+          this.showNotification('Error enrolling in class: ' + error.message, 'error');
         }
       }
 
