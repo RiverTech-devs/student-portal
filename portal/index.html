@@ -12464,35 +12464,56 @@
           
           if (studentError) throw studentError;
           
-          // Load enrollments with class info
+          // Load enrollments
           const { data: enrollments, error: enrollError } = await this.auth.supabase
             .from('class_enrollments')
-            .select(`
-              *,
-              class:classes(
-                id,
-                name,
-                subject,
-                grade_level,
-                teacher_id
-              )
-            `)
+            .select('*')
             .eq('student_id', studentId)
             .eq('status', 'active');
-          
-          if (enrollError) throw enrollError;
-          
-          // Load teacher names for each class
-          if (enrollments) {
-            for (let enrollment of enrollments) {
-              if (enrollment.class?.teacher_id) {
-                const { data: teacher } = await this.auth.supabase
-                  .from('user_profiles')
-                  .select('first_name, last_name')
-                  .eq('id', enrollment.class.teacher_id)
-                  .single();
-                enrollment.class.teacher = teacher;
-              }
+      
+          if (enrollError) {
+            console.error('Error loading enrollments:', enrollError);
+          }
+      
+          // Load class info separately
+          if (enrollments && enrollments.length > 0) {
+            const classIds = [...new Set(enrollments.map(e => e.class_id))];
+            const { data: classes } = await this.auth.supabase
+              .from('classes')
+              .select('id, name, subject, grade_level, teacher_id')
+              .in('id', classIds);
+            
+            // Create class map
+            const classMap = {};
+            classes?.forEach(c => {
+              classMap[c.id] = c;
+            });
+            
+            // Attach class info to enrollments
+            enrollments.forEach(e => {
+              e.class = classMap[e.class_id];
+            });
+            
+            // Load teacher names
+            const teacherIds = [...new Set(classes?.map(c => c.teacher_id).filter(id => id))];
+            if (teacherIds.length > 0) {
+              const { data: teachers } = await this.auth.supabase
+                .from('user_profiles')
+                .select('id, first_name, last_name')
+                .in('id', teacherIds);
+              
+              // Create teacher map
+              const teacherMap = {};
+              teachers?.forEach(t => {
+                teacherMap[t.id] = t;
+              });
+              
+              // Attach teacher info to classes
+              enrollments.forEach(e => {
+                if (e.class?.teacher_id) {
+                  e.class.teacher = teacherMap[e.class.teacher_id];
+                }
+              });
             }
           }
           
@@ -12565,6 +12586,7 @@
                   <div style="display: grid; gap: 10px;">
                     ${enrollments.map(enrollment => {
                       const cls = enrollment.class;
+                      if (!cls) return '';
                       const avgGrade = gradesByClass[cls.id];
                       return `
                         <div style="border: 1px solid var(--border); padding: 15px; border-radius: 8px; display: flex; justify-content: space-between; align-items: center;">
@@ -12572,7 +12594,7 @@
                             <h4 style="margin: 0 0 5px 0;">${cls.name}</h4>
                             <div style="font-size: 13px; color: var(--muted);">
                               <span>📚 ${cls.subject}</span>
-                              <span style="margin-left: 15px;">👨‍🏫 ${cls.teacher?.first_name} ${cls.teacher?.last_name}</span>
+                              <span style="margin-left: 15px;">👨‍🏫 ${cls.teacher?.first_name || 'Unknown'} ${cls.teacher?.last_name || ''}</span>
                               ${avgGrade ? `<span style="margin-left: 15px;">📊 Avg: ${avgGrade}%</span>` : ''}
                             </div>
                           </div>
