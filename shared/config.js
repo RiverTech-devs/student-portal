@@ -111,6 +111,43 @@ class PortalAuth {
         }
     }
 
+    async reconnect() {
+        console.log('🔄 Reconnecting to Supabase...');
+        
+        try {
+            // Recreate the Supabase client
+            this.supabase = supabase.createClient(this.config.supabaseUrl, this.config.supabaseKey, {
+                auth: {
+                    autoRefreshToken: true,
+                    persistSession: true,
+                    detectSessionInUrl: true
+                }
+            });
+            
+            // Restore the session
+            const { data: { session }, error } = await this.supabase.auth.getSession();
+            
+            if (error) {
+                console.error('❌ Reconnect session error:', error);
+                return false;
+            }
+            
+            if (session?.user) {
+                this.currentUser = session.user;
+                await this.loadUserProfile();
+                console.log('✅ Reconnected successfully');
+                return true;
+            }
+            
+            console.warn('⚠️ Reconnected but no session');
+            return false;
+            
+        } catch (error) {
+            console.error('❌ Reconnect failed:', error);
+            return false;
+        }
+    }
+
     async loadUserProfile() {
         try {
             const { data: { user } } = await this.supabase.auth.getUser();
@@ -504,6 +541,7 @@ if (document.readyState === 'loading') {
     PortalUI.applyTheme(window.portalAuth.config.theme);
 
 }
+
 
 
 
