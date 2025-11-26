@@ -1015,11 +1015,11 @@
         }
         
         try {
-          const { data: { session } } = await this.auth.supabase.auth.getSession();
+          const { data: { session } } = await this.supabaseQuery(() =>          this.auth.supabase.auth.getSession();
           
           if (!session) {
             console.log('No session found, attempting refresh...');
-            const { data: { session: newSession }, error } = await this.auth.supabase.auth.refreshSession();
+            const { data: { session: newSession }, error } = await this.supabaseQuery(() =>          this.auth.supabase.auth.refreshSession();
             
             if (error || !newSession) {
               console.error('Session refresh failed:', error);
@@ -1038,7 +1038,7 @@
           
           if (timeUntilExpiry < 300) { // Less than 5 minutes
             console.log('Session expiring soon, proactively refreshing...');
-            const { data: { session: newSession }, error } = await this.auth.supabase.auth.refreshSession();
+            const { data: { session: newSession }, error } = await this.supabaseQuery(() =>          this.auth.supabase.auth.refreshSession();
             
             if (error) {
               console.error('Proactive refresh failed:', error);
@@ -1076,7 +1076,7 @@
             }, 5000);
             
             try {
-                await this.auth.supabase.from('quarters').select('id').limit(1);
+                await this.supabaseQuery(() =>          this.auth.supabase.from('quarters').select('id').limit(1);
                 clearTimeout(timeout);
                 resolve(true);
             } catch (e) {
@@ -1084,7 +1084,38 @@
                 resolve(false);
             }
         });
-    }
+      } 
+
+      async supabaseQuery(queryFn, timeoutMs = 8000) {
+          return new Promise(async (resolve, reject) => {
+              const timeout = setTimeout(async () => {
+                  console.warn('⚠️ Query timeout - reconnecting...');
+                  
+                  const reconnected = await window.portalAuth.reconnect();
+                  if (reconnected) {
+                      this.auth = window.portalAuth;
+                      // Retry the query once after reconnect
+                      try {
+                          const result = await queryFn();
+                          resolve(result);
+                      } catch (retryError) {
+                          reject(new Error('Query failed after reconnect'));
+                      }
+                  } else {
+                      reject(new Error('Connection lost'));
+                  }
+              }, timeoutMs);
+              
+              try {
+                  const result = await queryFn();
+                  clearTimeout(timeout);
+                  resolve(result);
+              } catch (error) {
+                  clearTimeout(timeout);
+                  reject(error);
+              }
+          });
+      }
 
       async waitForAuth() {
         while (!window.portalAuth || !window.portalAuth.initialized) {
@@ -1168,7 +1199,7 @@
             callback: async (response) => {
               try {
                 // Exchange authorization code for tokens via YOUR Edge Function
-                const sessionResult = await this.auth.supabase.auth.getSession();
+                const sessionResult = await this.supabaseQuery(() =>          this.auth.supabase.auth.getSession();
                 if (!sessionResult.data || !sessionResult.data.session) {
                   throw new Error('No active session');
                 }
@@ -1201,30 +1232,32 @@
                 const rootFolderId = await this.createRootFolderWithToken(tokens.access_token);
                 
                 // Store tokens and config in database
-                const { error } = await this.auth.supabase
-                  .from('teacher_drive_config')
-                  .upsert({
-                    teacher_id: this.userInfo.user.id,
-                    refresh_token: tokens.refresh_token,  // This is critical
-                    access_token: tokens.access_token,
-                    token_expiry: new Date(Date.now() + (tokens.expires_in || 3600) * 1000).toISOString(),
-                    root_folder_id: rootFolderId,
-                    drive_enabled: true,
-                    updated_at: new Date().toISOString()
-                  }, {
-                    onConflict: 'teacher_id'
-                  });
+                const { error } = await this.supabaseQuery(() => 
+                  this.auth.supabase
+                    .from('teacher_drive_config')
+                    .upsert({
+                      teacher_id: this.userInfo.user.id,
+                      refresh_token: tokens.refresh_token,  // This is critical
+                      access_token: tokens.access_token,
+                      token_expiry: new Date(Date.now() + (tokens.expires_in || 3600) * 1000).toISOString(),
+                      root_folder_id: rootFolderId,
+                      drive_enabled: true,
+                      updated_at: new Date().toISOString()
+                    }, {
+                      onConflict: 'teacher_id'
+                    });
                 
                 if (error) throw error;
                 
                 // Update public settings table
-                await this.auth.supabase
-                  .from('teacher_upload_settings')
-                  .upsert({
-                    teacher_id: this.userInfo.user.id,
-                    drive_enabled: true,
-                    fallback_enabled: true,
-                    updated_at: new Date().toISOString()
+                await this.supabaseQuery(() => 
+                  this.auth.supabase
+                    .from('teacher_upload_settings')
+                    .upsert({
+                      teacher_id: this.userInfo.user.id,
+                      drive_enabled: true,
+                      fallback_enabled: true,
+                      updated_at: new Date().toISOString()
                   }, {
                     onConflict: 'teacher_id'
                   });
@@ -1351,11 +1384,12 @@
         }
       
         try {
-          const { error } = await this.auth.supabase
-            .from('teacher_drive_config')
-            .update({ 
-              drive_enabled: false,
-              updated_at: new Date().toISOString()
+          const { error } = await this.supabaseQuery(() => 
+            this.auth.supabase
+              .from('teacher_drive_config')
+              .update({ 
+                drive_enabled: false,
+                updated_at: new Date().toISOString()
             })
             .eq('teacher_id', this.userInfo.user.id);
       
@@ -1580,11 +1614,12 @@
         console.log('🔍 User ID:', this.userInfo.user.id);
         console.log('🔍 User Type:', this.userInfo.profile.user_type);
         
-        const { data: classes, error: classError } = await this.auth.supabase
-          .from('classes')
-          .select('*')
-          .eq('teacher_id', this.userInfo.user.id)
-          .order('name');
+        const { data: classes, error: classError } = await this.supabaseQuery(() => 
+          this.auth.supabase
+            .from('classes')
+            .select('*')
+            .eq('teacher_id', this.userInfo.user.id)
+            .order('name');
       
         console.log('🔍 Classes query result:', { 
           classesCount: classes?.length, 
@@ -1602,11 +1637,12 @@
         
         // Get enrollment counts
         for (let cls of this.classes) {
-          const { data: enrollments } = await this.auth.supabase
-            .from('class_enrollments')
-            .select('id')
-            .eq('class_id', cls.id)
-            .eq('status', 'active');
+          const { data: enrollments } = await this.supabaseQuery(() => 
+            this.auth.supabase
+              .from('class_enrollments')
+              .select('id')
+              .eq('class_id', cls.id)
+              .eq('status', 'active');
           
           cls.student_count = enrollments ? enrollments.length : 0;
         }
@@ -1618,11 +1654,12 @@
         console.log('Loading student classes...');
         
         // Get enrollments first
-        const { data: enrollments, error: enrollError } = await this.auth.supabase
-          .from('class_enrollments')
-          .select('*')
-          .eq('student_id', this.userInfo.user.id)
-          .eq('status', 'active');
+        const { data: enrollments, error: enrollError } = await this.supabaseQuery(() => 
+          this.auth.supabase
+            .from('class_enrollments')
+            .select('*')
+            .eq('student_id', this.userInfo.user.id)
+            .eq('status', 'active');
       
         if (enrollError) {
           console.error('Error loading student enrollments:', enrollError);
@@ -1643,7 +1680,8 @@
       
         // Get classes separately
         const classIds = enrollments.map(e => e.class_id);
-        const { data: classes, error: classError } = await this.auth.supabase
+        const { data: classes, error: classError } = await this.supabaseQuery(() => 
+        this.auth.supabase
           .from('classes')
           .select('*')
           .in('id', classIds)
@@ -1668,7 +1706,8 @@
         // Load assignments for these classes with selective assignment support
         if (this.classes.length > 0) {
           // First get all assignments for the classes
-          const { data: allAssignments, error: assignmentError } = await this.auth.supabase
+          const { data: allAssignments, error: assignmentError } = await this.supabaseQuery(() => 
+        this.auth.supabase
             .from('assignments')
             .select('*')
             .in('class_id', classIds)
@@ -1687,7 +1726,8 @@
                 assignments.push(assignment);
               } else {
                 // Check if student is specifically assigned
-                const { data: studentAssignment } = await this.auth.supabase
+                const { data: studentAssignment } = await this.supabaseQuery(() => 
+        this.auth.supabase
                   .from('assignment_students')
                   .select('id')
                   .eq('assignment_id', assignment.id)
@@ -1703,7 +1743,8 @@
             // Load student's submissions for these assignments
             const assignmentIds = assignments.map(a => a.id);
             if (assignmentIds.length > 0) {
-              const { data: submissions, error: submissionError } = await this.auth.supabase
+              const { data: submissions, error: submissionError } = await this.supabaseQuery(() => 
+        this.auth.supabase
                 .from('assignment_submissions')
                 .select('*')
                 .in('assignment_id', assignmentIds)
@@ -1738,7 +1779,8 @@
         
         try {
           // Get all messages for this user
-          const { data: messages, error } = await this.auth.supabase
+          const { data: messages, error } = await this.supabaseQuery(() => 
+        this.auth.supabase
             .from('messages')
             .select('*')
             .or(`sender_id.eq.${this.userInfo.user.id},recipient_id.eq.${this.userInfo.user.id}`)
@@ -1768,7 +1810,8 @@
           // Get user profiles for all conversation participants
           const userIds = Object.keys(conversations);
           if (userIds.length > 0) {
-            const { data: profiles } = await this.auth.supabase
+            const { data: profiles } = await this.supabaseQuery(() => 
+        this.auth.supabase
               .from('user_profiles')
               .select('id, first_name, last_name, email, user_type')
               .in('id', userIds);
@@ -1859,7 +1902,8 @@
             // ADMINS can message EVERYONE
             
             // Get all teachers
-            const { data: teachers } = await this.auth.supabase
+            const { data: teachers } = await this.supabaseQuery(() => 
+        this.auth.supabase
               .from('user_profiles')
               .select('id, first_name, last_name, email, user_type')
               .eq('user_type', 'teacher');
@@ -1876,7 +1920,8 @@
             }
             
             // Get all students
-            const { data: students } = await this.auth.supabase
+            const { data: students } = await this.supabaseQuery(() => 
+        this.auth.supabase
               .from('user_profiles')
               .select('id, first_name, last_name, email, user_type')
               .eq('user_type', 'student');
@@ -1893,7 +1938,8 @@
             }
             
             // Get other admins (excluding self)
-            const { data: admins } = await this.auth.supabase
+            const { data: admins } = await this.supabaseQuery(() => 
+        this.auth.supabase
               .from('user_profiles')
               .select('id, first_name, last_name, email, user_type')
               .eq('user_type', 'admin')
@@ -1911,7 +1957,8 @@
             }
             
             // Get all parents
-            const { data: parents } = await this.auth.supabase
+            const { data: parents } = await this.supabaseQuery(() => 
+        this.auth.supabase
               .from('user_profiles')
               .select('id, first_name, last_name, email, user_type')
               .eq('user_type', 'parent');
@@ -1933,7 +1980,8 @@
             
             if (classIds.length > 0) {
               // Get students in teacher's classes
-              const { data: enrollments } = await this.auth.supabase
+              const { data: enrollments } = await this.supabaseQuery(() => 
+        this.auth.supabase
                 .from('class_enrollments')
                 .select('student_id')
                 .in('class_id', classIds)
@@ -1943,7 +1991,8 @@
                 const studentIds = [...new Set(enrollments.map(e => e.student_id))];
                 
                 // Get student profiles
-                const { data: students } = await this.auth.supabase
+                const { data: students } = await this.supabaseQuery(() => 
+        this.auth.supabase
                   .from('user_profiles')
                   .select('id, first_name, last_name, email, user_type')
                   .in('id', studentIds);
@@ -1962,7 +2011,8 @@
             }
       
             // Get other teachers and staff
-            const { data: teachers } = await this.auth.supabase
+            const { data: teachers } = await this.supabaseQuery(() => 
+        this.auth.supabase
               .from('user_profiles')
               .select('id, first_name, last_name, email, user_type')
               .in('user_type', ['teacher', 'admin'])
@@ -1984,7 +2034,8 @@
             const teacherIds = [...new Set(this.classes.map(c => c.teacher_id).filter(id => id))];
             
             if (teacherIds.length > 0) {
-              const { data: teacherProfiles } = await this.auth.supabase
+              const { data: teacherProfiles } = await this.supabaseQuery(() => 
+        this.auth.supabase
                 .from('user_profiles')
                 .select('id, first_name, last_name, email, user_type')
                 .in('id', teacherIds);
@@ -2002,7 +2053,7 @@
             }
       
             // Also allow students to message admin staff
-            const { data: adminStaff } = await this.auth.supabase
+            const { data: adminStaff } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('user_profiles')
               .select('id, first_name, last_name, email, user_type')
               .eq('user_type', 'admin');
@@ -2020,7 +2071,7 @@
             
           } else if (userType === 'parent') {
             // Parents can message teachers and admins
-            const { data: staff } = await this.auth.supabase
+            const { data: staff } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('user_profiles')
               .select('id, first_name, last_name, email, user_type')
               .in('user_type', ['teacher', 'admin']);
@@ -2460,7 +2511,7 @@
           const thread = this.messageThreads?.find(t => t.userId === otherUserId);
           if (!thread) {
             // New conversation - get user profile
-            const { data: profile } = await this.auth.supabase
+            const { data: profile } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('user_profiles')
               .select('id, first_name, last_name, email, user_type')
               .eq('id', otherUserId)
@@ -2484,7 +2535,7 @@
               .map(m => m.id);
             
             if (unreadIds.length > 0) {
-              const { error } = await this.auth.supabase
+              const { error } = await this.supabaseQuery(() =>          this.auth.supabase
                 .from('messages')
                 .update({ is_read: true })
                 .in('id', unreadIds);
@@ -2647,7 +2698,7 @@
             threadId = crypto.randomUUID();
           }
           
-          const { error } = await this.auth.supabase
+          const { error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('messages')
             .insert([{
               sender_id: this.userInfo.user.id,
@@ -2728,7 +2779,7 @@
           // Generate thread ID for new conversation
           const threadId = crypto.randomUUID();
           
-          const { error } = await this.auth.supabase
+          const { error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('messages')
             .insert([{
               sender_id: this.userInfo.user.id,
@@ -2813,7 +2864,7 @@
           let discussions = [];
           
           // Get discussions - only non-deleted ones
-          const { data: discussionsRaw, error } = await this.auth.supabase
+          const { data: discussionsRaw, error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('class_discussions')
             .select(`
               id,
@@ -2839,7 +2890,7 @@
           // Get reply counts for all discussions
           if (discussions.length > 0) {
             const discussionIds = discussions.map(d => d.id);
-            const { data: replies } = await this.auth.supabase
+            const { data: replies } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('discussion_replies')
               .select('discussion_id')
               .in('discussion_id', discussionIds)
@@ -2862,7 +2913,7 @@
           const profileMap = {};
           
           if (authorIds.length > 0) {
-            const { data: profiles } = await this.auth.supabase
+            const { data: profiles } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('user_profiles')
               .select('id, first_name, last_name, user_type')
               .in('id', authorIds);
@@ -3014,7 +3065,7 @@
         }
 
         try {
-          const { error } = await this.auth.supabase
+          const { error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('class_discussions')
             .insert([discussionData]);
 
@@ -3034,7 +3085,7 @@
 
       async editDiscussion(discussionId) {
         try {
-          const { data: discussion } = await this.auth.supabase
+          const { data: discussion } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('class_discussions')
             .select('*')
             .eq('id', discussionId)
@@ -3080,7 +3131,7 @@
         }
 
         try {
-          const { error } = await this.auth.supabase
+          const { error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('class_discussions')
             .update(updatedData)
             .eq('id', discussionId)
@@ -3100,7 +3151,7 @@
       async openDiscussion(discussionId) {
         try {
           // Load discussion with all fields
-          const { data: discussion, error } = await this.auth.supabase
+          const { data: discussion, error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('class_discussions')
             .select(`
               id,
@@ -3122,14 +3173,14 @@
           if (!discussion) throw new Error('Discussion not found');
       
           // Load author profile
-          const { data: authorProfile } = await this.auth.supabase
+          const { data: authorProfile } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('user_profiles')
             .select('id, first_name, last_name, user_type')
             .eq('id', discussion.author_id)
             .single();
       
           // Load ALL replies (including deleted ones to maintain context)
-          const { data: replies } = await this.auth.supabase
+          const { data: replies } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('discussion_replies')
             .select('*')
             .eq('discussion_id', discussionId)
@@ -3143,7 +3194,7 @@
               ...replies.filter(r => r.deleted_by).map(r => r.deleted_by)
             ]);
             
-            const { data: profiles } = await this.auth.supabase
+            const { data: profiles } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('user_profiles')
               .select('id, first_name, last_name, user_type')
               .in('id', Array.from(userIds));
@@ -3423,7 +3474,7 @@
             parent_id: parentReplyId
           };
       
-          const { data: newReply, error } = await this.auth.supabase
+          const { data: newReply, error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('discussion_replies')
             .insert([replyData])
             .select()
@@ -3466,7 +3517,7 @@
           }
       
           // Soft delete the reply
-          const { error } = await this.auth.supabase
+          const { error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('discussion_replies')
             .update({
               is_deleted: true,
@@ -3496,7 +3547,7 @@
       async refreshDiscussionReplies(discussionId) {
         try {
           // Load ALL replies (including deleted for context)
-          const { data: replies } = await this.auth.supabase
+          const { data: replies } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('discussion_replies')
             .select('*')
             .eq('discussion_id', discussionId)
@@ -3510,7 +3561,7 @@
               ...replies.filter(r => r.deleted_by).map(r => r.deleted_by)
             ]);
             
-            const { data: profiles } = await this.auth.supabase
+            const { data: profiles } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('user_profiles')
               .select('id, first_name, last_name, user_type')
               .in('id', Array.from(userIds));
@@ -3550,14 +3601,14 @@
         
         try {
           // Get class ID before deletion for refresh
-          const { data: discussion } = await this.auth.supabase
+          const { data: discussion } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('class_discussions')
             .select('class_id')
             .eq('id', discussionId)
             .single();
           
           // Soft delete the discussion
-          const { error } = await this.auth.supabase
+          const { error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('class_discussions')
             .update({
               is_deleted: true,
@@ -3569,7 +3620,7 @@
           if (error) throw error;
           
           // Also soft delete all replies
-          await this.auth.supabase
+          await this.supabaseQuery(() =>          this.auth.supabase
             .from('discussion_replies')
             .update({
               is_deleted: true,
@@ -3788,7 +3839,7 @@
             window.portalLoading.show('create-class', 'Creating class...');
           }
           
-          const { data, error } = await this.auth.supabase
+          const { data, error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('classes')
             .insert([classData])
             .select()
@@ -3845,7 +3896,7 @@
             return;
           }
           
-          const { data: fetchedClass, error } = await this.auth.supabase
+          const { data: fetchedClass, error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('classes')
             .select('*')
             .eq('id', classId)
@@ -3990,7 +4041,7 @@
         console.log('👑 Admin viewing class:', classId);
         
         // Load full class data
-        const { data: classData, error } = await this.auth.supabase
+        const { data: classData, error } = await this.supabaseQuery(() =>          this.auth.supabase
           .from('classes')
           .select('*')
           .eq('id', classId)
@@ -4002,7 +4053,7 @@
         }
         
         // Get teacher info
-        const { data: teacher } = await this.auth.supabase
+        const { data: teacher } = await this.supabaseQuery(() =>          this.auth.supabase
           .from('user_profiles')
           .select('first_name, last_name')
           .eq('id', classData.teacher_id)
@@ -4033,7 +4084,7 @@
         
         try {
           // Use UPDATE to set status to 'withdrawn' instead of DELETE
-          const { error } = await this.auth.supabase
+          const { error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('class_enrollments')
             .update({ 
               status: 'withdrawn',
@@ -4044,7 +4095,7 @@
           
           if (error) throw error;
 
-          await this.auth.supabase
+          await this.supabaseQuery(() =>          this.auth.supabase
           .from('enrollment_history')
           .insert({
             enrollment_id: enrollmentId,
@@ -4087,7 +4138,7 @@
             const teacherId = userInfo.profile.id;
             
             // Get teacher's classes
-            const { data: classes, error } = await this.auth.supabase
+            const { data: classes, error } = await this.supabaseQuery(() =>          this.auth.supabase
                 .from('classes')
                 .select('*')
                 .eq('teacher_id', teacherId)
@@ -4109,7 +4160,7 @@
             let classHTML = '<div style="display: grid; gap: 15px;">';
             
             for (const classItem of classes) {
-                const { data: enrollments } = await this.auth.supabase
+                const { data: enrollments } = await this.supabaseQuery(() =>          this.auth.supabase
                     .from('class_enrollments')
                     .select('student_id', { count: 'exact' })
                     .eq('class_id', classItem.id);
@@ -4181,14 +4232,14 @@
           
           try {
               // Get class details
-              const { data: classData } = await this.auth.supabase
+              const { data: classData } = await this.supabaseQuery(() =>          this.auth.supabase
                   .from('classes')
                   .select('name')
                   .eq('id', classId)
                   .single();
               
               // Get already enrolled students (ANY status - we need to see all)
-              const { data: enrolled, error: enrollError } = await this.auth.supabase
+              const { data: enrolled, error: enrollError } = await this.supabaseQuery(() =>          this.auth.supabase
                   .from('class_enrollments')
                   .select('student_id, status')
                   .eq('class_id', classId);
@@ -4203,7 +4254,7 @@
               const enrolledIds = activeEnrollments.map(e => e.student_id);
               
               // Get all students (both active and inactive)
-              const { data: students, error: studentsError } = await this.auth.supabase
+              const { data: students, error: studentsError } = await this.supabaseQuery(() =>          this.auth.supabase
                   .from('user_profiles')
                   .select('*')
                   .eq('user_type', 'student')
@@ -4299,7 +4350,7 @@
               }
               
               // Check if enrollment exists (ANY status, including 'removed')
-              const { data: existing, error: checkError } = await this.auth.supabase
+              const { data: existing, error: checkError } = await this.supabaseQuery(() =>          this.auth.supabase
                   .from('class_enrollments')
                   .select('id, status')
                   .eq('class_id', classId)
@@ -4320,7 +4371,7 @@
                       return;
                   } else {
                       // Reactivate the removed/inactive enrollment
-                      const { error: updateError } = await this.auth.supabase
+                      const { error: updateError } = await this.supabaseQuery(() =>          this.auth.supabase
                           .from('class_enrollments')
                           .update({ 
                               status: 'active',
@@ -4337,7 +4388,7 @@
               } else {
                   
                   // No enrollment exists, create new one
-                  const { error: insertError } = await this.auth.supabase
+                  const { error: insertError } = await this.supabaseQuery(() =>          this.auth.supabase
                       .from('class_enrollments')
                       .insert({
                           class_id: classId,
@@ -4389,7 +4440,7 @@
           const classData = this.classes.find(c => c.id === classId);
 
           // Load enrolled students
-          const { data: enrollments, error } = await this.auth.supabase
+          const { data: enrollments, error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('class_enrollments')
             .select('*')
             .eq('class_id', classId)
@@ -4401,7 +4452,7 @@
           if (enrollments && enrollments.length > 0) {
             const studentIds = enrollments.map(e => e.student_id);
             
-            const { data: students } = await this.auth.supabase
+            const { data: students } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('user_profiles')
               .select('id, first_name, last_name, email, grade_level')
               .in('id', studentIds);
@@ -4479,7 +4530,7 @@
       
         try {
           // First verify the teacher owns this class
-          const { data: classCheck, error: classError } = await this.auth.supabase
+          const { data: classCheck, error: classError } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('classes')
             .select('id, name')
             .eq('id', classId)
@@ -4491,7 +4542,7 @@
           }
           
           // Update the enrollment status to 'removed'
-          const { data, error } = await this.auth.supabase
+          const { data, error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('class_enrollments')
             .update({ 
               status: 'removed',
@@ -4511,7 +4562,7 @@
           }
       
           // ADD ENROLLMENT HISTORY HERE - INSIDE THE TRY BLOCK
-          await this.auth.supabase
+          await this.supabaseQuery(() =>          this.auth.supabase
             .from('enrollment_history')
             .insert({
               enrollment_id: enrollmentId,
@@ -4627,7 +4678,7 @@
         }
         
         try {
-          const { error } = await this.auth.supabase
+          const { error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('classes')
             .update(updatedData)
             .eq('id', classId)
@@ -4656,7 +4707,7 @@
         }
 
         try {
-          const { error } = await this.auth.supabase
+          const { error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('classes')
             .update({ is_active: false })
             .eq('id', classId)
@@ -4719,7 +4770,7 @@
         
         try {
           // Find class by code
-          const { data: classData, error: classError } = await this.auth.supabase
+          const { data: classData, error: classError } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('classes')
             .select('id, name, subject, teacher_id, max_students')
             .eq('class_code', classCode)
@@ -4731,7 +4782,7 @@
           }
           
           // Check if already enrolled
-          const { data: existingEnrollment } = await this.auth.supabase
+          const { data: existingEnrollment } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('class_enrollments')
             .select('id, status')
             .eq('class_id', classData.id)
@@ -4744,7 +4795,7 @@
               return;
             } else if (existingEnrollment.status === 'removed') {
               // Reactivate enrollment
-              const { error: updateError } = await this.auth.supabase
+              const { error: updateError } = await this.supabaseQuery(() =>          this.auth.supabase
                 .from('class_enrollments')
                 .update({ 
                   status: 'active',
@@ -4763,7 +4814,7 @@
           }
           
           // Check class capacity
-          const { data: enrollments } = await this.auth.supabase
+          const { data: enrollments } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('class_enrollments')
             .select('id')
             .eq('class_id', classData.id)
@@ -4776,7 +4827,7 @@
           }
           
           // Enroll student
-          const { error: enrollError } = await this.auth.supabase
+          const { error: enrollError } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('class_enrollments')
             .insert({
               student_id: this.userInfo.user.id,
@@ -4808,7 +4859,7 @@
           const classData = this.classes.find(c => c.id === classId);
       
           // Get current quarter
-          const { data: currentQuarter } = await this.auth.supabase
+          const { data: currentQuarter } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('quarters')
             .select('*')
             .eq('is_current', true)
@@ -4862,7 +4913,7 @@
                 filteredAssignments.push(assignment);
               } else {
                 // Check if student is specifically assigned
-                const { data: studentAssignment } = await this.auth.supabase
+                const { data: studentAssignment } = await this.supabaseQuery(() =>          this.auth.supabase
                   .from('assignment_students')
                   .select('id')
                   .eq('assignment_id', assignment.id)
@@ -4881,7 +4932,7 @@
       
           if (isTeacher) {
             // Teacher view with grading status
-            const { data: categories } = await this.auth.supabase
+            const { data: categories } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('grade_categories')
               .select('id, name')
               .eq('class_id', classId);
@@ -4893,7 +4944,7 @@
             
             // Get submission counts for all assignments at once
             const assignmentIds = assignments.map(a => a.id);
-            const { data: allSubmissions } = await this.auth.supabase
+            const { data: allSubmissions } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('assignment_submissions')
               .select('assignment_id, status')
               .in('assignment_id', assignmentIds);
@@ -4919,7 +4970,7 @@
             });
             
             // Get total enrolled students for comparison
-            const { data: enrollments } = await this.auth.supabase
+            const { data: enrollments } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('class_enrollments')
               .select('id')
               .eq('class_id', classId)
@@ -5033,7 +5084,7 @@
             } else {
               // Load student's submissions
               const assignmentIds = assignments.map(a => a.id);
-              const { data: submissions } = await this.auth.supabase
+              const { data: submissions } = await this.supabaseQuery(() =>          this.auth.supabase
                 .from('assignment_submissions')
                 .select('*')
                 .eq('student_id', this.userInfo.user.id)
@@ -5157,7 +5208,7 @@
           const classData = this.classes.find(c => c.id === classId);
       
           // Load ALL assignments without quarter filter
-          const { data: allAssignments, error } = await this.auth.supabase
+          const { data: allAssignments, error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignments')
             .select('*')
             .eq('class_id', classId)
@@ -5168,7 +5219,7 @@
           let assignments = allAssignments || [];
       
           // Load categories
-          const { data: categories } = await this.auth.supabase
+          const { data: categories } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('grade_categories')
             .select('id, name')
             .eq('class_id', classId);
@@ -5180,7 +5231,7 @@
           
           // Get submission counts
           const assignmentIds = assignments.map(a => a.id);
-          const { data: allSubmissions } = await this.auth.supabase
+          const { data: allSubmissions } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignment_submissions')
             .select('assignment_id, status')
             .in('assignment_id', assignmentIds);
@@ -5199,7 +5250,7 @@
             }
           });
           
-          const { data: enrollments } = await this.auth.supabase
+          const { data: enrollments } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('class_enrollments')
             .select('id')
             .eq('class_id', classId)
@@ -5208,7 +5259,7 @@
           const totalStudents = enrollments?.length || 0;
           
           // Group assignments by quarter
-          const { data: quarters } = await this.auth.supabase
+          const { data: quarters } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('quarters')
             .select('*')
             .order('start_date', { ascending: false });
@@ -5383,14 +5434,14 @@
         const classData = this.classes.find(c => c.id === classId);
       
         // Load categories for this class
-        const { data: categories } = await this.auth.supabase
+        const { data: categories } = await this.supabaseQuery(() =>          this.auth.supabase
           .from('grade_categories')
           .select('*')
           .eq('class_id', classId)
           .order('display_order');
         
         // Load students in this class
-        const { data: enrollments } = await this.auth.supabase
+        const { data: enrollments } = await this.supabaseQuery(() =>          this.auth.supabase
           .from('class_enrollments')
           .select('student_id')
           .eq('class_id', classId)
@@ -5398,7 +5449,7 @@
           
         let studentProfiles = [];
         if (enrollments && enrollments.length > 0) {
-          const { data: profiles } = await this.auth.supabase
+          const { data: profiles } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('user_profiles')
             .select('id, first_name, last_name, grade_level')
             .in('id', enrollments.map(e => e.student_id))
@@ -5577,7 +5628,7 @@
     
       try {
         // Create the assignment
-        const { data: newAssignment, error: assignmentError } = await this.auth.supabase
+        const { data: newAssignment, error: assignmentError } = await this.supabaseQuery(() =>          this.auth.supabase
           .from('assignments')
           .insert([assignmentData])
           .select()
@@ -5592,7 +5643,7 @@
           
           if (selectedStudents.length === 0) {
             // If no students selected, delete the assignment and show error
-            await this.auth.supabase
+            await this.supabaseQuery(() =>          this.auth.supabase
               .from('assignments')
               .delete()
               .eq('id', newAssignment.id);
@@ -5605,7 +5656,7 @@
             student_id: studentId
           }));
     
-          const { error: studentError } = await this.auth.supabase
+          const { error: studentError } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignment_students')
             .insert(assignmentStudents);
     
@@ -5630,7 +5681,7 @@
       async editAssignment(assignmentId) {
         try {
           // Load existing assignment data
-          const { data: assignment, error } = await this.auth.supabase
+          const { data: assignment, error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignments')
             .select('*')
             .eq('id', assignmentId)
@@ -5646,7 +5697,7 @@
             .order('display_order');
           
           // Load available rubrics
-          const { data: rubrics } = await this.auth.supabase
+          const { data: rubrics } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('rubrics')
             .select('id, name, description, is_default')
             .order('is_default', { ascending: false });
@@ -5657,7 +5708,7 @@
           }
       
           // Load enrolled students for this class
-          const { data: enrollments } = await this.auth.supabase
+          const { data: enrollments } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('class_enrollments')
             .select('student_id')
             .eq('class_id', assignment.class_id)
@@ -5668,7 +5719,7 @@
           // Load student profiles
           let studentProfiles = [];
           if (studentIds.length > 0) {
-            const { data: students } = await this.auth.supabase
+            const { data: students } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('user_profiles')
               .select('id, first_name, last_name, grade_level')
               .in('id', studentIds)
@@ -5679,7 +5730,7 @@
           // If selective assignment, load assigned students
           let assignedStudentIds = [];
           if (!assignment.assigned_to_all) {
-            const { data: assignedStudents } = await this.auth.supabase
+            const { data: assignedStudents } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('assignment_students')
               .select('student_id')
               .eq('assignment_id', assignmentId);
@@ -5879,7 +5930,7 @@
           const description = this.assignmentDescriptionEditor?.root.innerHTML || '';
       
           // Update assignment
-          const { error } = await this.auth.supabase
+          const { error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignments')
             .update({
               title,
@@ -5900,7 +5951,7 @@
           // Handle student assignments if selective
           if (assignToSpecific) {
             // Delete existing assignments
-            await this.auth.supabase
+            await this.supabaseQuery(() =>          this.auth.supabase
               .from('assignment_students')
               .delete()
               .eq('assignment_id', assignmentId);
@@ -5916,13 +5967,13 @@
                 student_id: studentId
               }));
               
-              await this.auth.supabase
+              await this.supabaseQuery(() =>          this.auth.supabase
                 .from('assignment_students')
                 .insert(insertData);
             }
           } else {
             // Remove any specific assignments if switching to all students
-            await this.auth.supabase
+            await this.supabaseQuery(() =>          this.auth.supabase
               .from('assignment_students')
               .delete()
               .eq('assignment_id', assignmentId);
@@ -5945,7 +5996,7 @@
       async deleteAssignment(assignmentId) {
         try {
           // First get assignment details and check for submissions
-          const { data: assignment } = await this.auth.supabase
+          const { data: assignment } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignments')
             .select('*, class_id')
             .eq('id', assignmentId)
@@ -5957,7 +6008,7 @@
           }
       
           // Check if there are any submissions
-          const { data: submissions, error: subError } = await this.auth.supabase
+          const { data: submissions, error: subError } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignment_submissions')
             .select('id')
             .eq('assignment_id', assignmentId);
@@ -5988,7 +6039,7 @@
           }
       
           // Delete the assignment (submissions will cascade delete if foreign key is set up)
-          const { error } = await this.auth.supabase
+          const { error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignments')
             .delete()
             .eq('id', assignmentId);
@@ -6015,7 +6066,7 @@
           today.setHours(0, 0, 0, 0);
           
           // Get current quarter to filter past quarters
-          const { data: currentQuarter } = await this.auth.supabase
+          const { data: currentQuarter } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('quarters')
             .select('id, name, start_date')
             .lte('start_date', new Date().toISOString())
@@ -6029,7 +6080,7 @@
           if (classIds.length === 0) return [];
           
           // Get assignments due before today
-          const { data: assignments, error } = await this.auth.supabase
+          const { data: assignments, error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignments')
             .select('*')
             .in('class_id', classIds)
@@ -6068,7 +6119,7 @@
       
           // Get class info separately
           const assignmentClassIds = [...new Set(relevantAssignments.map(a => a.class_id))];
-          const { data: classes } = await this.auth.supabase
+          const { data: classes } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('classes')
             .select('id, name, subject')
             .in('id', assignmentClassIds);
@@ -6087,7 +6138,7 @@
           // Load category names
           const categoryIds = [...new Set(relevantAssignments.map(a => a.category_id).filter(id => id))];
           if (categoryIds.length > 0) {
-            const { data: categories } = await this.auth.supabase
+            const { data: categories } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('grade_categories')
               .select('id, name')
               .in('id', categoryIds);
@@ -6108,7 +6159,7 @@
             if (assignment.assigned_to_all) {
               filteredAssignments.push(assignment);
             } else {
-              const { data: studentAssignment } = await this.auth.supabase
+              const { data: studentAssignment } = await this.supabaseQuery(() =>          this.auth.supabase
                 .from('assignment_students')
                 .select('id')
                 .eq('assignment_id', assignment.id)
@@ -6124,7 +6175,7 @@
           // Get student's submissions for these assignments
           if (filteredAssignments.length > 0) {
             const assignmentIds = filteredAssignments.map(a => a.id);
-            const { data: submissions } = await this.auth.supabase
+            const { data: submissions } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('assignment_submissions')
               .select('assignment_id, status')
               .in('assignment_id', assignmentIds)
@@ -6251,7 +6302,7 @@
           if (classIds.length === 0) return [];
           
           // Get assignments WITHOUT relationship join
-          const { data: assignments, error } = await this.auth.supabase
+          const { data: assignments, error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignments')
             .select('*')
             .in('class_id', classIds)
@@ -6269,7 +6320,7 @@
       
           // Get class info separately
           const assignmentClassIds = [...new Set(assignments.map(a => a.class_id))];
-          const { data: classes } = await this.auth.supabase
+          const { data: classes } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('classes')
             .select('id, name, subject')
             .in('id', assignmentClassIds);
@@ -6288,7 +6339,7 @@
           // Load category names
           const categoryIds = [...new Set(assignments.map(a => a.category_id).filter(id => id))];
           if (categoryIds.length > 0) {
-            const { data: categories } = await this.auth.supabase
+            const { data: categories } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('grade_categories')
               .select('id, name')
               .in('id', categoryIds);
@@ -6311,7 +6362,7 @@
               filteredAssignments.push(assignment);
             } else {
               // Check if student is specifically assigned
-              const { data: studentAssignment } = await this.auth.supabase
+              const { data: studentAssignment } = await this.supabaseQuery(() =>          this.auth.supabase
                 .from('assignment_students')
                 .select('id')
                 .eq('assignment_id', assignment.id)
@@ -6327,7 +6378,7 @@
           // Get student's submissions for these assignments
           if (filteredAssignments.length > 0) {
             const assignmentIds = filteredAssignments.map(a => a.id);
-            const { data: submissions } = await this.auth.supabase
+            const { data: submissions } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('assignment_submissions')
               .select('assignment_id, status')
               .in('assignment_id', assignmentIds)
@@ -6466,7 +6517,7 @@
     
       async loadCurrentQuarterInfo() {
         try {
-          const { data: quarter, error } = await this.auth.supabase
+          const { data: quarter, error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('quarters')
             .select('*')
             .eq('is_current', true)
@@ -6488,14 +6539,14 @@
       async viewSubmission(assignmentId) {
         try {
           // Load assignment details
-          const { data: assignment } = await this.auth.supabase
+          const { data: assignment } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignments')
             .select('*')
             .eq('id', assignmentId)
             .single();
       
           // Load submission
-          const { data: submission, error } = await this.auth.supabase
+          const { data: submission, error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignment_submissions')
             .select('*')
             .eq('assignment_id', assignmentId)
@@ -6594,7 +6645,7 @@
       async viewSubmissions(assignmentId) {
         try {
           // Load assignment details
-          const { data: assignment } = await this.auth.supabase
+          const { data: assignment } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignments')
             .select('*')
             .eq('id', assignmentId)
@@ -6605,7 +6656,7 @@
           let assignedStudentIds = [];
       
           if (isSelectiveAssignment) {
-            const { data: assignedStudents } = await this.auth.supabase
+            const { data: assignedStudents } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('assignment_students')
               .select('student_id')
               .eq('assignment_id', assignmentId);
@@ -6617,7 +6668,7 @@
           let enrollments;
           if (isSelectiveAssignment) {
             // For selective assignments, only get enrolled students who are assigned
-            const { data: allEnrollments } = await this.auth.supabase
+            const { data: allEnrollments } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('class_enrollments')
               .select('student_id')
               .eq('class_id', assignment.class_id)
@@ -6626,7 +6677,7 @@
             enrollments = allEnrollments?.filter(e => assignedStudentIds.includes(e.student_id)) || [];
           } else {
             // For regular assignments, get all enrolled students
-            const { data: allEnrollments } = await this.auth.supabase
+            const { data: allEnrollments } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('class_enrollments')
               .select('student_id')
               .eq('class_id', assignment.class_id)
@@ -6656,14 +6707,14 @@
       
           // Get all student profiles
           const studentIds = enrollments.map(e => e.student_id);
-          const { data: students } = await this.auth.supabase
+          const { data: students } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('user_profiles')
             .select('id, first_name, last_name, email, grade_level')
             .in('id', studentIds)
             .order('last_name');
       
           // Load all submissions for this assignment
-          const { data: submissions } = await this.auth.supabase
+          const { data: submissions } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignment_submissions')
             .select('*')
             .eq('assignment_id', assignmentId);
@@ -6684,7 +6735,7 @@
           // Load category info
           let categoryName = 'Uncategorized';
           if (assignment.category_id) {
-            const { data: category } = await this.auth.supabase
+            const { data: category } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('grade_categories')
               .select('name, weight')
               .eq('id', assignment.category_id)
@@ -6854,19 +6905,19 @@
       
       async viewStudentSubmission(submissionId, assignmentId) {
         try {
-          const { data: submission } = await this.auth.supabase
+          const { data: submission } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignment_submissions')
             .select('*')
             .eq('id', submissionId)
             .single();
       
-          const { data: student } = await this.auth.supabase
+          const { data: student } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('user_profiles')
             .select('first_name, last_name, email')
             .eq('id', submission.student_id)
             .single();
       
-          const { data: assignment } = await this.auth.supabase
+          const { data: assignment } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignments')
             .select('title, max_points')
             .eq('id', assignmentId)
@@ -6933,7 +6984,7 @@
       async viewArchivedSubmission(assignmentId) {
         try {
           // Load assignment details
-          const { data: assignment, error: assignmentError } = await this.auth.supabase
+          const { data: assignment, error: assignmentError } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignments')
             .select('*')
             .eq('id', assignmentId)
@@ -6942,7 +6993,7 @@
           if (assignmentError) throw assignmentError;
       
           // Load student's submission
-          const { data: submission } = await this.auth.supabase
+          const { data: submission } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignment_submissions')
             .select('*')
             .eq('assignment_id', assignmentId)
@@ -7123,7 +7174,7 @@
       async submitAssignment(assignmentId) {
         try {
           // Load assignment details
-          const { data: assignment, error: assignmentError } = await this.auth.supabase
+          const { data: assignment, error: assignmentError } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignments')
             .select('*')
             .eq('id', assignmentId)
@@ -7177,7 +7228,7 @@
           }
       
           // Check for existing submission
-          const { data: existingSubmission } = await this.auth.supabase
+          const { data: existingSubmission } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignment_submissions')
             .select('*')
             .eq('assignment_id', assignmentId)
@@ -7475,13 +7526,13 @@
             }
       
             // Get assignment and class info
-            const { data: assignment } = await this.auth.supabase
+            const { data: assignment } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('assignments')
               .select('class_id, title')
               .eq('id', assignmentId)
               .single();
       
-            const { data: classData } = await this.auth.supabase
+            const { data: classData } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('classes')
               .select('teacher_id, name')
               .eq('id', assignment.class_id)
@@ -7496,7 +7547,7 @@
             formData.append('assignmentTitle', assignment.title);
             formData.append('className', classData.name);
       
-            const sessionResult = await this.auth.supabase.auth.getSession();
+            const sessionResult = await this.supabaseQuery(() =>          this.auth.supabase.auth.getSession();
             
             const response = await fetch(`https://joxvhzxkrcigknsdrusr.supabase.co/functions/v1/upload-to-drive`, {
               method: 'POST',
@@ -7525,7 +7576,7 @@
           }
       
           // Submit to database
-          const { error } = await this.auth.supabase
+          const { error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignment_submissions')
             .upsert(submissionData, {
               onConflict: 'assignment_id,student_id'
@@ -7537,7 +7588,7 @@
           this.closeModal('submit-assignment');
           
           // Refresh the assignments view with updated submission status
-          const { data: assignment } = await this.auth.supabase
+          const { data: assignment } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignments')
             .select('class_id')
             .eq('id', assignmentId)
@@ -7575,7 +7626,7 @@
       async resubmitAssignment(assignmentId) {
         try {
           // Load existing submission
-          const { data: submission } = await this.auth.supabase
+          const { data: submission } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignment_submissions')
             .select('*')
             .eq('assignment_id', assignmentId)
@@ -7588,7 +7639,7 @@
           }
           
           // Load assignment details
-          const { data: assignment } = await this.auth.supabase
+          const { data: assignment } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignments')
             .select('*')
             .eq('id', assignmentId)
@@ -7679,7 +7730,7 @@
         const newFile = fileInput?.files[0];
       
         // Load existing submission to preserve file if no new one uploaded
-        const { data: existingSubmission } = await this.auth.supabase
+        const { data: existingSubmission } = await this.supabaseQuery(() =>          this.auth.supabase
           .from('assignment_submissions')
           .select('*')
           .eq('id', submissionId)
@@ -7735,13 +7786,13 @@
             }
       
             // Get assignment and class info
-            const { data: assignment } = await this.auth.supabase
+            const { data: assignment } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('assignments')
               .select('class_id, title')
               .eq('id', assignmentId)
               .single();
       
-            const { data: classData } = await this.auth.supabase
+            const { data: classData } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('classes')
               .select('teacher_id, name')
               .eq('id', assignment.class_id)
@@ -7756,7 +7807,7 @@
             formData.append('assignmentTitle', assignment.title);
             formData.append('className', classData.name);
       
-            const sessionResult = await this.auth.supabase.auth.getSession();
+            const sessionResult = await this.supabaseQuery(() =>          this.auth.supabase.auth.getSession();
             
             const response = await fetch(`https://joxvhzxkrcigknsdrusr.supabase.co/functions/v1/upload-to-drive`, {
               method: 'POST',
@@ -7792,7 +7843,7 @@
           }
       
           // Update submission
-          const { error } = await this.auth.supabase
+          const { error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignment_submissions')
             .update(updateData)
             .eq('id', submissionId);
@@ -7803,7 +7854,7 @@
           this.closeModal('resubmit-assignment');
           
           // Refresh the assignments view with updated submission status
-          const { data: assignment } = await this.auth.supabase
+          const { data: assignment } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignments')
             .select('class_id')
             .eq('id', assignmentId)
@@ -7878,13 +7929,13 @@
             }
       
             // Get assignment and class info
-            const { data: assignment } = await this.auth.supabase
+            const { data: assignment } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('assignments')
               .select('class_id, title')
               .eq('id', assignmentId)
               .single();
       
-            const { data: classData } = await this.auth.supabase
+            const { data: classData } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('classes')
               .select('teacher_id, name')
               .eq('id', assignment.class_id)
@@ -7899,7 +7950,7 @@
             formData.append('assignmentTitle', assignment.title);
             formData.append('className', classData.name);
       
-            const sessionResult = await this.auth.supabase.auth.getSession();
+            const sessionResult = await this.supabaseQuery(() =>          this.auth.supabase.auth.getSession();
             
             const response = await fetch(`https://joxvhzxkrcigknsdrusr.supabase.co/functions/v1/upload-to-drive`, {
               method: 'POST',
@@ -7922,7 +7973,7 @@
           }
       
           // Submit to database
-          const { error } = await this.auth.supabase
+          const { error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignment_submissions')
             .upsert(submissionData, {
               onConflict: 'assignment_id,student_id'
@@ -7934,7 +7985,7 @@
           this.closeModal('submit-assignment');
 
          // Get  the class ID to refresh the correct view
-          const { data: assignment } = await this.auth.supabase
+          const { data: assignment } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignments')
             .select('class_id')
             .eq('id', assignmentId)
@@ -7971,7 +8022,7 @@
 
       async viewSubmissionWithFile(assignmentId, submissionId) {
         try {
-          const { data: submission } = await this.auth.supabase
+          const { data: submission } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignment_submissions')
             .select('*')
             .eq('id', submissionId)
@@ -8001,7 +8052,7 @@
           }
       
           // Load submission with assignment info
-          const { data: submission, error } = await this.auth.supabase
+          const { data: submission, error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignment_submissions')
             .select(`
               *,
@@ -8015,7 +8066,7 @@
           if (error) throw error;
           
           // Load student info separately
-          const { data: student } = await this.auth.supabase
+          const { data: student } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('user_profiles')
             .select('first_name, last_name, email')
             .eq('id', submission.student_id)
@@ -8026,7 +8077,7 @@
           // Separately load rubric if assignment uses one
           let rubricInfo = null;
           if (assignment.rubric_id) {
-            const { data: rubric } = await this.auth.supabase
+            const { data: rubric } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('rubrics')
               .select('id, name, description')
               .eq('id', assignment.rubric_id)
@@ -8040,7 +8091,7 @@
           // Load rubric criteria if using rubric grading
           let rubricCriteria = [];
           if (isRubricGrading && assignment.rubric_id) {
-            const { data: criteria } = await this.auth.supabase
+            const { data: criteria } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('rubric_criteria')
               .select('*')
               .eq('rubric_id', assignment.rubric_id)
@@ -8182,13 +8233,13 @@
       async gradeNonSubmitted(studentId, assignmentId) {
         try {
           // Get student and assignment info
-          const { data: student } = await this.auth.supabase
+          const { data: student } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('user_profiles')
             .select('first_name, last_name')
             .eq('id', studentId)
             .single();
             
-          const { data: assignment } = await this.auth.supabase
+          const { data: assignment } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignments')
             .select('title, max_points, grading_type, rubric_id')
             .eq('id', assignmentId)
@@ -8200,14 +8251,14 @@
           let rubricCriteria = [];
           let rubricInfo = null;
           if (isRubricGrading) {
-            const { data: rubric } = await this.auth.supabase
+            const { data: rubric } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('rubrics')
               .select('id, name')
               .eq('id', assignment.rubric_id)
               .single();
             rubricInfo = rubric;
             
-            const { data: criteria } = await this.auth.supabase
+            const { data: criteria } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('rubric_criteria')
               .select('*')
               .eq('rubric_id', assignment.rubric_id)
@@ -8386,7 +8437,7 @@
             // Handle excused assignment
             const excuseReason = document.getElementById('excuse-reason')?.value || '';
             
-            const { error } = await this.auth.supabase
+            const { error } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('assignment_submissions')
               .insert({
                 assignment_id: assignmentId,
@@ -8428,7 +8479,7 @@
               feedback = document.getElementById('grade-feedback')?.value || '';
             }
             
-            const { error } = await this.auth.supabase
+            const { error } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('assignment_submissions')
               .insert({
                 assignment_id: assignmentId,
@@ -8460,13 +8511,13 @@
 
       async sendReminderToStudent(studentId, assignmentId) {
         try {
-          const { data: assignment } = await this.auth.supabase
+          const { data: assignment } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignments')
             .select('title, due_date')
             .eq('id', assignmentId)
             .single();
       
-          const { data: student } = await this.auth.supabase
+          const { data: student } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('user_profiles')
             .select('first_name, last_name')
             .eq('id', studentId)
@@ -8474,7 +8525,7 @@
       
           if (confirm(`Send reminder to ${student?.first_name} ${student?.last_name} about "${assignment?.title}"?`)) {
             // Send message through the messaging system
-            const { error } = await this.auth.supabase
+            const { error } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('messages')
               .insert([{
                 sender_id: this.userInfo.user.id,
@@ -8504,13 +8555,13 @@
       async excuseStudent(studentId, assignmentId) {
         try {
           // Get student and assignment info
-          const { data: student } = await this.auth.supabase
+          const { data: student } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('user_profiles')
             .select('first_name, last_name')
             .eq('id', studentId)
             .single();
             
-          const { data: assignment } = await this.auth.supabase
+          const { data: assignment } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignments')
             .select('title')
             .eq('id', assignmentId)
@@ -8555,7 +8606,7 @@
           const excuseReason = document.getElementById('excuse-reason').value;
           
           // Create a submission record with excused status
-          const { error } = await this.auth.supabase
+          const { error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignment_submissions')
             .insert({
               assignment_id: assignmentId,
@@ -8611,7 +8662,7 @@
           }
       
           // Get assignment info to determine grading type
-          const { data: assignment } = await this.auth.supabase
+          const { data: assignment } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignments')
             .select('grading_type, max_points')
             .eq('id', assignmentId)
@@ -8668,7 +8719,7 @@
           }
       
           // Update submission
-          const { error } = await this.auth.supabase
+          const { error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignment_submissions')
             .update(gradeData)
             .eq('id', submissionId);
@@ -8697,7 +8748,7 @@
       async viewAssignmentRubric(rubricId, maxPoints) {
         try {
           // Load rubric with criteria
-          const { data: rubric, error: rubricError } = await this.auth.supabase
+          const { data: rubric, error: rubricError } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('rubrics')
             .select('*')
             .eq('id', rubricId)
@@ -8705,7 +8756,7 @@
       
           if (rubricError) throw rubricError;
       
-          const { data: criteria, error: criteriaError } = await this.auth.supabase
+          const { data: criteria, error: criteriaError } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('rubric_criteria')
             .select('*')
             .eq('rubric_id', rubricId)
@@ -8843,13 +8894,13 @@
         
         try {
           // Load default rubric criteria
-          const { data: defaultRubric } = await this.auth.supabase
+          const { data: defaultRubric } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('rubrics')
             .select('id')
             .eq('is_default', true)
             .single();
       
-          const { data: criteria } = await this.auth.supabase
+          const { data: criteria } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('rubric_criteria')
             .select('*')
             .eq('rubric_id', defaultRubric.id)
@@ -8890,7 +8941,7 @@
           const description = document.getElementById('inline-rubric-description').value.trim();
       
           // Create rubric
-          const { data: rubric, error: rubricError } = await this.auth.supabase
+          const { data: rubric, error: rubricError } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('rubrics')
             .insert({
               name,
@@ -8920,7 +8971,7 @@
           });
       
           // Insert criteria
-          const { error: criteriaError } = await this.auth.supabase
+          const { error: criteriaError } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('rubric_criteria')
             .insert(criteria);
       
@@ -8965,7 +9016,7 @@
       
       async loadRubrics() {
         try {
-          const { data: rubrics, error } = await this.auth.supabase
+          const { data: rubrics, error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('rubrics')
             .select('*')
             .or(`is_default.eq.true,created_by.eq.${this.userInfo.user.id}`)
@@ -8992,7 +9043,7 @@
           }
       
           // Load teacher's rubrics and default
-          const { data: rubrics, error } = await this.auth.supabase
+          const { data: rubrics, error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('rubrics')
             .select('*')
             .or(`is_default.eq.true,created_by.eq.${this.userInfo.user.id}`)
@@ -9067,13 +9118,13 @@
       
       async viewRubricDetails(rubricId) {
         try {
-          const { data: rubric } = await this.auth.supabase
+          const { data: rubric } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('rubrics')
             .select('*')
             .eq('id', rubricId)
             .single();
       
-          const { data: criteria } = await this.auth.supabase
+          const { data: criteria } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('rubric_criteria')
             .select('*')
             .eq('rubric_id', rubricId)
@@ -9207,13 +9258,13 @@
         
         try {
           // Load default rubric criteria
-          const { data: defaultRubric } = await this.auth.supabase
+          const { data: defaultRubric } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('rubrics')
             .select('id')
             .eq('is_default', true)
             .single();
       
-          const { data: criteria } = await this.auth.supabase
+          const { data: criteria } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('rubric_criteria')
             .select('*')
             .eq('rubric_id', defaultRubric.id)
@@ -9257,7 +9308,7 @@
           const description = document.getElementById('rubric-description').value.trim();
       
           // Create rubric
-          const { data: rubric, error: rubricError } = await this.auth.supabase
+          const { data: rubric, error: rubricError } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('rubrics')
             .insert({
               name,
@@ -9287,7 +9338,7 @@
           });
       
           // Insert criteria
-          const { error: criteriaError } = await this.auth.supabase
+          const { error: criteriaError } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('rubric_criteria')
             .insert(criteria);
       
@@ -9314,7 +9365,7 @@
         }
       
         try {
-          const { error } = await this.auth.supabase
+          const { error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('rubrics')
             .delete()
             .eq('id', rubricId);
@@ -9515,14 +9566,14 @@
       async previewRubric(rubricId) {
         try {
           // Load rubric info
-          const { data: rubric } = await this.auth.supabase
+          const { data: rubric } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('rubrics')
             .select('*')
             .eq('id', rubricId)
             .single();
           
           // Load criteria
-          const { data: criteria } = await this.auth.supabase
+          const { data: criteria } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('rubric_criteria')
             .select('*')
             .eq('rubric_id', rubricId)
@@ -9576,7 +9627,7 @@
       async attemptDriveUpload(file, assignmentId) {
         try {
           // Get assignment and class info
-          const { data: assignment } = await this.auth.supabase
+          const { data: assignment } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignments')
             .select('class_id, title')
             .eq('id', assignmentId)
@@ -9584,7 +9635,7 @@
       
           if (!assignment) throw new Error('Assignment not found');
       
-          const { data: classData } = await this.auth.supabase
+          const { data: classData } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('classes')
             .select('teacher_id, name')
             .eq('id', assignment.class_id)
@@ -9593,7 +9644,7 @@
           if (!classData) throw new Error('Class not found');
       
           // Check upload settings from the public table
-          const { data: uploadSettings } = await this.auth.supabase
+          const { data: uploadSettings } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('teacher_upload_settings')
             .select('drive_enabled')
             .eq('teacher_id', classData.teacher_id)
@@ -9612,7 +9663,7 @@
           formData.append('assignmentTitle', assignment.title);
           formData.append('className', classData.name);
       
-          const sessionResult = await this.auth.supabase.auth.getSession();
+          const sessionResult = await this.supabaseQuery(() =>          this.auth.supabase.auth.getSession();
           if (!sessionResult.data?.session) {
             throw new Error('No active session');
           }
@@ -9652,7 +9703,7 @@
           const fileName = `${this.userInfo.user.id}/${assignmentId}/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
       
           // Upload file
-          const { data: uploadData, error: uploadError } = await this.auth.supabase.storage
+          const { data: uploadData, error: uploadError } = await this.supabaseQuery(() =>          this.auth.supabase.storage
             .from(bucketName)
             .upload(fileName, file, { 
               cacheControl: '3600', 
@@ -9670,7 +9721,7 @@
           }
       
           // Create signed URL for private bucket
-          const { data: signedUrlData, error: signedError } = await this.auth.supabase.storage
+          const { data: signedUrlData, error: signedError } = await this.supabaseQuery(() =>          this.auth.supabase.storage
             .from(bucketName)
             .createSignedUrl(fileName, 604800); // 7 days expiry
       
@@ -9698,7 +9749,7 @@
         if (submission.storage_type === 'google_drive' && submission.drive_file_id) {
           try {
             // First try to get the direct link from database
-            const { data: driveUpload } = await this.auth.supabase
+            const { data: driveUpload } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('drive_uploads')
               .select('drive_web_link')
               .eq('drive_file_id', submission.drive_file_id)
@@ -9854,14 +9905,14 @@
           const classData = this.classes.find(c => c.id === classId);
 
           // Get enrollment data
-          const { data: enrollments } = await this.auth.supabase
+          const { data: enrollments } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('class_enrollments')
             .select('*')
             .eq('class_id', classId)
             .eq('status', 'active');
 
           // Get assignments
-          const { data: assignments } = await this.auth.supabase
+          const { data: assignments } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignments')
             .select('*')
             .eq('class_id', classId);
@@ -9869,7 +9920,7 @@
           // Get submissions
           let submissionRate = 0;
           if (assignments && assignments.length > 0) {
-            const { data: submissions } = await this.auth.supabase
+            const { data: submissions } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('assignment_submissions')
               .select('*')
               .in('assignment_id', assignments.map(a => a.id));
@@ -9879,7 +9930,7 @@
           }
 
           // Get discussion activity
-          const { data: discussions } = await this.auth.supabase
+          const { data: discussions } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('class_discussions')
             .select('*')
             .eq('class_id', classId);
@@ -9953,7 +10004,7 @@
           const classData = this.classes.find(c => c.id === classId);
       
           // Get current quarter
-          const { data: currentQuarter } = await this.auth.supabase
+          const { data: currentQuarter } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('quarters')
             .select('*')
             .eq('is_current', true)
@@ -9977,7 +10028,7 @@
           }
       
           // Get the student's enrollment for this class
-          const { data: enrollment } = await this.auth.supabase
+          const { data: enrollment } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('class_enrollments')
             .select('*')
             .eq('class_id', classId)
@@ -10001,19 +10052,19 @@
       
           // Update quarter if needed and recalculate
           if (enrollment.current_quarter_id !== currentQuarter.id) {
-            await this.auth.supabase
+            await this.supabaseQuery(() =>          this.auth.supabase
               .from('class_enrollments')
               .update({ current_quarter_id: currentQuarter.id })
               .eq('id', enrollment.id);
           }
       
           // Recalculate grades
-          await this.auth.supabase.rpc('update_enrollment_grades', {
+          await this.supabaseQuery(() =>          this.auth.supabase.rpc('update_enrollment_grades', {
             p_enrollment_id: enrollment.id
           });
       
           // Reload enrollment with updated grades
-          const { data: updatedEnrollment } = await this.auth.supabase
+          const { data: updatedEnrollment } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('class_enrollments')
             .select('*')
             .eq('id', enrollment.id)
@@ -10024,7 +10075,7 @@
           const classGrade = updatedEnrollment?.class_grade?.toFixed(1) || '0.0';
       
           // Load assignments and submissions for detail view
-          const { data: assignments } = await this.auth.supabase
+          const { data: assignments } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignments')
             .select('*')
             .eq('class_id', classId)
@@ -10034,7 +10085,7 @@
       
           let assignmentsHtml = '';
           if (assignments && assignments.length > 0) {
-            const { data: submissions } = await this.auth.supabase
+            const { data: submissions } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('assignment_submissions')
               .select('*')
               .in('assignment_id', assignments.map(a => a.id))
@@ -10084,7 +10135,7 @@
           }
       
           // Load categories for this class
-          const { data: categories } = await this.auth.supabase
+          const { data: categories } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('grade_categories')
             .select('*')
             .eq('class_id', classId)
@@ -10095,7 +10146,7 @@
           if (categories && categories.length > 0) {
             for (const category of categories) {
               // Get assignments in this category for current quarter
-              const { data: categoryAssignments } = await this.auth.supabase
+              const { data: categoryAssignments } = await this.supabaseQuery(() =>          this.auth.supabase
                 .from('assignments')
                 .select('id, title, max_points')
                 .eq('class_id', classId)
@@ -10106,7 +10157,7 @@
               
               if (categoryAssignments && categoryAssignments.length > 0) {
                 const assignmentIds = categoryAssignments.map(a => a.id);
-                const { data: categorySubmissions } = await this.auth.supabase
+                const { data: categorySubmissions } = await this.supabaseQuery(() =>          this.auth.supabase
                   .from('assignment_submissions')
                   .select('*')
                   .in('assignment_id', assignmentIds)
@@ -10265,7 +10316,7 @@
       async showQuarterManagement() {
         try {
           // Load all quarters
-          const { data: quarters, error } = await this.auth.supabase
+          const { data: quarters, error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('quarters')
             .select('*')
             .order('start_date', { ascending: false });
@@ -10443,7 +10494,7 @@
           // Get current quarter before creating new one
           let currentQuarter = null;
           if (setCurrent) {
-            const { data: existing } = await this.auth.supabase
+            const { data: existing } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('quarters')
               .select('*')
               .eq('is_current', true)
@@ -10456,7 +10507,7 @@
           if (setCurrent && currentQuarter) {
             this.showNotification('Snapshotting current quarter grades...', 'info');
             
-            const { error: snapshotError } = await this.auth.supabase
+            const { error: snapshotError } = await this.supabaseQuery(() =>          this.auth.supabase
               .rpc('snapshot_quarter_grades', { p_quarter_id: currentQuarter.id });
             
             if (snapshotError) {
@@ -10465,14 +10516,14 @@
             }
             
             // Unset all other quarters
-            await this.auth.supabase
+            await this.supabaseQuery(() =>          this.auth.supabase
               .from('quarters')
               .update({ is_current: false })
               .eq('is_current', true);
           }
           
           // Create new quarter
-          const { data: newQuarter, error: createError } = await this.auth.supabase
+          const { data: newQuarter, error: createError } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('quarters')
             .insert({
               name,
@@ -10490,7 +10541,7 @@
           if (setCurrent) {
             this.showNotification('Transitioning enrollments to new quarter...', 'info');
             
-            const { error: updateError } = await this.auth.supabase
+            const { error: updateError } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('class_enrollments')
               .update({ 
                 current_quarter_id: newQuarter.id,
@@ -10505,14 +10556,14 @@
             // Recalculate all grades for new quarter (they should be empty/null initially)
             this.showNotification('Recalculating grades for new quarter...', 'info');
             
-            const { data: enrollments } = await this.auth.supabase
+            const { data: enrollments } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('class_enrollments')
               .select('id')
               .eq('status', 'active');
             
             if (enrollments) {
               for (const enrollment of enrollments) {
-                await this.auth.supabase.rpc('update_enrollment_grades', {
+                await this.supabaseQuery(() =>          this.auth.supabase.rpc('update_enrollment_grades', {
                   p_enrollment_id: enrollment.id
                 });
               }
@@ -10546,7 +10597,7 @@
           }
           
           // Get current quarter to snapshot
-          const { data: currentQuarter } = await this.auth.supabase
+          const { data: currentQuarter } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('quarters')
             .select('*')
             .eq('is_current', true)
@@ -10554,19 +10605,19 @@
           
           // Snapshot current quarter grades
           if (currentQuarter) {
-            await this.auth.supabase.rpc('snapshot_quarter_grades', { 
+            await this.supabaseQuery(() =>          this.auth.supabase.rpc('snapshot_quarter_grades', { 
               p_quarter_id: currentQuarter.id 
             });
           }
           
           // Unset all current quarters
-          await this.auth.supabase
+          await this.supabaseQuery(() =>          this.auth.supabase
             .from('quarters')
             .update({ is_current: false })
             .eq('is_current', true);
           
           // Set new current quarter
-          const { error: updateError } = await this.auth.supabase
+          const { error: updateError } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('quarters')
             .update({ is_current: true })
             .eq('id', quarterId);
@@ -10574,7 +10625,7 @@
           if (updateError) throw updateError;
           
           // Update all enrollments
-          await this.auth.supabase
+          await this.supabaseQuery(() =>          this.auth.supabase
             .from('class_enrollments')
             .update({ 
               current_quarter_id: quarterId,
@@ -10584,14 +10635,14 @@
             .eq('status', 'active');
           
           // Recalculate grades
-          const { data: enrollments } = await this.auth.supabase
+          const { data: enrollments } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('class_enrollments')
             .select('id')
             .eq('status', 'active');
           
           if (enrollments) {
             for (const enrollment of enrollments) {
-              await this.auth.supabase.rpc('update_enrollment_grades', {
+              await this.supabaseQuery(() =>          this.auth.supabase.rpc('update_enrollment_grades', {
                 p_enrollment_id: enrollment.id
               });
             }
@@ -10612,7 +10663,7 @@
       }
       
       async archiveQuarter(quarterId) {
-        const { data: quarter } = await this.auth.supabase
+        const { data: quarter } = await this.supabaseQuery(() =>          this.auth.supabase
           .from('quarters')
           .select('*')
           .eq('id', quarterId)
@@ -10629,11 +10680,11 @@
         
         try {
           // Snapshot grades before archiving
-          await this.auth.supabase.rpc('snapshot_quarter_grades', { 
+          await this.supabaseQuery(() =>          this.auth.supabase.rpc('snapshot_quarter_grades', { 
             p_quarter_id: quarterId 
           });
           
-          const { error } = await this.auth.supabase
+          const { error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('quarters')
             .update({ 
               is_archived: true,
@@ -10656,7 +10707,7 @@
       
       async unarchiveQuarter(quarterId) {
         try {
-          const { error } = await this.auth.supabase
+          const { error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('quarters')
             .update({ 
               is_archived: false,
@@ -10680,14 +10731,14 @@
       async viewQuarterGrades(quarterId) {
         try {
           // Load quarter info
-          const { data: quarter } = await this.auth.supabase
+          const { data: quarter } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('quarters')
             .select('*')
             .eq('id', quarterId)
             .single();
           
           // Load snapshots for this quarter
-          const { data: snapshots, error } = await this.auth.supabase
+          const { data: snapshots, error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('quarter_grade_snapshots')
             .select(`
               *,
@@ -10715,7 +10766,7 @@
           
           // Get student profiles
           const studentIds = snapshots.map(s => s.class_enrollments.student_id);
-          const { data: students } = await this.auth.supabase
+          const { data: students } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('user_profiles')
             .select('id, first_name, last_name')
             .in('id', studentIds);
@@ -10727,7 +10778,7 @@
           
           // Get class info
           const classIds = [...new Set(snapshots.map(s => s.class_enrollments.class_id))];
-          const { data: classes } = await this.auth.supabase
+          const { data: classes } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('classes')
             .select('id, name')
             .in('id', classIds);
@@ -10798,7 +10849,7 @@
           }
           
           // Load quarter
-          const { data: quarter } = await this.auth.supabase
+          const { data: quarter } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('quarters')
             .select('*')
             .eq('id', quarterId)
@@ -10807,7 +10858,7 @@
           // Load snapshots or current grades
           let gradeData;
           if (quarter.is_archived) {
-            const { data: snapshots } = await this.auth.supabase
+            const { data: snapshots } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('quarter_grade_snapshots')
               .select(`
                 *,
@@ -10816,7 +10867,7 @@
               .eq('quarter_id', quarterId);
             gradeData = snapshots;
           } else {
-            const { data: enrollments } = await this.auth.supabase
+            const { data: enrollments } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('class_enrollments')
               .select('*')
               .eq('current_quarter_id', quarterId)
@@ -10833,12 +10884,12 @@
           const studentIds = gradeData.map(g => quarter.is_archived ? g.class_enrollments.student_id : g.student_id);
           const classIds = gradeData.map(g => quarter.is_archived ? g.class_enrollments.class_id : g.class_id);
           
-          const { data: students } = await this.auth.supabase
+          const { data: students } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('user_profiles')
             .select('id, first_name, last_name, email')
             .in('id', studentIds);
           
-          const { data: classes } = await this.auth.supabase
+          const { data: classes } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('classes')
             .select('id, name, subject')
             .in('id', classIds);
@@ -10892,7 +10943,7 @@
       
       async editQuarter(quarterId) {
         try {
-          const { data: quarter } = await this.auth.supabase
+          const { data: quarter } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('quarters')
             .select('*')
             .eq('id', quarterId)
@@ -10943,7 +10994,7 @@
         const endDate = document.getElementById('edit-end-date').value;
         
         try {
-          const { error } = await this.auth.supabase
+          const { error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('quarters')
             .update({
               name,
@@ -10969,7 +11020,7 @@
       async showStudentQuarterHistory() {
         try {
           // Load all quarters
-          const { data: quarters, error } = await this.auth.supabase
+          const { data: quarters, error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('quarters')
             .select('*')
             .order('start_date', { ascending: false });
@@ -11032,14 +11083,14 @@
       async viewStudentQuarterGrades(quarterId) {
         try {
           // Load quarter info
-          const { data: quarter } = await this.auth.supabase
+          const { data: quarter } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('quarters')
             .select('*')
             .eq('id', quarterId)
             .single();
           
           // Load student's enrollments
-          const { data: enrollments, error } = await this.auth.supabase
+          const { data: enrollments, error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('class_enrollments')
             .select('*')
             .eq('student_id', this.userInfo.user.id)
@@ -11051,7 +11102,7 @@
           // If quarter is archived, try to load from snapshots instead
           let gradeData = enrollments;
           if (quarter.is_archived && (!enrollments || enrollments.length === 0)) {
-            const { data: snapshots } = await this.auth.supabase
+            const { data: snapshots } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('quarter_grade_snapshots')
               .select(`
                 *,
@@ -11084,7 +11135,7 @@
           
           // Load class information
           const classIds = gradeData.map(e => e.class_id);
-          const { data: classes } = await this.auth.supabase
+          const { data: classes } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('classes')
             .select('id, name, subject')
             .in('id', classIds);
@@ -11163,7 +11214,7 @@
       async viewQuarterAssignments(quarterId) {
         try {
           // Load quarter info
-          const { data: quarter } = await this.auth.supabase
+          const { data: quarter } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('quarters')
             .select('*')
             .eq('id', quarterId)
@@ -11178,7 +11229,7 @@
           }
           
           // Load assignments for this quarter
-          const { data: assignments, error } = await this.auth.supabase
+          const { data: assignments, error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignments')
             .select('*')
             .in('class_id', classIds)
@@ -11203,7 +11254,7 @@
           }
           
           // Get class info
-          const { data: classes } = await this.auth.supabase
+          const { data: classes } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('classes')
             .select('id, name, subject')
             .in('id', classIds);
@@ -11219,7 +11270,7 @@
             if (assignment.assigned_to_all) {
               filteredAssignments.push(assignment);
             } else {
-              const { data: studentAssignment } = await this.auth.supabase
+              const { data: studentAssignment } = await this.supabaseQuery(() =>          this.auth.supabase
                 .from('assignment_students')
                 .select('id')
                 .eq('assignment_id', assignment.id)
@@ -11234,7 +11285,7 @@
           
           // Load submissions
           const assignmentIds = filteredAssignments.map(a => a.id);
-          const { data: submissions } = await this.auth.supabase
+          const { data: submissions } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignment_submissions')
             .select('*')
             .in('assignment_id', assignmentIds)
@@ -11354,13 +11405,13 @@
       
           // Fetch requested data
           if (includeStudents) {
-            const { data: enrollments } = await this.auth.supabase
+            const { data: enrollments } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('class_enrollments')
               .select('*')
               .eq('class_id', classId)
               .eq('status', 'active');
       
-            const { data: students } = await this.auth.supabase
+            const { data: students } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('user_profiles')
               .select('id, first_name, last_name, email, grade_level')
               .in('id', enrollments?.map(e => e.student_id) || []);
@@ -11369,7 +11420,7 @@
           }
       
           if (includeAssignments) {
-            const { data: assignments } = await this.auth.supabase
+            const { data: assignments } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('assignments')
               .select('*')
               .eq('class_id', classId);
@@ -11379,7 +11430,7 @@
       
           if (includeSubmissions) {
             const assignmentIds = exportData.assignments?.map(a => a.id) || [];
-            const { data: submissions } = await this.auth.supabase
+            const { data: submissions } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('assignment_submissions')
               .select('*')
               .in('assignment_id', assignmentIds);
@@ -11388,7 +11439,7 @@
           }
       
           if (includeDiscussions) {
-            const { data: discussions } = await this.auth.supabase
+            const { data: discussions } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('class_discussions')
               .select('*')
               .eq('class_id', classId)
@@ -11556,35 +11607,35 @@
           }
       
           // Gather all data
-          const { data: enrollments } = await this.auth.supabase
+          const { data: enrollments } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('class_enrollments')
             .select('*')
             .eq('class_id', classId)
             .eq('status', 'active');
       
-          const { data: students } = await this.auth.supabase
+          const { data: students } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('user_profiles')
             .select('*')
             .in('id', enrollments?.map(e => e.student_id) || []);
       
-          const { data: assignments } = await this.auth.supabase
+          const { data: assignments } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignments')
             .select('*')
             .eq('class_id', classId)
             .order('created_at', { ascending: false });
       
-          const { data: submissions } = await this.auth.supabase
+          const { data: submissions } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignment_submissions')
             .select('*')
             .in('assignment_id', assignments?.map(a => a.id) || []);
       
-          const { data: discussions } = await this.auth.supabase
+          const { data: discussions } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('class_discussions')
             .select('*')
             .eq('class_id', classId)
             .eq('is_deleted', false);
       
-          const { data: replies } = await this.auth.supabase
+          const { data: replies } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('discussion_replies')
             .select('*')
             .in('discussion_id', discussions?.map(d => d.id) || [])
@@ -11823,7 +11874,7 @@
       async loadReportFilters() {
         try {
           // Load all classes
-          const { data: classes } = await this.auth.supabase
+          const { data: classes } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('classes')
             .select('id, name, subject')
             .order('name');
@@ -11839,7 +11890,7 @@
           }
           
           // Load all active students
-          const { data: students } = await this.auth.supabase
+          const { data: students } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('user_profiles')
             .select('id, first_name, last_name, grade_level')
             .eq('user_type', 'student')
@@ -11898,7 +11949,7 @@
           // Handle semester and full year queries
           let grades;
           if (quarter === 'S1') {
-            const { data: q1Grades } = await this.auth.supabase
+            const { data: q1Grades } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('grades')
               .select(`
                 *,
@@ -11913,7 +11964,7 @@
               `)
               .eq('assignment.quarter', 'Q1');
             
-            const { data: q2Grades } = await this.auth.supabase
+            const { data: q2Grades } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('grades')
               .select(`
                 *,
@@ -11930,7 +11981,7 @@
             
             grades = [...(q1Grades || []), ...(q2Grades || [])];
           } else if (quarter === 'S2') {
-            const { data: q3Grades } = await this.auth.supabase
+            const { data: q3Grades } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('grades')
               .select(`
                 *,
@@ -11945,7 +11996,7 @@
               `)
               .eq('assignment.quarter', 'Q3');
             
-            const { data: q4Grades } = await this.auth.supabase
+            const { data: q4Grades } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('grades')
               .select(`
                 *,
@@ -11962,7 +12013,7 @@
             
             grades = [...(q3Grades || []), ...(q4Grades || [])];
           } else if (quarter === 'YEAR') {
-            const { data: allGrades } = await this.auth.supabase
+            const { data: allGrades } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('grades')
               .select(`
                 *,
@@ -12236,26 +12287,26 @@
           console.log('📊 Starting database queries...');
           
           // Get statistics
-          const { data: allUsers } = await this.auth.supabase
+          const { data: allUsers } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('user_profiles')
             .select('user_type');
           
           console.log('👥 Users loaded:', allUsers?.length);
           
-          const { data: allClasses } = await this.auth.supabase
+          const { data: allClasses } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('classes')
             .select('id');
           
           console.log('🏫 Classes loaded:', allClasses?.length);
           
-          const { data: activeEnrollments } = await this.auth.supabase
+          const { data: activeEnrollments } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('class_enrollments')
             .select('id')
             .eq('status', 'active');
           
           console.log('📚 Enrollments loaded:', activeEnrollments?.length);
           
-          const { data: allAssignments } = await this.auth.supabase
+          const { data: allAssignments } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('assignments')
             .select('id');
           
@@ -12504,7 +12555,7 @@
         section.innerHTML = '<div style="text-align: center; padding: 40px;"><div class="loading-spinner"></div><p>Loading classes...</p></div>';
         
         try {
-          const { data: allClasses, error } = await this.auth.supabase
+          const { data: allClasses, error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('classes')
             .select('*')
             .order('name', { ascending: true });
@@ -12515,7 +12566,7 @@
           if (allClasses) {
             for (let classItem of allClasses) {
               if (classItem.teacher_id) {
-                const { data: teacher } = await this.auth.supabase
+                const { data: teacher } = await this.supabaseQuery(() =>          this.auth.supabase
                   .from('user_profiles')
                   .select('first_name, last_name')
                   .eq('id', classItem.teacher_id)
@@ -12527,7 +12578,7 @@
           
           // Get enrollment counts
           for (let cls of allClasses) {
-            const { data: enrollments } = await this.auth.supabase
+            const { data: enrollments } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('class_enrollments')
               .select('id')
               .eq('class_id', cls.id)
@@ -12590,7 +12641,7 @@
         section.innerHTML = '<div style="text-align: center; padding: 40px;"><div class="loading-spinner"></div><p>Loading users...</p></div>';
         
         try {
-          const { data: allUsers, error } = await this.auth.supabase
+          const { data: allUsers, error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('user_profiles')
             .select('*')
             .order('last_name');
@@ -12741,7 +12792,7 @@
         }
         
         try {
-          const { error } = await this.auth.supabase
+          const { error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('user_profiles')
             .update({ user_type: 'admin' })
             .eq('id', userId);
@@ -12762,7 +12813,7 @@
         }
         
         try {
-          const { error } = await this.auth.supabase
+          const { error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('user_profiles')
             .update({ user_type: 'teacher' })
             .eq('id', userId);
@@ -12788,7 +12839,7 @@
         
         try {
           // Get all students
-          const { data: allStudents, error } = await this.auth.supabase
+          const { data: allStudents, error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('user_profiles')
             .select('*')
             .eq('user_type', 'student')
@@ -12801,7 +12852,7 @@
           
           // Get enrollment data for active students
           for (let student of activeStudents) {
-            const { data: enrollments } = await this.auth.supabase
+            const { data: enrollments } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('class_enrollments')
               .select('class_id, classes(name)')
               .eq('student_id', student.id)
@@ -12946,7 +12997,7 @@
         }
         
         try {
-          const { error } = await this.auth.supabase
+          const { error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('user_profiles')
             .update({ account_status: 'active' })
             .eq('id', studentId);
@@ -12966,7 +13017,7 @@
         
         try {
           // Load student profile
-          const { data: student, error: studentError } = await this.auth.supabase
+          const { data: student, error: studentError } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('user_profiles')
             .select('*')
             .eq('id', studentId)
@@ -12975,7 +13026,7 @@
           if (studentError) throw studentError;
           
           // Load enrollments with grade data
-          const { data: enrollments, error: enrollError } = await this.auth.supabase
+          const { data: enrollments, error: enrollError } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('class_enrollments')
             .select('*')
             .eq('student_id', studentId)
@@ -12988,7 +13039,7 @@
           // Load class info separately
           if (enrollments && enrollments.length > 0) {
             const classIds = [...new Set(enrollments.map(e => e.class_id))];
-            const { data: classes } = await this.auth.supabase
+            const { data: classes } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('classes')
               .select('id, name, subject, grade_level, teacher_id')
               .in('id', classIds);
@@ -13007,7 +13058,7 @@
             // Load teacher names
             const teacherIds = [...new Set(classes?.map(c => c.teacher_id).filter(id => id))];
             if (teacherIds.length > 0) {
-              const { data: teachers } = await this.auth.supabase
+              const { data: teachers } = await this.supabaseQuery(() =>          this.auth.supabase
                 .from('user_profiles')
                 .select('id, first_name, last_name')
                 .in('id', teacherIds);
@@ -13191,7 +13242,7 @@
         
         try {
           // Update enrollment status to removed
-          const { error } = await this.auth.supabase
+          const { error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('class_enrollments')
             .update({ status: 'removed' })
             .eq('student_id', studentId)
@@ -13213,13 +13264,13 @@
       
       async enrollStudentInClass(studentId) {
         // Get all available classes
-        const { data: allClasses } = await this.auth.supabase
+        const { data: allClasses } = await this.supabaseQuery(() =>          this.auth.supabase
           .from('classes')
           .select('id, name, subject, teacher_id')
           .order('name');
         
         // Get classes student is already in
-        const { data: currentEnrollments } = await this.auth.supabase
+        const { data: currentEnrollments } = await this.supabaseQuery(() =>          this.auth.supabase
           .from('class_enrollments')
           .select('class_id')
           .eq('student_id', studentId)
@@ -13263,7 +13314,7 @@
         }
         
         try {
-          const { error } = await this.auth.supabase
+          const { error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('class_enrollments')
             .insert({
               student_id: studentId,
@@ -13291,7 +13342,7 @@
         if (newGrade === null) return;
         
         try {
-          const { error } = await this.auth.supabase
+          const { error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('user_profiles')
             .update({ grade_level: newGrade })
             .eq('id', studentId);
@@ -13314,7 +13365,7 @@
         }
         
         try {
-          const { error } = await this.auth.supabase
+          const { error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('user_profiles')
             .update({ account_status: 'inactive' })
             .eq('id', studentId);
@@ -13333,7 +13384,7 @@
       
       async editStudentProfile(studentId) {
         // Load current student data
-        const { data: student } = await this.auth.supabase
+        const { data: student } = await this.supabaseQuery(() =>          this.auth.supabase
           .from('user_profiles')
           .select('*')
           .eq('id', studentId)
@@ -13378,7 +13429,7 @@
         }
         
         try {
-          const { error } = await this.auth.supabase
+          const { error } = await this.supabaseQuery(() =>          this.auth.supabase
             .from('user_profiles')
             .update({
               first_name: firstName,
@@ -13439,7 +13490,7 @@
 
       async deleteAccount() {
         try {
-            const { data: { session } } = await this.auth.supabase.auth.getSession();
+            const { data: { session } } = await this.supabaseQuery(() =>          this.auth.supabase.auth.getSession();
             if (!session) {
                 throw new Error('No active session');
             }
@@ -13466,7 +13517,7 @@
                 throw new Error(data.error || 'Failed to delete account');
             }
     
-            await this.auth.supabase.auth.signOut({ scope: 'local' });
+            await this.supabaseQuery(() =>          this.auth.supabase.auth.signOut({ scope: 'local' });
             alert('Account deleted successfully');
             window.location.href = '/student-portal/index.html';
             
@@ -13479,7 +13530,7 @@
       async createInactiveStudent(studentData) {
           console.log('🔍 Creating inactive student with data:', studentData);
           
-          const { data, error } = await this.auth.supabase
+          const { data, error } = await this.supabaseQuery(() =>          this.auth.supabase
               .from('user_profiles')
               .insert({
                   // DO NOT SET id - let database handle it OR it will be set by a trigger
@@ -13751,7 +13802,7 @@
         `;
         
         try {
-            const { data: students, error } = await this.auth.supabase
+            const { data: students, error } = await this.supabaseQuery(() =>          this.auth.supabase
                 .from('user_profiles')
                 .select('*')
                 .eq('account_status', 'inactive')
