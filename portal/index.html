@@ -9697,7 +9697,6 @@
       }
     }
 
-      // Helper function for editing assignment  
       async editAssignment(assignmentId) {
         try {
           // Load existing assignment data
@@ -9715,6 +9714,12 @@
             .select('*')
             .eq('class_id', assignment.class_id)
             .order('display_order');
+          
+          // Load available rubrics
+          const { data: rubrics } = await this.auth.supabase
+            .from('rubrics')
+            .select('id, name, description, is_default')
+            .order('is_default', { ascending: false });
           
           if (!assignment) {
             this.showNotification('Assignment not found', 'error');
@@ -9755,6 +9760,9 @@
           const dueDate = new Date(assignment.due_date);
           const formattedDate = dueDate.toISOString().slice(0, 16);
       
+          // Determine current grading type
+          const isRubricGrading = assignment.grading_type === 'rubric';
+      
           const modalContent = `
             <form id="edit-assignment-form">
               <div class="form-group">
@@ -9776,7 +9784,7 @@
                 <label for="edit-assignment-max-points">Maximum Points</label>
                 <input type="number" id="edit-assignment-max-points" min="1" max="1000" value="${assignment.max_points || 100}">
               </div>
-          
+      
               <div class="form-group">
                 <label for="edit-assignment-category">Category</label>
                 <select id="edit-assignment-category">
@@ -9786,6 +9794,45 @@
                     </option>
                   `).join('') : '<option value="">No categories</option>'}
                 </select>
+              </div>
+      
+              <!-- Grading Type Section -->
+              <div class="card" style="background: var(--card); margin: 20px 0; padding: 15px;">
+                <label style="font-weight: 600; margin-bottom: 10px; display: block;">Grading Method</label>
+                
+                <div style="display: flex; gap: 20px; margin-bottom: 15px;">
+                  <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                    <input type="radio" name="edit-grading-type" value="points" ${!isRubricGrading ? 'checked' : ''} onchange="app.toggleEditGradingType('points')">
+                    <span>Points-Based</span>
+                  </label>
+                  <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                    <input type="radio" name="edit-grading-type" value="rubric" ${isRubricGrading ? 'checked' : ''} onchange="app.toggleEditGradingType('rubric')">
+                    <span>Rubric-Based</span>
+                  </label>
+                </div>
+                
+                <div id="edit-rubric-selection" style="display: ${isRubricGrading ? 'block' : 'none'};">
+                  <label for="edit-assignment-rubric">Select Rubric:</label>
+                  <select id="edit-assignment-rubric" style="width: 100%; padding: 10px; margin-top: 5px;">
+                    <option value="">-- Select a Rubric --</option>
+                    ${rubrics && rubrics.length > 0 ? rubrics.map(rubric => `
+                      <option value="${rubric.id}" ${rubric.id === assignment.rubric_id ? 'selected' : ''}>
+                        ${rubric.name}${rubric.is_default ? ' (Default)' : ''}
+                        ${rubric.description ? ` - ${rubric.description.substring(0, 50)}...` : ''}
+                      </option>
+                    `).join('') : ''}
+                  </select>
+                  
+                  ${assignment.rubric_id ? `
+                    <button type="button" class="btn btn-secondary small" style="margin-top: 10px;" onclick="app.previewRubric('${assignment.rubric_id}')">
+                      👁️ Preview Current Rubric
+                    </button>
+                  ` : ''}
+                  
+                  <p style="color: var(--muted); font-size: 12px; margin-top: 10px;">
+                    Rubric grading allows you to select from predefined performance levels (A, B, C, etc.) with descriptions.
+                  </p>
+                </div>
               </div>
               
               <div class="form-group">
@@ -9875,6 +9922,61 @@
         }
       }
 
+      toggleEditGradingType(type) {
+        const rubricSection = document.getElementById('edit-rubric-selection');
+        if (rubricSection) {
+          rubricSection.style.display = type === 'rubric' ? 'block' : 'none';
+        }
+      }
+      
+      async previewRubric(rubricId) {
+        try {
+          // Load rubric info
+          const { data: rubric } = await this.auth.supabase
+            .from('rubrics')
+            .select('*')
+            .eq('id', rubricId)
+            .single();
+          
+          // Load criteria
+          const { data: criteria } = await this.auth.supabase
+            .from('rubric_criteria')
+            .select('*')
+            .eq('rubric_id', rubricId)
+            .order('sort_order');
+          
+          const modalContent = `
+            <div>
+              <h3>${rubric?.name || 'Rubric'}</h3>
+              ${rubric?.description ? `<p style="color: var(--muted); margin-bottom: 20px;">${rubric.description}</p>` : ''}
+              
+              <div style="display: grid; gap: 10px;">
+                ${criteria && criteria.length > 0 ? criteria.map(c => `
+                  <div class="card" style="border-left: 4px solid var(--accent);">
+                    <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 8px;">
+                      <strong style="font-size: 18px;">${c.letter_grade}</strong>
+                      <span style="color: var(--accent); font-weight: 600;">${c.point_percentage}%</span>
+                    </div>
+                    <div style="color: var(--accent); font-size: 14px; margin-bottom: 5px;">${c.summary_level}</div>
+                    <div style="color: var(--muted); font-size: 13px;">${c.core_meaning}</div>
+                  </div>
+                `).join('') : '<p>No criteria defined for this rubric.</p>'}
+              </div>
+            </div>
+            
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal('preview-rubric')">Close</button>
+            </div>
+          `;
+          
+          this.showModal('preview-rubric', '📋 Rubric Preview', modalContent, true);
+          
+        } catch (error) {
+          console.error('Error loading rubric:', error);
+          this.showNotification('Error loading rubric: ' + error.message, 'error');
+        }
+      }
+
       toggleEditStudentSelection() {
         const checkbox = document.getElementById('edit-assign-to-specific');
         const section = document.getElementById('edit-student-selection-section');
@@ -9888,63 +9990,75 @@
       }
       
       async submitEditAssignment(assignmentId, classId) {
-        const isSelectiveAssignment = document.getElementById('edit-assign-to-specific').checked;
-        
-        const updatedData = {
-          title: document.getElementById('edit-assignment-title').value,
-          description: this.assignmentDescriptionEditor ? this.assignmentDescriptionEditor.root.innerHTML : null,
-          due_date: document.getElementById('edit-assignment-due-date').value,
-          max_points: parseInt(document.getElementById('edit-assignment-max-points').value) || 100,
-          is_published: document.getElementById('edit-assignment-is-published').checked,
-          category_id: document.getElementById('edit-assignment-category')?.value || null,
-          assigned_to_all: !isSelectiveAssignment,
-          updated_at: new Date().toISOString()
-        };
-      
-        if (!updatedData.title || !updatedData.due_date) {
-          this.showNotification('Please fill in required fields', 'error');
-          return;
-        }
-      
         try {
+          const title = document.getElementById('edit-assignment-title').value.trim();
+          const dueDate = document.getElementById('edit-assignment-due-date').value;
+          const maxPoints = parseInt(document.getElementById('edit-assignment-max-points').value) || 100;
+          const categoryId = document.getElementById('edit-assignment-category').value;
+          const isPublished = document.getElementById('edit-assignment-is-published').checked;
+          const assignToSpecific = document.getElementById('edit-assign-to-specific').checked;
+          
+          // Get grading type and rubric
+          const gradingType = document.querySelector('input[name="edit-grading-type"]:checked')?.value || 'points';
+          const rubricId = gradingType === 'rubric' ? document.getElementById('edit-assignment-rubric').value : null;
+          
+          // Validate rubric selection if rubric grading
+          if (gradingType === 'rubric' && !rubricId) {
+            this.showNotification('Please select a rubric for rubric-based grading', 'error');
+            return;
+          }
+      
+          if (!title || !dueDate) {
+            this.showNotification('Title and due date are required', 'error');
+            return;
+          }
+      
+          const description = this.assignmentDescriptionEditor?.root.innerHTML || '';
+      
           // Update assignment
           const { error } = await this.auth.supabase
             .from('assignments')
-            .update(updatedData)
+            .update({
+              title,
+              description,
+              due_date: dueDate,
+              max_points: maxPoints,
+              category_id: categoryId || null,
+              is_published: isPublished,
+              assigned_to_all: !assignToSpecific,
+              grading_type: gradingType,
+              rubric_id: rubricId || null,
+              updated_at: new Date().toISOString()
+            })
             .eq('id', assignmentId);
       
           if (error) throw error;
       
-          // Handle selective assignment student list
-          if (isSelectiveAssignment) {
-            const selectedStudents = Array.from(document.querySelectorAll('.edit-student-checkbox:checked'))
-              .map(cb => cb.value);
-      
-            if (selectedStudents.length === 0) {
-              this.showNotification('Please select at least one student', 'error');
-              return;
-            }
-      
+          // Handle student assignments if selective
+          if (assignToSpecific) {
             // Delete existing assignments
             await this.auth.supabase
               .from('assignment_students')
               .delete()
               .eq('assignment_id', assignmentId);
-      
+            
+            // Get selected students
+            const selectedStudents = Array.from(document.querySelectorAll('.edit-student-checkbox:checked'))
+              .map(cb => cb.value);
+            
             // Insert new assignments
-            const assignmentStudents = selectedStudents.map(studentId => ({
-              assignment_id: assignmentId,
-              student_id: studentId,
-              assigned_at: new Date().toISOString()
-            }));
-      
-            const { error: insertError } = await this.auth.supabase
-              .from('assignment_students')
-              .insert(assignmentStudents);
-      
-            if (insertError) throw insertError;
+            if (selectedStudents.length > 0) {
+              const insertData = selectedStudents.map(studentId => ({
+                assignment_id: assignmentId,
+                student_id: studentId
+              }));
+              
+              await this.auth.supabase
+                .from('assignment_students')
+                .insert(insertData);
+            }
           } else {
-            // If changing from selective to all students, delete assignment_students records
+            // Remove any specific assignments if switching to all students
             await this.auth.supabase
               .from('assignment_students')
               .delete()
@@ -9955,12 +10069,13 @@
           this.closeModal('edit-assignment');
           
           // Refresh assignments view
-          this.closeModal('assignments');
-          setTimeout(() => this.viewAssignments(classId), 100);
+          if (this.currentClassId) {
+            await this.viewAssignments(this.currentClassId);
+          }
       
         } catch (error) {
           console.error('Error updating assignment:', error);
-          this.showNotification('Error updating assignment: ' + error.message, 'error');
+          this.showNotification('Error: ' + error.message, 'error');
         }
       }
 
@@ -10302,9 +10417,30 @@
             
           const { data: assignment } = await this.auth.supabase
             .from('assignments')
-            .select('title, max_points')
+            .select('title, max_points, grading_type, rubric_id')
             .eq('id', assignmentId)
             .single();
+          
+          const isRubricGrading = assignment.grading_type === 'rubric' && assignment.rubric_id;
+          
+          // Load rubric criteria if using rubric grading
+          let rubricCriteria = [];
+          let rubricInfo = null;
+          if (isRubricGrading) {
+            const { data: rubric } = await this.auth.supabase
+              .from('rubrics')
+              .select('id, name')
+              .eq('id', assignment.rubric_id)
+              .single();
+            rubricInfo = rubric;
+            
+            const { data: criteria } = await this.auth.supabase
+              .from('rubric_criteria')
+              .select('*')
+              .eq('rubric_id', assignment.rubric_id)
+              .order('sort_order');
+            rubricCriteria = criteria || [];
+          }
           
           const modalContent = `
             <div>
@@ -10312,6 +10448,7 @@
               <p style="margin: 15px 0;">
                 Grade for <strong>${student?.first_name} ${student?.last_name}</strong><br>
                 Assignment: <strong>${assignment?.title}</strong>
+                ${isRubricGrading ? `<br>Rubric: <strong>${rubricInfo?.name || 'Default'}</strong>` : ''}
               </p>
               
               <div class="card" style="background: var(--danger); color: white; padding: 10px; margin: 15px 0;">
@@ -10337,52 +10474,117 @@
               </div>
               
               <div id="grading-section">
-                <form id="grade-form">
+                ${isRubricGrading ? `
+                  <!-- Rubric-Based Grading -->
                   <div class="form-group">
-                    <label for="grade-score">Points Earned (Max: ${assignment?.max_points || 100})</label>
-                    <input 
-                      type="number" 
-                      id="grade-score" 
-                      min="0" 
-                      max="${assignment?.max_points || 100}" 
-                      value="0"
-                      placeholder="Enter points"
-                    >
+                    <label>Select Performance Level:</label>
+                    <div id="rubric-options" style="display: grid; gap: 10px; margin-top: 10px;">
+                      ${rubricCriteria.map(criterion => `
+                        <label class="rubric-option" style="display: flex; align-items: start; padding: 12px; border: 2px solid var(--border); border-radius: 8px; cursor: pointer; transition: all 0.2s;">
+                          <input type="radio" name="rubric-grade" value="${criterion.letter_grade}" 
+                                 data-points="${Math.round((criterion.point_percentage / 100) * assignment.max_points)}"
+                                 data-descriptor="${criterion.descriptor}"
+                                 style="margin-top: 4px; margin-right: 12px;"
+                                 onchange="app.updateRubricSelection(this)">
+                          <div style="flex: 1;">
+                            <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 4px;">
+                              <strong style="font-size: 16px;">${criterion.letter_grade}</strong>
+                              <span style="color: var(--accent); font-weight: 600;">${Math.round((criterion.point_percentage / 100) * assignment.max_points)}/${assignment.max_points} pts</span>
+                            </div>
+                            <div style="color: var(--accent); font-size: 13px; font-weight: 500; margin-bottom: 4px;">
+                              ${criterion.summary_level}
+                            </div>
+                            <div style="color: var(--muted); font-size: 12px; line-height: 1.4;">
+                              ${criterion.core_meaning}
+                            </div>
+                          </div>
+                        </label>
+                      `).join('')}
+                    </div>
                   </div>
-                  
-                  <div class="form-group">
-                    <label for="grade-letter">Letter Grade</label>
-                    <select id="grade-letter">
-                      <option value="">Select Grade</option>
-                      <option value="F" selected>F</option>
-                      <option value="D">D</option>
-                      <option value="C-">C-</option>
-                      <option value="C">C</option>
-                      <option value="C+">C+</option>
-                      <option value="B-">B-</option>
-                      <option value="B">B</option>
-                      <option value="B+">B+</option>
-                      <option value="A-">A-</option>
-                      <option value="A">A</option>
-                      <option value="A+">A+</option>
-                    </select>
+      
+                  <!-- Override Option -->
+                  <div class="form-group" style="margin-top: 20px;">
+                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                      <input type="checkbox" id="grade-override" onchange="app.toggleGradeOverride()">
+                      <span>Override rubric grade (manual points entry)</span>
+                    </label>
                   </div>
-                  
-                  <div class="form-group">
-                    <label for="grade-feedback">Feedback</label>
-                    <textarea 
-                      id="grade-feedback" 
-                      rows="4" 
-                      placeholder="Provide feedback about the missing assignment..."
-                    >Assignment not submitted</textarea>
+      
+                  <div id="manual-grade-section" style="display: none;">
+                    <div class="form-group">
+                      <label for="manual-letter-grade">Letter Grade:</label>
+                      <input type="text" id="manual-letter-grade" placeholder="e.g., B+">
+                    </div>
+                    <div class="form-group">
+                      <label for="manual-points">Points Earned:</label>
+                      <input type="number" id="manual-points" min="0" max="${assignment.max_points}" step="0.5">
+                    </div>
                   </div>
-                </form>
+      
+                  <!-- Hidden fields -->
+                  <input type="hidden" id="selected-grade" value="">
+                  <input type="hidden" id="selected-points" value="">
+                ` : `
+                  <!-- Traditional Points-Based Grading -->
+                  <form id="grade-form">
+                    <div class="form-group">
+                      <label for="grade-score">Points Earned (Max: ${assignment?.max_points || 100})</label>
+                      <input 
+                        type="number" 
+                        id="grade-score" 
+                        min="0" 
+                        max="${assignment?.max_points || 100}" 
+                        value="0"
+                        placeholder="Enter points"
+                      >
+                    </div>
+                    
+                    <div class="form-group">
+                      <label for="grade-letter">Letter Grade</label>
+                      <select id="grade-letter">
+                        <option value="">Select Grade</option>
+                        <option value="F" selected>F</option>
+                        <option value="D">D</option>
+                        <option value="C-">C-</option>
+                        <option value="C">C</option>
+                        <option value="C+">C+</option>
+                        <option value="B-">B-</option>
+                        <option value="B">B</option>
+                        <option value="B+">B+</option>
+                        <option value="A-">A-</option>
+                        <option value="A">A</option>
+                        <option value="A+">A+</option>
+                      </select>
+                    </div>
+                    
+                    <div class="form-group">
+                      <label for="grade-feedback">Feedback</label>
+                      <textarea 
+                        id="grade-feedback" 
+                        rows="4" 
+                        placeholder="Provide feedback about the missing assignment..."
+                      >Assignment not submitted</textarea>
+                    </div>
+                  </form>
+                `}
               </div>
+              
+              ${isRubricGrading ? `
+                <div class="form-group">
+                  <label for="grade-feedback">Feedback</label>
+                  <textarea 
+                    id="grade-feedback" 
+                    rows="4" 
+                    placeholder="Provide feedback about the missing assignment..."
+                  >Assignment not submitted</textarea>
+                </div>
+              ` : ''}
             </div>
             
             <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
               <button class="btn btn-secondary" onclick="app.closeModal('grade-non-submitted')">Cancel</button>
-              <button class="btn btn-primary" onclick="app.submitGradeNonSubmitted('${studentId}', '${assignmentId}')">
+              <button class="btn btn-primary" onclick="app.submitGradeNonSubmitted('${studentId}', '${assignmentId}', ${isRubricGrading})">
                 Save Grade
               </button>
             </div>
@@ -10390,87 +10592,93 @@
           
           this.showModal('grade-non-submitted', 'Grade Missing Assignment', modalContent, true);
           
+          // Add rubric styles if using rubric grading
+          if (isRubricGrading) {
+            this.addRubricGradingStyles();
+          }
+          
         } catch (error) {
           console.error('Error:', error);
           this.showNotification('Error: ' + error.message, 'error');
         }
       }
       
-      async submitGradeNonSubmitted(studentId, assignmentId) {
+      async submitGradeNonSubmitted(studentId, assignmentId, isRubricGrading = false) {
         try {
-          const isExcused = document.getElementById('excuse-assignment').checked;
-          
-          let submissionData = {
-            assignment_id: assignmentId,
-            student_id: studentId,
-            submitted_at: new Date().toISOString()
-          };
+          const isExcused = document.getElementById('excuse-assignment')?.checked;
           
           if (isExcused) {
-            submissionData = {
-              ...submissionData,
-              content: 'Assignment excused by teacher',
-              status: 'excused',
-              excused_by: this.userInfo.user.id,
-              excused_at: new Date().toISOString(),
-              excuse_reason: document.getElementById('excuse-reason').value || null,
-              grade: null,
-              points_earned: null
-            };
-          } else {
-            const scoreValue = document.getElementById('grade-score').value;
-            const pointsEarned = scoreValue === '' ? 0 : parseInt(scoreValue); // Default to 0 for missing assignments
+            // Handle excused assignment
+            const excuseReason = document.getElementById('excuse-reason')?.value || '';
             
-            submissionData = {
-              ...submissionData,
-              content: 'No submission - graded by teacher',
-              status: 'graded',
-              points_earned: pointsEarned, // Allow 0
-              grade: document.getElementById('grade-letter').value || 'F',
-              feedback: document.getElementById('grade-feedback').value || 'Assignment not submitted',
-              graded_at: new Date().toISOString()
-            };
-          }
-          
-          const { error } = await this.auth.supabase
-            .from('assignment_submissions')
-            .insert(submissionData);
-          
-          if (error) throw error;
-      
-          // CRITICAL: Recalculate the student's grades
-          const { data: classData } = await this.auth.supabase
-            .from('assignments')
-            .select('class_id')
-            .eq('id', assignmentId)
-            .single();
-      
-          if (classData) {
-            const { data: enrollment } = await this.auth.supabase
-              .from('class_enrollments')
-              .select('id')
-              .eq('student_id', studentId)
-              .eq('class_id', classData.class_id)
-              .eq('status', 'active')
-              .single();
-      
-            if (enrollment) {
-              console.log('Recalculating grades for enrollment:', enrollment.id);
-              await this.auth.supabase.rpc('update_enrollment_grades', {
-                p_enrollment_id: enrollment.id
+            const { error } = await this.auth.supabase
+              .from('assignment_submissions')
+              .insert({
+                assignment_id: assignmentId,
+                student_id: studentId,
+                status: 'excused',
+                excuse_reason: excuseReason,
+                excused_by: this.userInfo.user.id,
+                excused_at: new Date().toISOString(),
+                submitted_at: new Date().toISOString()
               });
+            
+            if (error) throw error;
+            
+            this.showNotification('Student excused from assignment', 'success');
+          } else {
+            // Handle grading
+            let grade, pointsEarned, feedback;
+            
+            if (isRubricGrading) {
+              const isOverride = document.getElementById('grade-override')?.checked;
+              
+              if (isOverride) {
+                grade = document.getElementById('manual-letter-grade')?.value;
+                pointsEarned = parseFloat(document.getElementById('manual-points')?.value) || 0;
+              } else {
+                grade = document.getElementById('selected-grade')?.value;
+                pointsEarned = parseFloat(document.getElementById('selected-points')?.value) || 0;
+              }
+              
+              if (!grade) {
+                this.showNotification('Please select a grade level or enter a manual grade', 'error');
+                return;
+              }
+              
+              feedback = document.getElementById('grade-feedback')?.value || '';
+            } else {
+              pointsEarned = parseFloat(document.getElementById('grade-score')?.value) || 0;
+              grade = document.getElementById('grade-letter')?.value || 'F';
+              feedback = document.getElementById('grade-feedback')?.value || '';
             }
+            
+            const { error } = await this.auth.supabase
+              .from('assignment_submissions')
+              .insert({
+                assignment_id: assignmentId,
+                student_id: studentId,
+                status: 'graded',
+                grade: grade,
+                points_earned: pointsEarned,
+                feedback: feedback,
+                graded_at: new Date().toISOString(),
+                submitted_at: new Date().toISOString(),
+                grade_override: isRubricGrading && document.getElementById('grade-override')?.checked
+              });
+            
+            if (error) throw error;
+            
+            this.showNotification('Grade saved successfully!', 'success');
           }
           
-          this.showNotification(isExcused ? 'Assignment excused' : 'Grade saved successfully', 'success');
           this.closeModal('grade-non-submitted');
           
           // Refresh submissions view
-          this.closeModal('view-submissions');
-          setTimeout(() => this.viewSubmissions(assignmentId), 100);
+          await this.viewSubmissions(assignmentId);
           
         } catch (error) {
-          console.error('Error:', error);
+          console.error('Error saving grade:', error);
           this.showNotification('Error: ' + error.message, 'error');
         }
       }
