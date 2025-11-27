@@ -966,9 +966,144 @@
               delete this.modalTimeouts[topModal.id];
             }
             
-            console.log('📋 Top modal closed:', topModal.id, 'Remaining:', this.modalStack.length);
           }
         }
+      }
+
+      // ==================== STATE CAPTURE & RESTORE (for tab switching) ====================
+      captureState() {
+        const state = {
+          modalStack: [],
+          formInputs: {},
+          scrollPosition: window.scrollY,
+          currentClassId: this.currentClassId || null,
+          currentClass: this.currentClass || null
+        };
+
+        // Capture modal stack with their IDs and any associated data
+        if (this.modalStack && this.modalStack.length > 0) {
+          state.modalStack = this.modalStack.map(m => ({
+            id: m.id,
+            // Store the class/assignment ID if this is a detail modal
+            classId: this.currentClassId,
+            assignmentId: this.currentAssignmentId
+          }));
+        }
+
+        // Capture all form inputs currently on page
+        document.querySelectorAll('input, textarea, select').forEach(el => {
+          if (el.id || el.name) {
+            const key = el.id || el.name;
+            if (el.type === 'checkbox' || el.type === 'radio') {
+              state.formInputs[key] = el.checked;
+            } else {
+              state.formInputs[key] = el.value;
+            }
+          }
+        });
+
+        return state;
+      }
+
+      async restoreState(state) {
+        if (!state) return;
+
+        // Close all current modals first
+        while (this.modalStack && this.modalStack.length > 0) {
+          this.closeModal();
+        }
+
+        // Restore scroll position
+        if (state.scrollPosition) {
+          window.scrollTo(0, state.scrollPosition);
+        }
+
+        // Restore class context
+        if (state.currentClassId) {
+          this.currentClassId = state.currentClassId;
+        }
+        if (state.currentClass) {
+          this.currentClass = state.currentClass;
+        }
+
+        // Rebuild modal stack by re-opening modals
+        for (const modalInfo of state.modalStack) {
+          try {
+            if (modalInfo.id === 'class-details' && modalInfo.classId) {
+              await this.openClass(modalInfo.classId);
+            } else if (modalInfo.id === 'view-assignments' && modalInfo.classId) {
+              await this.viewAssignments(modalInfo.classId);
+            } else if (modalInfo.id === 'assignment-details' && modalInfo.assignmentId) {
+              await this.showAssignmentDetails(modalInfo.assignmentId);
+            }
+            // Add more modal types as needed
+          } catch (e) {
+            // If restoring a modal fails, continue with others
+          }
+        }
+
+        // Restore form inputs after modals are rebuilt
+        await new Promise(r => setTimeout(r, 100)); // Small delay for DOM to update
+        Object.entries(state.formInputs).forEach(([key, value]) => {
+          const el = document.getElementById(key) || document.querySelector(`[name="${key}"]`);
+          if (el) {
+            if (el.type === 'checkbox' || el.type === 'radio') {
+              el.checked = value;
+            } else {
+              el.value = value;
+            }
+          }
+        });
+      }
+
+      showReconnectingOverlay() {
+        const overlay = document.createElement('div');
+        overlay.id = 'reconnecting-overlay';
+        overlay.style.cssText = `
+          position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+          background: rgba(15, 18, 22, 0.9); z-index: 99999;
+          display: flex; flex-direction: column; align-items: center; justify-content: center;
+          font-family: inherit; color: #e6edf3;
+        `;
+        overlay.innerHTML = `
+          <div style="text-align: center; max-width: 400px; padding: 20px;">
+            <div style="font-size: 36px; margin-bottom: 16px; animation: pulse 1.5s ease-in-out infinite;">🔄</div>
+            <p style="margin: 0; color: #97a2b0; font-size: 16px;">Reconnecting...</p>
+          </div>
+          <style>
+            @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+          </style>
+        `;
+        document.body.appendChild(overlay);
+        return overlay;
+      }
+
+      showReloadOverlay() {
+        const overlay = document.createElement('div');
+        overlay.style.cssText = `
+          position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+          background: rgba(15, 18, 22, 0.95); z-index: 99999;
+          display: flex; flex-direction: column; align-items: center; justify-content: center;
+          font-family: inherit; color: #e6edf3;
+        `;
+        overlay.innerHTML = `
+          <div style="text-align: center; max-width: 400px; padding: 20px;">
+            <div style="font-size: 48px; margin-bottom: 16px;">🔄</div>
+            <h2 style="margin: 0 0 12px 0; font-size: 24px;">Welcome Back!</h2>
+            <p style="margin: 0 0 20px 0; color: #97a2b0; line-height: 1.5;">
+              This tab was inactive and needs to refresh to reconnect.
+              <br>One moment please...
+            </p>
+            <div style="width: 200px; height: 4px; background: #2a3140; border-radius: 2px; overflow: hidden;">
+              <div style="width: 0%; height: 100%; background: #6aa9ff; border-radius: 2px; animation: loadProgress 5s ease-out forwards;"></div>
+            </div>
+          </div>
+          <style>
+            @keyframes loadProgress { to { width: 100%; } }
+          </style>
+        `;
+        document.body.appendChild(overlay);
+        return overlay;
       }
 
       // ==================== SESSION, AUTH & GOOGLE API ====================
@@ -1004,12 +1139,16 @@
         // Handle tab visibility changes
         document.addEventListener('visibilitychange', async () => {
           if (document.hidden) {
-            // Track when tab was hidden
+            // Track when tab was hidden and save current state
             this._tabHiddenAt = Date.now();
             this._tabReturning = false;
+            this._savedState = this.captureState();
           } else {
             // Tab became visible - mark that we're in the process of returning
             this._tabReturning = true;
+
+            // Show reconnecting overlay
+            const overlay = this.showReconnectingOverlay();
 
             // Create fresh Supabase client on tab return
             window.portalAuth.reconnectSync();
@@ -1032,44 +1171,28 @@
               }
             });
 
+            // Remove overlay
+            if (overlay && overlay.parentNode) {
+              overlay.remove();
+            }
+
             if (!networkOk) {
-              // Network is frozen - show friendly message and reload
+              // Network is frozen - need full reload as last resort
               this._tabReturning = false;
-
-              // Create a friendly overlay message
-              const overlay = document.createElement('div');
-              overlay.style.cssText = `
-                position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-                background: rgba(15, 18, 22, 0.95); z-index: 99999;
-                display: flex; flex-direction: column; align-items: center; justify-content: center;
-                font-family: inherit; color: #e6edf3;
-              `;
-              overlay.innerHTML = `
-                <div style="text-align: center; max-width: 400px; padding: 20px;">
-                  <div style="font-size: 48px; margin-bottom: 16px;">🔄</div>
-                  <h2 style="margin: 0 0 12px 0; font-size: 24px;">Welcome Back!</h2>
-                  <p style="margin: 0 0 20px 0; color: #97a2b0; line-height: 1.5;">
-                    This tab was inactive and needs to refresh to reconnect.
-                    <br>One moment please...
-                  </p>
-                  <div style="width: 200px; height: 4px; background: #2a3140; border-radius: 2px; overflow: hidden;">
-                    <div style="width: 0%; height: 100%; background: #6aa9ff; border-radius: 2px; animation: loadProgress 5s ease-out forwards;"></div>
-                  </div>
-                </div>
-                <style>
-                  @keyframes loadProgress { to { width: 100%; } }
-                </style>
-              `;
-              document.body.appendChild(overlay);
-
-              // Reload after showing message
+              this.showReloadOverlay();
               setTimeout(() => window.location.reload(), 5000);
               return;
             }
 
-            // Now safe to run queries
+            // Network is good - restore state
             this._tabReturning = false;
             this._lastSessionCheck = Date.now();
+
+            // Restore modals and form state
+            if (this._savedState) {
+              await this.restoreState(this._savedState);
+              this._savedState = null;
+            }
           }
         });
 
