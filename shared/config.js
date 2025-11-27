@@ -177,8 +177,6 @@ class PortalAuth {
 
     // Synchronous reconnect - creates new client immediately without waiting for session
     reconnectSync() {
-        console.log('🔄 Sync reconnecting to Supabase...');
-
         try {
             // Clean up old auth listener
             if (this._authUnsubscribe) {
@@ -198,10 +196,8 @@ class PortalAuth {
             // Re-setup auth listener
             this._setupAuthListener();
 
-            console.log('✅ Sync reconnect complete - new client ready');
             return true;
         } catch (error) {
-            console.error('❌ Sync reconnect failed:', error);
             return false;
         }
     }

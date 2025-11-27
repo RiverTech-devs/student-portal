@@ -983,13 +983,11 @@
           const now = Date.now();
           // Skip if we checked within the last 2 seconds or a check is in progress
           if (this._sessionCheckPending || (now - this._lastSessionCheck) < 2000) {
-            console.log(`Session check skipped (${source}) - too recent or pending`);
             return;
           }
 
           this._sessionCheckPending = true;
           this._lastSessionCheck = now;
-          console.log(`Session check triggered by: ${source}`);
 
           try {
             await this.checkAndRefreshSession();
@@ -1009,47 +1007,33 @@
             // Track when tab was hidden
             this._tabHiddenAt = Date.now();
             this._tabReturning = false;
-            console.log('Tab hidden at:', new Date().toLocaleTimeString());
           } else {
-            // Tab became visible - check how long it was hidden
-            const hiddenDuration = this._tabHiddenAt ? Date.now() - this._tabHiddenAt : 0;
-            console.log(`Tab visible after ${Math.round(hiddenDuration / 1000)}s`);
-
-            // Mark that we're in the process of returning - queries should wait
+            // Tab became visible - mark that we're in the process of returning
             this._tabReturning = true;
 
-            // ALWAYS preemptively create fresh client on tab return
-            console.log('🔄 Preemptive reconnect on tab return...');
+            // Create fresh Supabase client on tab return
             window.portalAuth.reconnectSync();
             this.auth = window.portalAuth;
 
             // Give the browser a moment to fully wake up network stack
-            console.log('⏳ Waiting for network to stabilize...');
-            await new Promise(r => setTimeout(r, 1000)); // Increased to 1 second
+            await new Promise(r => setTimeout(r, 1000));
 
-            // Do a quick test query with timeout to check if network is responsive
+            // Test if network is responsive
             const networkOk = await new Promise(async (resolve) => {
-              const timeout = setTimeout(() => {
-                console.error('❌ Network not responding after tab return');
-                resolve(false);
-              }, 3000); // 3 second timeout for warmup
+              const timeout = setTimeout(() => resolve(false), 3000);
 
               try {
-                const start = Date.now();
                 await this.auth.supabase.auth.getSession();
                 clearTimeout(timeout);
-                console.log(`✅ Network ready (${Date.now() - start}ms)`);
                 resolve(true);
               } catch (e) {
                 clearTimeout(timeout);
-                console.warn('⚠️ Network warmup failed:', e.message);
                 resolve(false);
               }
             });
 
             if (!networkOk) {
               // Network is frozen - show friendly message and reload
-              console.error('🔄 Network frozen - reloading page...');
               this._tabReturning = false;
 
               // Create a friendly overlay message
@@ -1069,7 +1053,7 @@
                     <br>One moment please...
                   </p>
                   <div style="width: 200px; height: 4px; background: #2a3140; border-radius: 2px; overflow: hidden;">
-                    <div style="width: 0%; height: 100%; background: #6aa9ff; border-radius: 2px; animation: loadProgress 2s ease-out forwards;"></div>
+                    <div style="width: 0%; height: 100%; background: #6aa9ff; border-radius: 2px; animation: loadProgress 5s ease-out forwards;"></div>
                   </div>
                 </div>
                 <style>
@@ -1079,14 +1063,13 @@
               document.body.appendChild(overlay);
 
               // Reload after showing message
-              setTimeout(() => window.location.reload(), 2000);
+              setTimeout(() => window.location.reload(), 5000);
               return;
             }
 
             // Now safe to run queries
             this._tabReturning = false;
             this._lastSessionCheck = Date.now();
-            console.log('✅ Tab return complete - ready for queries');
           }
         });
 
@@ -1096,8 +1079,6 @@
           const timeSinceCheck = Date.now() - this._lastSessionCheck;
           if (timeSinceCheck > 2000) {
             setTimeout(() => debouncedSessionCheck('focus'), 400);
-          } else {
-            console.log('Session check skipped (focus) - recently handled by visibility');
           }
         });
 
@@ -1110,8 +1091,6 @@
       }
       
       async checkAndRefreshSession() {
-        console.log('Checking session at:', new Date().toLocaleTimeString());
-  
         // First check if connection is alive at all
         const isAlive = await this.checkConnectionHealth();
         
@@ -1124,50 +1103,39 @@
         
         try {
           const { data: { session } } = await this.supabaseQuery(() => this.auth.supabase.auth.getSession());
-          
+
           if (!session) {
-            console.log('No session found, attempting refresh...');
             const { data: { session: newSession }, error } = await this.supabaseQuery(() => this.auth.supabase.auth.refreshSession());
-            
+
             if (error || !newSession) {
-              console.error('Session refresh failed:', error);
               this.showAuthRequired();
               return false;
-            } else {
-              console.log('Session refreshed successfully');
-              return true;
             }
+            return true;
           }
-          
+
           // Check if session is about to expire (within 5 minutes)
           const expiresAt = session.expires_at;
           const now = Math.floor(Date.now() / 1000);
           const timeUntilExpiry = expiresAt - now;
-          
-          if (timeUntilExpiry < 300) { // Less than 5 minutes
-            console.log('Session expiring soon, proactively refreshing...');
+
+          if (timeUntilExpiry < 300) {
             const { data: { session: newSession }, error } = await this.supabaseQuery(() => this.auth.supabase.auth.refreshSession());
-            
             if (error) {
-              console.error('Proactive refresh failed:', error);
               return false;
             }
-            console.log('Session proactively refreshed');
           }
-          
+
           return true;
         } catch (error) {
-          console.error('Session check error:', error);
           return false;
         }
       }
 
       async checkConnectionHealth() {
         // If tab was recently switched, we already did a preemptive reconnect
-        // Just return true and trust the fresh client
         const timeSinceHidden = this._tabHiddenAt ? Date.now() - this._tabHiddenAt : Infinity;
         if (timeSinceHidden < 10000) {
-          console.log('✅ Health check skipped - recent tab switch already reconnected');
           return true;
         }
 
@@ -1178,7 +1146,6 @@
           const timeout = setTimeout(() => {
             if (resolved) return;
             resolved = true;
-            console.warn('⚠️ Health check timeout - connection may be stale');
             resolve(false);
           }, 3000);
 
@@ -1199,36 +1166,26 @@
       } 
 
       async supabaseQuery(queryFn, timeoutMs = 8000) {
-          const queryId = Math.random().toString(36).substr(2, 6);
-
           // If tab is still in the process of returning, wait for it to complete
           if (this._tabReturning) {
-              console.log(`⏳ [${queryId}] Waiting for tab return to complete...`);
               let waited = 0;
               while (this._tabReturning && waited < 3000) {
                   await new Promise(r => setTimeout(r, 100));
                   waited += 100;
               }
-              if (this._tabReturning) {
-                  console.warn(`⚠️ [${queryId}] Tab return taking too long, proceeding anyway`);
-              }
           }
 
-          console.log(`📡 [${queryId}] Running query with ${timeoutMs}ms timeout`);
           return new Promise(async (resolve, reject) => {
               const timeout = setTimeout(() => {
-                  console.warn(`⚠️ [${queryId}] Query timeout after ${timeoutMs}ms`);
                   reject(new Error('Query timeout'));
               }, timeoutMs);
 
               try {
                   const result = await queryFn();
                   clearTimeout(timeout);
-                  console.log(`✅ [${queryId}] Query completed successfully`);
                   resolve(result);
               } catch (error) {
                   clearTimeout(timeout);
-                  console.error(`❌ [${queryId}] Query failed:`, error.message);
                   reject(error);
               }
           });
