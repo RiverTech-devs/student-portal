@@ -973,26 +973,49 @@
 
       // ==================== SESSION, AUTH & GOOGLE API ====================
       setupSessionMonitoring() {
+        // Track pending checks to prevent duplicates
+        this._sessionCheckPending = false;
+        this._lastSessionCheck = 0;
+
+        // Debounced session check - prevents double-triggers from visibility + focus
+        const debouncedSessionCheck = async (source) => {
+          const now = Date.now();
+          // Skip if we checked within the last 2 seconds or a check is in progress
+          if (this._sessionCheckPending || (now - this._lastSessionCheck) < 2000) {
+            console.log(`Session check skipped (${source}) - too recent or pending`);
+            return;
+          }
+
+          this._sessionCheckPending = true;
+          this._lastSessionCheck = now;
+          console.log(`Session check triggered by: ${source}`);
+
+          try {
+            await this.checkAndRefreshSession();
+          } finally {
+            this._sessionCheckPending = false;
+          }
+        };
+
         // Check session every 30 seconds
         this.sessionCheckInterval = setInterval(async () => {
-          await this.checkAndRefreshSession();
-        }, 30000); // Check every 30 seconds
-        
-        // CRITICAL FIX: Handle tab visibility changes
+          await debouncedSessionCheck('interval');
+        }, 30000);
+
+        // Handle tab visibility changes
         document.addEventListener('visibilitychange', async () => {
           if (!document.hidden) {
-            // Tab became visible again - immediately check session
-            console.log('Tab became visible, checking session...');
-            await this.checkAndRefreshSession();
+            // Small delay to let browser fully wake up
+            setTimeout(() => debouncedSessionCheck('visibility'), 500);
           }
         });
-        
+
         // Also check on window focus (backup for some browsers)
         window.addEventListener('focus', async () => {
-          console.log('Window focused, checking session...');
-          await this.checkAndRefreshSession();
+          // Delay slightly - visibility event usually fires first
+          setTimeout(() => debouncedSessionCheck('focus'), 600);
         });
-        
+
         // Clean up on page unload
         window.addEventListener('beforeunload', () => {
           if (this.sessionCheckInterval) {
@@ -1055,34 +1078,66 @@
       }
 
       async checkConnectionHealth() {
-        return new Promise(async (resolve) => {
-            const timeout = setTimeout(async () => {
-                console.error('❌ Supabase connection frozen - attempting reconnect...');
-                
-                // Try to reconnect instead of reload
-                const reconnected = await window.portalAuth.reconnect();
-                
-                if (reconnected) {
-                    // Update our reference
-                    this.auth = window.portalAuth;
-                    window.app.showNotification('Connection restored!', 'success');
-                    resolve(true);
-                } else {
-                    // Only reload as last resort
-                    window.app.showNotification('Connection lost. Reloading...', 'error');
-                    setTimeout(() => window.location.reload(), 1500);
-                    resolve(false);
-                }
-            }, 5000);
-            
+        // Use getSession() instead of a DB query - it's faster and doesn't need RLS
+        // Also increase timeout to 10 seconds - browsers need time to wake up after tab switch
+        return new Promise((resolve) => {
+          let resolved = false;
+
+          const timeout = setTimeout(async () => {
+            if (resolved) return;
+            resolved = true;
+
+            console.warn('⚠️ Supabase connection slow - attempting soft reconnect...');
+
+            // Try a soft reconnect first (just refresh the session)
             try {
-                await this.supabaseQuery(() => this.auth.supabase.from('quarters').select('id').limit(1));
-                clearTimeout(timeout);
+              const { data, error } = await this.auth.supabase.auth.getSession();
+              if (!error && data?.session) {
+                console.log('✅ Connection recovered after delay');
                 resolve(true);
+                return;
+              }
             } catch (e) {
-                clearTimeout(timeout);
-                resolve(false);
+              // Continue to hard reconnect
             }
+
+            // Try hard reconnect
+            console.error('❌ Soft reconnect failed - attempting hard reconnect...');
+            const reconnected = await window.portalAuth.reconnect();
+
+            if (reconnected) {
+              this.auth = window.portalAuth;
+              window.app.showNotification('Connection restored!', 'success');
+              resolve(true);
+            } else {
+              // Only reload as last resort
+              window.app.showNotification('Connection lost. Reloading...', 'error');
+              setTimeout(() => window.location.reload(), 1500);
+              resolve(false);
+            }
+          }, 10000); // 10 seconds - more lenient for tab wake-up
+
+          // Use getSession which is purely local/cached first, then validates
+          this.auth.supabase.auth.getSession()
+            .then(({ data, error }) => {
+              if (resolved) return;
+              resolved = true;
+              clearTimeout(timeout);
+
+              if (error) {
+                console.warn('Session check returned error:', error.message);
+                resolve(false);
+              } else {
+                resolve(true);
+              }
+            })
+            .catch((e) => {
+              if (resolved) return;
+              resolved = true;
+              clearTimeout(timeout);
+              console.error('Session check threw:', e);
+              resolve(false);
+            });
         });
       } 
 

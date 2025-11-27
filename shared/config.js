@@ -28,13 +28,13 @@ class PortalAuth {
 
     async initialize() {
         if (this.initialized) return this;
-        
+
         try {
             // Wait for Supabase to be available
             if (typeof supabase === 'undefined') {
                 await this.loadSupabase();
             }
-            
+
             this.supabase = supabase.createClient(this.config.supabaseUrl, this.config.supabaseKey, {
                 auth: {
                     autoRefreshToken: true,
@@ -45,30 +45,48 @@ class PortalAuth {
 
             // Check current session
             await this.checkCurrentSession();
-            
-            // Set up auth state listener
-            this.supabase.auth.onAuthStateChange(async (event, session) => {
-                console.log('🔐 Auth state changed:', event);
-                
-                if (event === 'SIGNED_IN' && session) {
-                    this.currentUser = session.user;
-                    await this.loadUserProfile();
-                    this.notifyAuthChange('SIGNED_IN');
-                } else if (event === 'SIGNED_OUT') {
-                    this.currentUser = null;
-                    this.userProfile = null;
-                    this.notifyAuthChange('SIGNED_OUT');
-                }
-            });
+
+            // Set up auth state listener and store the unsubscribe function
+            this._setupAuthListener();
 
             this.initialized = true;
             console.log('✅ PortalAuth initialized');
-            
+
         } catch (error) {
             console.error('❌ PortalAuth initialization failed:', error);
         }
-        
+
         return this;
+    }
+
+    _setupAuthListener() {
+        // Clean up previous listener if exists
+        if (this._authUnsubscribe) {
+            this._authUnsubscribe();
+            this._authUnsubscribe = null;
+        }
+
+        const { data: { subscription } } = this.supabase.auth.onAuthStateChange(async (event, session) => {
+            console.log('🔐 Auth state changed:', event);
+
+            if (event === 'SIGNED_IN' && session) {
+                this.currentUser = session.user;
+                await this.loadUserProfile();
+                this.notifyAuthChange('SIGNED_IN');
+            } else if (event === 'SIGNED_OUT') {
+                this.currentUser = null;
+                this.userProfile = null;
+                this.notifyAuthChange('SIGNED_OUT');
+            } else if (event === 'TOKEN_REFRESHED') {
+                console.log('🔄 Token refreshed');
+                // Update current user from refreshed session
+                if (session?.user) {
+                    this.currentUser = session.user;
+                }
+            }
+        });
+
+        this._authUnsubscribe = () => subscription.unsubscribe();
     }
 
     async loadSupabase() {
@@ -113,8 +131,14 @@ class PortalAuth {
 
     async reconnect() {
         console.log('🔄 Reconnecting to Supabase...');
-        
+
         try {
+            // Clean up old auth listener before creating new client
+            if (this._authUnsubscribe) {
+                this._authUnsubscribe();
+                this._authUnsubscribe = null;
+            }
+
             // Recreate the Supabase client
             this.supabase = supabase.createClient(this.config.supabaseUrl, this.config.supabaseKey, {
                 auth: {
@@ -123,25 +147,28 @@ class PortalAuth {
                     detectSessionInUrl: true
                 }
             });
-            
+
+            // Re-setup the auth listener for the new client
+            this._setupAuthListener();
+
             // Restore the session
             const { data: { session }, error } = await this.supabase.auth.getSession();
-            
+
             if (error) {
                 console.error('❌ Reconnect session error:', error);
                 return false;
             }
-            
+
             if (session?.user) {
                 this.currentUser = session.user;
                 await this.loadUserProfile();
                 console.log('✅ Reconnected successfully');
                 return true;
             }
-            
+
             console.warn('⚠️ Reconnected but no session');
             return false;
-            
+
         } catch (error) {
             console.error('❌ Reconnect failed:', error);
             return false;
