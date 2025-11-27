@@ -976,6 +976,7 @@
         // Track pending checks to prevent duplicates
         this._sessionCheckPending = false;
         this._lastSessionCheck = 0;
+        this._tabHiddenAt = null;
 
         // Debounced session check - prevents double-triggers from visibility + focus
         const debouncedSessionCheck = async (source) => {
@@ -1003,17 +1004,33 @@
         }, 30000);
 
         // Handle tab visibility changes
-        document.addEventListener('visibilitychange', async () => {
-          if (!document.hidden) {
-            // Small delay to let browser fully wake up
-            setTimeout(() => debouncedSessionCheck('visibility'), 500);
+        document.addEventListener('visibilitychange', () => {
+          if (document.hidden) {
+            // Track when tab was hidden
+            this._tabHiddenAt = Date.now();
+            console.log('Tab hidden at:', new Date().toLocaleTimeString());
+          } else {
+            // Tab became visible - check how long it was hidden
+            const hiddenDuration = this._tabHiddenAt ? Date.now() - this._tabHiddenAt : 0;
+            console.log(`Tab visible after ${Math.round(hiddenDuration / 1000)}s`);
+
+            // If hidden for more than 5 seconds, preemptively create fresh client
+            // This avoids the frozen client issue entirely
+            if (hiddenDuration > 5000) {
+              console.log('🔄 Preemptive reconnect after long tab switch...');
+              window.portalAuth.reconnectSync();
+              this.auth = window.portalAuth;
+            }
+
+            // Then do the session check
+            setTimeout(() => debouncedSessionCheck('visibility'), 300);
           }
         });
 
         // Also check on window focus (backup for some browsers)
         window.addEventListener('focus', async () => {
           // Delay slightly - visibility event usually fires first
-          setTimeout(() => debouncedSessionCheck('focus'), 600);
+          setTimeout(() => debouncedSessionCheck('focus'), 400);
         });
 
         // Clean up on page unload
@@ -1078,64 +1095,33 @@
       }
 
       async checkConnectionHealth() {
-        // Use getSession() instead of a DB query - it's faster and doesn't need RLS
-        // Also increase timeout to 10 seconds - browsers need time to wake up after tab switch
+        // Simple health check with short timeout
+        // Preemptive reconnect on tab visibility should handle most frozen client issues
         return new Promise((resolve) => {
           let resolved = false;
 
-          const timeout = setTimeout(async () => {
+          const timeout = setTimeout(() => {
             if (resolved) return;
             resolved = true;
+            console.warn('⚠️ Health check timeout - forcing reconnect...');
 
-            console.warn('⚠️ Supabase connection slow - attempting soft reconnect...');
+            // Force a sync reconnect and continue
+            window.portalAuth.reconnectSync();
+            this.auth = window.portalAuth;
+            resolve(true); // Assume reconnect worked, let the session check verify
+          }, 3000); // 3 second timeout - if it takes longer, client is frozen
 
-            // Try a soft reconnect first (just refresh the session)
-            try {
-              const { data, error } = await this.auth.supabase.auth.getSession();
-              if (!error && data?.session) {
-                console.log('✅ Connection recovered after delay');
-                resolve(true);
-                return;
-              }
-            } catch (e) {
-              // Continue to hard reconnect
-            }
-
-            // Try hard reconnect
-            console.error('❌ Soft reconnect failed - attempting hard reconnect...');
-            const reconnected = await window.portalAuth.reconnect();
-
-            if (reconnected) {
-              this.auth = window.portalAuth;
-              window.app.showNotification('Connection restored!', 'success');
-              resolve(true);
-            } else {
-              // Only reload as last resort
-              window.app.showNotification('Connection lost. Reloading...', 'error');
-              setTimeout(() => window.location.reload(), 1500);
-              resolve(false);
-            }
-          }, 10000); // 10 seconds - more lenient for tab wake-up
-
-          // Use getSession which is purely local/cached first, then validates
           this.auth.supabase.auth.getSession()
-            .then(({ data, error }) => {
+            .then(({ error }) => {
               if (resolved) return;
               resolved = true;
               clearTimeout(timeout);
-
-              if (error) {
-                console.warn('Session check returned error:', error.message);
-                resolve(false);
-              } else {
-                resolve(true);
-              }
+              resolve(!error);
             })
-            .catch((e) => {
+            .catch(() => {
               if (resolved) return;
               resolved = true;
               clearTimeout(timeout);
-              console.error('Session check threw:', e);
               resolve(false);
             });
         });
@@ -1144,23 +1130,22 @@
       async supabaseQuery(queryFn, timeoutMs = 8000) {
           return new Promise(async (resolve, reject) => {
               const timeout = setTimeout(async () => {
-                  console.warn('⚠️ Query timeout - reconnecting...');
-                  
-                  const reconnected = await window.portalAuth.reconnect();
-                  if (reconnected) {
-                      this.auth = window.portalAuth;
-                      // Retry the query once after reconnect
-                      try {
-                          const result = await queryFn();
-                          resolve(result);
-                      } catch (retryError) {
-                          reject(new Error('Query failed after reconnect'));
-                      }
-                  } else {
-                      reject(new Error('Connection lost'));
+                  console.warn('⚠️ Query timeout - forcing reconnect...');
+
+                  // Use sync reconnect to immediately get a fresh client
+                  window.portalAuth.reconnectSync();
+                  this.auth = window.portalAuth;
+
+                  // Retry the query once after reconnect
+                  try {
+                      const result = await queryFn();
+                      resolve(result);
+                  } catch (retryError) {
+                      console.error('Query failed after reconnect:', retryError);
+                      reject(new Error('Query failed after reconnect'));
                   }
               }, timeoutMs);
-              
+
               try {
                   const result = await queryFn();
                   clearTimeout(timeout);
