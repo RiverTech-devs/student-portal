@@ -1101,21 +1101,24 @@
       }
 
       async checkConnectionHealth() {
-        // Simple health check with short timeout
-        // Preemptive reconnect on tab visibility should handle most frozen client issues
+        // If tab was recently switched, we already did a preemptive reconnect
+        // Just return true and trust the fresh client
+        const timeSinceHidden = this._tabHiddenAt ? Date.now() - this._tabHiddenAt : Infinity;
+        if (timeSinceHidden < 10000) {
+          console.log('✅ Health check skipped - recent tab switch already reconnected');
+          return true;
+        }
+
+        // Simple health check with short timeout for normal operation
         return new Promise((resolve) => {
           let resolved = false;
 
           const timeout = setTimeout(() => {
             if (resolved) return;
             resolved = true;
-            console.warn('⚠️ Health check timeout - forcing reconnect...');
-
-            // Force a sync reconnect and continue
-            window.portalAuth.reconnectSync();
-            this.auth = window.portalAuth;
-            resolve(true); // Assume reconnect worked, let the session check verify
-          }, 3000); // 3 second timeout - if it takes longer, client is frozen
+            console.warn('⚠️ Health check timeout - connection may be stale');
+            resolve(false);
+          }, 3000);
 
           this.auth.supabase.auth.getSession()
             .then(({ error }) => {
@@ -1134,22 +1137,20 @@
       } 
 
       async supabaseQuery(queryFn, timeoutMs = 8000) {
+          // If tab was recently hidden, just run the query directly without timeout wrapper
+          // The preemptive reconnect on tab return already handled client refresh
+          const timeSinceHidden = this._tabHiddenAt ? Date.now() - this._tabHiddenAt : Infinity;
+          if (timeSinceHidden < 10000) {
+              // Tab was hidden within last 10 seconds - skip timeout wrapper to avoid
+              // cascading timeouts from queries that were queued during tab switch
+              console.log('📡 Running query directly (recent tab switch)');
+              return await queryFn();
+          }
+
           return new Promise(async (resolve, reject) => {
               const timeout = setTimeout(async () => {
-                  console.warn('⚠️ Query timeout - forcing reconnect...');
-
-                  // Use sync reconnect to immediately get a fresh client
-                  window.portalAuth.reconnectSync();
-                  this.auth = window.portalAuth;
-
-                  // Retry the query once after reconnect
-                  try {
-                      const result = await queryFn();
-                      resolve(result);
-                  } catch (retryError) {
-                      console.error('Query failed after reconnect:', retryError);
-                      reject(new Error('Query failed after reconnect'));
-                  }
+                  console.warn('⚠️ Query timeout - rejecting (tab was visible the whole time)');
+                  reject(new Error('Query timeout'));
               }, timeoutMs);
 
               try {
