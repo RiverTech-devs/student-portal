@@ -1024,17 +1024,35 @@
             this.auth = window.portalAuth;
 
             // Give the browser a moment to fully wake up network stack
-            // This is crucial - immediate queries after tab return often hang
             console.log('⏳ Waiting for network to stabilize...');
-            await new Promise(r => setTimeout(r, 500));
+            await new Promise(r => setTimeout(r, 1000)); // Increased to 1 second
 
-            // Do a quick test query to warm up the connection
-            try {
-              const start = Date.now();
-              await this.auth.supabase.auth.getSession();
-              console.log(`✅ Network ready (${Date.now() - start}ms)`);
-            } catch (e) {
-              console.warn('⚠️ Network warmup failed, continuing anyway');
+            // Do a quick test query with timeout to check if network is responsive
+            const networkOk = await new Promise(async (resolve) => {
+              const timeout = setTimeout(() => {
+                console.error('❌ Network not responding after tab return');
+                resolve(false);
+              }, 3000); // 3 second timeout for warmup
+
+              try {
+                const start = Date.now();
+                await this.auth.supabase.auth.getSession();
+                clearTimeout(timeout);
+                console.log(`✅ Network ready (${Date.now() - start}ms)`);
+                resolve(true);
+              } catch (e) {
+                clearTimeout(timeout);
+                console.warn('⚠️ Network warmup failed:', e.message);
+                resolve(false);
+              }
+            });
+
+            if (!networkOk) {
+              // Network is frozen - reload the page as last resort
+              console.error('🔄 Network frozen - reloading page...');
+              window.app?.showNotification?.('Reconnecting...', 'warning');
+              setTimeout(() => window.location.reload(), 500);
+              return;
             }
 
             // Now safe to run queries
