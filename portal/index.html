@@ -1004,27 +1004,43 @@
         }, 30000);
 
         // Handle tab visibility changes
-        document.addEventListener('visibilitychange', () => {
+        document.addEventListener('visibilitychange', async () => {
           if (document.hidden) {
             // Track when tab was hidden
             this._tabHiddenAt = Date.now();
+            this._tabReturning = false;
             console.log('Tab hidden at:', new Date().toLocaleTimeString());
           } else {
             // Tab became visible - check how long it was hidden
             const hiddenDuration = this._tabHiddenAt ? Date.now() - this._tabHiddenAt : 0;
             console.log(`Tab visible after ${Math.round(hiddenDuration / 1000)}s`);
 
+            // Mark that we're in the process of returning - queries should wait
+            this._tabReturning = true;
+
             // ALWAYS preemptively create fresh client on tab return
-            // The Supabase client freezes almost immediately when tab is hidden
             console.log('🔄 Preemptive reconnect on tab return...');
             window.portalAuth.reconnectSync();
             this.auth = window.portalAuth;
 
-            // DON'T do an immediate session check - the fresh client will trigger
-            // onAuthStateChange which handles session restoration. Just mark our
-            // last check time so the interval check runs normally later.
+            // Give the browser a moment to fully wake up network stack
+            // This is crucial - immediate queries after tab return often hang
+            console.log('⏳ Waiting for network to stabilize...');
+            await new Promise(r => setTimeout(r, 500));
+
+            // Do a quick test query to warm up the connection
+            try {
+              const start = Date.now();
+              await this.auth.supabase.auth.getSession();
+              console.log(`✅ Network ready (${Date.now() - start}ms)`);
+            } catch (e) {
+              console.warn('⚠️ Network warmup failed, continuing anyway');
+            }
+
+            // Now safe to run queries
+            this._tabReturning = false;
             this._lastSessionCheck = Date.now();
-            console.log('✅ Tab return handled - skipping redundant session check');
+            console.log('✅ Tab return complete - ready for queries');
           }
         });
 
@@ -1137,22 +1153,18 @@
       } 
 
       async supabaseQuery(queryFn, timeoutMs = 8000) {
-          // If tab was recently hidden, just run the query directly without timeout wrapper
-          // The preemptive reconnect on tab return already handled client refresh
-          const timeSinceHidden = this._tabHiddenAt ? Date.now() - this._tabHiddenAt : Infinity;
           const queryId = Math.random().toString(36).substr(2, 6);
 
-          if (timeSinceHidden < 10000) {
-              // Tab was hidden within last 10 seconds - skip timeout wrapper to avoid
-              // cascading timeouts from queries that were queued during tab switch
-              console.log(`📡 [${queryId}] Running query directly (tab hidden ${Math.round(timeSinceHidden/1000)}s ago)`);
-              try {
-                  const result = await queryFn();
-                  console.log(`✅ [${queryId}] Query completed successfully`);
-                  return result;
-              } catch (err) {
-                  console.error(`❌ [${queryId}] Query failed:`, err.message);
-                  throw err;
+          // If tab is still in the process of returning, wait for it to complete
+          if (this._tabReturning) {
+              console.log(`⏳ [${queryId}] Waiting for tab return to complete...`);
+              let waited = 0;
+              while (this._tabReturning && waited < 3000) {
+                  await new Promise(r => setTimeout(r, 100));
+                  waited += 100;
+              }
+              if (this._tabReturning) {
+                  console.warn(`⚠️ [${queryId}] Tab return taking too long, proceeding anyway`);
               }
           }
 
