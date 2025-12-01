@@ -763,12 +763,13 @@
         this.userInfo = null;
         this.initialized = false;
         this.classes = [];
+        this.children = []; // Parent-specific: linked children
         this.messages = [];
         this.messageRecipients = [];
         this.messageThreads = [];
         this.modalStack = [];
-        this.isProcessing = false; 
-        this.modalTimeouts = {}; 
+        this.isProcessing = false;
+        this.modalTimeouts = {};
         this.sessionCheckInterval = null;
       }
 
@@ -819,11 +820,13 @@
         
         // Load data based on user type
         const userType = this.userInfo.profile.user_type;
-        
+
         if (userType === 'admin' || userType === 'teacher') {
           await this.loadTeacherData();
         } else if (userType === 'student') {
           await this.loadStudentData();
+        } else if (userType === 'parent') {
+          await this.loadParentData();
         }
         
         // Setup navigation and load home
@@ -1483,8 +1486,15 @@
             { section: 'messaging', label: 'Messages', icon: '💬' },
             { section: 'profile', label: 'Profile', icon: '👤' }
           );
+        } else if (userType === 'parent') {
+          navItems.push(
+            { section: 'home', label: 'Home', icon: '📊' },
+            { section: 'classes', label: "Children's Classes", icon: '📚' },
+            { section: 'messaging', label: 'Messages', icon: '💬' },
+            { section: 'profile', label: 'Account Settings', icon: '⚙️' }
+          );
         }
-        
+
         nav.innerHTML = navItems.map(item => {
           // Handle external links (Main Portal)
           if (item.isExternal) {
@@ -1808,7 +1818,83 @@
         }
         
         console.log('Loaded', this.classes.length, 'classes for student');
-      
+
+        // Refresh home content if on home page
+        if (this.currentSection === 'home') {
+          this.setupHomeContent();
+        }
+      }
+
+      async loadParentData() {
+        console.log('Loading parent data...');
+
+        // Initialize children array
+        this.children = [];
+
+        try {
+          // Get linked children IDs
+          const { data: links, error: linkError } = await this.supabaseQuery(() =>
+            this.auth.supabase
+              .from('parent_child_links')
+              .select('child_id')
+              .eq('parent_id', this.userInfo.user.id));
+
+          if (linkError) {
+            console.error('Error loading parent links:', linkError);
+            return;
+          }
+
+          if (!links || links.length === 0) {
+            console.log('No children linked to parent');
+            return;
+          }
+
+          // Get child profiles
+          const childIds = links.map(l => l.child_id);
+          const { data: childProfiles, error: profileError } = await this.supabaseQuery(() =>
+            this.auth.supabase
+              .from('user_profiles')
+              .select('id, first_name, last_name, email, grade_level')
+              .in('id', childIds));
+
+          if (profileError) {
+            console.error('Error loading child profiles:', profileError);
+            return;
+          }
+
+          this.children = childProfiles || [];
+          console.log('Loaded', this.children.length, 'children for parent');
+
+          // Load classes for all children
+          if (this.children.length > 0) {
+            const { data: enrollments } = await this.supabaseQuery(() =>
+              this.auth.supabase
+                .from('class_enrollments')
+                .select('student_id, class_id, classes(*)')
+                .in('student_id', childIds)
+                .eq('status', 'active'));
+
+            // Group classes by child
+            this.children.forEach(child => {
+              child.classes = (enrollments || [])
+                .filter(e => e.student_id === child.id)
+                .map(e => e.classes)
+                .filter(c => c); // Filter out any null classes
+            });
+
+            // Get unique classes for parent view
+            const uniqueClasses = {};
+            (enrollments || []).forEach(e => {
+              if (e.classes && !uniqueClasses[e.classes.id]) {
+                uniqueClasses[e.classes.id] = e.classes;
+              }
+            });
+            this.classes = Object.values(uniqueClasses);
+          }
+        } catch (error) {
+          console.error('Error in loadParentData:', error);
+        }
+
         // Refresh home content if on home page
         if (this.currentSection === 'home') {
           this.setupHomeContent();
@@ -2347,13 +2433,46 @@
       }
 
       getParentHomeContent() {
+        const children = this.children || [];
+        const totalClasses = children.reduce((sum, child) => sum + (child.classes?.length || 0), 0);
+        const unreadMessages = this.messageThreads?.reduce((total, thread) => total + thread.unreadCount, 0) || 0;
+
+        // Build children list HTML
+        let childrenListHTML = '';
+        if (children.length === 0) {
+          childrenListHTML = `
+            <div style="text-align: center; padding: 20px;">
+              <p style="color: var(--muted); margin-bottom: 15px;">
+                No children linked to your account yet.
+              </p>
+              <p style="color: var(--muted); font-size: 13px; margin-bottom: 15px;">
+                Link your child's student account to view their classes, grades, and communicate with teachers.
+              </p>
+            </div>
+          `;
+        } else {
+          childrenListHTML = children.map(child => `
+            <div class="list-item" style="cursor: pointer;" onclick="app.showChildDetails('${child.id}')">
+              <div class="list-item-content">
+                <div class="list-item-title">${child.first_name} ${child.last_name}</div>
+                <div class="list-item-meta">
+                  Grade ${child.grade_level || 'N/A'} • ${child.classes?.length || 0} class${child.classes?.length !== 1 ? 'es' : ''}
+                </div>
+              </div>
+              <span style="color: var(--accent);">→</span>
+            </div>
+          `).join('');
+        }
+
         return `
           <div class="grid grid-2">
             <div class="card">
               <h3>👨‍👩‍👧‍👦 Your Children</h3>
-              <p>View your children's progress and communicate with teachers.</p>
-              <button class="btn btn-primary" style="margin-top: 15px;">
-                👶 Manage Children
+              <div class="list" style="margin-top: 15px;">
+                ${childrenListHTML}
+              </div>
+              <button class="btn btn-secondary" style="margin-top: 15px; width: 100%;" onclick="app.showLinkChildModal()">
+                ➕ Link Another Child
               </button>
             </div>
 
@@ -2363,16 +2482,336 @@
                 <div class="list-item">
                   <div class="list-item-content">
                     <div class="list-item-title">Children</div>
-                    <div class="list-item-meta">Registered students</div>
+                    <div class="list-item-meta">Linked students</div>
                   </div>
-                  <div style="font-size: 20px; font-weight: 700; color: var(--accent);">0</div>
+                  <div style="font-size: 20px; font-weight: 700; color: var(--accent);">${children.length}</div>
+                </div>
+                <div class="list-item">
+                  <div class="list-item-content">
+                    <div class="list-item-title">Classes</div>
+                    <div class="list-item-meta">Combined enrollments</div>
+                  </div>
+                  <div style="font-size: 20px; font-weight: 700; color: var(--accent-2);">${totalClasses}</div>
+                </div>
+                <div class="list-item">
+                  <div class="list-item-content">
+                    <div class="list-item-title">Unread Messages</div>
+                    <div class="list-item-meta">From teachers</div>
+                  </div>
+                  <div style="font-size: 20px; font-weight: 700; color: var(--warning);">${unreadMessages}</div>
                 </div>
               </div>
             </div>
           </div>
+
+          <div class="card" style="margin-top: 20px;">
+            <h3>🎯 Quick Actions</h3>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-top: 15px;">
+              <button class="btn btn-primary" onclick="app.showSection('classes')">
+                📚 View Children's Classes
+              </button>
+              <button class="btn btn-primary" onclick="app.showSection('messaging')">
+                💬 Messages
+              </button>
+              <button class="btn btn-secondary" onclick="app.showLinkChildModal()">
+                ➕ Link Another Child
+              </button>
+              <button class="btn btn-secondary" onclick="app.showSection('profile')">
+                ⚙️ Account Settings
+              </button>
+            </div>
+          </div>
         `;
       }
-      
+
+      // Parent-specific methods
+      async showChildDetails(childId) {
+        const child = this.children?.find(c => c.id === childId);
+        if (!child) {
+          window.PortalUI?.showNotification('Child not found', 'error');
+          return;
+        }
+
+        // Load child's assignments
+        let assignmentsHTML = '<p style="color: var(--muted);">Loading assignments...</p>';
+
+        try {
+          const classIds = child.classes?.map(c => c.id) || [];
+          if (classIds.length > 0) {
+            const { data: assignments } = await this.supabaseQuery(() =>
+              this.auth.supabase
+                .from('assignments')
+                .select('*, classes(name)')
+                .in('class_id', classIds)
+                .eq('is_published', true)
+                .order('due_date', { ascending: true }));
+
+            // Get submissions for these assignments
+            const assignmentIds = (assignments || []).map(a => a.id);
+            let submissions = [];
+            if (assignmentIds.length > 0) {
+              const { data: subs } = await this.supabaseQuery(() =>
+                this.auth.supabase
+                  .from('submissions')
+                  .select('assignment_id, submitted_at, grade')
+                  .eq('student_id', childId)
+                  .in('assignment_id', assignmentIds));
+              submissions = subs || [];
+            }
+
+            if (assignments && assignments.length > 0) {
+              assignmentsHTML = assignments.map(a => {
+                const submission = submissions.find(s => s.assignment_id === a.id);
+                const dueDate = a.due_date ? new Date(a.due_date) : null;
+                const isPastDue = dueDate && dueDate < new Date();
+                const statusColor = submission ? 'var(--accent-2)' : (isPastDue ? 'var(--danger)' : 'var(--warning)');
+                const statusText = submission ? (submission.grade ? `Graded: ${submission.grade}` : 'Submitted') : (isPastDue ? 'Missing' : 'Pending');
+
+                return `
+                  <div class="list-item">
+                    <div class="list-item-content">
+                      <div class="list-item-title">${a.title}</div>
+                      <div class="list-item-meta">${a.classes?.name || 'Unknown Class'} • Due: ${dueDate ? dueDate.toLocaleDateString() : 'No due date'}</div>
+                    </div>
+                    <span style="color: ${statusColor}; font-size: 12px;">${statusText}</span>
+                  </div>
+                `;
+              }).join('');
+            } else {
+              assignmentsHTML = '<p style="color: var(--muted); text-align: center;">No assignments found.</p>';
+            }
+          } else {
+            assignmentsHTML = '<p style="color: var(--muted); text-align: center;">Not enrolled in any classes.</p>';
+          }
+        } catch (error) {
+          console.error('Error loading child assignments:', error);
+          assignmentsHTML = '<p style="color: var(--danger);">Error loading assignments.</p>';
+        }
+
+        const classesHTML = child.classes && child.classes.length > 0
+          ? child.classes.map(c => `
+              <div class="list-item">
+                <div class="list-item-content">
+                  <div class="list-item-title">${c.name}</div>
+                  <div class="list-item-meta">${c.description || 'No description'}</div>
+                </div>
+              </div>
+            `).join('')
+          : '<p style="color: var(--muted); text-align: center;">Not enrolled in any classes.</p>';
+
+        const modalContent = `
+          <div style="margin-bottom: 20px;">
+            <p><strong>Name:</strong> ${child.first_name} ${child.last_name}</p>
+            <p><strong>Email:</strong> ${child.email}</p>
+            <p><strong>Grade:</strong> ${child.grade_level || 'N/A'}</p>
+          </div>
+
+          <div style="margin-bottom: 20px;">
+            <h4 style="margin-bottom: 10px;">📚 Classes (${child.classes?.length || 0})</h4>
+            <div class="list">${classesHTML}</div>
+          </div>
+
+          <div style="margin-bottom: 20px;">
+            <h4 style="margin-bottom: 10px;">📝 Assignments</h4>
+            <div class="list" style="max-height: 300px; overflow-y: auto;">
+              ${assignmentsHTML}
+            </div>
+          </div>
+
+          <div style="text-align: right;">
+            <button class="btn btn-secondary" onclick="app.closeModal('child-details')">Close</button>
+          </div>
+        `;
+
+        this.showModal('child-details', `👦 ${child.first_name}'s Progress`, modalContent);
+      }
+
+      showLinkChildModal() {
+        const modalContent = `
+          <form id="link-child-form" onsubmit="app.linkChildByEmail(event)">
+            <div style="margin-bottom: 15px;">
+              <label style="display: block; margin-bottom: 5px; color: var(--muted);">Child's Email Address</label>
+              <input type="email" id="child-email-input" class="form-control" placeholder="child@example.com" required
+                style="width: 100%; padding: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text);">
+              <small style="color: var(--muted);">Enter the email address your child uses to sign in.</small>
+            </div>
+            <div style="display: flex; gap: 10px; justify-content: flex-end;">
+              <button type="button" class="btn btn-secondary" onclick="app.closeModal('link-child')">Cancel</button>
+              <button type="submit" class="btn btn-primary">Link Child</button>
+            </div>
+          </form>
+        `;
+
+        this.showModal('link-child', '➕ Link a Child', modalContent);
+      }
+
+      async linkChildByEmail(event) {
+        event.preventDefault();
+
+        const emailInput = document.getElementById('child-email-input');
+        const childEmail = emailInput?.value?.trim().toLowerCase();
+
+        if (!childEmail) {
+          window.PortalUI?.showNotification('Please enter an email address', 'error');
+          return;
+        }
+
+        try {
+          // Find the child's profile by email
+          const { data: childProfile, error: findError } = await this.supabaseQuery(() =>
+            this.auth.supabase
+              .from('user_profiles')
+              .select('id, first_name, last_name, email, user_type')
+              .eq('email', childEmail)
+              .single());
+
+          if (findError || !childProfile) {
+            window.PortalUI?.showNotification('No student found with that email address', 'error');
+            return;
+          }
+
+          if (childProfile.user_type !== 'student') {
+            window.PortalUI?.showNotification('That account is not a student account', 'error');
+            return;
+          }
+
+          // Check if already linked
+          const existingChild = this.children?.find(c => c.id === childProfile.id);
+          if (existingChild) {
+            window.PortalUI?.showNotification('This child is already linked to your account', 'warning');
+            this.closeModal('link-child');
+            return;
+          }
+
+          // Create the link
+          const { error: linkError } = await this.supabaseQuery(() =>
+            this.auth.supabase
+              .from('parent_child_links')
+              .upsert({
+                parent_id: this.userInfo.user.id,
+                child_id: childProfile.id
+              }, { onConflict: 'parent_id,child_id' }));
+
+          if (linkError) {
+            console.error('Error linking child:', linkError);
+            window.PortalUI?.showNotification('Failed to link child: ' + linkError.message, 'error');
+            return;
+          }
+
+          window.PortalUI?.showNotification(`Successfully linked ${childProfile.first_name} to your account!`, 'success');
+          this.closeModal('link-child');
+
+          // Reload parent data
+          await this.loadParentData();
+
+        } catch (error) {
+          console.error('Error in linkChildByEmail:', error);
+          window.PortalUI?.showNotification('An error occurred. Please try again.', 'error');
+        }
+      }
+
+      async viewChildrenGrades(classId) {
+        // Find children enrolled in this class
+        const enrolledChildren = this.children?.filter(child =>
+          child.classes?.some(c => c.id === classId)
+        ) || [];
+
+        if (enrolledChildren.length === 0) {
+          window.PortalUI?.showNotification('No children enrolled in this class', 'warning');
+          return;
+        }
+
+        // Build grades display
+        let gradesHTML = '';
+
+        for (const child of enrolledChildren) {
+          try {
+            // Get submissions for this child in this class
+            const { data: assignments } = await this.supabaseQuery(() =>
+              this.auth.supabase
+                .from('assignments')
+                .select('id, title, due_date, points_possible')
+                .eq('class_id', classId)
+                .eq('is_published', true)
+                .order('due_date', { ascending: true }));
+
+            if (!assignments || assignments.length === 0) {
+              gradesHTML += `
+                <div style="margin-bottom: 20px; padding: 15px; background: var(--card); border-radius: 8px;">
+                  <h4 style="color: var(--accent); margin-bottom: 10px;">👦 ${child.first_name} ${child.last_name}</h4>
+                  <p style="color: var(--muted);">No assignments in this class yet.</p>
+                </div>
+              `;
+              continue;
+            }
+
+            const assignmentIds = assignments.map(a => a.id);
+            const { data: submissions } = await this.supabaseQuery(() =>
+              this.auth.supabase
+                .from('submissions')
+                .select('assignment_id, grade, submitted_at, status')
+                .eq('student_id', child.id)
+                .in('assignment_id', assignmentIds));
+
+            const assignmentRows = assignments.map(a => {
+              const submission = submissions?.find(s => s.assignment_id === a.id);
+              const dueDate = a.due_date ? new Date(a.due_date) : null;
+              const isPastDue = dueDate && dueDate < new Date() && !submission;
+              const grade = submission?.grade ?? '-';
+              const status = submission ? (submission.status || 'Submitted') : (isPastDue ? 'Missing' : 'Pending');
+              const statusColor = submission ? 'var(--accent-2)' : (isPastDue ? 'var(--danger)' : 'var(--warning)');
+
+              return `
+                <tr>
+                  <td style="padding: 8px; border-bottom: 1px solid var(--border);">${a.title}</td>
+                  <td style="padding: 8px; border-bottom: 1px solid var(--border);">${dueDate ? dueDate.toLocaleDateString() : 'N/A'}</td>
+                  <td style="padding: 8px; border-bottom: 1px solid var(--border); color: ${statusColor};">${status}</td>
+                  <td style="padding: 8px; border-bottom: 1px solid var(--border);">${grade}${a.points_possible ? ` / ${a.points_possible}` : ''}</td>
+                </tr>
+              `;
+            }).join('');
+
+            gradesHTML += `
+              <div style="margin-bottom: 20px; padding: 15px; background: var(--card); border-radius: 8px;">
+                <h4 style="color: var(--accent); margin-bottom: 15px;">👦 ${child.first_name} ${child.last_name}</h4>
+                <table style="width: 100%; border-collapse: collapse;">
+                  <thead>
+                    <tr style="text-align: left; border-bottom: 2px solid var(--border);">
+                      <th style="padding: 8px;">Assignment</th>
+                      <th style="padding: 8px;">Due Date</th>
+                      <th style="padding: 8px;">Status</th>
+                      <th style="padding: 8px;">Grade</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${assignmentRows}
+                  </tbody>
+                </table>
+              </div>
+            `;
+          } catch (error) {
+            console.error('Error loading grades for child:', child.id, error);
+            gradesHTML += `
+              <div style="margin-bottom: 20px; padding: 15px; background: var(--card); border-radius: 8px;">
+                <h4 style="color: var(--accent); margin-bottom: 10px;">👦 ${child.first_name} ${child.last_name}</h4>
+                <p style="color: var(--danger);">Error loading grades.</p>
+              </div>
+            `;
+          }
+        }
+
+        const modalContent = `
+          <div style="max-height: 70vh; overflow-y: auto;">
+            ${gradesHTML}
+          </div>
+          <div style="text-align: right; margin-top: 15px;">
+            <button class="btn btn-secondary" onclick="app.closeModal('children-grades')">Close</button>
+          </div>
+        `;
+
+        this.showModal('children-grades', "📊 Children's Grades", modalContent);
+      }
+
       attachTeacherDashboardListeners() {
           // Listen on document to catch events from anywhere (home, class view, modals)
           document.addEventListener('click', (e) => {
@@ -3655,7 +4094,7 @@
         const userType = this.userInfo.profile.user_type;
 
         console.log('🔍 Rendering classes, userType:', userType, 'classes count:', this.classes?.length);
-    
+
         // Setup actions based on user type
         if (userType === 'teacher' || userType === 'admin') {
           classesActions.innerHTML = `
@@ -3669,14 +4108,25 @@
               ➕ Join Class
             </button>
           `;
+        } else if (userType === 'parent') {
+          // Parents have read-only view, no action buttons
+          classesActions.innerHTML = `
+            <span style="color: var(--muted); font-size: 14px;">Viewing your children's classes</span>
+          `;
         }
-        
+
         // Render classes
         if (this.classes.length === 0) {
+          const emptyMessage = userType === 'teacher'
+            ? 'Create your first class to get started.'
+            : userType === 'parent'
+              ? 'Your children are not enrolled in any classes yet.'
+              : 'Enroll in a class to begin learning.';
+
           classesContent.innerHTML = `
             <div class="empty-state">
               <h3>📚 No Classes Yet</h3>
-              <p>${userType === 'teacher' ? 'Create your first class to get started.' : 'Enroll in a class to begin learning.'}</p>
+              <p>${emptyMessage}</p>
             </div>
           `;
         } else {
@@ -3692,7 +4142,19 @@
         const userType = this.userInfo.profile.user_type;
         const isTeacher = userType === 'teacher' || userType === 'admin';
         const isStudent = userType === 'student';
-        
+        const isParent = userType === 'parent';
+
+        // Find which children are enrolled in this class (for parents)
+        let enrolledChildrenText = '';
+        if (isParent && this.children) {
+          const enrolledChildren = this.children.filter(child =>
+            child.classes?.some(c => c.id === cls.id)
+          );
+          if (enrolledChildren.length > 0) {
+            enrolledChildrenText = enrolledChildren.map(c => c.first_name).join(', ');
+          }
+        }
+
         return `
           <div class="class-card" onclick="app.openClass('${cls.id}')" style="cursor: pointer;">
             ${isTeacher ? `
@@ -3716,6 +4178,11 @@
               <div class="class-stats" style="margin-top: 8px;">
                 <span>👥 ${cls.student_count || 0}/${cls.max_students || 30}</span>
                 <span>🔢 ${cls.class_code}</span>
+              </div>
+            ` : ''}
+            ${isParent && enrolledChildrenText ? `
+              <div class="class-stats" style="margin-top: 8px;">
+                <span>👦 ${enrolledChildrenText}</span>
               </div>
             ` : ''}
           </div>
@@ -3884,19 +4351,21 @@
 
       async openClass(classId) {
         console.log('🔍 Opening class:', classId);
-        
-        const isAdmin = this.userInfo.profile.user_type === 'admin';
-        const isTeacher = this.userInfo.profile.user_type === 'teacher' || isAdmin;
+
+        const userType = this.userInfo.profile.user_type;
+        const isAdmin = userType === 'admin';
+        const isTeacher = userType === 'teacher' || isAdmin;
+        const isParent = userType === 'parent';
         let classData;
-        
+
         // Try to find class in our loaded classes first
         const classToOpen = this.classes.find(c => c.id === classId);
-        
+
         if (classToOpen) {
           classData = classToOpen;
         } else {
-          // Class not in our list - load it from database (admin can view any class)
-          if (!isAdmin) {
+          // Class not in our list - load it from database (admin and parent can view)
+          if (!isAdmin && !isParent) {
             this.showNotification('Class not found', 'error');
             return;
           }
@@ -3956,6 +4425,11 @@
           ${isAdmin && !isOwnClass ? `
             <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 12px 20px; border-radius: 8px; margin-bottom: 20px;">
               <strong>👑 Admin View</strong> - This is another teacher's class
+            </div>
+          ` : ''}
+          ${isParent ? `
+            <div style="background: linear-gradient(135deg, #6aa9ff 0%, #8bffb0 100%); color: black; padding: 12px 20px; border-radius: 8px; margin-bottom: 20px;">
+              <strong>👨‍👩‍👧‍👦 Parent View</strong> - Viewing your child's class
             </div>
           ` : ''}
           
@@ -4021,6 +4495,10 @@
                   </button>
                   <button class="btn btn-primary" onclick="teacherGrades.showGradeManagementModal('${classId}')">
                     📊 Manage Grades
+                  </button>
+                ` : isParent ? `
+                  <button class="btn btn-secondary" onclick="app.viewChildrenGrades('${classId}')">
+                    📊 Children's Grades
                   </button>
                 ` : `
                   <button class="btn btn-secondary" onclick="app.viewGrades('${classId}')">
