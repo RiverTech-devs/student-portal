@@ -630,21 +630,47 @@
                 const pendingLinks = localStorage.getItem('pending_child_links');
                 console.log('Pending links found:', pendingLinks);
                 console.log('User type:', userInfo.profile?.user_type);
-                
+
                 if (pendingLinks && userInfo.profile?.user_type === 'parent') {
                     const childEmails = JSON.parse(pendingLinks);
                     console.log('Processing child links for:', childEmails);
-                    
+
                     // Add delay to ensure auth is fully ready
-                    setTimeout(() => {
-                        this.linkParentToChildren(userInfo.profile.id, childEmails)
-                            .then((results) => {
-                                console.log('Link results:', results);
-                                localStorage.removeItem('pending_child_links');
-                            })
-                            .catch(error => {
-                                console.error('Failed to link children:', error);
-                            });
+                    setTimeout(async () => {
+                        try {
+                            const results = await this.linkParentToChildren(userInfo.profile.id, childEmails);
+                            console.log('Link results:', results);
+                            localStorage.removeItem('pending_child_links');
+
+                            // Show detailed results to user
+                            const successCount = results.filter(r => r.success).length;
+                            const failedEmails = results.filter(r => !r.success).map(r => r.email);
+                            const notFoundEmails = childEmails.filter(email =>
+                                !results.some(r => r.email === email)
+                            );
+
+                            if (successCount > 0) {
+                                window.PortalUI?.showNotification(
+                                    `Successfully linked ${successCount} child account${successCount > 1 ? 's' : ''}!`,
+                                    'success'
+                                );
+                            }
+
+                            if (notFoundEmails.length > 0 || failedEmails.length > 0) {
+                                const allFailed = [...notFoundEmails, ...failedEmails];
+                                setTimeout(() => {
+                                    this.showChildLinkResultsModal(results, notFoundEmails);
+                                }, 1500);
+                            }
+
+                            // Reload dashboard to show linked children
+                            if (successCount > 0) {
+                                await this.loadParentTeacherDashboard();
+                            }
+                        } catch (error) {
+                            console.error('Failed to link children:', error);
+                            window.PortalUI?.showNotification('Error linking child accounts. Please try again from the dashboard.', 'error');
+                        }
                     }, 1000);
                 }
                 
@@ -941,24 +967,32 @@
 
             async linkParentToChildren(parentId, childEmails) {
                 const results = [];
-                
+
                 for (const childEmail of childEmails) {
                     try {
                         // First find the child's user ID
                         const { data: childProfile, error: childError } = await this.auth.supabase
                             .from('user_profiles')
-                            .select('id')
+                            .select('id, first_name, last_name, user_type')
                             .eq('email', childEmail)
                             .single();
-                        
+
                         if (childError || !childProfile) {
                             console.warn(`Child account not found for email: ${childEmail}`);
+                            results.push({ email: childEmail, success: false, reason: 'not_found' });
                             continue;
                         }
-            
+
+                        // Verify it's a student account
+                        if (childProfile.user_type !== 'student') {
+                            console.warn(`Account ${childEmail} is not a student account`);
+                            results.push({ email: childEmail, success: false, reason: 'not_student' });
+                            continue;
+                        }
+
                         // Use UPSERT with the correct table name
                         const { data, error } = await this.auth.supabase
-                            .from('parent_child_links')  // Correct table name
+                            .from('parent_child_links')
                             .upsert({
                                 parent_id: parentId,
                                 child_id: childProfile.id,
@@ -967,24 +1001,89 @@
                                 onConflict: 'parent_id,child_id',
                                 ignoreDuplicates: false
                             });
-            
+
                         if (error) {
                             console.error(`Error linking to child ${childEmail}:`, error);
+                            results.push({ email: childEmail, success: false, reason: 'link_error', error: error.message });
                         } else {
-                            results.push({ email: childEmail, success: true });
+                            results.push({
+                                email: childEmail,
+                                success: true,
+                                childName: `${childProfile.first_name} ${childProfile.last_name}`
+                            });
                         }
-                        
+
                     } catch (error) {
                         console.error(`Failed to link parent to child ${childEmail}:`, error);
+                        results.push({ email: childEmail, success: false, reason: 'error', error: error.message });
                     }
                 }
-                
+
                 const successCount = results.filter(r => r.success).length;
                 if (successCount > 0) {
                     console.log(`Successfully linked to ${successCount} child account(s)`);
                 }
-                
+
                 return results;
+            }
+
+            showChildLinkResultsModal(results, notFoundEmails) {
+                const successResults = results.filter(r => r.success);
+                const failedResults = results.filter(r => !r.success);
+
+                let content = '<div style="padding: 10px;">';
+
+                // Show successful links
+                if (successResults.length > 0) {
+                    content += `
+                        <div style="margin-bottom: 20px;">
+                            <h4 style="color: var(--accent-2); margin-bottom: 10px;">Successfully Linked</h4>
+                            ${successResults.map(r => `
+                                <div style="padding: 8px; background: rgba(139, 255, 176, 0.1); border-radius: 6px; margin-bottom: 5px;">
+                                    ${r.childName || r.email}
+                                </div>
+                            `).join('')}
+                        </div>
+                    `;
+                }
+
+                // Show failed/not found
+                if (notFoundEmails.length > 0 || failedResults.length > 0) {
+                    content += `
+                        <div style="margin-bottom: 20px;">
+                            <h4 style="color: var(--warning); margin-bottom: 10px;">Could Not Link</h4>
+                            <p style="color: var(--muted); font-size: 13px; margin-bottom: 10px;">
+                                These accounts could not be linked. The child may need to register first.
+                            </p>
+                            ${notFoundEmails.map(email => `
+                                <div style="padding: 8px; background: rgba(255, 211, 106, 0.1); border-radius: 6px; margin-bottom: 5px;">
+                                    <strong>${email}</strong>
+                                    <span style="color: var(--muted); font-size: 12px;"> - Account not found</span>
+                                </div>
+                            `).join('')}
+                            ${failedResults.map(r => `
+                                <div style="padding: 8px; background: rgba(255, 211, 106, 0.1); border-radius: 6px; margin-bottom: 5px;">
+                                    <strong>${r.email}</strong>
+                                    <span style="color: var(--muted); font-size: 12px;"> - ${
+                                        r.reason === 'not_student' ? 'Not a student account' :
+                                        r.reason === 'link_error' ? 'Link failed' : 'Error occurred'
+                                    }</span>
+                                </div>
+                            `).join('')}
+                            <p style="color: var(--muted); font-size: 12px; margin-top: 10px;">
+                                You can link children later from your dashboard using the "Link Another Child" button.
+                            </p>
+                        </div>
+                    `;
+                }
+
+                content += `
+                    <div style="display: flex; justify-content: flex-end; margin-top: 15px;">
+                        <button class="btn btn-primary" onclick="portal.closeModal()">Got it</button>
+                    </div>
+                </div>`;
+
+                this.showModal('child-link-results', 'Child Account Linking Results', content);
             }
 
             async handlePasswordReset(e) {
@@ -1455,6 +1554,9 @@
                             <div class="card" style="max-width: 600px; margin: 50px auto; text-align: center;">
                                 <h3>👶 No Children Linked</h3>
                                 <p>No children are linked to your account yet.</p>
+                                <button class="btn btn-primary" onclick="portal.showLinkChildModal()" style="margin-top: 15px;">
+                                    ➕ Link a Child
+                                </button>
                             </div>
                         `;
                         return;
@@ -1512,14 +1614,20 @@
                                         <small>Grade ${child.grade_level || 'N/A'} • ${child.email}</small>
                                     </div>
                                 `).join('')}
+                                <button class="btn btn-secondary" onclick="portal.showLinkChildModal()" style="width: 100%; margin-top: 10px;">
+                                    ➕ Link Another Child
+                                </button>
                             </div>
                             <div class="card">
                                 <h3>📚 Quick Actions</h3>
                                 <button class="btn btn-primary" onclick="window.portalAuth.goToClassesPortal()" style="width: 100%; margin-bottom: 10px;">
                                     View Classes & Messages
                                 </button>
-                                <button class="btn btn-secondary" onclick="portal.loadChildDetails('${firstChild.id}')" style="width: 100%;">
+                                <button class="btn btn-secondary" onclick="portal.loadChildDetails('${firstChild.id}')" style="width: 100%; margin-bottom: 10px;">
                                     View ${firstChild.first_name}'s Details
+                                </button>
+                                <button class="btn btn-primary" onclick="portal.showLinkChildModal()" style="width: 100%; background: linear-gradient(135deg, #6aa9ff 0%, #8bffb0 100%);">
+                                    ➕ Link Another Child
                                 </button>
                             </div>
                         </div>
@@ -1727,7 +1835,178 @@
                     window.PortalUI.showNotification('Failed to load assignment details', 'error');
                 }
             }
-            
+
+            // Parent-specific methods
+            showLinkChildModal() {
+                const modalContent = `
+                    <form id="link-child-form" onsubmit="portal.linkChildByEmail(event)">
+                        <div style="margin-bottom: 15px;">
+                            <label style="display: block; margin-bottom: 5px; color: var(--muted);">Child's Email Address</label>
+                            <input type="email" id="child-email-input" class="form-control" placeholder="child@example.com" required>
+                            <small style="color: var(--muted);">Enter the email address your child uses to sign in.</small>
+                        </div>
+                        <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                            <button type="button" class="btn btn-secondary" onclick="portal.closeModal()">Cancel</button>
+                            <button type="submit" class="btn btn-primary">Link Child</button>
+                        </div>
+                    </form>
+                `;
+                this.showModal('link-child', 'Link a Child', modalContent);
+            }
+
+            async linkChildByEmail(event) {
+                event.preventDefault();
+
+                const emailInput = document.getElementById('child-email-input');
+                const childEmail = emailInput?.value?.trim().toLowerCase();
+
+                if (!childEmail) {
+                    window.PortalUI?.showNotification('Please enter an email address', 'error');
+                    return;
+                }
+
+                try {
+                    // Find the child's profile by email
+                    const { data: childProfile, error: findError } = await this.auth.supabase
+                        .from('user_profiles')
+                        .select('id, first_name, last_name, email, user_type')
+                        .eq('email', childEmail)
+                        .single();
+
+                    if (findError || !childProfile) {
+                        window.PortalUI?.showNotification('No student found with that email address', 'error');
+                        return;
+                    }
+
+                    if (childProfile.user_type !== 'student') {
+                        window.PortalUI?.showNotification('That account is not a student account', 'error');
+                        return;
+                    }
+
+                    // Create the link
+                    const { error: linkError } = await this.auth.supabase
+                        .from('parent_child_links')
+                        .upsert({
+                            parent_id: this.auth.currentUser.id,
+                            child_id: childProfile.id
+                        }, { onConflict: 'parent_id,child_id' });
+
+                    if (linkError) {
+                        console.error('Error linking child:', linkError);
+                        window.PortalUI?.showNotification('Failed to link child: ' + linkError.message, 'error');
+                        return;
+                    }
+
+                    window.PortalUI?.showNotification(`Successfully linked ${childProfile.first_name} to your account!`, 'success');
+                    this.closeModal();
+
+                    // Reload the dashboard
+                    await this.loadDashboard(this.auth.userProfile);
+
+                } catch (error) {
+                    console.error('Error in linkChildByEmail:', error);
+                    window.PortalUI?.showNotification('An error occurred. Please try again.', 'error');
+                }
+            }
+
+            async loadChildDetails(childId) {
+                const container = document.getElementById('child-details-container');
+                if (!container) return;
+
+                container.innerHTML = '<div class="loading-spinner" style="margin: 20px auto;"></div>';
+
+                try {
+                    // Get child's profile
+                    const { data: childProfile } = await this.auth.supabase
+                        .from('user_profiles')
+                        .select('*')
+                        .eq('id', childId)
+                        .single();
+
+                    if (!childProfile) {
+                        container.innerHTML = '<div class="alert alert-error">Child profile not found.</div>';
+                        return;
+                    }
+
+                    // Get child's class enrollments with class details
+                    const { data: enrollments } = await this.auth.supabase
+                        .from('class_enrollments')
+                        .select('*, classes(id, name, subject)')
+                        .eq('student_id', childId)
+                        .eq('status', 'active');
+
+                    // Get assignments and grades
+                    let gradesHTML = '';
+                    if (enrollments && enrollments.length > 0) {
+                        const classIds = enrollments.map(e => e.class_id);
+
+                        const { data: assignments } = await this.auth.supabase
+                            .from('assignments')
+                            .select('id, title, class_id, due_date, points_possible')
+                            .in('class_id', classIds)
+                            .eq('is_published', true)
+                            .order('due_date', { ascending: true });
+
+                        if (assignments && assignments.length > 0) {
+                            const assignmentIds = assignments.map(a => a.id);
+                            const { data: submissions } = await this.auth.supabase
+                                .from('submissions')
+                                .select('assignment_id, grade, submitted_at, status')
+                                .eq('student_id', childId)
+                                .in('assignment_id', assignmentIds);
+
+                            gradesHTML = `
+                                <div class="card" style="margin-top: 20px;">
+                                    <h4>📝 Recent Assignments</h4>
+                                    <table style="width: 100%; margin-top: 10px;">
+                                        <thead>
+                                            <tr>
+                                                <th style="text-align: left;">Assignment</th>
+                                                <th style="text-align: left;">Class</th>
+                                                <th style="text-align: left;">Status</th>
+                                                <th style="text-align: left;">Grade</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            ${assignments.slice(0, 10).map(a => {
+                                                const submission = submissions?.find(s => s.assignment_id === a.id);
+                                                const className = enrollments.find(e => e.class_id === a.class_id)?.classes?.name || 'Unknown';
+                                                const isPastDue = a.due_date && new Date(a.due_date) < new Date() && !submission;
+                                                const statusText = submission ? (submission.status || 'Submitted') : (isPastDue ? 'Missing' : 'Pending');
+                                                const statusColor = submission ? 'var(--accent-2)' : (isPastDue ? 'var(--danger)' : 'var(--warning)');
+
+                                                return `
+                                                    <tr>
+                                                        <td>${a.title}</td>
+                                                        <td>${className}</td>
+                                                        <td style="color: ${statusColor};">${statusText}</td>
+                                                        <td>${submission?.grade ?? '-'}</td>
+                                                    </tr>
+                                                `;
+                                            }).join('')}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            `;
+                        }
+                    }
+
+                    container.innerHTML = `
+                        <div class="card" style="margin-top: 20px;">
+                            <h3>📊 ${childProfile.first_name}'s Details</h3>
+                            <p><strong>Name:</strong> ${childProfile.first_name} ${childProfile.last_name}</p>
+                            <p><strong>Email:</strong> ${childProfile.email}</p>
+                            <p><strong>Grade Level:</strong> ${childProfile.grade_level || 'Not set'}</p>
+                            <p><strong>Enrolled Classes:</strong> ${enrollments?.length || 0}</p>
+                        </div>
+                        ${gradesHTML}
+                    `;
+                } catch (error) {
+                    console.error('Error loading child details:', error);
+                    container.innerHTML = '<div class="alert alert-error">Failed to load child details.</div>';
+                }
+            }
+
             async loadTeacherDashboard(dashboardSection, userInfo, firstName) {
                 // Keep existing teacher dashboard
                 dashboardSection.innerHTML = `
