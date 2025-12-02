@@ -48,9 +48,21 @@ CREATE INDEX IF NOT EXISTS idx_classes_id ON classes(id);
 CREATE INDEX IF NOT EXISTS idx_classes_is_active ON classes(is_active);
 CREATE INDEX IF NOT EXISTS idx_classes_teacher_id ON classes(teacher_id);
 
+-- Assignment students table indexes (for selective assignment lookups)
+CREATE INDEX IF NOT EXISTS idx_assignment_students_assignment_id
+ON assignment_students(assignment_id);
+
+CREATE INDEX IF NOT EXISTS idx_assignment_students_student_id
+ON assignment_students(student_id);
+
+-- Composite index for the common lookup pattern (student checking their assignments)
+CREATE INDEX IF NOT EXISTS idx_assignment_students_student_assignment
+ON assignment_students(student_id, assignment_id);
+
 -- Analyze tables to update query planner statistics
 ANALYZE assignments;
 ANALYZE assignment_submissions;
+ANALYZE assignment_students;
 ANALYZE user_profiles;
 ANALYZE rubrics;
 ANALYZE class_enrollments;
