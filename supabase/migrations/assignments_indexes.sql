@@ -39,6 +39,14 @@ CREATE INDEX IF NOT EXISTS idx_class_enrollments_student_id ON class_enrollments
 CREATE INDEX IF NOT EXISTS idx_class_enrollments_status ON class_enrollments(status);
 CREATE INDEX IF NOT EXISTS idx_class_enrollments_class_status
 ON class_enrollments(class_id, status);
+-- For student login query pattern (student_id + status)
+CREATE INDEX IF NOT EXISTS idx_class_enrollments_student_status
+ON class_enrollments(student_id, status);
+
+-- Classes table indexes
+CREATE INDEX IF NOT EXISTS idx_classes_id ON classes(id);
+CREATE INDEX IF NOT EXISTS idx_classes_is_active ON classes(is_active);
+CREATE INDEX IF NOT EXISTS idx_classes_teacher_id ON classes(teacher_id);
 
 -- Analyze tables to update query planner statistics
 ANALYZE assignments;
@@ -46,3 +54,4 @@ ANALYZE assignment_submissions;
 ANALYZE user_profiles;
 ANALYZE rubrics;
 ANALYZE class_enrollments;
+ANALYZE classes;
