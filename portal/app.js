@@ -289,7 +289,7 @@ async function Dashboard(app) {
   ]));
 }
 
-/* Profile: Parent prefs */
+/* Profile: Notification preferences (opt-in) */
 async function Profile(app) {
   const prof = await currentProfile();
   if (!prof) {
@@ -297,66 +297,37 @@ async function Profile(app) {
     return;
   }
 
-  if (prof.role === 'parent') {
-    const card = h('div', { class: 'card' }, [ h('h3', {}, 'Notifications') ]);
-    app.append(card);
-  
-    const { data: set } = await sb
-      .from('notification_settings')
-      .select('*')
-      .eq('user_id', prof.id)
-      .maybeSingle();
-  
-    const missChk = h('input', { type: 'checkbox', id: 'missEmail', checked: !!set?.miss_assignment_email });
-    const emailOverride = h('input', { type: 'email', id: 'emailOverride', placeholder: 'Send to different email (optional)', value: set?.email_override || '' });
-  
-    card.append(
-      h('label', { class: 'checkline' }, [ missChk, ' Email me when my student misses an assignment' ]),
-      emailOverride,
-      h('div', { class: 'row', style: 'margin-top:8px' }, [
-        h('button', {
-          class: 'btn',
-          onclick: async () => {
-            const row = {
-              user_id: prof.id,
-              miss_assignment_email: !!document.getElementById('missEmail').checked,
-              email_override: (document.getElementById('emailOverride').value || '').trim() || null
-            };
-            const { error } = await sb.from('notification_settings').upsert(row);
-            if (error) return alert(error.message);
-            alert('Saved.');
-          }
-        }, 'Save')
-      ])
-    );
-  }
-  
   const { data: prefs } = await sb.from('notification_prefs').select('*').eq('user_id', prof.id).maybeSingle();
   const p = prefs || { user_id: prof.id, email_reports: false, email_missed_assignments: false };
+
+  app.innerHTML = '';
 
   const card = h('div', { class: 'card' }, [
     h('h2', {}, 'Profile & Notifications'),
     h('p', {}, `Role: ${prof.role}`),
-    h('div', { class: 'row' }, [
-      h('label', {}, [
-        h('input', { type: 'checkbox', id: 'chkReports', checked: p.email_reports ? true : false }),
+    h('h3', {}, 'Email Notifications'),
+    h('p', { class: 'muted' }, 'Choose which email notifications you would like to receive.'),
+    h('div', { class: 'col', style: 'gap:12px' }, [
+      h('label', { class: 'checkline' }, [
+        h('input', { type: 'checkbox', id: 'chkReports', checked: !!p.email_reports }),
         ' Email me grade reports'
       ]),
-      h('label', {}, [
-        h('input', { type: 'checkbox', id: 'chkMissed', checked: p.email_missed_assignments ? true : false }),
-        ' Email me when assignments are missed'
+      h('label', { class: 'checkline' }, [
+        h('input', { type: 'checkbox', id: 'chkMissed', checked: !!p.email_missed_assignments }),
+        prof.role === 'parent' ? ' Email me when my student misses an assignment' : ' Email me when assignments are missed'
       ]),
-      h('button', { class: 'btn', onclick: async () => {
-        const email_reports = document.getElementById('chkReports').checked;
-        const email_missed_assignments = document.getElementById('chkMissed').checked;
-        const upsert = { user_id: prof.id, email_reports, email_missed_assignments };
-        const { error } = await sb.from('notification_prefs').upsert(upsert);
-        if (error) return alert(error.message);
-        alert('Preferences saved.');
-      }}, 'Save')
+      h('div', { class: 'row', style: 'margin-top:8px' }, [
+        h('button', { class: 'btn', onclick: async () => {
+          const email_reports = document.getElementById('chkReports').checked;
+          const email_missed_assignments = document.getElementById('chkMissed').checked;
+          const upsert = { user_id: prof.id, email_reports, email_missed_assignments };
+          const { error } = await sb.from('notification_prefs').upsert(upsert);
+          if (error) return alert(error.message);
+          alert('Preferences saved.');
+        }}, 'Save Preferences')
+      ])
     ])
   ]);
-  app.innerHTML = '';
   app.append(card);
 }
 
