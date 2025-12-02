@@ -6995,16 +6995,22 @@
           // Get all assignments from student's classes
           const classIds = this.classes.map(c => c.id);
           if (classIds.length === 0) return [];
-          
-          // Get assignments due before today (limit to recent, extend timeout)
-          const { data: assignments, error } = await this.supabaseQuery(() => this.auth.supabase
+
+          // Get assignments due before today, but only from current quarter (server-side filter)
+          let query = this.auth.supabase
             .from('assignments')
             .select('id, title, description, due_date, class_id, assigned_to_all, category_id, created_at, graded_offline')
             .in('class_id', classIds)
             .eq('is_published', true)
-            .lt('due_date', today.toISOString())
-            .order('due_date', { ascending: false })
-            .limit(100), 15000);
+            .lt('due_date', today.toISOString());
+
+          // Filter to current quarter at database level to avoid timeout
+          if (currentQuarter?.start_date) {
+            query = query.gte('due_date', currentQuarter.start_date);
+          }
+
+          const { data: assignments, error } = await this.supabaseQuery(() =>
+            query.order('due_date', { ascending: false }).limit(100), 15000);
       
           if (error) {
             console.error('Error loading missing assignments:', error);
@@ -8592,24 +8598,29 @@
           // Close the assignments modal
           this.closeModal('view-assignments');
 
-          // If on home page, refresh immediately with local data
+          // If on home page, just refresh the missing assignments section
           if (this.currentSection === 'home') {
-            this.setupHomeContent();
+            this.loadMissingAssignments().then(missingAssignments => {
+              const missingContainer = document.getElementById('missing-assignments-container');
+              if (missingContainer) {
+                missingContainer.innerHTML = this.renderMissingAssignments(missingAssignments);
+              }
+            });
+          } else {
+            // Reopen the assignments view with updated local data (only when not on home page)
+            const updatedAssignment = this.classes
+              .flatMap(c => c.assignments || [])
+              .find(a => a.id === assignmentId);
+
+            if (updatedAssignment) {
+              setTimeout(() => {
+                this.viewAssignments(updatedAssignment.class_id);
+              }, 100);
+            }
           }
 
           // Reload student data in background (non-blocking) for full sync
           this.loadStudentData().catch(err => console.warn('Background refresh failed:', err));
-
-          // Reopen the assignments view with updated local data
-          const updatedAssignment = this.classes
-            .flatMap(c => c.assignments || [])
-            .find(a => a.id === assignmentId);
-
-          if (updatedAssignment) {
-            setTimeout(() => {
-              this.viewAssignments(updatedAssignment.class_id);
-            }, 100);
-          }
           
         } catch (err) {
           console.error('Submission error:', err);
