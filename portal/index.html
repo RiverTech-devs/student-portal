@@ -13793,16 +13793,22 @@
         event.preventDefault();
 
         const email = document.getElementById('teacher-email')?.value?.trim().toLowerCase();
-        const firstName = document.getElementById('teacher-first-name')?.value?.trim() || '';
-        const lastName = document.getElementById('teacher-last-name')?.value?.trim() || '';
+        const firstName = document.getElementById('teacher-first-name')?.value?.trim() || 'New';
+        const lastName = document.getElementById('teacher-last-name')?.value?.trim() || 'Teacher';
 
         if (!email) {
           this.showNotification('Please enter an email address', 'error');
           return;
         }
 
+        const submitBtn = event.target.querySelector('button[type="submit"]');
+        if (submitBtn) {
+          submitBtn.disabled = true;
+          submitBtn.textContent = 'Sending Invitation...';
+        }
+
         try {
-          // Check if email already exists
+          // Check if email already exists in profiles
           const { data: existingUser } = await this.supabaseQuery(() => this.auth.supabase
             .from('user_profiles')
             .select('id, email')
@@ -13814,85 +13820,110 @@
             return;
           }
 
-          // Generate a unique invitation token
-          const inviteToken = crypto.randomUUID();
+          // Create the auth user with a temporary random password
+          // The teacher will use password reset to set their own password
+          const tempPassword = crypto.randomUUID() + 'Aa1!'; // Meets password requirements
 
-          // Store the invitation in the database
-          const { error: inviteError } = await this.supabaseQuery(() => this.auth.supabase
-            .from('teacher_invitations')
-            .insert({
-              email: email,
-              first_name: firstName,
-              last_name: lastName,
-              invite_token: inviteToken,
-              invited_by: this.userInfo.user.id,
-              status: 'pending',
-              expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString() // 7 days
-            }));
+          const { data: authData, error: authError } = await this.auth.supabase.auth.signUp({
+            email: email,
+            password: tempPassword,
+            options: {
+              data: {
+                first_name: firstName,
+                last_name: lastName
+              }
+            }
+          });
 
-          if (inviteError) {
-            // Table might not exist, let's create the invitation URL anyway
-            console.warn('Could not store invitation in database:', inviteError);
+          if (authError) {
+            throw authError;
           }
 
-          // Generate the invitation URL
-          const baseUrl = window.location.origin;
-          const inviteUrl = `${baseUrl}/student-portal/?invite=${inviteToken}&email=${encodeURIComponent(email)}&type=teacher`;
+          if (!authData.user) {
+            throw new Error('Failed to create user account');
+          }
 
-          // Show success with the invitation link (since we may not have email sending set up)
+          // Create the teacher profile
+          const username = `${firstName.toLowerCase()}.${lastName.toLowerCase()}`.replace(/[^a-z.]/g, '') + '.' + Date.now().toString(36);
+
+          const { error: profileError } = await this.supabaseQuery(() => this.auth.supabase
+            .from('user_profiles')
+            .insert({
+              id: authData.user.id,
+              auth_user_id: authData.user.id,
+              email: email,
+              username: username,
+              first_name: firstName,
+              last_name: lastName,
+              user_type: 'teacher',
+              account_status: 'active',
+              can_login: true
+            }));
+
+          if (profileError) {
+            console.error('Profile creation error:', profileError);
+            throw new Error('Failed to create teacher profile: ' + profileError.message);
+          }
+
+          // Send password reset email so teacher can set their own password
+          const { error: resetError } = await this.auth.supabase.auth.resetPasswordForEmail(email, {
+            redirectTo: `${window.location.origin}/student-portal/reset-password.html`
+          });
+
+          if (resetError) {
+            console.warn('Could not send password reset email:', resetError);
+            // Still show success but warn about email
+          }
+
           this.closeModal('invite-teacher');
-          this.showTeacherInviteLinkModal(email, inviteUrl, firstName, lastName);
+          this.showTeacherInviteSuccessModal(email, firstName, lastName, !resetError);
 
         } catch (error) {
           console.error('Error sending teacher invitation:', error);
           this.showNotification('Error: ' + error.message, 'error');
+        } finally {
+          if (submitBtn) {
+            submitBtn.disabled = false;
+            submitBtn.textContent = '✉️ Send Invitation';
+          }
         }
       }
 
-      showTeacherInviteLinkModal(email, inviteUrl, firstName, lastName) {
-        const teacherName = firstName && lastName ? `${firstName} ${lastName}` : email;
+      showTeacherInviteSuccessModal(email, firstName, lastName, emailSent) {
+        const teacherName = `${firstName} ${lastName}`;
 
         const modalContent = `
           <div>
             <div style="background: rgba(139, 255, 176, 0.1); border: 1px solid var(--accent-2); border-radius: 8px; padding: 15px; margin-bottom: 20px;">
-              <p style="color: var(--accent-2); font-weight: 500; margin-bottom: 5px;">✅ Invitation Created!</p>
-              <p style="color: var(--muted); font-size: 13px;">Share this link with <strong>${teacherName}</strong> to complete their registration.</p>
-            </div>
-
-            <div class="form-group" style="margin-bottom: 20px;">
-              <label style="display: block; margin-bottom: 5px; font-weight: 500;">Invitation Link</label>
-              <div style="display: flex; gap: 10px;">
-                <input type="text" id="invite-link-input" value="${inviteUrl}" readonly
-                       style="flex: 1; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: var(--text); font-size: 12px;">
-                <button type="button" class="btn btn-primary" onclick="app.copyInviteLink()">
-                  📋 Copy
-                </button>
-              </div>
-            </div>
-
-            <div style="background: rgba(106, 169, 255, 0.1); border-radius: 8px; padding: 15px; margin-bottom: 20px;">
-              <p style="font-size: 13px; color: var(--muted);">
-                <strong style="color: var(--accent);">📧 Send this link to the teacher</strong><br>
-                They can click the link to set up their account with a password. The link expires in 7 days.
+              <p style="color: var(--accent-2); font-weight: 500; margin-bottom: 5px;">✅ Teacher Account Created!</p>
+              <p style="color: var(--muted); font-size: 13px;">
+                Account created for <strong>${teacherName}</strong> (${email})
               </p>
             </div>
 
+            ${emailSent ? `
+              <div style="background: rgba(106, 169, 255, 0.1); border-radius: 8px; padding: 15px; margin-bottom: 20px;">
+                <p style="font-size: 13px; color: var(--muted);">
+                  <strong style="color: var(--accent);">📧 Password Setup Email Sent</strong><br>
+                  The teacher will receive an email with a link to set their password. They can then log in to the portal.
+                </p>
+              </div>
+            ` : `
+              <div style="background: rgba(255, 211, 106, 0.1); border-radius: 8px; padding: 15px; margin-bottom: 20px;">
+                <p style="font-size: 13px; color: var(--muted);">
+                  <strong style="color: var(--warning);">⚠️ Email Could Not Be Sent</strong><br>
+                  The account was created, but the email could not be sent. Please ask the teacher to use "Forgot Password" on the login page to set their password.
+                </p>
+              </div>
+            `}
+
             <div style="display: flex; gap: 10px; justify-content: flex-end;">
-              <button type="button" class="btn btn-secondary" onclick="app.closeModal('teacher-invite-link')">Done</button>
+              <button type="button" class="btn btn-primary" onclick="app.closeModal('teacher-invite-success')">Done</button>
             </div>
           </div>
         `;
 
-        this.showModal('teacher-invite-link', '✉️ Teacher Invitation Link', modalContent);
-      }
-
-      copyInviteLink() {
-        const input = document.getElementById('invite-link-input');
-        if (input) {
-          input.select();
-          document.execCommand('copy');
-          this.showNotification('✅ Link copied to clipboard!', 'success');
-        }
+        this.showModal('teacher-invite-success', '✅ Teacher Invited', modalContent);
       }
 
       async renderStudentManagement() {
