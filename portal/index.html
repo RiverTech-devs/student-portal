@@ -833,8 +833,113 @@
         this.setupUnifiedNavigation();
         this.setupHomeContent();
         this.setupEventListeners();
-        
+
+        // Check if user needs password setup (teacher invited by admin)
+        this.checkPasswordSetupRequired();
+
         console.log('✅ Classes Portal initialized');
+      }
+
+      checkPasswordSetupRequired() {
+        const urlParams = new URLSearchParams(window.location.search);
+        const needsSetup = urlParams.get('setup_password') === 'true';
+        const userMetadata = this.userInfo?.user?.user_metadata || {};
+
+        if (needsSetup || userMetadata.needs_password_setup) {
+          // Show password setup modal
+          this.showPasswordSetupModal();
+        }
+      }
+
+      showPasswordSetupModal() {
+        const modalContent = `
+          <div>
+            <p style="color: var(--muted); margin-bottom: 20px;">
+              Welcome! Your account was created by an administrator. Please set your password to complete your account setup.
+            </p>
+
+            <form id="password-setup-form" onsubmit="app.handlePasswordSetup(event)">
+              <div class="form-group" style="margin-bottom: 15px;">
+                <label for="new-password" style="display: block; margin-bottom: 5px; font-weight: 500;">New Password</label>
+                <input type="password" id="new-password" class="form-control" required minlength="8"
+                       placeholder="Enter your new password"
+                       style="width: 100%; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text);">
+              </div>
+
+              <div class="form-group" style="margin-bottom: 20px;">
+                <label for="confirm-password" style="display: block; margin-bottom: 5px; font-weight: 500;">Confirm Password</label>
+                <input type="password" id="confirm-password" class="form-control" required minlength="8"
+                       placeholder="Confirm your new password"
+                       style="width: 100%; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text);">
+              </div>
+
+              <p style="font-size: 12px; color: var(--muted); margin-bottom: 15px;">
+                Password must be at least 8 characters long.
+              </p>
+
+              <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                <button type="submit" class="btn btn-primary">Set Password</button>
+              </div>
+            </form>
+          </div>
+        `;
+
+        this.showModal('password-setup', '🔐 Set Your Password', modalContent);
+      }
+
+      async handlePasswordSetup(event) {
+        event.preventDefault();
+
+        const newPassword = document.getElementById('new-password')?.value;
+        const confirmPassword = document.getElementById('confirm-password')?.value;
+
+        if (!newPassword || !confirmPassword) {
+          this.showNotification('Please fill in both password fields', 'error');
+          return;
+        }
+
+        if (newPassword !== confirmPassword) {
+          this.showNotification('Passwords do not match', 'error');
+          return;
+        }
+
+        if (newPassword.length < 8) {
+          this.showNotification('Password must be at least 8 characters', 'error');
+          return;
+        }
+
+        const submitBtn = event.target.querySelector('button[type="submit"]');
+        if (submitBtn) {
+          submitBtn.disabled = true;
+          submitBtn.textContent = 'Setting Password...';
+        }
+
+        try {
+          // Update the user's password
+          const { error } = await this.auth.supabase.auth.updateUser({
+            password: newPassword,
+            data: { needs_password_setup: false }
+          });
+
+          if (error) throw error;
+
+          this.closeModal('password-setup');
+          this.showNotification('Password set successfully! You can now log in with your new password.', 'success');
+
+          // Remove the setup_password param from URL
+          const url = new URL(window.location);
+          url.searchParams.delete('setup_password');
+          window.history.replaceState({}, '', url);
+
+        } catch (error) {
+          console.error('Password setup error:', error);
+          this.showNotification('Error setting password: ' + error.message, 'error');
+        } finally {
+          if (submitBtn) {
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Set Password';
+          }
+        }
       }
 
       async safeExecute(operation, operationName = 'Operation') {
@@ -13821,16 +13926,18 @@
           }
 
           // Create the auth user with a temporary random password
-          // The teacher will use password reset to set their own password
+          // Use the same emailRedirectTo as regular registration - Supabase will send confirmation email
           const tempPassword = crypto.randomUUID() + 'Aa1!'; // Meets password requirements
 
           const { data: authData, error: authError } = await this.auth.supabase.auth.signUp({
             email: email,
             password: tempPassword,
             options: {
+              emailRedirectTo: `${window.location.origin}/student-portal/confirm.html?teacher_setup=true`,
               data: {
                 first_name: firstName,
-                last_name: lastName
+                last_name: lastName,
+                needs_password_setup: true
               }
             }
           });
@@ -13865,18 +13972,11 @@
             throw new Error('Failed to create teacher profile: ' + profileError.message);
           }
 
-          // Send password reset email so teacher can set their own password
-          const { error: resetError } = await this.auth.supabase.auth.resetPasswordForEmail(email, {
-            redirectTo: `${window.location.origin}/student-portal/reset-password.html`
-          });
-
-          if (resetError) {
-            console.warn('Could not send password reset email:', resetError);
-            // Still show success but warn about email
-          }
+          // Supabase will automatically send the confirmation email via emailRedirectTo
+          // No need for a separate resetPasswordForEmail call
 
           this.closeModal('invite-teacher');
-          this.showTeacherInviteSuccessModal(email, firstName, lastName, !resetError);
+          this.showTeacherInviteSuccessModal(email, firstName, lastName, true);
 
         } catch (error) {
           console.error('Error sending teacher invitation:', error);
@@ -13904,8 +14004,8 @@
             ${emailSent ? `
               <div style="background: rgba(106, 169, 255, 0.1); border-radius: 8px; padding: 15px; margin-bottom: 20px;">
                 <p style="font-size: 13px; color: var(--muted);">
-                  <strong style="color: var(--accent);">📧 Password Setup Email Sent</strong><br>
-                  The teacher will receive an email with a link to set their password. They can then log in to the portal.
+                  <strong style="color: var(--accent);">📧 Confirmation Email Sent</strong><br>
+                  The teacher will receive an email to confirm their account and complete setup. Once confirmed, they can log in and set their password.
                 </p>
               </div>
             ` : `
