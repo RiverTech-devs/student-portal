@@ -1893,27 +1893,32 @@
             console.error('Error loading assignments:', assignmentError);
           } else if (allAssignments && allAssignments.length > 0) {
             // Filter to only assignments assigned to this student
-            let assignments = [];
-            
-            for (const assignment of allAssignments) {
-              if (assignment.assigned_to_all) {
-                // Assignment is for all students
-                assignments.push(assignment);
-              } else {
-                // Check if student is specifically assigned
-                const { data: studentAssignment } = await this.supabaseQuery(() => 
-        this.auth.supabase
+            // Get selective assignments (not assigned_to_all) in ONE batch query
+            const selectiveAssignmentIds = allAssignments
+              .filter(a => !a.assigned_to_all)
+              .map(a => a.id);
+
+            let assignedToStudentIds = new Set();
+            if (selectiveAssignmentIds.length > 0) {
+              const { data: studentAssignments } = await this.supabaseQuery(() =>
+                this.auth.supabase
                   .from('assignment_students')
-                  .select('id')
-                  .eq('assignment_id', assignment.id)
-                  .eq('student_id', this.userInfo.user.id)
-                  .maybeSingle());
-                  
-                if (studentAssignment) {
-                  assignments.push(assignment);
-                }
+                  .select('assignment_id')
+                  .in('assignment_id', selectiveAssignmentIds)
+                  .eq('student_id', this.userInfo.user.id));
+
+              if (studentAssignments) {
+                assignedToStudentIds = new Set(studentAssignments.map(sa => sa.assignment_id));
               }
             }
+
+            // Now filter assignments client-side
+            const assignments = allAssignments.filter(assignment => {
+              if (assignment.assigned_to_all) {
+                return true;
+              }
+              return assignedToStudentIds.has(assignment.id);
+            });
             
             // Load student's submissions for these assignments
             const assignmentIds = assignments.map(a => a.id);
