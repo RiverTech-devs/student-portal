@@ -11184,47 +11184,55 @@
             .select('*')
             .eq('class_id', classId)
             .order('display_order'));
-          
-          // Calculate category averages for this student
+
+          // Calculate category averages using batch queries (fixes N+1 timeout issue)
           const categoryGrades = [];
           if (categories && categories.length > 0) {
-            for (const category of categories) {
-              // Get assignments in this category for current quarter
-              const { data: categoryAssignments } = await this.supabaseQuery(() => this.auth.supabase
-                .from('assignments')
-                .select('id, title, max_points')
-                .eq('class_id', classId)
-                .eq('category_id', category.id)
-                .eq('is_published', true)
-                .gte('due_date', currentQuarter.start_date)
-                .lte('due_date', currentQuarter.end_date));
-              
-              if (categoryAssignments && categoryAssignments.length > 0) {
-                const assignmentIds = categoryAssignments.map(a => a.id);
-                const { data: categorySubmissions } = await this.supabaseQuery(() => this.auth.supabase
-                  .from('assignment_submissions')
-                  .select('*')
-                  .in('assignment_id', assignmentIds)
-                  .eq('student_id', this.userInfo.user.id)
-                  .eq('status', 'graded'));
-                
-                if (categorySubmissions && categorySubmissions.length > 0) {
-                  let totalPercentage = 0;
-                  categorySubmissions.forEach(sub => {
-                    const assignment = categoryAssignments.find(a => a.id === sub.assignment_id);
-                    if (assignment && assignment.max_points > 0) {
-                      totalPercentage += (sub.points_earned / assignment.max_points) * 100;
-                    }
-                  });
-                  
-                  const average = totalPercentage / categorySubmissions.length;
-                  categoryGrades.push({
-                    name: category.name,
-                    weight: category.weight,
-                    average: average.toFixed(1),
-                    count: categorySubmissions.length,
-                    total: categoryAssignments.length
-                  });
+            // Batch load ALL assignments for all categories at once
+            const { data: allCategoryAssignments } = await this.supabaseQuery(() => this.auth.supabase
+              .from('assignments')
+              .select('id, title, max_points, category_id')
+              .eq('class_id', classId)
+              .eq('is_published', true)
+              .gte('due_date', currentQuarter.start_date)
+              .lte('due_date', currentQuarter.end_date));
+
+            if (allCategoryAssignments && allCategoryAssignments.length > 0) {
+              // Batch load ALL submissions for these assignments at once
+              const allAssignmentIds = allCategoryAssignments.map(a => a.id);
+              const { data: allSubmissions } = await this.supabaseQuery(() => this.auth.supabase
+                .from('assignment_submissions')
+                .select('*')
+                .in('assignment_id', allAssignmentIds)
+                .eq('student_id', this.userInfo.user.id)
+                .eq('status', 'graded'));
+
+              // Group by category and calculate averages client-side
+              for (const category of categories) {
+                const categoryAssignments = allCategoryAssignments.filter(a => a.category_id === category.id);
+
+                if (categoryAssignments.length > 0) {
+                  const categoryAssignmentIds = new Set(categoryAssignments.map(a => a.id));
+                  const categorySubmissions = (allSubmissions || []).filter(s => categoryAssignmentIds.has(s.assignment_id));
+
+                  if (categorySubmissions.length > 0) {
+                    let totalPercentage = 0;
+                    categorySubmissions.forEach(sub => {
+                      const assignment = categoryAssignments.find(a => a.id === sub.assignment_id);
+                      if (assignment && assignment.max_points > 0) {
+                        totalPercentage += (sub.points_earned / assignment.max_points) * 100;
+                      }
+                    });
+
+                    const average = totalPercentage / categorySubmissions.length;
+                    categoryGrades.push({
+                      name: category.name,
+                      weight: category.weight,
+                      average: average.toFixed(1),
+                      count: categorySubmissions.length,
+                      total: categoryAssignments.length
+                    });
+                  }
                 }
               }
             }
@@ -12310,25 +12318,30 @@
             classMap[c.id] = c;
           });
           
-          // Filter to only assignments assigned to this student
-          const filteredAssignments = [];
-          for (const assignment of assignments) {
-            if (assignment.assigned_to_all) {
-              filteredAssignments.push(assignment);
-            } else {
-              const { data: studentAssignment } = await this.supabaseQuery(() => this.auth.supabase
-                .from('assignment_students')
-                .select('id')
-                .eq('assignment_id', assignment.id)
-                .eq('student_id', this.userInfo.user.id)
-                .maybeSingle());
-                
-              if (studentAssignment) {
-                filteredAssignments.push(assignment);
-              }
+          // Batch query for selective assignments (fixes N+1 timeout issue)
+          const selectiveAssignmentIds = assignments
+            .filter(a => !a.assigned_to_all)
+            .map(a => a.id);
+
+          let assignedToStudentIds = new Set();
+          if (selectiveAssignmentIds.length > 0) {
+            const { data: studentAssignments } = await this.supabaseQuery(() => this.auth.supabase
+              .from('assignment_students')
+              .select('assignment_id')
+              .in('assignment_id', selectiveAssignmentIds)
+              .eq('student_id', this.userInfo.user.id));
+
+            if (studentAssignments) {
+              assignedToStudentIds = new Set(studentAssignments.map(sa => sa.assignment_id));
             }
           }
-          
+
+          // Filter to assignments that are either assigned to all OR specifically assigned to this student
+          const filteredAssignments = assignments.filter(assignment => {
+            if (assignment.assigned_to_all) return true;
+            return assignedToStudentIds.has(assignment.id);
+          });
+
           // Load submissions
           const assignmentIds = filteredAssignments.map(a => a.id);
           const { data: submissions } = await this.supabaseQuery(() => this.auth.supabase
