@@ -11519,14 +11519,15 @@
               .eq('status', 'active'));
             
             if (enrollments) {
-              for (const enrollment of enrollments) {
-                await this.supabaseQuery(() => this.auth.supabase.rpc('update_enrollment_grades', {
+              // Run grade updates in parallel
+              await Promise.allSettled(enrollments.map(enrollment =>
+                this.auth.supabase.rpc('update_enrollment_grades', {
                   p_enrollment_id: enrollment.id
-                }));
-              }
+                })
+              ));
             }
           }
-          
+
           this.showNotification('Quarter created successfully!', 'success');
           this.closeModal('create-quarter');
           
@@ -11598,13 +11599,14 @@
             .eq('status', 'active'));
           
           if (enrollments) {
-            for (const enrollment of enrollments) {
-              await this.supabaseQuery(() => this.auth.supabase.rpc('update_enrollment_grades', {
+            // Run grade updates in parallel
+            await Promise.allSettled(enrollments.map(enrollment =>
+              this.auth.supabase.rpc('update_enrollment_grades', {
                 p_enrollment_id: enrollment.id
-              }));
-            }
+              })
+            ));
           }
-          
+
           this.showNotification('Quarter set as current!', 'success');
           this.closeModal('quarter-management');
           setTimeout(() => this.showQuarterManagement(), 100);
@@ -15334,27 +15336,33 @@
           });
           
           this.enrollments = enrollments;
-          
-          // Update current_quarter_id and calculate grades for all enrollments
-          for (const enrollment of this.enrollments) {
-            if (enrollment.current_quarter_id !== quarter.id) {
-              await window.app.auth.supabase
-                .from('class_enrollments')
-                .update({ current_quarter_id: quarter.id })
-                .eq('id', enrollment.id);
-            }
-            
-            // Calculate grades
-            const { error: rpcError } = await window.app.auth.supabase.rpc('update_enrollment_grades', {
-              p_enrollment_id: enrollment.id
-            });
-            
-            if (rpcError) {
-              console.error('RPC error for enrollment', enrollment.id, ':', rpcError);
-            } else {
-              console.log('Grades calculated for enrollment:', enrollment.id);
-            }
+
+          // Update current_quarter_id for enrollments that need it (in parallel)
+          const quarterUpdates = this.enrollments
+            .filter(e => e.current_quarter_id !== quarter.id)
+            .map(e => window.app.auth.supabase
+              .from('class_enrollments')
+              .update({ current_quarter_id: quarter.id })
+              .eq('id', e.id)
+            );
+
+          if (quarterUpdates.length > 0) {
+            await Promise.allSettled(quarterUpdates);
           }
+
+          // Calculate grades in parallel (don't block on errors)
+          const gradeUpdates = this.enrollments.map(enrollment =>
+            window.app.auth.supabase.rpc('update_enrollment_grades', {
+              p_enrollment_id: enrollment.id
+            }).then(({ error }) => {
+              if (error) {
+                console.warn('Grade calc skipped for enrollment', enrollment.id, ':', error.message);
+              }
+              return { enrollment_id: enrollment.id, error };
+            })
+          );
+
+          await Promise.allSettled(gradeUpdates);
           
           // Reload with updated grades (without relationship join)
           const { data: updatedEnrollments } = await window.app.auth.supabase
@@ -15530,13 +15538,14 @@
           }
           
           window.app.showNotification('Recalculating academic grades...', 'info');
-          
-          for (const enrollment of this.enrollments) {
-            await window.app.auth.supabase.rpc('update_enrollment_grades', {
+
+          // Run grade updates in parallel
+          await Promise.allSettled(this.enrollments.map(enrollment =>
+            window.app.auth.supabase.rpc('update_enrollment_grades', {
               p_enrollment_id: enrollment.id
-            });
-          }
-          
+            })
+          ));
+
           window.app.showNotification('Academic grades recalculated!', 'success');
           
           // Reload the modal
