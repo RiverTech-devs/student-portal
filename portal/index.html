@@ -13356,8 +13356,28 @@
           
           const admins = allUsers.filter(u => u.user_type === 'admin');
           const teachers = allUsers.filter(u => u.user_type === 'teacher');
+          const parents = allUsers.filter(u => u.user_type === 'parent');
           const activeStudents = allUsers.filter(u => u.user_type === 'student' && u.account_status === 'active');
           const inactiveStudents = allUsers.filter(u => u.user_type === 'student' && u.account_status === 'inactive');
+
+          // Load parent-child links
+          const { data: parentChildLinks } = await this.supabaseQuery(() => this.auth.supabase
+            .from('parent_child_links')
+            .select('parent_id, child_id'));
+
+          // Create a map of parent_id -> array of child profiles
+          const parentChildrenMap = {};
+          if (parentChildLinks) {
+            parentChildLinks.forEach(link => {
+              if (!parentChildrenMap[link.parent_id]) {
+                parentChildrenMap[link.parent_id] = [];
+              }
+              const childProfile = allUsers.find(u => u.id === link.child_id);
+              if (childProfile) {
+                parentChildrenMap[link.parent_id].push(childProfile);
+              }
+            });
+          }
           
           section.innerHTML = `
             <div style="padding: 20px;">
@@ -13426,7 +13446,56 @@
                   </table>
                 ` : '<p style="color: var(--muted);">No teachers</p>'}
               </div>
-              
+
+              <!-- Parents -->
+              <div class="card" style="margin-bottom: 20px;">
+                <h3 style="margin-bottom: 15px;">👨‍👩‍👧‍👦 Parents (${parents.length})</h3>
+                ${parents.length > 0 ? `
+                  <div style="max-height: 500px; overflow-y: auto;">
+                    <table style="width: 100%;">
+                      <thead>
+                        <tr>
+                          <th>Name</th>
+                          <th>Email</th>
+                          <th>Linked Children</th>
+                          <th>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${parents.map(parent => {
+                          const children = parentChildrenMap[parent.id] || [];
+                          return `
+                            <tr>
+                              <td>${parent.first_name} ${parent.last_name}</td>
+                              <td>${parent.email || 'N/A'}</td>
+                              <td>
+                                ${children.length > 0 ? `
+                                  <div style="display: flex; flex-wrap: wrap; gap: 5px;">
+                                    ${children.map(child => `
+                                      <span style="background: rgba(139, 255, 176, 0.2); color: var(--accent-2); padding: 2px 8px; border-radius: 12px; font-size: 12px; display: inline-flex; align-items: center; gap: 5px;">
+                                        ${child.first_name} ${child.last_name}
+                                        <button onclick="app.unlinkChildFromParent('${parent.id}', '${child.id}', '${parent.first_name}', '${child.first_name}')"
+                                                style="background: none; border: none; color: var(--danger); cursor: pointer; padding: 0 2px; font-size: 14px;"
+                                                title="Remove link">×</button>
+                                      </span>
+                                    `).join('')}
+                                  </div>
+                                ` : '<span style="color: var(--muted); font-size: 12px;">No children linked</span>'}
+                              </td>
+                              <td>
+                                <button class="btn btn-secondary small" onclick="app.showLinkChildToParentModal('${parent.id}', '${parent.first_name} ${parent.last_name}')">
+                                  ➕ Link Child
+                                </button>
+                              </td>
+                            </tr>
+                          `;
+                        }).join('')}
+                      </tbody>
+                    </table>
+                  </div>
+                ` : '<p style="color: var(--muted);">No parent accounts</p>'}
+              </div>
+
               <!-- Active Students -->
               <div class="card" style="margin-bottom: 20px;">
                 <h3 style="margin-bottom: 15px;">👨‍🎓 Active Students (${activeStudents.length})</h3>
@@ -13517,19 +13586,148 @@
         if (!confirm(`Demote ${userName} from Admin to Teacher?\n\nThey will lose admin privileges but retain their classes.`)) {
           return;
         }
-        
+
         try {
           const { error } = await this.supabaseQuery(() => this.auth.supabase
             .from('user_profiles')
             .update({ user_type: 'teacher' })
             .eq('id', userId));
-          
+
           if (error) throw error;
-          
+
           this.showNotification(`${userName} demoted to Teacher`, 'success');
           this.renderAdminUsers(); // Refresh the view
         } catch (error) {
           console.error('Error demoting user:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+        }
+      }
+
+      // Parent-Child Link Management (Admin)
+      async showLinkChildToParentModal(parentId, parentName) {
+        try {
+          // Get all students
+          const { data: students } = await this.supabaseQuery(() => this.auth.supabase
+            .from('user_profiles')
+            .select('id, first_name, last_name, email, grade_level')
+            .eq('user_type', 'student')
+            .eq('account_status', 'active')
+            .order('last_name'));
+
+          // Get already linked children for this parent
+          const { data: existingLinks } = await this.supabaseQuery(() => this.auth.supabase
+            .from('parent_child_links')
+            .select('child_id')
+            .eq('parent_id', parentId));
+
+          const linkedChildIds = new Set((existingLinks || []).map(l => l.child_id));
+
+          // Filter out already linked children
+          const availableStudents = (students || []).filter(s => !linkedChildIds.has(s.id));
+
+          const modalContent = `
+            <div>
+              <p style="color: var(--muted); margin-bottom: 15px;">
+                Select a student to link to <strong>${parentName}</strong>'s account:
+              </p>
+
+              ${availableStudents.length > 0 ? `
+                <div style="margin-bottom: 15px;">
+                  <input type="text" id="student-search-input" class="form-control"
+                         placeholder="Search students..."
+                         oninput="app.filterStudentList(this.value)"
+                         style="margin-bottom: 10px;">
+                </div>
+
+                <div id="student-list-container" style="max-height: 300px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px;">
+                  ${availableStudents.map(student => `
+                    <div class="student-list-item"
+                         data-name="${student.first_name} ${student.last_name}".toLowerCase()
+                         style="padding: 12px 15px; border-bottom: 1px solid var(--border); cursor: pointer; display: flex; justify-content: space-between; align-items: center;"
+                         onmouseover="this.style.background='rgba(106, 169, 255, 0.1)'"
+                         onmouseout="this.style.background='transparent'"
+                         onclick="app.linkChildToParent('${parentId}', '${student.id}', '${parentName}', '${student.first_name} ${student.last_name}')">
+                      <div>
+                        <strong>${student.first_name} ${student.last_name}</strong>
+                        <div style="font-size: 12px; color: var(--muted);">
+                          ${student.email || 'No email'} • Grade ${student.grade_level || 'N/A'}
+                        </div>
+                      </div>
+                      <span style="color: var(--accent);">➕</span>
+                    </div>
+                  `).join('')}
+                </div>
+              ` : `
+                <p style="color: var(--warning); text-align: center; padding: 20px;">
+                  No available students to link. All students are already linked to this parent.
+                </p>
+              `}
+            </div>
+
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal('link-child-to-parent')">Cancel</button>
+            </div>
+          `;
+
+          this.showModal('link-child-to-parent', `➕ Link Child to ${parentName}`, modalContent);
+        } catch (error) {
+          console.error('Error loading students:', error);
+          this.showNotification('Error loading students: ' + error.message, 'error');
+        }
+      }
+
+      filterStudentList(searchTerm) {
+        const items = document.querySelectorAll('.student-list-item');
+        const term = searchTerm.toLowerCase();
+
+        items.forEach(item => {
+          const name = item.getAttribute('data-name') || '';
+          if (name.includes(term) || searchTerm === '') {
+            item.style.display = 'flex';
+          } else {
+            item.style.display = 'none';
+          }
+        });
+      }
+
+      async linkChildToParent(parentId, childId, parentName, childName) {
+        try {
+          const { error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('parent_child_links')
+            .insert({
+              parent_id: parentId,
+              child_id: childId
+            }));
+
+          if (error) throw error;
+
+          this.showNotification(`✅ Linked ${childName} to ${parentName}`, 'success');
+          this.closeModal('link-child-to-parent');
+          this.renderAdminUsers(); // Refresh the view
+        } catch (error) {
+          console.error('Error linking child to parent:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+        }
+      }
+
+      async unlinkChildFromParent(parentId, childId, parentName, childName) {
+        if (!confirm(`Remove the link between ${parentName} and ${childName}?\n\nThe parent will no longer be able to view this child's information.`)) {
+          return;
+        }
+
+        try {
+          const { error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('parent_child_links')
+            .delete()
+            .eq('parent_id', parentId)
+            .eq('child_id', childId));
+
+          if (error) throw error;
+
+          this.showNotification(`Unlinked ${childName} from ${parentName}`, 'success');
+          this.renderAdminUsers(); // Refresh the view
+        } catch (error) {
+          console.error('Error unlinking child from parent:', error);
           this.showNotification('Error: ' + error.message, 'error');
         }
       }
