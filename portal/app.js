@@ -271,8 +271,8 @@ async function listMyClasses(role, userId) {
     return (data || []).map(r => r.classes);
   } else {
     // Parent: classes of their children (read-only)
-    const { data: kids } = await sb.from('student_parents').select('student_id').eq('parent_id', userId);
-    const studentIds = (kids || []).map(k => k.student_id);
+    const { data: kids } = await sb.from('parent_child_links').select('child_id').eq('parent_id', userId);
+    const studentIds = (kids || []).map(k => k.child_id);
     if (!studentIds.length) return [];
     const { data } = await sb.from('class_students').select('classes(*)').in('student_id', studentIds);
     return (data || []).map(r => r.classes);
