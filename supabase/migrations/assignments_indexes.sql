@@ -25,6 +25,24 @@ ON assignment_submissions(student_id);
 CREATE INDEX IF NOT EXISTS idx_assignment_submissions_student_assignment
 ON assignment_submissions(student_id, assignment_id);
 
+-- User profiles indexes (for student lookups)
+CREATE INDEX IF NOT EXISTS idx_user_profiles_id ON user_profiles(id);
+CREATE INDEX IF NOT EXISTS idx_user_profiles_user_type ON user_profiles(user_type);
+
+-- Rubrics indexes
+CREATE INDEX IF NOT EXISTS idx_rubrics_created_by ON rubrics(created_by);
+CREATE INDEX IF NOT EXISTS idx_rubrics_is_default ON rubrics(is_default);
+
+-- Class enrollments indexes (for student lists)
+CREATE INDEX IF NOT EXISTS idx_class_enrollments_class_id ON class_enrollments(class_id);
+CREATE INDEX IF NOT EXISTS idx_class_enrollments_student_id ON class_enrollments(student_id);
+CREATE INDEX IF NOT EXISTS idx_class_enrollments_status ON class_enrollments(status);
+CREATE INDEX IF NOT EXISTS idx_class_enrollments_class_status
+ON class_enrollments(class_id, status);
+
 -- Analyze tables to update query planner statistics
 ANALYZE assignments;
 ANALYZE assignment_submissions;
+ANALYZE user_profiles;
+ANALYZE rubrics;
+ANALYZE class_enrollments;
