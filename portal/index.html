@@ -1812,19 +1812,28 @@
         }
       
         this.classes = classes || [];
-        
-        // Get enrollment counts
-        for (let cls of this.classes) {
-          const { data: enrollments } = await this.supabaseQuery(() => 
+
+        // Batch query enrollment counts (fixes N+1 timeout issue)
+        if (this.classes.length > 0) {
+          const classIds = this.classes.map(c => c.id);
+          const { data: allEnrollments } = await this.supabaseQuery(() =>
             this.auth.supabase
               .from('class_enrollments')
-              .select('id')
-              .eq('class_id', cls.id)
+              .select('class_id')
+              .in('class_id', classIds)
               .eq('status', 'active'));
-          
-          cls.student_count = enrollments ? enrollments.length : 0;
+
+          // Count enrollments per class
+          const countMap = {};
+          (allEnrollments || []).forEach(e => {
+            countMap[e.class_id] = (countMap[e.class_id] || 0) + 1;
+          });
+
+          this.classes.forEach(cls => {
+            cls.student_count = countMap[cls.id] || 0;
+          });
         }
-        
+
         console.log('✅ Loaded', this.classes.length, 'classes');
       }
 
@@ -4973,18 +4982,25 @@
                 listDiv.innerHTML = '<p style="color: var(--muted-color);">No classes found</p>';
                 return;
             }
-            
-            // For each class, get enrolled students count
+
+            // Batch query enrollment counts (fixes N+1 timeout issue)
+            const classIds = classes.map(c => c.id);
+            const { data: allEnrollments } = await this.supabaseQuery(() => this.auth.supabase
+                .from('class_enrollments')
+                .select('class_id')
+                .in('class_id', classIds));
+
+            // Count enrollments per class
+            const countMap = {};
+            (allEnrollments || []).forEach(e => {
+                countMap[e.class_id] = (countMap[e.class_id] || 0) + 1;
+            });
+
             let classHTML = '<div style="display: grid; gap: 15px;">';
-            
+
             for (const classItem of classes) {
-                const { data: enrollments } = await this.supabaseQuery(() => this.auth.supabase
-                    .from('class_enrollments')
-                    .select('student_id', { count: 'exact' })
-                    .eq('class_id', classItem.id));
-                
-                const studentCount = enrollments?.length || 0;
-                
+                const studentCount = countMap[classItem.id] || 0;
+
                 classHTML += `
                     <div class="card" style="background: var(--card-bg); padding: 15px;">
                         <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -5001,7 +5017,7 @@
                     </div>
                 `;
             }
-            
+
             classHTML += '</div>';
             listDiv.innerHTML = classHTML;
             
@@ -13649,33 +13665,45 @@
             .order('name', { ascending: true }));
           
           if (error) throw error;
-          
-          // Get teacher info separately
-          if (allClasses) {
-            for (let classItem of allClasses) {
-              if (classItem.teacher_id) {
-                const { data: teacher } = await this.supabaseQuery(() => this.auth.supabase
-                  .from('user_profiles')
-                  .select('first_name, last_name')
-                  .eq('id', classItem.teacher_id)
-                  .single());
-                classItem.teacher = teacher;
-              }
+
+          if (allClasses && allClasses.length > 0) {
+            // Batch query teacher info (fixes N+1 timeout issue)
+            const teacherIds = [...new Set(allClasses.map(c => c.teacher_id).filter(Boolean))];
+            if (teacherIds.length > 0) {
+              const { data: teachers } = await this.supabaseQuery(() => this.auth.supabase
+                .from('user_profiles')
+                .select('id, first_name, last_name')
+                .in('id', teacherIds));
+
+              const teacherMap = {};
+              (teachers || []).forEach(t => {
+                teacherMap[t.id] = t;
+              });
+
+              allClasses.forEach(cls => {
+                cls.teacher = cls.teacher_id ? teacherMap[cls.teacher_id] : null;
+              });
             }
-          }
-          
-          // Get enrollment counts
-          for (let cls of allClasses) {
-            const { data: enrollments } = await this.supabaseQuery(() => this.auth.supabase
+
+            // Batch query enrollment counts (fixes N+1 timeout issue)
+            const classIds = allClasses.map(c => c.id);
+            const { data: allEnrollments } = await this.supabaseQuery(() => this.auth.supabase
               .from('class_enrollments')
-              .select('id')
-              .eq('class_id', cls.id)
+              .select('class_id')
+              .in('class_id', classIds)
               .eq('status', 'active'));
-            
-            cls.student_count = enrollments?.length || 0;
+
+            const countMap = {};
+            (allEnrollments || []).forEach(e => {
+              countMap[e.class_id] = (countMap[e.class_id] || 0) + 1;
+            });
+
+            allClasses.forEach(cls => {
+              cls.student_count = countMap[cls.id] || 0;
+            });
           }
-          
-          if (allClasses.length === 0) {
+
+          if (!allClasses || allClasses.length === 0) {
             section.innerHTML = `
               <div style="padding: 20px;">
                 <div class="empty-state">
@@ -14308,17 +14336,30 @@
           
           const activeStudents = allStudents.filter(s => s.account_status === 'active');
           const inactiveStudents = allStudents.filter(s => s.account_status === 'inactive');
-          
-          // Get enrollment data for active students
-          for (let student of activeStudents) {
-            const { data: enrollments } = await this.supabaseQuery(() => this.auth.supabase
+
+          // Batch query enrollment data for all active students (fixes N+1 timeout issue)
+          if (activeStudents.length > 0) {
+            const studentIds = activeStudents.map(s => s.id);
+            const { data: allEnrollments } = await this.supabaseQuery(() => this.auth.supabase
               .from('class_enrollments')
-              .select('class_id, classes(name)')
-              .eq('student_id', student.id)
+              .select('student_id, class_id, classes(name)')
+              .in('student_id', studentIds)
               .eq('status', 'active'));
-            student.enrollments = enrollments || [];
+
+            // Group enrollments by student
+            const enrollmentMap = {};
+            (allEnrollments || []).forEach(e => {
+              if (!enrollmentMap[e.student_id]) {
+                enrollmentMap[e.student_id] = [];
+              }
+              enrollmentMap[e.student_id].push(e);
+            });
+
+            activeStudents.forEach(student => {
+              student.enrollments = enrollmentMap[student.id] || [];
+            });
           }
-          
+
           section.innerHTML = `
             <div style="padding: 20px;">
               <h2 style="margin-bottom: 20px;">👨‍🎓 Student Management</h2>
