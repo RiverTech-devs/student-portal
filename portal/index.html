@@ -15869,9 +15869,47 @@
             await Promise.allSettled(quarterUpdates);
           }
 
-          // Skip automatic grade recalculation on modal open - grades are calculated when saving
-          // This prevents timeout errors from calling update_enrollment_grades for all students at once
-          
+          // Only calculate grades for students who don't have them yet (first time)
+          // Process sequentially to avoid database timeouts
+          const needsGradeCalc = this.enrollments.filter(e => e.academic_grade === null);
+          if (needsGradeCalc.length > 0) {
+            console.log(`Calculating grades for ${needsGradeCalc.length} students (first time)...`);
+            for (const enrollment of needsGradeCalc) {
+              try {
+                await window.app.auth.supabase.rpc('update_enrollment_grades', {
+                  p_enrollment_id: enrollment.id
+                });
+              } catch (err) {
+                console.warn('Grade calc failed for', enrollment.id, err.message);
+              }
+            }
+
+            // Reload enrollments to get calculated grades
+            const { data: refreshedEnrollments } = await window.app.auth.supabase
+              .from('class_enrollments')
+              .select('*')
+              .eq('class_id', classId)
+              .eq('status', 'active');
+
+            // Re-attach student profiles
+            refreshedEnrollments?.forEach(e => {
+              e.user_profiles = studentMap[e.student_id] || {
+                first_name: 'Unknown',
+                last_name: 'User',
+                email: 'N/A'
+              };
+            });
+
+            // Re-sort by last name
+            refreshedEnrollments?.sort((a, b) => {
+              const nameA = a.user_profiles.last_name?.toLowerCase() || '';
+              const nameB = b.user_profiles.last_name?.toLowerCase() || '';
+              return nameA.localeCompare(nameB);
+            });
+
+            this.enrollments = refreshedEnrollments || [];
+          }
+
           // Check categories
           const { data: categories } = await window.app.auth.supabase
             .from('grade_categories')
