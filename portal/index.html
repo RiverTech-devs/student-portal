@@ -1864,16 +1864,28 @@
       
         // Store enrollment info for later use
         this.enrollments = enrollments;
-      
-        // Get classes separately (extended timeout)
         const classIds = enrollments.map(e => e.class_id);
-        const { data: classes, error: classError } = await this.supabaseQuery(() =>
-          this.auth.supabase
-            .from('classes')
-            .select('id, name, subject, description, teacher_id, is_active')
-            .in('id', classIds)
-            .eq('is_active', true), 30000);
-      
+
+        // Parallel fetch: classes and current quarter (performance optimization)
+        const [classesResult, quarterResult] = await Promise.all([
+          this.supabaseQuery(() =>
+            this.auth.supabase
+              .from('classes')
+              .select('id, name, subject, description, teacher_id, is_active')
+              .in('id', classIds)
+              .eq('is_active', true), 30000),
+          this.supabaseQuery(() =>
+            this.auth.supabase
+              .from('quarters')
+              .select('id, start_date, end_date')
+              .lte('start_date', new Date().toISOString())
+              .gte('end_date', new Date().toISOString())
+              .single(), 10000)
+        ]);
+
+        const { data: classes, error: classError } = classesResult;
+        const { data: currentQuarter } = quarterResult;
+
         if (classError) {
           console.error('Error loading student classes:', classError);
           if (window.PortalUI) {
@@ -1881,26 +1893,17 @@
           }
           return;
         }
-      
+
         this.classes = classes || [];
-        
+
         // Attach enrollment IDs to classes for student unenrollment
         this.classes.forEach(cls => {
           const enrollment = enrollments.find(e => e.class_id === cls.id);
           cls.enrollment_id = enrollment ? enrollment.id : null;
         });
-        
+
         // Load assignments for these classes with selective assignment support
         if (this.classes.length > 0) {
-          // Get current quarter to limit date range
-          const { data: currentQuarter } = await this.supabaseQuery(() =>
-            this.auth.supabase
-              .from('quarters')
-              .select('id, start_date, end_date')
-              .lte('start_date', new Date().toISOString())
-              .gte('end_date', new Date().toISOString())
-              .single(), 10000);
-
           // Build query with date filter for current quarter
           let assignmentsQuery = this.auth.supabase
             .from('assignments')
@@ -7680,19 +7683,22 @@
             return;
           }
       
-          // Get all student profiles
+          // Parallel fetch: student profiles and submissions (performance optimization)
           const studentIds = enrollments.map(e => e.student_id);
-          const { data: students } = await this.supabaseQuery(() => this.auth.supabase
-            .from('user_profiles')
-            .select('id, first_name, last_name, email, grade_level')
-            .in('id', studentIds)
-            .order('last_name'));
-      
-          // Load all submissions for this assignment
-          const { data: submissions } = await this.supabaseQuery(() => this.auth.supabase
-            .from('assignment_submissions')
-            .select('*')
-            .eq('assignment_id', assignmentId));
+          const [studentsResult, submissionsResult] = await Promise.all([
+            this.supabaseQuery(() => this.auth.supabase
+              .from('user_profiles')
+              .select('id, first_name, last_name, email, grade_level')
+              .in('id', studentIds)
+              .order('last_name')),
+            this.supabaseQuery(() => this.auth.supabase
+              .from('assignment_submissions')
+              .select('*')
+              .eq('assignment_id', assignmentId))
+          ]);
+
+          const { data: students } = studentsResult;
+          const { data: submissions } = submissionsResult;
       
           // Create a map of submissions by student ID
           const submissionMap = {};
@@ -8209,15 +8215,26 @@
 
       async submitAssignment(assignmentId) {
         try {
-          // Load assignment details
-          const { data: assignment, error: assignmentError } = await this.supabaseQuery(() => this.auth.supabase
-            .from('assignments')
-            .select('*')
-            .eq('id', assignmentId)
-            .single());
-      
+          // Parallel fetch: assignment details and existing submission (performance optimization)
+          const [assignmentResult, submissionResult] = await Promise.all([
+            this.supabaseQuery(() => this.auth.supabase
+              .from('assignments')
+              .select('*')
+              .eq('id', assignmentId)
+              .single()),
+            this.supabaseQuery(() => this.auth.supabase
+              .from('assignment_submissions')
+              .select('*')
+              .eq('assignment_id', assignmentId)
+              .eq('student_id', this.userInfo.user.id)
+              .maybeSingle())
+          ]);
+
+          const { data: assignment, error: assignmentError } = assignmentResult;
+          const { data: existingSubmission } = submissionResult;
+
           if (assignmentError) throw assignmentError;
-      
+
           // Check if this is an offline/in-person graded assignment
           if (assignment.graded_offline) {
             this.showModal('submit-assignment', '📋 View Assignment', `
@@ -8262,19 +8279,12 @@
             `);
             return;
           }
-      
-          // Check for existing submission
-          const { data: existingSubmission } = await this.supabaseQuery(() => this.auth.supabase
-            .from('assignment_submissions')
-            .select('*')
-            .eq('assignment_id', assignmentId)
-            .eq('student_id', this.userInfo.user.id)
-            .maybeSingle());
-      
+
+          // existingSubmission already fetched in parallel above
           const isGraded = existingSubmission?.status === 'graded';
           const isExcused = existingSubmission?.status === 'excused';
           const isSubmitted = existingSubmission?.status === 'submitted';
-      
+
           let modalContent = '';
       
           if (isExcused) {
