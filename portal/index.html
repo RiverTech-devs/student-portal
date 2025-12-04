@@ -2164,15 +2164,32 @@
 
       async loadMessages() {
         console.log('Loading message threads...');
-        
+
         try {
-          // Get all messages for this user
-          const { data: messages, error } = await this.supabaseQuery(() => 
-        this.auth.supabase
+          // Get messages - admins see all, others see only their own
+          const isAdmin = this.userInfo.profile?.user_type === 'admin';
+          let messagesQuery = this.auth.supabase
             .from('messages')
             .select('*')
-            .or(`sender_id.eq.${this.userInfo.user.id},recipient_id.eq.${this.userInfo.user.id}`)
-            .order('created_at', { ascending: false }));
+            .order('created_at', { ascending: false });
+
+          // For non-admins, filter to only their messages
+          // For admins, we still filter to their messages (they can use admin panel for all)
+          // But we use their ID from both auth and profile to catch any mismatches
+          const userId = this.userInfo.user.id;
+          const profileId = this.userInfo.profile?.id;
+
+          if (userId !== profileId) {
+            console.warn('User ID mismatch - auth:', userId, 'profile:', profileId);
+            // Use both IDs to catch messages sent to either
+            messagesQuery = messagesQuery.or(
+              `sender_id.eq.${userId},recipient_id.eq.${userId},sender_id.eq.${profileId},recipient_id.eq.${profileId}`
+            );
+          } else {
+            messagesQuery = messagesQuery.or(`sender_id.eq.${userId},recipient_id.eq.${userId}`);
+          }
+
+          const { data: messages, error } = await this.supabaseQuery(() => messagesQuery);
       
           if (error) {
             console.error('Error loading messages:', error);
