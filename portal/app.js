@@ -1390,10 +1390,23 @@ async function renderViewNotesModal(classId, students, filters = {}) {
   // Build student name map
   const studentMap = new Map(students.map(s => [s.id, `${s.first_name} ${s.last_name}`]));
 
+  // Fetch teacher names for all notes
+  const teacherIds = [...new Set(notes.map(n => n.teacher_id))];
+  let teacherMap = new Map();
+  if (teacherIds.length) {
+    const { data: teachers } = await sb.from('profiles')
+      .select('id, first_name, last_name')
+      .in('id', teacherIds);
+    if (teachers) {
+      teacherMap = new Map(teachers.map(t => [t.id, `${t.first_name} ${t.last_name}`]));
+    }
+  }
+
   // Render notes
   notesContainer.innerHTML = '';
   for (const note of notes) {
     const studentName = studentMap.get(note.student_id) || 'Unknown Student';
+    const teacherName = teacherMap.get(note.teacher_id) || 'Unknown Teacher';
     const sentimentClass = `sentiment-${note.sentiment}`;
     const categoryLabel = note.category === 'custom' && note.custom_category
       ? note.custom_category
@@ -1410,7 +1423,10 @@ async function renderViewNotesModal(classId, students, filters = {}) {
       ]),
       h('div', { class: 'note-content' }, note.note),
       h('div', { class: 'note-footer' }, [
-        h('span', { class: 'note-date muted' }, fmtDate(note.created_at)),
+        h('div', { class: 'note-footer-left' }, [
+          h('span', { class: 'note-author muted' }, `Written by: ${teacherName}`),
+          h('span', { class: 'note-date muted' }, fmtDate(note.created_at))
+        ]),
         h('button', {
           class: 'btn small danger',
           onclick: async () => {
