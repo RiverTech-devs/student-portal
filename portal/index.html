@@ -5414,6 +5414,9 @@
                     </div>
                   </div>
                   <div style="display: flex; gap: 10px;">
+                    <button class="btn btn-secondary small" onclick="app.addStudentNote('${classId}', '${student.id}', '${student.first_name} ${student.last_name}')">
+                      📝 Add Note
+                    </button>
                     <button class="btn btn-secondary small" onclick="app.messageStudent('${student.id}')">
                       💬 Message
                     </button>
@@ -5428,14 +5431,19 @@
 
           const modalContent = `
             <div>
-              <h3>👥 Students - ${classData?.name}</h3>
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                <h3 style="margin: 0;">👥 Students - ${classData?.name}</h3>
+                <button class="btn btn-secondary small" onclick="app.viewClassNotes('${classId}')">
+                  📋 View All Notes
+                </button>
+              </div>
               <p style="color: var(--muted); margin-bottom: 15px;">
                 Class Code: <span style="background: var(--accent); color: black; padding: 2px 6px; border-radius: 4px; font-weight: bold;">
                   ${classData?.class_code}
                 </span>
                 • ${enrollments?.length || 0} / ${classData?.max_students || 30} students enrolled
               </p>
-              
+
               <div class="list" style="max-height: 60vh; overflow-y: auto;">
                 ${studentsHtml || '<p style="color: var(--muted); text-align: center; padding: 20px;">No students enrolled yet. Share the class code for students to join.</p>'}
               </div>
@@ -5525,6 +5533,260 @@
         } catch (error) {
           console.error('Error removing student:', error);
           this.showNotification(`Error removing student: ${error.message}`, 'error');
+        }
+      }
+
+      // ===== Student Notes Functions =====
+      async addStudentNote(classId, studentId, studentName) {
+        const modalContent = `
+          <div>
+            <h3 style="margin-bottom: 15px;">📝 Add Note for ${studentName}</h3>
+
+            <div class="form-group" style="margin-bottom: 15px;">
+              <label style="display: block; margin-bottom: 5px; font-weight: 600;">Sentiment *</label>
+              <select id="note-sentiment" style="width: 100%; padding: 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--card);">
+                <option value="">-- Select Sentiment --</option>
+                <option value="positive">Positive</option>
+                <option value="negative">Negative</option>
+                <option value="neutral">Neutral</option>
+              </select>
+            </div>
+
+            <div class="form-group" style="margin-bottom: 15px;">
+              <label style="display: block; margin-bottom: 5px; font-weight: 600;">Category *</label>
+              <select id="note-category" style="width: 100%; padding: 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--card);" onchange="app.toggleCustomCategory()">
+                <option value="">-- Select Category --</option>
+                <option value="academic">Academic</option>
+                <option value="behavior">Behavior</option>
+                <option value="responsibility">Responsibility</option>
+                <option value="custom">Custom</option>
+              </select>
+            </div>
+
+            <div class="form-group" id="custom-category-group" style="margin-bottom: 15px; display: none;">
+              <label style="display: block; margin-bottom: 5px; font-weight: 600;">Custom Category</label>
+              <input type="text" id="note-custom-category" placeholder="Enter custom category" style="width: 100%; padding: 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--card);">
+            </div>
+
+            <div class="form-group" id="note-value-group" style="margin-bottom: 15px; display: none;">
+              <label style="display: block; margin-bottom: 5px; font-weight: 600;">Value</label>
+              <input type="number" id="note-value" placeholder="Enter value" style="width: 100%; padding: 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--card);">
+              <small style="color: var(--muted);">Positive for positive sentiment, negative for negative sentiment</small>
+            </div>
+
+            <div class="form-group" style="margin-bottom: 15px;">
+              <label style="display: block; margin-bottom: 5px; font-weight: 600;">Note *</label>
+              <textarea id="note-content" rows="4" placeholder="Enter your note about this student..." style="width: 100%; padding: 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--card); resize: vertical;"></textarea>
+            </div>
+
+            <div style="display: flex; gap: 10px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal('add-note')">Cancel</button>
+              <button class="btn btn-primary" onclick="app.saveStudentNoteFromModal('${classId}', '${studentId}', '${studentName}')">Save Note</button>
+            </div>
+          </div>
+        `;
+
+        this.showModal('add-note', '📝 Add Student Note', modalContent, true);
+
+        // Add listener for sentiment change to show/hide value field
+        document.getElementById('note-sentiment').addEventListener('change', () => this.toggleNoteValueField());
+      }
+
+      toggleCustomCategory() {
+        const category = document.getElementById('note-category').value;
+        const customGroup = document.getElementById('custom-category-group');
+        customGroup.style.display = category === 'custom' ? 'block' : 'none';
+      }
+
+      toggleNoteValueField() {
+        const sentiment = document.getElementById('note-sentiment').value;
+        const valueGroup = document.getElementById('note-value-group');
+        const valueInput = document.getElementById('note-value');
+
+        if (sentiment === 'neutral') {
+          valueGroup.style.display = 'none';
+          valueInput.value = '';
+        } else {
+          valueGroup.style.display = 'block';
+        }
+      }
+
+      async saveStudentNoteFromModal(classId, studentId, studentName) {
+        const sentiment = document.getElementById('note-sentiment').value;
+        const category = document.getElementById('note-category').value;
+        const customCategory = document.getElementById('note-custom-category')?.value || null;
+        const value = document.getElementById('note-value').value ? parseInt(document.getElementById('note-value').value) : null;
+        const noteContent = document.getElementById('note-content').value.trim();
+
+        // Validation
+        if (!sentiment) {
+          this.showNotification('Please select a sentiment', 'error');
+          return;
+        }
+        if (!category) {
+          this.showNotification('Please select a category', 'error');
+          return;
+        }
+        if (category === 'custom' && !customCategory) {
+          this.showNotification('Please enter a custom category', 'error');
+          return;
+        }
+        if (!noteContent) {
+          this.showNotification('Please enter a note', 'error');
+          return;
+        }
+
+        // Validate value matches sentiment
+        if (sentiment === 'positive' && value !== null && value < 0) {
+          this.showNotification('Value must be positive for positive sentiment', 'error');
+          return;
+        }
+        if (sentiment === 'negative' && value !== null && value > 0) {
+          this.showNotification('Value must be negative for negative sentiment', 'error');
+          return;
+        }
+
+        try {
+          const { error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('student_notes')
+            .insert({
+              class_id: classId,
+              student_id: studentId,
+              teacher_id: this.userInfo.user.id,
+              sentiment: sentiment,
+              category: category,
+              custom_category: category === 'custom' ? customCategory : null,
+              value: sentiment === 'neutral' ? null : value,
+              note: noteContent
+            }));
+
+          if (error) throw error;
+
+          this.showNotification('Note saved successfully', 'success');
+          this.closeModal('add-note');
+        } catch (error) {
+          console.error('Error saving note:', error);
+          this.showNotification('Error saving note: ' + error.message, 'error');
+        }
+      }
+
+      async viewClassNotes(classId) {
+        try {
+          // Get class info
+          const { data: classData } = await this.supabaseQuery(() => this.auth.supabase
+            .from('classes')
+            .select('name')
+            .eq('id', classId)
+            .single());
+
+          // Get enrolled students
+          const { data: enrollments } = await this.supabaseQuery(() => this.auth.supabase
+            .from('class_enrollments')
+            .select('student_id')
+            .eq('class_id', classId)
+            .eq('status', 'active'));
+
+          const studentIds = (enrollments || []).map(e => e.student_id);
+
+          if (studentIds.length === 0) {
+            this.showNotification('No students enrolled in this class', 'warning');
+            return;
+          }
+
+          // Get all notes for these students across ALL classes
+          const { data: notes, error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('student_notes')
+            .select('*')
+            .in('student_id', studentIds)
+            .order('created_at', { ascending: false }));
+
+          if (error) throw error;
+
+          // Get student and teacher names
+          const teacherIds = [...new Set((notes || []).map(n => n.teacher_id))];
+          const allStudentIds = [...new Set((notes || []).map(n => n.student_id))];
+          const classIds = [...new Set((notes || []).map(n => n.class_id))];
+
+          const { data: teachers } = await this.supabaseQuery(() => this.auth.supabase
+            .from('user_profiles')
+            .select('id, first_name, last_name')
+            .in('id', teacherIds));
+
+          const { data: students } = await this.supabaseQuery(() => this.auth.supabase
+            .from('user_profiles')
+            .select('id, first_name, last_name')
+            .in('id', allStudentIds));
+
+          const { data: classes } = await this.supabaseQuery(() => this.auth.supabase
+            .from('classes')
+            .select('id, name')
+            .in('id', classIds));
+
+          const teacherMap = {};
+          (teachers || []).forEach(t => { teacherMap[t.id] = `${t.first_name} ${t.last_name}`; });
+
+          const studentMap = {};
+          (students || []).forEach(s => { studentMap[s.id] = `${s.first_name} ${s.last_name}`; });
+
+          const classMap = {};
+          (classes || []).forEach(c => { classMap[c.id] = c.name; });
+
+          // Build notes HTML
+          let notesHtml = '';
+          if (notes && notes.length > 0) {
+            notesHtml = notes.map(note => {
+              const sentimentColor = note.sentiment === 'positive' ? '#39ff88' :
+                                     note.sentiment === 'negative' ? '#ff6b6b' : '#6aa9ff';
+              const sentimentBg = note.sentiment === 'positive' ? 'rgba(57,255,136,.15)' :
+                                  note.sentiment === 'negative' ? 'rgba(255,107,107,.15)' : 'rgba(106,169,255,.15)';
+
+              return `
+                <div style="background: #0b1017; border: 1px solid #1a2330; border-radius: 8px; padding: 12px; margin-bottom: 10px; border-left: 3px solid ${sentimentColor};">
+                  <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px;">
+                    <div>
+                      <div style="font-weight: 600;">${studentMap[note.student_id] || 'Unknown'}</div>
+                      <div style="font-size: 12px; color: var(--muted);">${classMap[note.class_id] || 'Unknown Class'}</div>
+                    </div>
+                    <div style="display: flex; gap: 6px; align-items: center;">
+                      <span style="padding: 2px 6px; border-radius: 4px; background: ${sentimentBg}; color: ${sentimentColor}; font-size: 11px; text-transform: capitalize;">${note.sentiment}</span>
+                      <span style="padding: 2px 6px; background: #1a2330; border-radius: 4px; font-size: 11px; color: #97a2b0;">${note.category === 'custom' ? note.custom_category : note.category}</span>
+                      ${note.value !== null ? `<span style="padding: 2px 6px; background: #1a2330; border-radius: 4px; font-size: 11px; color: #ffd36a;">${note.value > 0 ? '+' : ''}${note.value}</span>` : ''}
+                    </div>
+                  </div>
+                  <div style="color: #c7d2de; line-height: 1.5; white-space: pre-wrap; margin-bottom: 8px;">${note.note}</div>
+                  <div style="display: flex; justify-content: space-between; align-items: center; padding-top: 8px; border-top: 1px solid #1a2330;">
+                    <div>
+                      <div style="font-size: 12px; font-style: italic; color: var(--muted);">— ${teacherMap[note.teacher_id] || 'Unknown'}</div>
+                      <div style="font-size: 11px; color: var(--muted);">${new Date(note.created_at).toLocaleString()}</div>
+                    </div>
+                  </div>
+                </div>
+              `;
+            }).join('');
+          } else {
+            notesHtml = '<p style="color: var(--muted); text-align: center; padding: 20px;">No notes found for students in this class.</p>';
+          }
+
+          const modalContent = `
+            <div>
+              <h3 style="margin-bottom: 15px;">📋 Notes for ${classData?.name || 'Class'} Students</h3>
+              <p style="color: var(--muted); margin-bottom: 15px;">${notes?.length || 0} note(s) found across all classes</p>
+
+              <div style="max-height: 60vh; overflow-y: auto;">
+                ${notesHtml}
+              </div>
+
+              <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+                <button class="btn btn-secondary" onclick="app.closeModal('view-notes')">Close</button>
+              </div>
+            </div>
+          `;
+
+          this.showModal('view-notes', '📋 View Student Notes', modalContent, true);
+
+        } catch (error) {
+          console.error('Error loading notes:', error);
+          this.showNotification('Error loading notes: ' + error.message, 'error');
         }
       }
 
