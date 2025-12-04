@@ -465,7 +465,13 @@ async function ClassDetail(app) {
 
         rosterCard.innerHTML = '';
         rosterCard.append(
-          h('h3', {}, 'Roster'),
+          h('div', { class: 'row', style: 'justify-content:space-between; align-items:center; margin-bottom:8px' }, [
+            h('h3', { style: 'margin:0' }, 'Roster'),
+            h('button', {
+              class: 'btn small',
+              onclick: () => openViewNotesModal(cls.id, students)
+            }, 'View Notes')
+          ]),
           students.length
             ? h('div', { class: 'roster-list' }, students.map(s => h('div', { class: 'roster-row' }, [
                 h('span', {}, `${s.first_name} ${s.last_name}`),
@@ -1245,6 +1251,180 @@ function renderStudentNoteForm(classId, student, teacherId) {
 
   // Initialize value field state
   updateValueField();
+}
+
+/* ===== View Notes Modal (teacher) ===== */
+function openViewNotesModal(classId, students) {
+  let modal = document.getElementById('viewNotesModal');
+  if (!modal) {
+    modal = h('div', { id: 'viewNotesModal', class: 'modal-overlay', tabindex: '-1' }, [
+      h('div', { class: 'modal', style: 'max-width:700px' }, [
+        h('div', { class: 'modal-head' }, [
+          h('h3', {}, 'Student Notes'),
+          h('span', { class: 'spacer' }),
+          h('button', { class: 'btn link small', id: 'refreshNotesBtn' }, 'Refresh'),
+          h('button', { class: 'btn link danger small', onclick: closeViewNotesModal }, 'Close')
+        ]),
+        h('div', { id: 'viewNotesBody', class: 'modal-body' }, '')
+      ])
+    ]);
+    document.body.appendChild(modal);
+    modal.addEventListener('click', (e) => { if (e.target === modal) closeViewNotesModal(); });
+    window.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeViewNotesModal(); });
+  }
+
+  modal.style.display = 'flex';
+  renderViewNotesModal(classId, students);
+}
+
+function closeViewNotesModal() {
+  const m = document.getElementById('viewNotesModal');
+  if (m) m.style.display = 'none';
+}
+
+async function renderViewNotesModal(classId, students, filters = {}) {
+  const body = document.getElementById('viewNotesBody');
+  if (!body) return;
+
+  const currentStudentId = filters.studentId || '';
+  const currentSentiment = filters.sentiment || 'all';
+  const currentFromDate = filters.fromDate || '';
+
+  // Build filter controls
+  const studentSelect = h('select', { id: 'notesStudentFilter' }, [
+    h('option', { value: '' }, 'All Students'),
+    ...students.map(s => h('option', { value: s.id, selected: s.id === currentStudentId }, `${s.first_name} ${s.last_name}`))
+  ]);
+
+  const sentimentSelect = h('select', { id: 'notesSentimentFilter' }, [
+    h('option', { value: 'all', selected: currentSentiment === 'all' }, 'All Sentiments'),
+    h('option', { value: 'positive', selected: currentSentiment === 'positive' }, 'Positive'),
+    h('option', { value: 'negative', selected: currentSentiment === 'negative' }, 'Negative'),
+    h('option', { value: 'neutral', selected: currentSentiment === 'neutral' }, 'Neutral')
+  ]);
+
+  const fromDateInput = h('input', {
+    type: 'date',
+    id: 'notesFromDateFilter',
+    value: currentFromDate,
+    title: 'Filter from date'
+  });
+
+  const applyFiltersBtn = h('button', {
+    class: 'btn small',
+    onclick: () => {
+      const newFilters = {
+        studentId: document.getElementById('notesStudentFilter').value,
+        sentiment: document.getElementById('notesSentimentFilter').value,
+        fromDate: document.getElementById('notesFromDateFilter').value
+      };
+      renderViewNotesModal(classId, students, newFilters);
+    }
+  }, 'Apply');
+
+  const clearFiltersBtn = h('button', {
+    class: 'btn small secondary',
+    onclick: () => renderViewNotesModal(classId, students, {})
+  }, 'Clear');
+
+  // Update refresh button
+  const refreshBtn = document.getElementById('refreshNotesBtn');
+  if (refreshBtn) {
+    refreshBtn.onclick = () => renderViewNotesModal(classId, students, filters);
+  }
+
+  const filtersRow = h('div', { class: 'notes-filters' }, [
+    h('div', { class: 'filter-group' }, [
+      h('label', { class: 'muted' }, 'Student'),
+      studentSelect
+    ]),
+    h('div', { class: 'filter-group' }, [
+      h('label', { class: 'muted' }, 'Sentiment'),
+      sentimentSelect
+    ]),
+    h('div', { class: 'filter-group' }, [
+      h('label', { class: 'muted' }, 'From Date'),
+      fromDateInput
+    ]),
+    h('div', { class: 'filter-actions' }, [applyFiltersBtn, clearFiltersBtn])
+  ]);
+
+  // Build query
+  let query = sb.from('student_notes')
+    .select('*')
+    .eq('class_id', classId)
+    .order('created_at', { ascending: false });
+
+  if (currentStudentId) {
+    query = query.eq('student_id', currentStudentId);
+  }
+  if (currentSentiment && currentSentiment !== 'all') {
+    query = query.eq('sentiment', currentSentiment);
+  }
+  if (currentFromDate) {
+    query = query.gte('created_at', currentFromDate);
+  }
+
+  const notesContainer = h('div', { class: 'notes-list' }, [
+    h('div', { class: 'muted' }, 'Loading notes...')
+  ]);
+
+  body.innerHTML = '';
+  body.append(filtersRow, notesContainer);
+
+  // Fetch notes
+  const { data: notes, error } = await query;
+
+  if (error) {
+    notesContainer.innerHTML = '';
+    notesContainer.append(h('div', { class: 'muted' }, `Error: ${error.message}`));
+    return;
+  }
+
+  if (!notes || notes.length === 0) {
+    notesContainer.innerHTML = '';
+    notesContainer.append(h('div', { class: 'muted' }, 'No notes found.'));
+    return;
+  }
+
+  // Build student name map
+  const studentMap = new Map(students.map(s => [s.id, `${s.first_name} ${s.last_name}`]));
+
+  // Render notes
+  notesContainer.innerHTML = '';
+  for (const note of notes) {
+    const studentName = studentMap.get(note.student_id) || 'Unknown Student';
+    const sentimentClass = `sentiment-${note.sentiment}`;
+    const categoryLabel = note.category === 'custom' && note.custom_category
+      ? note.custom_category
+      : note.category.charAt(0).toUpperCase() + note.category.slice(1);
+
+    const noteCard = h('div', { class: `note-card ${sentimentClass}` }, [
+      h('div', { class: 'note-header' }, [
+        h('span', { class: 'note-student' }, studentName),
+        h('span', { class: 'note-meta' }, [
+          h('span', { class: `note-sentiment ${sentimentClass}` }, note.sentiment),
+          h('span', { class: 'note-category' }, categoryLabel),
+          note.value !== null ? h('span', { class: 'note-value' }, `Value: ${note.value}`) : null
+        ].filter(Boolean))
+      ]),
+      h('div', { class: 'note-content' }, note.note),
+      h('div', { class: 'note-footer' }, [
+        h('span', { class: 'note-date muted' }, fmtDate(note.created_at)),
+        h('button', {
+          class: 'btn small danger',
+          onclick: async () => {
+            if (!confirm('Delete this note?')) return;
+            const { error: delError } = await sb.from('student_notes').delete().eq('id', note.id);
+            if (delError) return alert('Error deleting: ' + delError.message);
+            renderViewNotesModal(classId, students, filters);
+          }
+        }, 'Delete')
+      ])
+    ]);
+
+    notesContainer.append(noteCard);
+  }
 }
 
 /* Student helpers: Submit file / Submit text */
