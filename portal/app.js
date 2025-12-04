@@ -467,7 +467,13 @@ async function ClassDetail(app) {
         rosterCard.append(
           h('h3', {}, 'Roster'),
           students.length
-            ? h('div', {}, students.map(s => h('div', {}, `${s.first_name} ${s.last_name}`)))
+            ? h('div', { class: 'roster-list' }, students.map(s => h('div', { class: 'roster-row' }, [
+                h('span', {}, `${s.first_name} ${s.last_name}`),
+                h('button', {
+                  class: 'btn small',
+                  onclick: () => openStudentNoteModal(cls.id, s, prof.id)
+                }, 'Add Note')
+              ])))
             : h('small', { class: 'muted' }, 'No students yet.'),
           h('details', {}, [
             h('summary', {}, 'Add students'),
@@ -1044,6 +1050,201 @@ async function renderSubmissionsModal(assignmentId) {
     ]);
     list.append(row);
   }
+}
+
+/* ===== Student Note Modal (teacher) ===== */
+function openStudentNoteModal(classId, student, teacherId) {
+  let modal = document.getElementById('studentNoteModal');
+  if (!modal) {
+    modal = h('div', { id: 'studentNoteModal', class: 'modal-overlay', tabindex: '-1' }, [
+      h('div', { class: 'modal', style: 'max-width:500px' }, [
+        h('div', { class: 'modal-head' }, [
+          h('h3', { id: 'noteTitle' }, 'Add Student Note'),
+          h('span', { class: 'spacer' }),
+          h('button', { class: 'btn link danger small', onclick: closeStudentNoteModal }, 'Close')
+        ]),
+        h('div', { id: 'noteBody', class: 'modal-body' }, '')
+      ])
+    ]);
+    document.body.appendChild(modal);
+    modal.addEventListener('click', (e) => { if (e.target === modal) closeStudentNoteModal(); });
+    window.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeStudentNoteModal(); });
+  }
+
+  document.getElementById('noteTitle').textContent = `Add Note — ${student.first_name} ${student.last_name}`;
+  modal.style.display = 'flex';
+  renderStudentNoteForm(classId, student, teacherId);
+}
+
+function closeStudentNoteModal() {
+  const m = document.getElementById('studentNoteModal');
+  if (m) m.style.display = 'none';
+}
+
+function renderStudentNoteForm(classId, student, teacherId) {
+  const body = document.getElementById('noteBody');
+  if (!body) return;
+
+  const sentimentOptions = [
+    { value: 'positive', label: 'Positive', color: 'var(--accent)' },
+    { value: 'negative', label: 'Negative', color: 'var(--danger)' },
+    { value: 'neutral', label: 'Neutral', color: 'var(--text-muted)' }
+  ];
+
+  const categoryOptions = [
+    { value: 'academic', label: 'Academic' },
+    { value: 'behavior', label: 'Behavior' },
+    { value: 'responsibility', label: 'Responsibility' },
+    { value: 'custom', label: 'Custom' }
+  ];
+
+  let selectedSentiment = 'neutral';
+  let selectedCategory = 'academic';
+
+  // Sentiment radio buttons
+  const sentimentGroup = h('div', { class: 'col', style: 'gap:4px' }, [
+    h('label', { class: 'muted' }, 'Sentiment'),
+    h('div', { class: 'row', style: 'gap:12px' }, sentimentOptions.map(opt =>
+      h('label', { style: `cursor:pointer; color:${opt.color}` }, [
+        h('input', {
+          type: 'radio',
+          name: 'noteSentiment',
+          value: opt.value,
+          checked: opt.value === 'neutral',
+          onchange: (e) => {
+            selectedSentiment = e.target.value;
+            updateValueField();
+          }
+        }),
+        ` ${opt.label}`
+      ])
+    ))
+  ]);
+
+  // Category dropdown
+  const categorySelect = h('select', { id: 'noteCategory', onchange: (e) => {
+    selectedCategory = e.target.value;
+    customCategoryWrap.style.display = e.target.value === 'custom' ? 'block' : 'none';
+  }}, categoryOptions.map(opt =>
+    h('option', { value: opt.value }, opt.label)
+  ));
+
+  const customCategoryInput = h('input', { type: 'text', id: 'noteCustomCategory', placeholder: 'Enter custom category' });
+  const customCategoryWrap = h('div', { style: 'display:none' }, [customCategoryInput]);
+
+  const categoryGroup = h('div', { class: 'col', style: 'gap:4px' }, [
+    h('label', { class: 'muted', for: 'noteCategory' }, 'Category'),
+    categorySelect,
+    customCategoryWrap
+  ]);
+
+  // Value field
+  const valueInput = h('input', { type: 'number', id: 'noteValue', placeholder: 'Value (optional)', step: '1' });
+  const valueHint = h('small', { id: 'noteValueHint', class: 'muted' }, 'Neutral notes have no value');
+  const valueGroup = h('div', { class: 'col', style: 'gap:4px' }, [
+    h('label', { class: 'muted', for: 'noteValue' }, 'Value'),
+    valueInput,
+    valueHint
+  ]);
+
+  function updateValueField() {
+    const hint = document.getElementById('noteValueHint');
+    const input = document.getElementById('noteValue');
+    if (selectedSentiment === 'neutral') {
+      input.disabled = true;
+      input.value = '';
+      hint.textContent = 'Neutral notes have no value';
+    } else if (selectedSentiment === 'positive') {
+      input.disabled = false;
+      input.min = '0';
+      input.max = '';
+      if (input.value && Number(input.value) < 0) input.value = Math.abs(Number(input.value));
+      hint.textContent = 'Positive value (0 or greater)';
+    } else {
+      input.disabled = false;
+      input.max = '0';
+      input.min = '';
+      if (input.value && Number(input.value) > 0) input.value = -Math.abs(Number(input.value));
+      hint.textContent = 'Negative value (0 or less)';
+    }
+  }
+
+  // Note text area
+  const noteTextarea = h('textarea', { id: 'noteText', placeholder: 'Enter note details...', rows: '4', style: 'resize:vertical' });
+  const noteGroup = h('div', { class: 'col', style: 'gap:4px' }, [
+    h('label', { class: 'muted', for: 'noteText' }, 'Note'),
+    noteTextarea
+  ]);
+
+  // Save button
+  const saveBtn = h('button', {
+    class: 'btn',
+    onclick: async () => {
+      const sentiment = selectedSentiment;
+      const category = selectedCategory;
+      const customCategory = category === 'custom' ? (customCategoryInput.value.trim() || null) : null;
+      const noteText = noteTextarea.value.trim();
+      let value = null;
+
+      if (!noteText) {
+        alert('Please enter a note.');
+        return;
+      }
+
+      if (category === 'custom' && !customCategory) {
+        alert('Please enter a custom category name.');
+        return;
+      }
+
+      if (sentiment !== 'neutral' && valueInput.value !== '') {
+        value = Number(valueInput.value);
+        if (Number.isNaN(value)) {
+          alert('Value must be a number.');
+          return;
+        }
+        // Ensure correct sign
+        if (sentiment === 'positive' && value < 0) {
+          value = Math.abs(value);
+        } else if (sentiment === 'negative' && value > 0) {
+          value = -Math.abs(value);
+        }
+      }
+
+      const { error } = await sb.from('student_notes').insert({
+        class_id: classId,
+        student_id: student.id,
+        teacher_id: teacherId,
+        sentiment,
+        category,
+        custom_category: customCategory,
+        value,
+        note: noteText
+      });
+
+      if (error) {
+        alert('Error saving note: ' + error.message);
+        return;
+      }
+
+      alert('Note saved successfully.');
+      closeStudentNoteModal();
+    }
+  }, 'Save Note');
+
+  body.innerHTML = '';
+  body.append(
+    h('div', { class: 'col', style: 'gap:16px' }, [
+      h('div', { class: 'muted' }, `Student: ${student.first_name} ${student.last_name}`),
+      sentimentGroup,
+      categoryGroup,
+      valueGroup,
+      noteGroup,
+      saveBtn
+    ])
+  );
+
+  // Initialize value field state
+  updateValueField();
 }
 
 /* Student helpers: Submit file / Submit text */
