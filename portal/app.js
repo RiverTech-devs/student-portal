@@ -469,7 +469,7 @@ async function ClassDetail(app) {
             h('h3', { style: 'margin:0' }, 'Roster'),
             h('button', {
               class: 'btn small',
-              onclick: () => openViewNotesModal(cls.id, students, prof.role, prof.id)
+              onclick: () => openViewNotesModal(cls.id, students)
             }, 'View Notes')
           ]),
           students.length
@@ -1253,8 +1253,9 @@ function renderStudentNoteForm(classId, student, teacherId) {
   updateValueField();
 }
 
-/* ===== View Notes Modal (teacher/admin) ===== */
-function openViewNotesModal(classId, students, userRole, userId) {
+/* ===== View Notes Modal (read-only for all users via class view) ===== */
+/* Admin edit/delete is only available through Admin Dashboard > Student Management */
+function openViewNotesModal(classId, students) {
   let modal = document.getElementById('viewNotesModal');
   if (!modal) {
     modal = h('div', { id: 'viewNotesModal', class: 'modal-overlay', tabindex: '-1' }, [
@@ -1274,7 +1275,7 @@ function openViewNotesModal(classId, students, userRole, userId) {
   }
 
   modal.style.display = 'flex';
-  renderViewNotesModal(classId, students, {}, userRole, userId);
+  renderViewNotesModal(classId, students);
 }
 
 function closeViewNotesModal() {
@@ -1282,11 +1283,10 @@ function closeViewNotesModal() {
   if (m) m.style.display = 'none';
 }
 
-async function renderViewNotesModal(classId, students, filters = {}, userRole = 'teacher', userId = null) {
+async function renderViewNotesModal(classId, students, filters = {}) {
   const body = document.getElementById('viewNotesBody');
   if (!body) return;
 
-  const isAdmin = userRole === 'admin';
   const currentStudentId = filters.studentId || '';
   const currentSentiment = filters.sentiment || 'all';
   const currentFromDate = filters.fromDate || '';
@@ -1319,19 +1319,19 @@ async function renderViewNotesModal(classId, students, filters = {}, userRole = 
         sentiment: document.getElementById('notesSentimentFilter').value,
         fromDate: document.getElementById('notesFromDateFilter').value
       };
-      renderViewNotesModal(classId, students, newFilters, userRole, userId);
+      renderViewNotesModal(classId, students, newFilters);
     }
   }, 'Apply');
 
   const clearFiltersBtn = h('button', {
     class: 'btn small secondary',
-    onclick: () => renderViewNotesModal(classId, students, {}, userRole, userId)
+    onclick: () => renderViewNotesModal(classId, students, {})
   }, 'Clear');
 
   // Update refresh button
   const refreshBtn = document.getElementById('refreshNotesBtn');
   if (refreshBtn) {
-    refreshBtn.onclick = () => renderViewNotesModal(classId, students, filters, userRole, userId);
+    refreshBtn.onclick = () => renderViewNotesModal(classId, students, filters);
   }
 
   const filtersRow = h('div', { class: 'notes-filters' }, [
