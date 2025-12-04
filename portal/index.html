@@ -3132,6 +3132,121 @@
         this.showModal('children-grades', "📊 Children's Grades", modalContent);
       }
 
+      async viewChildrenNotes(classId) {
+        // Find children enrolled in this class
+        const enrolledChildren = this.children?.filter(child =>
+          child.classes?.some(c => c.id === classId)
+        ) || [];
+
+        if (enrolledChildren.length === 0) {
+          this.showNotification('No children enrolled in this class', 'warning');
+          return;
+        }
+
+        let notesHTML = '';
+
+        for (const child of enrolledChildren) {
+          try {
+            // Get all notes for this child (across all classes, as the policy allows)
+            const { data: notes, error } = await this.supabaseQuery(() =>
+              this.auth.supabase
+                .from('student_notes')
+                .select('*')
+                .eq('student_id', child.id)
+                .order('created_at', { ascending: false }));
+
+            if (error) throw error;
+
+            if (!notes || notes.length === 0) {
+              notesHTML += `
+                <div style="margin-bottom: 20px; padding: 15px; background: var(--card); border-radius: 8px;">
+                  <h4 style="color: var(--accent); margin-bottom: 10px;">👦 ${child.first_name} ${child.last_name}</h4>
+                  <p style="color: var(--muted);">No notes for this student yet.</p>
+                </div>
+              `;
+              continue;
+            }
+
+            // Get teacher names and class names for the notes
+            const teacherIds = [...new Set(notes.map(n => n.teacher_id))];
+            const classIds = [...new Set(notes.map(n => n.class_id))];
+
+            const { data: teachers } = await this.supabaseQuery(() =>
+              this.auth.supabase
+                .from('user_profiles')
+                .select('id, first_name, last_name')
+                .in('id', teacherIds));
+
+            const { data: classes } = await this.supabaseQuery(() =>
+              this.auth.supabase
+                .from('classes')
+                .select('id, name')
+                .in('id', classIds));
+
+            const teacherMap = {};
+            (teachers || []).forEach(t => { teacherMap[t.id] = `${t.first_name} ${t.last_name}`; });
+
+            const classMap = {};
+            (classes || []).forEach(c => { classMap[c.id] = c.name; });
+
+            const noteCards = notes.map(note => {
+              const sentimentColor = note.sentiment === 'positive' ? '#39ff88' :
+                                     note.sentiment === 'negative' ? '#ff6b6b' : '#6aa9ff';
+              const sentimentBg = note.sentiment === 'positive' ? 'rgba(57,255,136,.15)' :
+                                  note.sentiment === 'negative' ? 'rgba(255,107,107,.15)' : 'rgba(106,169,255,.15)';
+
+              return `
+                <div style="background: #0b1017; border: 1px solid #1a2330; border-radius: 8px; padding: 12px; margin-bottom: 10px; border-left: 3px solid ${sentimentColor};">
+                  <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px;">
+                    <div style="font-size: 12px; color: var(--muted);">${classMap[note.class_id] || 'Unknown Class'}</div>
+                    <div style="display: flex; gap: 6px; align-items: center;">
+                      <span style="padding: 2px 6px; border-radius: 4px; background: ${sentimentBg}; color: ${sentimentColor}; font-size: 11px; text-transform: capitalize;">${note.sentiment}</span>
+                      <span style="padding: 2px 6px; background: #1a2330; border-radius: 4px; font-size: 11px; color: #97a2b0;">${note.category === 'custom' ? note.custom_category : note.category}</span>
+                      ${note.value !== null ? `<span style="padding: 2px 6px; background: #1a2330; border-radius: 4px; font-size: 11px; color: #ffd36a;">${note.value > 0 ? '+' : ''}${note.value}</span>` : ''}
+                    </div>
+                  </div>
+                  <div style="color: #c7d2de; line-height: 1.5; white-space: pre-wrap; margin-bottom: 8px;">${note.note}</div>
+                  <div style="display: flex; justify-content: space-between; align-items: center; padding-top: 8px; border-top: 1px solid #1a2330;">
+                    <div>
+                      <div style="font-size: 12px; font-style: italic; color: var(--muted);">— ${teacherMap[note.teacher_id] || 'Unknown Teacher'}</div>
+                      <div style="font-size: 11px; color: var(--muted);">${new Date(note.created_at).toLocaleString()}</div>
+                    </div>
+                  </div>
+                </div>
+              `;
+            }).join('');
+
+            notesHTML += `
+              <div style="margin-bottom: 20px; padding: 15px; background: var(--card); border-radius: 8px;">
+                <h4 style="color: var(--accent); margin-bottom: 15px;">👦 ${child.first_name} ${child.last_name}</h4>
+                <div style="max-height: 300px; overflow-y: auto;">
+                  ${noteCards}
+                </div>
+              </div>
+            `;
+          } catch (error) {
+            console.error('Error loading notes for child:', child.id, error);
+            notesHTML += `
+              <div style="margin-bottom: 20px; padding: 15px; background: var(--card); border-radius: 8px;">
+                <h4 style="color: var(--accent); margin-bottom: 10px;">👦 ${child.first_name} ${child.last_name}</h4>
+                <p style="color: var(--danger);">Error loading notes.</p>
+              </div>
+            `;
+          }
+        }
+
+        const modalContent = `
+          <div style="max-height: 70vh; overflow-y: auto;">
+            ${notesHTML}
+          </div>
+          <div style="text-align: right; margin-top: 15px;">
+            <button class="btn btn-secondary" onclick="app.closeModal('children-notes')">Close</button>
+          </div>
+        `;
+
+        this.showModal('children-notes', "📝 Children's Notes", modalContent);
+      }
+
       attachTeacherDashboardListeners() {
           // Listen on document to catch events from anywhere (home, class view, modals)
           document.addEventListener('click', (e) => {
@@ -4948,6 +5063,9 @@
                 ` : isParent ? `
                   <button class="btn btn-secondary" onclick="app.viewChildrenGrades('${classId}')">
                     📊 Children's Grades
+                  </button>
+                  <button class="btn btn-secondary" onclick="app.viewChildrenNotes('${classId}')">
+                    📝 Children's Notes
                   </button>
                 ` : `
                   <button class="btn btn-secondary" onclick="app.viewGrades('${classId}')">

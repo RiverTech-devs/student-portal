@@ -75,3 +75,14 @@ CREATE POLICY "Admins can manage all notes"
       AND profiles.role = 'admin'
     )
   );
+
+-- Parents can view notes for their linked children
+CREATE POLICY "Parents can view notes for their children"
+  ON student_notes FOR SELECT
+  USING (
+    EXISTS (
+      SELECT 1 FROM parent_child_links
+      WHERE parent_child_links.parent_id = auth.uid()
+      AND parent_child_links.child_id = student_notes.student_id
+    )
+  );
