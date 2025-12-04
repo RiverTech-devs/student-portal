@@ -572,6 +572,108 @@
         overflow-x: auto;
         margin: 1em 0;
       }
+
+      /* Admin Student Notes Styles */
+      .admin-notes-list {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        max-height: 500px;
+        overflow-y: auto;
+      }
+      .admin-note-card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-left: 4px solid var(--accent);
+        border-radius: 8px;
+        padding: 12px;
+      }
+      .admin-note-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .admin-note-class {
+        font-weight: 600;
+        color: var(--accent);
+      }
+      .admin-note-meta {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        font-size: 12px;
+      }
+      .admin-note-sentiment {
+        padding: 2px 8px;
+        border-radius: 4px;
+        text-transform: capitalize;
+        font-size: 11px;
+        font-weight: 500;
+      }
+      .admin-note-category {
+        padding: 2px 8px;
+        background: var(--border);
+        border-radius: 4px;
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .admin-note-value {
+        padding: 2px 8px;
+        background: var(--border);
+        border-radius: 4px;
+        font-size: 11px;
+        color: var(--warning);
+      }
+      .admin-note-content {
+        color: var(--text);
+        line-height: 1.5;
+        white-space: pre-wrap;
+        margin-bottom: 8px;
+      }
+      .admin-note-modified {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 8px;
+        margin: 8px 0;
+        background: rgba(255, 211, 106, 0.1);
+        border: 1px solid rgba(255, 211, 106, 0.3);
+        border-radius: 6px;
+        font-size: 12px;
+      }
+      .admin-note-modified-badge {
+        background: var(--warning);
+        color: #0a0a0a;
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.05em;
+      }
+      .admin-note-footer {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding-top: 8px;
+        border-top: 1px solid var(--border);
+      }
+      .admin-note-footer-left {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        font-size: 12px;
+      }
+      .admin-note-actions {
+        display: flex;
+        gap: 6px;
+      }
+      .btn-sm {
+        padding: 4px 8px;
+        font-size: 11px;
+      }
   </style>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
   <script src="https://apis.google.com/js/api.js" async defer></script>
@@ -14691,6 +14793,9 @@
                   <button class="btn btn-secondary" onclick="app.showEnrollStudentInClassModal('${studentId}')">
                     ➕ Enroll in Class
                   </button>
+                  <button class="btn btn-secondary" onclick="app.viewStudentNotes('${studentId}', '${student.first_name} ${student.last_name}')">
+                    📝 View Notes
+                  </button>
                   ${student.account_status === 'inactive' ? `
                     <button class="btn btn-primary" onclick="app.activateStudent('${studentId}', '${student.first_name} ${student.last_name}')">
                       ✅ Activate Account
@@ -14873,25 +14978,319 @@
         if (!confirm(`Deactivate ${studentName}'s account?\n\nThey will not be able to log in until reactivated.`)) {
           return;
         }
-        
+
         try {
           const { error } = await this.supabaseQuery(() => this.auth.supabase
             .from('user_profiles')
             .update({ account_status: 'inactive' })
             .eq('id', studentId));
-          
+
           if (error) throw error;
-          
+
           this.showNotification(`${studentName}'s account deactivated`, 'success');
           this.closeModal('student-details');
           this.renderStudentManagement();
-          
+
         } catch (error) {
           console.error('Error deactivating student:', error);
           this.showNotification('Error: ' + error.message, 'error');
         }
       }
-      
+
+      async viewStudentNotes(studentId, studentName) {
+        // Show loading modal first
+        this.showModal('student-notes', `📝 Notes for ${studentName}`, '<div style="text-align:center; padding:20px;">Loading notes...</div>');
+
+        try {
+          // Fetch all notes for this student across all classes
+          const { data: notes, error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('student_notes')
+            .select('*')
+            .eq('student_id', studentId)
+            .order('created_at', { ascending: false }));
+
+          if (error) throw error;
+
+          // Get unique user IDs (teachers and modifiers)
+          const teacherIds = [...new Set((notes || []).map(n => n.teacher_id))];
+          const modifierIds = [...new Set((notes || []).filter(n => n.modified_by).map(n => n.modified_by))];
+          const classIds = [...new Set((notes || []).map(n => n.class_id))];
+          const allUserIds = [...new Set([...teacherIds, ...modifierIds])];
+
+          // Fetch user names
+          let userMap = new Map();
+          if (allUserIds.length) {
+            const { data: users } = await this.supabaseQuery(() => this.auth.supabase
+              .from('user_profiles')
+              .select('id, first_name, last_name')
+              .in('id', allUserIds));
+            if (users) {
+              userMap = new Map(users.map(u => [u.id, `${u.first_name} ${u.last_name}`]));
+            }
+          }
+
+          // Fetch class names
+          let classMap = new Map();
+          if (classIds.length) {
+            const { data: classes } = await this.supabaseQuery(() => this.auth.supabase
+              .from('classes')
+              .select('id, name')
+              .in('id', classIds));
+            if (classes) {
+              classMap = new Map(classes.map(c => [c.id, c.name]));
+            }
+          }
+
+          // Build notes HTML
+          let notesHtml = '';
+          if (!notes || notes.length === 0) {
+            notesHtml = '<p style="color: var(--muted); text-align: center;">No notes found for this student.</p>';
+          } else {
+            notesHtml = '<div class="admin-notes-list">';
+            for (const note of notes) {
+              const teacherName = userMap.get(note.teacher_id) || 'Unknown Teacher';
+              const modifierName = note.modified_by ? userMap.get(note.modified_by) : null;
+              const className = classMap.get(note.class_id) || 'Unknown Class';
+              const sentimentColor = note.sentiment === 'positive' ? '#39ff88' : note.sentiment === 'negative' ? '#ff6b6b' : '#6aa9ff';
+              const categoryLabel = note.category === 'custom' && note.custom_category
+                ? note.custom_category
+                : note.category.charAt(0).toUpperCase() + note.category.slice(1);
+
+              notesHtml += `
+                <div class="admin-note-card" style="border-left-color: ${note.modified_at ? '#ffd36a' : sentimentColor};">
+                  <div class="admin-note-header">
+                    <span class="admin-note-class">${className}</span>
+                    <div class="admin-note-meta">
+                      <span class="admin-note-sentiment" style="background: ${sentimentColor}20; color: ${sentimentColor};">${note.sentiment}</span>
+                      <span class="admin-note-category">${categoryLabel}</span>
+                      ${note.value !== null ? `<span class="admin-note-value">Value: ${note.value}</span>` : ''}
+                    </div>
+                  </div>
+                  <div class="admin-note-content">${note.note}</div>
+                  ${note.modified_at ? `
+                    <div class="admin-note-modified">
+                      <span class="admin-note-modified-badge">MODIFIED</span>
+                      <span style="color: var(--muted);"> by ${modifierName || 'Admin'} on ${new Date(note.modified_at).toLocaleDateString()}</span>
+                    </div>
+                  ` : ''}
+                  <div class="admin-note-footer">
+                    <div class="admin-note-footer-left">
+                      <span style="font-style: italic; color: var(--muted);">Written by: ${teacherName}</span>
+                      <span style="color: var(--muted);">${new Date(note.created_at).toLocaleDateString()}</span>
+                    </div>
+                    <div class="admin-note-actions">
+                      <button class="btn btn-sm" onclick="app.editStudentNote('${note.id}', '${studentId}', '${studentName}')">Edit</button>
+                      <button class="btn btn-sm danger" onclick="app.deleteStudentNote('${note.id}', '${studentId}', '${studentName}')">Delete</button>
+                    </div>
+                  </div>
+                </div>
+              `;
+            }
+            notesHtml += '</div>';
+          }
+
+          // Filter controls
+          const filterHtml = `
+            <div class="admin-notes-filters" style="margin-bottom: 15px;">
+              <select id="notes-sentiment-filter" onchange="app.filterStudentNotes('${studentId}', '${studentName}')" style="padding: 6px 10px; border-radius: 6px; background: var(--card); border: 1px solid var(--border); color: var(--text);">
+                <option value="all">All Sentiments</option>
+                <option value="positive">Positive</option>
+                <option value="negative">Negative</option>
+                <option value="neutral">Neutral</option>
+              </select>
+              <button class="btn btn-secondary btn-sm" onclick="app.viewStudentNotes('${studentId}', '${studentName}')" style="margin-left: 10px;">Refresh</button>
+            </div>
+          `;
+
+          const modalContent = filterHtml + notesHtml + `
+            <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px;">
+              <button class="btn btn-secondary" onclick="app.closeModal('student-notes')">Close</button>
+            </div>
+          `;
+
+          this.showModal('student-notes', `📝 Notes for ${studentName}`, modalContent);
+
+        } catch (error) {
+          console.error('Error loading student notes:', error);
+          this.showNotification('Error loading notes: ' + error.message, 'error');
+        }
+      }
+
+      async filterStudentNotes(studentId, studentName) {
+        const sentiment = document.getElementById('notes-sentiment-filter')?.value || 'all';
+
+        this.showModal('student-notes', `📝 Notes for ${studentName}`, '<div style="text-align:center; padding:20px;">Loading notes...</div>');
+
+        try {
+          let query = this.auth.supabase
+            .from('student_notes')
+            .select('*')
+            .eq('student_id', studentId)
+            .order('created_at', { ascending: false });
+
+          if (sentiment !== 'all') {
+            query = query.eq('sentiment', sentiment);
+          }
+
+          const { data: notes, error } = await this.supabaseQuery(() => query);
+
+          if (error) throw error;
+
+          // Re-render with filtered notes (reuse the viewStudentNotes logic)
+          // For simplicity, just reload with filter applied
+          await this.viewStudentNotes(studentId, studentName);
+
+          // Set the filter value back
+          setTimeout(() => {
+            const filterEl = document.getElementById('notes-sentiment-filter');
+            if (filterEl) filterEl.value = sentiment;
+          }, 100);
+
+        } catch (error) {
+          console.error('Error filtering notes:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+        }
+      }
+
+      async editStudentNote(noteId, studentId, studentName) {
+        try {
+          // Fetch the note
+          const { data: note, error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('student_notes')
+            .select('*')
+            .eq('id', noteId)
+            .single());
+
+          if (error) throw error;
+
+          const editContent = `
+            <div>
+              <div style="margin-bottom: 15px;">
+                <label style="display: block; margin-bottom: 5px; color: var(--muted);">Sentiment</label>
+                <div style="display: flex; gap: 15px;">
+                  <label style="cursor: pointer; color: #39ff88;"><input type="radio" name="edit-note-sentiment" value="positive" ${note.sentiment === 'positive' ? 'checked' : ''}> Positive</label>
+                  <label style="cursor: pointer; color: #ff6b6b;"><input type="radio" name="edit-note-sentiment" value="negative" ${note.sentiment === 'negative' ? 'checked' : ''}> Negative</label>
+                  <label style="cursor: pointer; color: #6aa9ff;"><input type="radio" name="edit-note-sentiment" value="neutral" ${note.sentiment === 'neutral' ? 'checked' : ''}> Neutral</label>
+                </div>
+              </div>
+              <div style="margin-bottom: 15px;">
+                <label style="display: block; margin-bottom: 5px; color: var(--muted);">Category</label>
+                <select id="edit-note-category" style="width: 100%; padding: 8px; border-radius: 6px; background: var(--card); border: 1px solid var(--border); color: var(--text);">
+                  <option value="academic" ${note.category === 'academic' ? 'selected' : ''}>Academic</option>
+                  <option value="behavior" ${note.category === 'behavior' ? 'selected' : ''}>Behavior</option>
+                  <option value="responsibility" ${note.category === 'responsibility' ? 'selected' : ''}>Responsibility</option>
+                  <option value="custom" ${note.category === 'custom' ? 'selected' : ''}>Custom</option>
+                </select>
+              </div>
+              <div style="margin-bottom: 15px;" id="custom-category-wrap" style="${note.category === 'custom' ? '' : 'display: none;'}">
+                <label style="display: block; margin-bottom: 5px; color: var(--muted);">Custom Category</label>
+                <input type="text" id="edit-note-custom-category" value="${note.custom_category || ''}" style="width: 100%; padding: 8px; border-radius: 6px; background: var(--card); border: 1px solid var(--border); color: var(--text);">
+              </div>
+              <div style="margin-bottom: 15px;">
+                <label style="display: block; margin-bottom: 5px; color: var(--muted);">Value</label>
+                <input type="number" id="edit-note-value" value="${note.value !== null ? note.value : ''}" placeholder="Optional value" style="width: 100%; padding: 8px; border-radius: 6px; background: var(--card); border: 1px solid var(--border); color: var(--text);">
+              </div>
+              <div style="margin-bottom: 15px;">
+                <label style="display: block; margin-bottom: 5px; color: var(--muted);">Note</label>
+                <textarea id="edit-note-text" rows="4" style="width: 100%; padding: 8px; border-radius: 6px; background: var(--card); border: 1px solid var(--border); color: var(--text); resize: vertical;">${note.note}</textarea>
+              </div>
+              <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                <button class="btn btn-secondary" onclick="app.viewStudentNotes('${studentId}', '${studentName}')">Cancel</button>
+                <button class="btn btn-primary" onclick="app.saveStudentNote('${noteId}', '${studentId}', '${studentName}')">Save Changes</button>
+              </div>
+            </div>
+          `;
+
+          this.showModal('student-notes', `✏️ Edit Note`, editContent);
+
+          // Add category change handler
+          document.getElementById('edit-note-category').addEventListener('change', (e) => {
+            document.getElementById('custom-category-wrap').style.display = e.target.value === 'custom' ? 'block' : 'none';
+          });
+
+        } catch (error) {
+          console.error('Error loading note for edit:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+        }
+      }
+
+      async saveStudentNote(noteId, studentId, studentName) {
+        const sentiment = document.querySelector('input[name="edit-note-sentiment"]:checked')?.value;
+        const category = document.getElementById('edit-note-category')?.value;
+        const customCategory = document.getElementById('edit-note-custom-category')?.value?.trim() || null;
+        const valueStr = document.getElementById('edit-note-value')?.value;
+        const noteText = document.getElementById('edit-note-text')?.value?.trim();
+
+        if (!noteText) {
+          this.showNotification('Please enter a note.', 'error');
+          return;
+        }
+
+        if (category === 'custom' && !customCategory) {
+          this.showNotification('Please enter a custom category name.', 'error');
+          return;
+        }
+
+        let value = null;
+        if (sentiment !== 'neutral' && valueStr !== '') {
+          value = Number(valueStr);
+          if (isNaN(value)) {
+            this.showNotification('Value must be a number.', 'error');
+            return;
+          }
+          if (sentiment === 'positive' && value < 0) value = Math.abs(value);
+          if (sentiment === 'negative' && value > 0) value = -Math.abs(value);
+        }
+
+        try {
+          const currentUser = await this.auth.getCurrentUser();
+
+          const { error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('student_notes')
+            .update({
+              sentiment,
+              category,
+              custom_category: customCategory,
+              value,
+              note: noteText,
+              modified_at: new Date().toISOString(),
+              modified_by: currentUser.id
+            })
+            .eq('id', noteId));
+
+          if (error) throw error;
+
+          this.showNotification('Note updated successfully.', 'success');
+          await this.viewStudentNotes(studentId, studentName);
+
+        } catch (error) {
+          console.error('Error saving note:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+        }
+      }
+
+      async deleteStudentNote(noteId, studentId, studentName) {
+        if (!confirm('Delete this note? This action cannot be undone.')) {
+          return;
+        }
+
+        try {
+          const { error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('student_notes')
+            .delete()
+            .eq('id', noteId));
+
+          if (error) throw error;
+
+          this.showNotification('Note deleted.', 'success');
+          await this.viewStudentNotes(studentId, studentName);
+
+        } catch (error) {
+          console.error('Error deleting note:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+        }
+      }
+
       async editStudentProfile(studentId) {
         // Load current student data
         const { data: student } = await this.supabaseQuery(() => this.auth.supabase
