@@ -3030,51 +3030,98 @@
         }
       }
 
-      async viewChildrenGrades(classId) {
+      async viewChildrenGrades(classId, selectedQuarterId = null) {
         // Find children enrolled in this class
         const enrolledChildren = this.children?.filter(child =>
           child.classes?.some(c => c.id === classId)
         ) || [];
 
         if (enrolledChildren.length === 0) {
-          window.PortalUI?.showNotification('No children enrolled in this class', 'warning');
+          this.showNotification('No children enrolled in this class', 'warning');
           return;
         }
+
+        // Load all quarters for the dropdown
+        const { data: allQuarters } = await this.supabaseQuery(() =>
+          this.auth.supabase
+            .from('quarters')
+            .select('*')
+            .order('start_date', { ascending: false }));
+
+        // Get current quarter if no quarter selected
+        let activeQuarter = null;
+        if (selectedQuarterId) {
+          activeQuarter = allQuarters?.find(q => q.id === selectedQuarterId);
+        } else {
+          activeQuarter = allQuarters?.find(q => q.is_current);
+        }
+
+        // Build quarter selector
+        const quarterOptions = (allQuarters || []).map(q =>
+          `<option value="${q.id}" ${q.id === activeQuarter?.id ? 'selected' : ''}>${q.name} (${q.school_year})</option>`
+        ).join('');
+
+        const quarterSelector = `
+          <div style="margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
+            <label style="color: var(--muted);">Quarter:</label>
+            <select id="children-grades-quarter-select"
+                    onchange="app.viewChildrenGrades('${classId}', this.value)"
+                    style="padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--card); color: var(--text);">
+              <option value="">All Time</option>
+              ${quarterOptions}
+            </select>
+            ${activeQuarter ? `<span style="font-size: 12px; color: var(--muted);">${new Date(activeQuarter.start_date).toLocaleDateString()} - ${new Date(activeQuarter.end_date).toLocaleDateString()}</span>` : ''}
+          </div>
+        `;
 
         // Build grades display
         let gradesHTML = '';
 
         for (const child of enrolledChildren) {
           try {
-            // Get submissions for this child in this class
-            const { data: assignments } = await this.supabaseQuery(() =>
-              this.auth.supabase
-                .from('assignments')
-                .select('id, title, due_date, points_possible')
-                .eq('class_id', classId)
-                .eq('is_published', true)
-                .order('due_date', { ascending: true }));
+            // Build assignments query with quarter filter
+            let assignmentsQuery = this.auth.supabase
+              .from('assignments')
+              .select('id, title, due_date, points_possible')
+              .eq('class_id', classId)
+              .eq('is_published', true)
+              .order('due_date', { ascending: false }); // Newest first
+
+            // Filter by quarter date range if selected
+            if (activeQuarter) {
+              assignmentsQuery = assignmentsQuery
+                .gte('due_date', activeQuarter.start_date)
+                .lte('due_date', activeQuarter.end_date);
+            }
+
+            const { data: assignments } = await this.supabaseQuery(() => assignmentsQuery);
 
             if (!assignments || assignments.length === 0) {
               gradesHTML += `
                 <div style="margin-bottom: 20px; padding: 15px; background: var(--card); border-radius: 8px;">
                   <h4 style="color: var(--accent); margin-bottom: 10px;">👦 ${child.first_name} ${child.last_name}</h4>
-                  <p style="color: var(--muted);">No assignments in this class yet.</p>
+                  <p style="color: var(--muted);">No assignments ${activeQuarter ? 'for this quarter' : 'in this class'} yet.</p>
                 </div>
               `;
               continue;
             }
 
             const assignmentIds = assignments.map(a => a.id);
-            const { data: submissions } = await this.supabaseQuery(() =>
-              this.auth.supabase
-                .from('submissions')
-                .select('assignment_id, grade, submitted_at, status')
-                .eq('student_id', child.id)
-                .in('assignment_id', assignmentIds));
+
+            // Only query submissions if we have assignment IDs (fixes 400 error)
+            let submissions = [];
+            if (assignmentIds.length > 0) {
+              const { data: submissionsData } = await this.supabaseQuery(() =>
+                this.auth.supabase
+                  .from('submissions')
+                  .select('assignment_id, grade, submitted_at, status')
+                  .eq('student_id', child.id)
+                  .in('assignment_id', assignmentIds));
+              submissions = submissionsData || [];
+            }
 
             const assignmentRows = assignments.map(a => {
-              const submission = submissions?.find(s => s.assignment_id === a.id);
+              const submission = submissions.find(s => s.assignment_id === a.id);
               const dueDate = a.due_date ? new Date(a.due_date) : null;
               const isPastDue = dueDate && dueDate < new Date() && !submission;
               const grade = submission?.grade ?? '-';
@@ -3121,7 +3168,8 @@
         }
 
         const modalContent = `
-          <div style="max-height: 70vh; overflow-y: auto;">
+          ${quarterSelector}
+          <div style="max-height: 60vh; overflow-y: auto;">
             ${gradesHTML}
           </div>
           <div style="text-align: right; margin-top: 15px;">
