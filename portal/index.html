@@ -13456,7 +13456,7 @@
         section.innerHTML = `
           <div style="padding: 20px;">
             <h2 style="margin-bottom: 20px;">📊 Grade Reports</h2>
-            
+
             <!-- Report Controls -->
             <div class="card" style="margin-bottom: 20px;">
               <h3 style="margin-bottom: 15px;">Report Filters</h3>
@@ -13464,13 +13464,7 @@
                 <div>
                   <label style="display: block; margin-bottom: 5px; font-weight: bold;">Quarter</label>
                   <select id="report-quarter" class="form-control" style="width: 100%; padding: 8px;">
-                    <option value="Q1">Quarter 1</option>
-                    <option value="Q2">Quarter 2</option>
-                    <option value="Q3">Quarter 3</option>
-                    <option value="Q4">Quarter 4</option>
-                    <option value="S1">Semester 1 (Q1+Q2)</option>
-                    <option value="S2">Semester 2 (Q3+Q4)</option>
-                    <option value="YEAR">Full Year</option>
+                    <option value="all">All Time</option>
                   </select>
                 </div>
                 <div>
@@ -13509,12 +13503,30 @@
       
       async loadReportFilters() {
         try {
+          // Load all quarters
+          const { data: quarters } = await this.supabaseQuery(() => this.auth.supabase
+            .from('quarters')
+            .select('id, name, start_date, end_date, is_current')
+            .order('start_date', { ascending: false }));
+
+          const quarterSelect = document.getElementById('report-quarter');
+          if (quarterSelect && quarters) {
+            // Store quarters for later use in generateGradeReport
+            this.reportQuarters = quarters;
+            quarters.forEach(quarter => {
+              const option = document.createElement('option');
+              option.value = quarter.id;
+              option.textContent = quarter.name + (quarter.is_current ? ' (Current)' : '');
+              quarterSelect.appendChild(option);
+            });
+          }
+
           // Load all classes
           const { data: classes } = await this.supabaseQuery(() => this.auth.supabase
             .from('classes')
             .select('id, name, subject')
             .order('name'));
-          
+
           const classSelect = document.getElementById('report-class');
           if (classSelect && classes) {
             classes.forEach(cls => {
@@ -13524,7 +13536,7 @@
               classSelect.appendChild(option);
             });
           }
-          
+
           // Load all active students
           const { data: students } = await this.supabaseQuery(() => this.auth.supabase
             .from('user_profiles')
@@ -13532,7 +13544,7 @@
             .eq('user_type', 'student')
             .eq('account_status', 'active')
             .order('last_name'));
-          
+
           const studentSelect = document.getElementById('report-student');
           if (studentSelect && students) {
             students.forEach(student => {
@@ -13542,151 +13554,127 @@
               studentSelect.appendChild(option);
             });
           }
-          
+
         } catch (error) {
           console.error('Error loading report filters:', error);
         }
       }
       
       async generateGradeReport() {
-        const quarter = document.getElementById('report-quarter').value;
+        const quarterId = document.getElementById('report-quarter').value;
         const classId = document.getElementById('report-class').value;
         const studentId = document.getElementById('report-student').value;
         const reportDisplay = document.getElementById('report-display');
-        
+
         reportDisplay.innerHTML = '<div style="text-align: center; padding: 40px;"><div class="loading-spinner"></div><p>Generating report...</p></div>';
-        
+
         try {
-          // Build query based on filters
+          // Get the selected quarter's date range
+          let startDate = null;
+          let endDate = null;
+          let quarterName = 'All Time';
+
+          if (quarterId !== 'all' && this.reportQuarters) {
+            const selectedQuarter = this.reportQuarters.find(q => q.id === quarterId);
+            if (selectedQuarter) {
+              startDate = selectedQuarter.start_date;
+              endDate = selectedQuarter.end_date;
+              quarterName = selectedQuarter.name;
+            }
+          }
+
+          // Step 1: Get assignments (with optional date range and class filters)
+          let assignmentsQuery = this.auth.supabase
+            .from('assignments')
+            .select('id, title, class_id, due_date, points_possible, category');
+
+          if (startDate && endDate) {
+            assignmentsQuery = assignmentsQuery
+              .gte('due_date', startDate)
+              .lte('due_date', endDate);
+          }
+
+          if (classId !== 'all') {
+            assignmentsQuery = assignmentsQuery.eq('class_id', classId);
+          }
+
+          const { data: assignments, error: assignmentsError } = await this.supabaseQuery(() => assignmentsQuery);
+
+          if (assignmentsError) throw assignmentsError;
+
+          if (!assignments || assignments.length === 0) {
+            reportDisplay.innerHTML = '<p style="color: var(--muted); text-align: center; padding: 40px;">No assignments found for selected filters</p>';
+            return;
+          }
+
+          const assignmentIds = assignments.map(a => a.id);
+          const classIds = [...new Set(assignments.map(a => a.class_id))];
+
+          // Step 2: Get classes info
+          const { data: classes } = await this.supabaseQuery(() => this.auth.supabase
+            .from('classes')
+            .select('id, name, subject')
+            .in('id', classIds));
+
+          const classMap = {};
+          (classes || []).forEach(c => { classMap[c.id] = c; });
+
+          // Step 3: Get grades for these assignments
           let gradesQuery = this.auth.supabase
             .from('grades')
-            .select(`
-              *,
-              student:user_profiles!student_id(id, first_name, last_name, grade_level),
-              assignment:assignments(
-                id,
-                title,
-                quarter,
-                class_id,
-                class:classes(id, name, subject)
-              )
-            `)
-            .eq('assignment.quarter', quarter === 'YEAR' ? null : quarter);
-          
-          // Apply filters
-          if (classId !== 'all') {
-            gradesQuery = gradesQuery.eq('assignment.class_id', classId);
-          }
-          
+            .select('*')
+            .in('assignment_id', assignmentIds);
+
           if (studentId !== 'all') {
             gradesQuery = gradesQuery.eq('student_id', studentId);
           }
-          
-          // Handle semester and full year queries
-          let grades;
-          if (quarter === 'S1') {
-            const { data: q1Grades } = await this.supabaseQuery(() => this.auth.supabase
-              .from('grades')
-              .select(`
-                *,
-                student:user_profiles!student_id(id, first_name, last_name, grade_level),
-                assignment:assignments(
-                  id,
-                  title,
-                  quarter,
-                  class_id,
-                  class:classes(id, name, subject)
-                )
-              `)
-              .eq('assignment.quarter', 'Q1'));
-            
-            const { data: q2Grades } = await this.supabaseQuery(() => this.auth.supabase
-              .from('grades')
-              .select(`
-                *,
-                student:user_profiles!student_id(id, first_name, last_name, grade_level),
-                assignment:assignments(
-                  id,
-                  title,
-                  quarter,
-                  class_id,
-                  class:classes(id, name, subject)
-                )
-              `)
-              .eq('assignment.quarter', 'Q2'));
-            
-            grades = [...(q1Grades || []), ...(q2Grades || [])];
-          } else if (quarter === 'S2') {
-            const { data: q3Grades } = await this.supabaseQuery(() => this.auth.supabase
-              .from('grades')
-              .select(`
-                *,
-                student:user_profiles!student_id(id, first_name, last_name, grade_level),
-                assignment:assignments(
-                  id,
-                  title,
-                  quarter,
-                  class_id,
-                  class:classes(id, name, subject)
-                )
-              `)
-              .eq('assignment.quarter', 'Q3'));
-            
-            const { data: q4Grades } = await this.supabaseQuery(() => this.auth.supabase
-              .from('grades')
-              .select(`
-                *,
-                student:user_profiles!student_id(id, first_name, last_name, grade_level),
-                assignment:assignments(
-                  id,
-                  title,
-                  quarter,
-                  class_id,
-                  class:classes(id, name, subject)
-                )
-              `)
-              .eq('assignment.quarter', 'Q4'));
-            
-            grades = [...(q3Grades || []), ...(q4Grades || [])];
-          } else if (quarter === 'YEAR') {
-            const { data: allGrades } = await this.supabaseQuery(() => this.auth.supabase
-              .from('grades')
-              .select(`
-                *,
-                student:user_profiles!student_id(id, first_name, last_name, grade_level),
-                assignment:assignments(
-                  id,
-                  title,
-                  quarter,
-                  class_id,
-                  class:classes(id, name, subject)
-                )
-              `));
-            grades = allGrades || [];
-          } else {
-            const { data: quarterGrades } = await gradesQuery;
-            grades = quarterGrades || [];
+
+          const { data: grades, error: gradesError } = await this.supabaseQuery(() => gradesQuery);
+
+          if (gradesError) throw gradesError;
+
+          if (!grades || grades.length === 0) {
+            reportDisplay.innerHTML = '<p style="color: var(--muted); text-align: center; padding: 40px;">No grades found for selected filters</p>';
+            return;
           }
-          
-          // Apply class filter if needed
-          if (classId !== 'all') {
-            grades = grades.filter(g => g.assignment?.class_id === classId);
-          }
-          
-          // Apply student filter if needed
-          if (studentId !== 'all') {
-            grades = grades.filter(g => g.student_id === studentId);
-          }
-          
+
+          // Step 4: Get student profiles
+          const studentIds = [...new Set(grades.map(g => g.student_id))];
+          const { data: students } = await this.supabaseQuery(() => this.auth.supabase
+            .from('user_profiles')
+            .select('id, first_name, last_name, grade_level')
+            .in('id', studentIds));
+
+          const studentMap = {};
+          (students || []).forEach(s => { studentMap[s.id] = s; });
+
+          // Step 5: Build assignment map
+          const assignmentMap = {};
+          assignments.forEach(a => {
+            assignmentMap[a.id] = {
+              ...a,
+              class: classMap[a.class_id]
+            };
+          });
+
+          // Step 6: Combine data into expected format
+          const combinedGrades = grades.map(g => ({
+            ...g,
+            student: studentMap[g.student_id],
+            assignment: assignmentMap[g.assignment_id],
+            category: assignmentMap[g.assignment_id]?.category || 'Academic'
+          })).filter(g => g.assignment && g.student);
+
           // Organize data by student and class
-          const reportData = this.organizeGradeReportData(grades);
-          
+          const reportData = this.organizeGradeReportData(combinedGrades);
+
           // Store for export
           this.currentReportData = reportData;
-          
+          this.currentReportQuarterName = quarterName;
+
           // Render the report
-          this.renderGradeReportTable(reportData, quarter);
-          
+          this.renderGradeReportTable(reportData, quarterName);
+
         } catch (error) {
           console.error('Error generating report:', error);
           reportDisplay.innerHTML = `<div class="card"><p style="color: var(--danger);">Error generating report: ${error.message}</p></div>`;
