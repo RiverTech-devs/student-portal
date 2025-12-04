@@ -11,7 +11,10 @@ CREATE TABLE IF NOT EXISTS student_notes (
   custom_category TEXT, -- only used when category = 'custom'
   value INTEGER, -- positive for positive sentiment, negative for negative, null for neutral
   note TEXT NOT NULL,
-  created_at TIMESTAMPTZ DEFAULT now()
+  created_at TIMESTAMPTZ DEFAULT now(),
+  -- Modification tracking
+  modified_at TIMESTAMPTZ, -- when the note was last modified
+  modified_by UUID REFERENCES profiles(id) ON DELETE SET NULL -- admin who modified
 );
 
 -- Indexes for common queries

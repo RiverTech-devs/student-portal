@@ -469,7 +469,7 @@ async function ClassDetail(app) {
             h('h3', { style: 'margin:0' }, 'Roster'),
             h('button', {
               class: 'btn small',
-              onclick: () => openViewNotesModal(cls.id, students, prof.role)
+              onclick: () => openViewNotesModal(cls.id, students, prof.role, prof.id)
             }, 'View Notes')
           ]),
           students.length
@@ -1254,7 +1254,7 @@ function renderStudentNoteForm(classId, student, teacherId) {
 }
 
 /* ===== View Notes Modal (teacher/admin) ===== */
-function openViewNotesModal(classId, students, userRole) {
+function openViewNotesModal(classId, students, userRole, userId) {
   let modal = document.getElementById('viewNotesModal');
   if (!modal) {
     modal = h('div', { id: 'viewNotesModal', class: 'modal-overlay', tabindex: '-1' }, [
@@ -1274,7 +1274,7 @@ function openViewNotesModal(classId, students, userRole) {
   }
 
   modal.style.display = 'flex';
-  renderViewNotesModal(classId, students, {}, userRole);
+  renderViewNotesModal(classId, students, {}, userRole, userId);
 }
 
 function closeViewNotesModal() {
@@ -1282,7 +1282,7 @@ function closeViewNotesModal() {
   if (m) m.style.display = 'none';
 }
 
-async function renderViewNotesModal(classId, students, filters = {}, userRole = 'teacher') {
+async function renderViewNotesModal(classId, students, filters = {}, userRole = 'teacher', userId = null) {
   const body = document.getElementById('viewNotesBody');
   if (!body) return;
 
@@ -1319,19 +1319,19 @@ async function renderViewNotesModal(classId, students, filters = {}, userRole = 
         sentiment: document.getElementById('notesSentimentFilter').value,
         fromDate: document.getElementById('notesFromDateFilter').value
       };
-      renderViewNotesModal(classId, students, newFilters, userRole);
+      renderViewNotesModal(classId, students, newFilters, userRole, userId);
     }
   }, 'Apply');
 
   const clearFiltersBtn = h('button', {
     class: 'btn small secondary',
-    onclick: () => renderViewNotesModal(classId, students, {}, userRole)
+    onclick: () => renderViewNotesModal(classId, students, {}, userRole, userId)
   }, 'Clear');
 
   // Update refresh button
   const refreshBtn = document.getElementById('refreshNotesBtn');
   if (refreshBtn) {
-    refreshBtn.onclick = () => renderViewNotesModal(classId, students, filters, userRole);
+    refreshBtn.onclick = () => renderViewNotesModal(classId, students, filters, userRole, userId);
   }
 
   const filtersRow = h('div', { class: 'notes-filters' }, [
@@ -1391,15 +1391,18 @@ async function renderViewNotesModal(classId, students, filters = {}, userRole = 
   // Build student name map
   const studentMap = new Map(students.map(s => [s.id, `${s.first_name} ${s.last_name}`]));
 
-  // Fetch teacher names for all notes
+  // Fetch teacher names and modifier names for all notes
   const teacherIds = [...new Set(notes.map(n => n.teacher_id))];
-  let teacherMap = new Map();
-  if (teacherIds.length) {
-    const { data: teachers } = await sb.from('profiles')
+  const modifierIds = [...new Set(notes.filter(n => n.modified_by).map(n => n.modified_by))];
+  const allUserIds = [...new Set([...teacherIds, ...modifierIds])];
+
+  let userMap = new Map();
+  if (allUserIds.length) {
+    const { data: users } = await sb.from('profiles')
       .select('id, first_name, last_name')
-      .in('id', teacherIds);
-    if (teachers) {
-      teacherMap = new Map(teachers.map(t => [t.id, `${t.first_name} ${t.last_name}`]));
+      .in('id', allUserIds);
+    if (users) {
+      userMap = new Map(users.map(u => [u.id, `${u.first_name} ${u.last_name}`]));
     }
   }
 
@@ -1407,7 +1410,8 @@ async function renderViewNotesModal(classId, students, filters = {}, userRole = 
   notesContainer.innerHTML = '';
   for (const note of notes) {
     const studentName = studentMap.get(note.student_id) || 'Unknown Student';
-    const teacherName = teacherMap.get(note.teacher_id) || 'Unknown Teacher';
+    const teacherName = userMap.get(note.teacher_id) || 'Unknown Teacher';
+    const modifierName = note.modified_by ? userMap.get(note.modified_by) : null;
     const sentimentClass = `sentiment-${note.sentiment}`;
     const categoryLabel = note.category === 'custom' && note.custom_category
       ? note.custom_category
@@ -1417,7 +1421,7 @@ async function renderViewNotesModal(classId, students, filters = {}, userRole = 
     const adminActions = isAdmin ? h('div', { class: 'note-actions' }, [
       h('button', {
         class: 'btn small',
-        onclick: () => openEditNoteModal(note, classId, students, filters, userRole)
+        onclick: () => openEditNoteModal(note, classId, students, filters, userRole, userId)
       }, 'Edit'),
       h('button', {
         class: 'btn small danger',
@@ -1425,12 +1429,18 @@ async function renderViewNotesModal(classId, students, filters = {}, userRole = 
           if (!confirm('Delete this note?')) return;
           const { error: delError } = await sb.from('student_notes').delete().eq('id', note.id);
           if (delError) return alert('Error deleting: ' + delError.message);
-          renderViewNotesModal(classId, students, filters, userRole);
+          renderViewNotesModal(classId, students, filters, userRole, userId);
         }
       }, 'Delete')
     ]) : null;
 
-    const noteCard = h('div', { class: `note-card ${sentimentClass}` }, [
+    // Build modification indicator
+    const modifiedIndicator = note.modified_at ? h('div', { class: 'note-modified' }, [
+      h('span', { class: 'note-modified-badge' }, 'MODIFIED'),
+      h('span', { class: 'muted' }, ` by ${modifierName || 'Admin'} on ${fmtDate(note.modified_at)}`)
+    ]) : null;
+
+    const noteCard = h('div', { class: `note-card ${sentimentClass}${note.modified_at ? ' modified' : ''}` }, [
       h('div', { class: 'note-header' }, [
         h('span', { class: 'note-student' }, studentName),
         h('span', { class: 'note-meta' }, [
@@ -1440,6 +1450,7 @@ async function renderViewNotesModal(classId, students, filters = {}, userRole = 
         ].filter(Boolean))
       ]),
       h('div', { class: 'note-content' }, note.note),
+      modifiedIndicator,
       h('div', { class: 'note-footer' }, [
         h('div', { class: 'note-footer-left' }, [
           h('span', { class: 'note-author muted' }, `Written by: ${teacherName}`),
@@ -1447,14 +1458,14 @@ async function renderViewNotesModal(classId, students, filters = {}, userRole = 
         ]),
         adminActions
       ].filter(Boolean))
-    ]);
+    ].filter(Boolean));
 
     notesContainer.append(noteCard);
   }
 }
 
 /* ===== Edit Note Modal (admin only) ===== */
-function openEditNoteModal(note, classId, students, filters, userRole) {
+function openEditNoteModal(note, classId, students, filters, userRole, userId) {
   let modal = document.getElementById('editNoteModal');
   if (!modal) {
     modal = h('div', { id: 'editNoteModal', class: 'modal-overlay', tabindex: '-1' }, [
@@ -1473,7 +1484,7 @@ function openEditNoteModal(note, classId, students, filters, userRole) {
   }
 
   modal.style.display = 'flex';
-  renderEditNoteForm(note, classId, students, filters, userRole);
+  renderEditNoteForm(note, classId, students, filters, userRole, userId);
 }
 
 function closeEditNoteModal() {
@@ -1481,7 +1492,7 @@ function closeEditNoteModal() {
   if (m) m.style.display = 'none';
 }
 
-function renderEditNoteForm(note, classId, students, filters, userRole) {
+function renderEditNoteForm(note, classId, students, filters, userRole, userId) {
   const body = document.getElementById('editNoteBody');
   if (!body) return;
 
@@ -1630,7 +1641,9 @@ function renderEditNoteForm(note, classId, students, filters, userRole) {
         category,
         custom_category: customCategory,
         value,
-        note: noteText
+        note: noteText,
+        modified_at: new Date().toISOString(),
+        modified_by: userId
       }).eq('id', note.id);
 
       if (error) {
@@ -1640,7 +1653,7 @@ function renderEditNoteForm(note, classId, students, filters, userRole) {
 
       alert('Note updated successfully.');
       closeEditNoteModal();
-      renderViewNotesModal(classId, students, filters, userRole);
+      renderViewNotesModal(classId, students, filters, userRole, userId);
     }
   }, 'Save Changes');
 
