@@ -448,8 +448,8 @@ async function ClassDetail(app) {
     app.innerHTML = '';
     app.append(wrap);
 
-    /* ---------- Roster (teacher only) ---------- */
-    if (prof.role === 'teacher' && cls.teacher_id === prof.id) {
+    /* ---------- Roster (teacher or admin who owns the class) ---------- */
+    if ((prof.role === 'teacher' || prof.role === 'admin') && cls.teacher_id === prof.id) {
       const rosterCard = h('div', { class: 'card' }, [ h('h3', {}, 'Roster'), h('small', { class: 'muted' }, 'Loading roster…') ]);
       wrap.append(rosterCard);
 
@@ -512,8 +512,8 @@ async function ClassDetail(app) {
 const asgCard = h('div', { class: 'card' }, [ h('h3', {}, 'Assignments') ]);
 wrap.append(asgCard);
 
-  /* Teacher: creator with Start/Finish + Points + roster checkboxes */
-  if (prof.role === 'teacher' && cls.teacher_id === prof.id) {
+  /* Teacher or admin who owns the class: creator with Start/Finish + Points + roster checkboxes */
+  if ((prof.role === 'teacher' || prof.role === 'admin') && cls.teacher_id === prof.id) {
     // fetch roster for THIS class
     let roster = [];
     try {
