@@ -1350,10 +1350,13 @@ async function renderViewNotesModal(classId, students, filters = {}, userRole = 
     h('div', { class: 'filter-actions' }, [applyFiltersBtn, clearFiltersBtn])
   ]);
 
-  // Build query
+  // Get student IDs from roster to fetch ALL their notes (across all classes)
+  const studentIds = students.map(s => s.id);
+
+  // Build query - fetch notes for roster students across ALL classes
   let query = sb.from('student_notes')
     .select('*')
-    .eq('class_id', classId)
+    .in('student_id', studentIds)
     .order('created_at', { ascending: false });
 
   if (currentStudentId) {
@@ -1391,6 +1394,18 @@ async function renderViewNotesModal(classId, students, filters = {}, userRole = 
   // Build student name map
   const studentMap = new Map(students.map(s => [s.id, `${s.first_name} ${s.last_name}`]));
 
+  // Fetch class names for all notes
+  const classIds = [...new Set(notes.map(n => n.class_id))];
+  let classMap = new Map();
+  if (classIds.length) {
+    const { data: classes } = await sb.from('classes')
+      .select('id, name')
+      .in('id', classIds);
+    if (classes) {
+      classMap = new Map(classes.map(c => [c.id, c.name]));
+    }
+  }
+
   // Fetch teacher names and modifier names for all notes
   const teacherIds = [...new Set(notes.map(n => n.teacher_id))];
   const modifierIds = [...new Set(notes.filter(n => n.modified_by).map(n => n.modified_by))];
@@ -1412,6 +1427,7 @@ async function renderViewNotesModal(classId, students, filters = {}, userRole = 
     const studentName = studentMap.get(note.student_id) || 'Unknown Student';
     const teacherName = userMap.get(note.teacher_id) || 'Unknown Teacher';
     const modifierName = note.modified_by ? userMap.get(note.modified_by) : null;
+    const className = classMap.get(note.class_id) || 'Unknown Class';
     const sentimentClass = `sentiment-${note.sentiment}`;
     const categoryLabel = note.category === 'custom' && note.custom_category
       ? note.custom_category
@@ -1428,7 +1444,10 @@ async function renderViewNotesModal(classId, students, filters = {}, userRole = 
 
     const noteCard = h('div', { class: `note-card ${sentimentClass}${note.modified_at ? ' modified' : ''}` }, [
       h('div', { class: 'note-header' }, [
-        h('span', { class: 'note-student' }, studentName),
+        h('div', { class: 'note-header-left' }, [
+          h('span', { class: 'note-student' }, studentName),
+          h('span', { class: 'note-class muted' }, `in ${className}`)
+        ]),
         h('span', { class: 'note-meta' }, [
           h('span', { class: `note-sentiment ${sentimentClass}` }, note.sentiment),
           h('span', { class: 'note-category' }, categoryLabel),
