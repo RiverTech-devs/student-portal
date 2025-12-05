@@ -895,6 +895,271 @@
         this.isProcessing = false;
         this.modalTimeouts = {};
         this.sessionCheckInterval = null;
+
+        // Quarter weights for GPA calculation
+        this.quarterWeights = {
+          1: 0.20,  // Q1 = 20%
+          2: 0.25,  // Q2 = 25%
+          3: 0.25,  // Q3 = 25%
+          4: 0.30   // Q4 = 30%
+        };
+      }
+
+      // ==================== GPA CALCULATION HELPERS ====================
+
+      /**
+       * Converts a percentage grade to 4.0 GPA scale
+       * @param {number} percentage - Grade as percentage (0-100)
+       * @returns {number} GPA on 4.0 scale
+       */
+      percentageToGPA(percentage) {
+        if (percentage === null || percentage === undefined) return null;
+        if (percentage >= 97) return 4.0;  // A+
+        if (percentage >= 93) return 4.0;  // A
+        if (percentage >= 90) return 3.7;  // A-
+        if (percentage >= 87) return 3.3;  // B+
+        if (percentage >= 83) return 3.0;  // B
+        if (percentage >= 80) return 2.7;  // B-
+        if (percentage >= 77) return 2.3;  // C+
+        if (percentage >= 73) return 2.0;  // C
+        if (percentage >= 70) return 1.7;  // C-
+        if (percentage >= 67) return 1.3;  // D+
+        if (percentage >= 63) return 1.0;  // D
+        if (percentage >= 60) return 0.7;  // D-
+        return 0.0;  // F
+      }
+
+      /**
+       * Gets the GPA modifier for a course weight type
+       * @param {string} courseWeight - 'normal', 'honors', 'ap', or 'dual_credit'
+       * @returns {number} GPA modifier (0, 0.5, or 1.0)
+       */
+      getCourseWeightModifier(courseWeight) {
+        switch (courseWeight) {
+          case 'honors': return 0.5;
+          case 'ap': return 1.0;
+          case 'dual_credit': return 1.0;
+          default: return 0;
+        }
+      }
+
+      /**
+       * Determines the school year from a date
+       * School year runs Aug-July, so Aug 2024 through Jul 2025 = "2024-2025"
+       * @param {Date|string} date - The date to check
+       * @returns {string} School year in format "YYYY-YYYY"
+       */
+      determineSchoolYear(date) {
+        const d = new Date(date);
+        const month = d.getMonth(); // 0-11
+        const year = d.getFullYear();
+
+        // If Aug (7) through Dec (11), school year starts this year
+        // If Jan (0) through Jul (6), school year started last year
+        if (month >= 7) {
+          return `${year}-${year + 1}`;
+        } else {
+          return `${year - 1}-${year}`;
+        }
+      }
+
+      /**
+       * Gets the quarter number (1-4) from a quarter name or determines from dates
+       * @param {object} quarter - Quarter object with name, start_date, etc.
+       * @returns {number} Quarter number 1-4, or null if can't determine
+       */
+      getQuarterNumber(quarter) {
+        if (!quarter) return null;
+
+        // Try to extract from name (e.g., "Q1", "Quarter 1", "1st Quarter")
+        const name = quarter.name?.toLowerCase() || '';
+        const match = name.match(/q?(\d)/i) || name.match(/(\d)(?:st|nd|rd|th)/i);
+        if (match) {
+          const num = parseInt(match[1]);
+          if (num >= 1 && num <= 4) return num;
+        }
+
+        // Fall back to determining from start date month
+        if (quarter.start_date) {
+          const month = new Date(quarter.start_date).getMonth();
+          // Rough mapping: Aug-Oct = Q1, Nov-Jan = Q2, Feb-Apr = Q3, May-Jul = Q4
+          if (month >= 7 && month <= 9) return 1;   // Aug-Oct
+          if (month >= 10 || month <= 0) return 2;  // Nov-Jan
+          if (month >= 1 && month <= 3) return 3;   // Feb-Apr
+          if (month >= 4 && month <= 6) return 4;   // May-Jul
+        }
+
+        return null;
+      }
+
+      /**
+       * Calculates the weighted GPA for a student for a given school year
+       * @param {string} studentId - The student's user ID
+       * @param {string} schoolYear - Optional school year (e.g., "2024-2025"), defaults to current
+       * @returns {Promise<object>} GPA data with quarterly breakdown
+       */
+      async calculateStudentGPA(studentId, schoolYear = null) {
+        try {
+          // Determine current school year if not provided
+          if (!schoolYear) {
+            schoolYear = this.determineSchoolYear(new Date());
+          }
+
+          // Load all quarters for this school year
+          const { data: quarters, error: quarterError } = await this.supabaseQuery(() =>
+            this.auth.supabase
+              .from('quarters')
+              .select('*')
+              .eq('school_year', schoolYear)
+              .order('start_date', { ascending: true }));
+
+          if (quarterError) {
+            console.error('Error loading quarters for GPA:', quarterError);
+            return null;
+          }
+
+          // Initialize result structure
+          const result = {
+            schoolYear: schoolYear,
+            quarters: {
+              1: { grade: null, gpa: null, classes: [] },
+              2: { grade: null, gpa: null, classes: [] },
+              3: { grade: null, gpa: null, classes: [] },
+              4: { grade: null, gpa: null, classes: [] }
+            },
+            cumulativeGPA: null,
+            weightedGPA: null,
+            totalClasses: 0
+          };
+
+          if (!quarters || quarters.length === 0) {
+            console.log('No quarters found for school year:', schoolYear);
+            return result;
+          }
+
+          // For each quarter, get the student's grades
+          for (const quarter of quarters) {
+            const quarterNum = this.getQuarterNumber(quarter);
+            if (!quarterNum) continue;
+
+            // Check if quarter is archived (use snapshots) or current (use enrollments)
+            let gradeData = [];
+
+            if (quarter.is_archived) {
+              // Load from quarter_grade_snapshots
+              const { data: snapshots } = await this.supabaseQuery(() =>
+                this.auth.supabase
+                  .from('quarter_grade_snapshots')
+                  .select(`
+                    *,
+                    class_enrollments!inner(class_id, student_id)
+                  `)
+                  .eq('quarter_id', quarter.id)
+                  .eq('class_enrollments.student_id', studentId));
+
+              if (snapshots) {
+                gradeData = snapshots.map(s => ({
+                  class_id: s.class_enrollments.class_id,
+                  class_grade: s.class_grade
+                }));
+              }
+            } else {
+              // Load from current enrollments
+              const { data: enrollments } = await this.supabaseQuery(() =>
+                this.auth.supabase
+                  .from('class_enrollments')
+                  .select('class_id, class_grade')
+                  .eq('student_id', studentId)
+                  .eq('status', 'active'));
+
+              if (enrollments) {
+                gradeData = enrollments;
+              }
+            }
+
+            if (gradeData.length === 0) continue;
+
+            // Get class info including course_weight
+            const classIds = gradeData.map(g => g.class_id);
+            const { data: classes } = await this.supabaseQuery(() =>
+              this.auth.supabase
+                .from('classes')
+                .select('id, name, course_weight')
+                .in('id', classIds));
+
+            const classMap = {};
+            classes?.forEach(c => { classMap[c.id] = c; });
+
+            // Calculate GPA for this quarter
+            let totalWeightedGPA = 0;
+            let classCount = 0;
+            const quarterClasses = [];
+
+            for (const grade of gradeData) {
+              if (grade.class_grade === null || grade.class_grade === undefined) continue;
+
+              const classInfo = classMap[grade.class_id] || {};
+              const baseGPA = this.percentageToGPA(grade.class_grade);
+              const modifier = this.getCourseWeightModifier(classInfo.course_weight);
+              const adjustedGPA = Math.min(baseGPA + modifier, 5.0); // Cap at 5.0
+
+              quarterClasses.push({
+                classId: grade.class_id,
+                className: classInfo.name || 'Unknown',
+                courseWeight: classInfo.course_weight || 'normal',
+                percentageGrade: grade.class_grade,
+                baseGPA: baseGPA,
+                adjustedGPA: adjustedGPA
+              });
+
+              totalWeightedGPA += adjustedGPA;
+              classCount++;
+            }
+
+            if (classCount > 0) {
+              const quarterGPA = totalWeightedGPA / classCount;
+              result.quarters[quarterNum] = {
+                grade: gradeData.reduce((sum, g) => sum + (g.class_grade || 0), 0) / gradeData.length,
+                gpa: quarterGPA,
+                classes: quarterClasses
+              };
+              result.totalClasses += classCount;
+            }
+          }
+
+          // Calculate cumulative weighted GPA
+          let totalWeight = 0;
+          let weightedSum = 0;
+
+          for (let q = 1; q <= 4; q++) {
+            if (result.quarters[q].gpa !== null) {
+              const weight = this.quarterWeights[q];
+              weightedSum += result.quarters[q].gpa * weight;
+              totalWeight += weight;
+            }
+          }
+
+          if (totalWeight > 0) {
+            // Re-normalize weights based on available quarters
+            result.weightedGPA = weightedSum / totalWeight;
+            result.cumulativeGPA = result.weightedGPA;
+          }
+
+          return result;
+        } catch (error) {
+          console.error('Error calculating GPA:', error);
+          return null;
+        }
+      }
+
+      /**
+       * Formats a GPA value for display
+       * @param {number} gpa - GPA value
+       * @returns {string} Formatted GPA string
+       */
+      formatGPA(gpa) {
+        if (gpa === null || gpa === undefined) return '-';
+        return gpa.toFixed(2);
       }
 
       async init() {
@@ -2671,7 +2936,7 @@
             missingContainer.innerHTML = this.renderMissingAssignments(missingAssignments);
           }
         });
-      
+
         // Load upcoming assignments
         this.loadDueComingUp().then(upcomingAssignments => {
           const upcomingContainer = document.getElementById('due-this-week-container');
@@ -2679,7 +2944,7 @@
             upcomingContainer.innerHTML = this.renderUpcomingAssignments(upcomingAssignments);
           }
         });
-      
+
         // Load current quarter info
         this.loadCurrentQuarterInfo().then(quarterInfo => {
           const quarterContainer = document.getElementById('quarter-info-container');
@@ -2701,11 +2966,26 @@
             `;
           }
         });
-      
+
+        // Load GPA data
+        this.loadStudentGPADisplay();
+
         return `
           <!-- Quarter Info Banner -->
           <div id="quarter-info-container"></div>
-          
+
+          <!-- GPA Overview Card -->
+          <div id="student-gpa-container" class="card" style="margin-bottom: 20px;">
+            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 15px;">
+              <h3 style="margin: 0;">🎓 Your GPA</h3>
+              <span id="gpa-school-year" style="color: var(--muted); font-size: 13px;"></span>
+            </div>
+            <div style="display: flex; align-items: center; justify-content: center; padding: 20px;">
+              <div class="loading-spinner"></div>
+              <span style="margin-left: 10px; color: var(--muted);">Calculating GPA...</span>
+            </div>
+          </div>
+
           <div class="grid grid-2">
             <div class="card">
               <h3>🎯 Quick Actions</h3>
@@ -2721,7 +3001,7 @@
                 </button>
               </div>
             </div>
-      
+
             <div class="card">
               <h3>📊 Your Overview</h3>
               <div class="list">
@@ -2761,6 +3041,95 @@
             </div>
           </div>
         `;
+      }
+
+      /**
+       * Loads and displays the student's GPA on their home dashboard
+       */
+      async loadStudentGPADisplay() {
+        const container = document.getElementById('student-gpa-container');
+        if (!container) return;
+
+        try {
+          const studentId = this.userInfo.user.id;
+          const gpaData = await this.calculateStudentGPA(studentId);
+
+          if (!gpaData) {
+            container.innerHTML = `
+              <h3>🎓 Your GPA</h3>
+              <p style="color: var(--muted);">Unable to calculate GPA at this time.</p>
+            `;
+            return;
+          }
+
+          // Update school year display
+          const schoolYearEl = document.getElementById('gpa-school-year');
+          if (schoolYearEl) {
+            schoolYearEl.textContent = gpaData.schoolYear;
+          }
+
+          // Build quarter display
+          const quarterLabels = ['Q1', 'Q2', 'Q3', 'Q4'];
+          const quarterWeightLabels = ['20%', '25%', '25%', '30%'];
+
+          let quartersHTML = quarterLabels.map((label, i) => {
+            const qNum = i + 1;
+            const qData = gpaData.quarters[qNum];
+            const hasGrade = qData.gpa !== null;
+
+            return `
+              <div style="text-align: center; padding: 15px; background: var(--card); border: 1px solid var(--border); border-radius: 8px;">
+                <div style="font-size: 12px; color: var(--muted); margin-bottom: 5px;">
+                  ${label} <span style="font-size: 10px;">(${quarterWeightLabels[i]})</span>
+                </div>
+                <div style="font-size: 24px; font-weight: 700; color: ${hasGrade ? 'var(--accent)' : 'var(--muted)'};">
+                  ${hasGrade ? this.formatGPA(qData.gpa) : '-'}
+                </div>
+                ${hasGrade ? `<div style="font-size: 11px; color: var(--muted);">${qData.grade?.toFixed(1) || '-'}%</div>` : ''}
+              </div>
+            `;
+          }).join('');
+
+          // Determine GPA color based on value
+          let gpaColor = 'var(--muted)';
+          if (gpaData.cumulativeGPA !== null) {
+            if (gpaData.cumulativeGPA >= 3.5) gpaColor = 'var(--accent-2)';  // Green
+            else if (gpaData.cumulativeGPA >= 2.5) gpaColor = 'var(--accent)';  // Blue
+            else if (gpaData.cumulativeGPA >= 1.5) gpaColor = 'var(--warning)';  // Yellow
+            else gpaColor = 'var(--danger)';  // Red
+          }
+
+          container.innerHTML = `
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px;">
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <h3 style="margin: 0;">🎓 Your GPA</h3>
+                <span style="color: var(--muted); font-size: 13px;">${gpaData.schoolYear}</span>
+              </div>
+            </div>
+
+            <!-- Cumulative GPA Display -->
+            <div style="text-align: center; padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 12px; margin-bottom: 20px;">
+              <div style="font-size: 14px; color: rgba(255,255,255,0.8); margin-bottom: 5px;">Cumulative GPA</div>
+              <div style="font-size: 48px; font-weight: 700; color: white;">
+                ${gpaData.cumulativeGPA !== null ? this.formatGPA(gpaData.cumulativeGPA) : '-'}
+              </div>
+              <div style="font-size: 12px; color: rgba(255,255,255,0.7); margin-top: 5px;">
+                ${gpaData.totalClasses} class${gpaData.totalClasses !== 1 ? 'es' : ''} • Weighted by quarter
+              </div>
+            </div>
+
+            <!-- Quarterly Breakdown -->
+            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;">
+              ${quartersHTML}
+            </div>
+          `;
+        } catch (error) {
+          console.error('Error loading GPA display:', error);
+          container.innerHTML = `
+            <h3>🎓 Your GPA</h3>
+            <p style="color: var(--danger);">Error loading GPA data.</p>
+          `;
+        }
       }
 
       getParentHomeContent() {
@@ -2930,12 +3299,48 @@
             `).join('')
           : '<p style="color: var(--muted); text-align: center;">Not enrolled in any classes.</p>';
 
+        // Calculate child's GPA
+        const gpaData = await this.calculateStudentGPA(childId);
+        const quarterLabels = ['Q1', 'Q2', 'Q3', 'Q4'];
+        const quarterWeightLabels = ['20%', '25%', '25%', '30%'];
+
+        const gpaQuartersHTML = gpaData ? quarterLabels.map((label, i) => {
+          const qNum = i + 1;
+          const qData = gpaData.quarters[qNum];
+          const hasGrade = qData?.gpa !== null;
+          return `
+            <div style="text-align: center; padding: 10px; background: var(--card); border: 1px solid var(--border); border-radius: 6px;">
+              <div style="font-size: 11px; color: var(--muted);">${label} <span style="font-size: 9px;">(${quarterWeightLabels[i]})</span></div>
+              <div style="font-size: 20px; font-weight: 700; color: ${hasGrade ? 'var(--accent)' : 'var(--muted)'};">
+                ${hasGrade ? this.formatGPA(qData.gpa) : '-'}
+              </div>
+            </div>
+          `;
+        }).join('') : '';
+
         const modalContent = `
+          <!-- GPA Overview -->
+          <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+              <div>
+                <h3 style="margin: 0; color: white;">${child.first_name} ${child.last_name}</h3>
+                <div style="font-size: 13px; opacity: 0.9; margin-top: 5px;">
+                  Grade ${child.grade_level || 'N/A'} • ${child.enrollment_type === 'homeschool' ? 'Homeschool' : 'Full-Time'}
+                </div>
+              </div>
+              <div style="text-align: center; background: rgba(255,255,255,0.15); padding: 12px 20px; border-radius: 8px;">
+                <div style="font-size: 11px; opacity: 0.9;">Cumulative GPA</div>
+                <div style="font-size: 28px; font-weight: 700;">${gpaData?.cumulativeGPA !== null ? this.formatGPA(gpaData.cumulativeGPA) : '-'}</div>
+                ${gpaData?.schoolYear ? `<div style="font-size: 10px; opacity: 0.7;">${gpaData.schoolYear}</div>` : ''}
+              </div>
+            </div>
+            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;">
+              ${gpaQuartersHTML}
+            </div>
+          </div>
+
           <div style="margin-bottom: 20px;">
-            <p><strong>Name:</strong> ${child.first_name} ${child.last_name}</p>
             <p><strong>Email:</strong> ${child.email}</p>
-            <p><strong>Grade:</strong> ${child.grade_level || 'N/A'}</p>
-            <p><strong>Enrollment:</strong> ${child.enrollment_type === 'homeschool' ? 'Homeschool' : 'Full-Time'}</p>
           </div>
 
           <div style="margin-bottom: 20px;">
@@ -6010,7 +6415,9 @@
         if (!classData) return;
 
         const gradingWeight = classData.grading_weight || 'even';
-        
+        const courseWeight = classData.course_weight || 'normal';
+        const isAdmin = this.userInfo.profile?.user_type === 'admin';
+
         const modalContent = `
           <form id="edit-class-form">
             <div class="form-group">
@@ -6066,6 +6473,45 @@
               <label for="edit-max-students">Maximum Students</label>
               <input type="number" id="edit-max-students" min="1" max="100" value="${classData.max_students || 30}">
             </div>
+            ${isAdmin ? `
+            <!-- Course Weight Section - Admin Only -->
+            <div class="form-group" style="margin-top: 20px; padding-top: 20px; border-top: 2px solid var(--border);">
+              <label style="font-weight: 600; margin-bottom: 10px; display: block;">
+                🎓 Course Weight (GPA Modifier)
+                <span style="font-size: 11px; color: var(--muted); font-weight: normal; display: block; margin-top: 4px;">Admin only - affects GPA calculation</span>
+              </label>
+              <div style="display: flex; flex-direction: column; gap: 10px;">
+                <label style="display: flex; align-items: flex-start; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; ${courseWeight === 'normal' ? 'background: rgba(106, 169, 255, 0.1); border-color: var(--accent);' : ''}">
+                  <input type="radio" name="edit-course-weight" value="normal" ${courseWeight === 'normal' ? 'checked' : ''} style="margin-top: 3px;">
+                  <div>
+                    <strong>Normal</strong>
+                    <div style="font-size: 12px; color: var(--muted);">Standard GPA weight (no modifier)</div>
+                  </div>
+                </label>
+                <label style="display: flex; align-items: flex-start; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; ${courseWeight === 'honors' ? 'background: rgba(139, 255, 176, 0.1); border-color: var(--accent-2);' : ''}">
+                  <input type="radio" name="edit-course-weight" value="honors" ${courseWeight === 'honors' ? 'checked' : ''} style="margin-top: 3px;">
+                  <div>
+                    <strong>Honors</strong>
+                    <div style="font-size: 12px; color: var(--muted);">+0.5 GPA boost (max 4.5)</div>
+                  </div>
+                </label>
+                <label style="display: flex; align-items: flex-start; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; ${courseWeight === 'ap' ? 'background: rgba(255, 211, 106, 0.1); border-color: var(--warning);' : ''}">
+                  <input type="radio" name="edit-course-weight" value="ap" ${courseWeight === 'ap' ? 'checked' : ''} style="margin-top: 3px;">
+                  <div>
+                    <strong>AP (Advanced Placement)</strong>
+                    <div style="font-size: 12px; color: var(--muted);">+1.0 GPA boost (max 5.0)</div>
+                  </div>
+                </label>
+                <label style="display: flex; align-items: flex-start; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; ${courseWeight === 'dual_credit' ? 'background: rgba(255, 106, 136, 0.1); border-color: var(--danger);' : ''}">
+                  <input type="radio" name="edit-course-weight" value="dual_credit" ${courseWeight === 'dual_credit' ? 'checked' : ''} style="margin-top: 3px;">
+                  <div>
+                    <strong>Dual Credit</strong>
+                    <div style="font-size: 12px; color: var(--muted);">+1.0 GPA boost (max 5.0)</div>
+                  </div>
+                </label>
+              </div>
+            </div>
+            ` : ''}
           </form>
 
           <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
@@ -6079,7 +6525,8 @@
 
       async submitEditClass(classId) {
         const gradingWeight = document.querySelector('input[name="edit-grading-weight"]:checked')?.value || 'even';
-        
+        const isAdmin = this.userInfo.profile?.user_type === 'admin';
+
         const updatedData = {
           name: document.getElementById('edit-class-name').value,
           subject: document.getElementById('edit-class-subject').value,
@@ -6087,6 +6534,12 @@
           max_students: parseInt(document.getElementById('edit-max-students').value) || 30,
           grading_weight: gradingWeight
         };
+
+        // Only admins can set course weight
+        if (isAdmin) {
+          const courseWeight = document.querySelector('input[name="edit-course-weight"]:checked')?.value || 'normal';
+          updatedData.course_weight = courseWeight;
+        }
         
         if (!updatedData.name || !updatedData.subject) {
           this.showNotification('Please fill in required fields', 'error');
@@ -6094,12 +6547,18 @@
         }
         
         try {
-          const { error } = await this.supabaseQuery(() => this.auth.supabase
+          // Build query - admins can update any class, teachers only their own
+          let query = this.auth.supabase
             .from('classes')
             .update(updatedData)
-            .eq('id', classId)
-            .eq('teacher_id', this.userInfo.user.id));
-          
+            .eq('id', classId);
+
+          if (!isAdmin) {
+            query = query.eq('teacher_id', this.userInfo.user.id);
+          }
+
+          const { error } = await this.supabaseQuery(() => query);
+
           if (error) throw error;
           
           this.showNotification('Class updated successfully!', 'success');
@@ -15167,18 +15626,50 @@
               });
             }
           }
-          
+
+          // Calculate student's GPA
+          const gpaData = await this.calculateStudentGPA(studentId);
+          const gpaDisplay = gpaData?.cumulativeGPA !== null ? this.formatGPA(gpaData.cumulativeGPA) : '-';
+
+          // Build GPA quarter breakdown
+          const quarterLabels = ['Q1', 'Q2', 'Q3', 'Q4'];
+          const gpaQuartersHTML = gpaData ? quarterLabels.map((label, i) => {
+            const qNum = i + 1;
+            const qData = gpaData.quarters[qNum];
+            const hasGrade = qData?.gpa !== null;
+            return `
+              <div style="text-align: center;">
+                <div style="font-size: 11px; opacity: 0.8;">${label}</div>
+                <div style="font-size: 18px; font-weight: 700;">${hasGrade ? this.formatGPA(qData.gpa) : '-'}</div>
+              </div>
+            `;
+          }).join('') : '<div style="text-align: center;">-</div>';
+
           const modalContent = `
             <div style="margin-bottom: 20px;">
               <!-- Student Header -->
               <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
-                <h2 style="margin: 0 0 10px 0; color: white;">${student.first_name} ${student.last_name}</h2>
-                <div style="display: flex; gap: 20px; flex-wrap: wrap; font-size: 14px;">
-                  <span>📧 ${student.email || 'No email'}</span>
-                  <span>👤 ${student.username}</span>
-                  <span>🎓 Grade ${student.grade_level || 'N/A'}</span>
-                  <span>🏠 ${student.enrollment_type === 'homeschool' ? 'Homeschool' : 'Full-Time'}</span>
-                  <span>📊 ${student.account_status === 'active' ? '✅ Active' : '⊘ Inactive'}</span>
+                <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+                  <div>
+                    <h2 style="margin: 0 0 10px 0; color: white;">${student.first_name} ${student.last_name}</h2>
+                    <div style="display: flex; gap: 20px; flex-wrap: wrap; font-size: 14px;">
+                      <span>📧 ${student.email || 'No email'}</span>
+                      <span>👤 ${student.username}</span>
+                      <span>🎓 Grade ${student.grade_level || 'N/A'}</span>
+                      <span>🏠 ${student.enrollment_type === 'homeschool' ? 'Homeschool' : 'Full-Time'}</span>
+                      <span>📊 ${student.account_status === 'active' ? '✅ Active' : '⊘ Inactive'}</span>
+                    </div>
+                  </div>
+                  <!-- GPA Display -->
+                  <div style="text-align: center; background: rgba(255,255,255,0.15); padding: 15px 25px; border-radius: 8px; min-width: 140px;">
+                    <div style="font-size: 12px; opacity: 0.9; margin-bottom: 5px;">Cumulative GPA</div>
+                    <div style="font-size: 32px; font-weight: 700;">${gpaDisplay}</div>
+                    ${gpaData?.schoolYear ? `<div style="font-size: 11px; opacity: 0.7; margin-top: 3px;">${gpaData.schoolYear}</div>` : ''}
+                  </div>
+                </div>
+                <!-- Quarter GPA Breakdown -->
+                <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 15px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.2);">
+                  ${gpaQuartersHTML}
                 </div>
               </div>
               
