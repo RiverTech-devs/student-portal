@@ -2240,31 +2240,39 @@
                 if (this.portal.auth.isAuthenticated()) {
                     try {
                         const userId = this.portal.auth.getUserInfo().profile.id;
-                        
-                        // Try to load from Supabase
+
+                        // Try to load from Supabase with all new fields
                         const { data, error } = await this.portal.auth.supabase
                             .from('skill_progress')
-                            .select('subject, skill_name, state')
+                            .select('subject, skill_name, state, mastery_score, last_practiced, practice_count, decay_rate, mastered_at')
                             .eq('user_id', userId);
-                        
+
                         if (data && !error) {
-                            // Organize progress by subject
+                            // Organize progress by subject with full skill data
                             this.skillProgress = {};
                             data.forEach(record => {
                                 if (!this.skillProgress[record.subject]) {
                                     this.skillProgress[record.subject] = {};
                                 }
-                                this.skillProgress[record.subject][record.skill_name] = record.state;
+                                // Store full skill data object, not just state
+                                this.skillProgress[record.subject][record.skill_name] = {
+                                    state: record.state,
+                                    mastery_score: record.mastery_score || 0,
+                                    last_practiced: record.last_practiced,
+                                    practice_count: record.practice_count || 0,
+                                    decay_rate: record.decay_rate || 14,
+                                    mastered_at: record.mastered_at
+                                };
                             });
                         } else {
                             // Fallback to localStorage
                             const saved = localStorage.getItem(`skill_progress_${userId}`);
                             this.skillProgress = saved ? JSON.parse(saved) : {};
                         }
-                        
+
                         // Update skills counter
                         this.updateSkillsCounter();
-                        
+
                     } catch (error) {
                         console.warn('Could not load skill progress:', error);
                         this.skillProgress = {};
@@ -2273,37 +2281,77 @@
             }
         
             updateSkillsCounter() {
-                // Count total unlocked skills across all subjects
+                // Count total unlocked/mastered skills across all subjects
                 let totalUnlocked = 0;
+                let totalMastered = 0;
+                let needsReview = 0;
+
                 Object.values(this.skillProgress).forEach(subjectProgress => {
-                    Object.values(subjectProgress).forEach(state => {
-                        if (state === 'available' || state === 'activated') {
+                    Object.values(subjectProgress).forEach(skillData => {
+                        // Handle both old format (string) and new format (object)
+                        const state = typeof skillData === 'string' ? skillData : skillData.state;
+
+                        if (['available', 'activated', 'mastered', 'in_progress', 'needs_review'].includes(state)) {
                             totalUnlocked++;
+                        }
+                        if (['activated', 'mastered'].includes(state)) {
+                            totalMastered++;
+                        }
+
+                        // Check for decay on mastered skills
+                        if (typeof skillData === 'object' && skillData.last_practiced) {
+                            const daysSince = Math.floor((Date.now() - new Date(skillData.last_practiced)) / (1000 * 60 * 60 * 24));
+                            const decayRate = skillData.decay_rate || 14;
+                            if (daysSince > decayRate && ['activated', 'mastered'].includes(state)) {
+                                needsReview++;
+                            }
                         }
                     });
                 });
-                
+
                 const counter = document.getElementById('skills-unlocked');
                 if (counter) {
-                    counter.textContent = totalUnlocked;
+                    counter.textContent = totalMastered;
+                }
+
+                // Update needs review badge if it exists
+                const reviewBadge = document.getElementById('skills-needs-review');
+                if (reviewBadge) {
+                    reviewBadge.textContent = needsReview;
+                    reviewBadge.style.display = needsReview > 0 ? 'inline' : 'none';
                 }
             }
         
             handleSkillTreeMessage(event) {
-                // Handle messages from the skill tree iframe
+                // Handle messages from the skill tree iframe or games
                 if (!event.data || !event.data.type) return;
-                
+
                 switch (event.data.type) {
                     case 'REQUEST_SKILL_DATA':
                         this.sendSkillData(event.data.subject, event.source);
                         break;
-                        
+
                     case 'SKILL_UNLOCKED':
                         this.handleSkillUnlocked(event.data);
                         break;
-                        
+
+                    case 'SKILL_PRACTICE':
+                        // Game reporting skill practice
+                        this.handleSkillPractice(event.data);
+                        break;
+
+                    case 'GAME_SESSION_COMPLETE':
+                        // Game session finished with results
+                        this.handleGameSessionComplete(event.data);
+                        break;
+
+                    case 'REQUEST_SKILLS_FOR_GAME':
+                        // Game requesting available skills to practice
+                        this.sendSkillsForGame(event.data, event.source);
+                        break;
+
                     default:
-                        console.log('Unknown message from skill tree:', event.data.type);
+                        console.log('Unknown message from skill tree/game:', event.data.type);
                 }
             }
         
@@ -2325,27 +2373,40 @@
         
             async handleSkillUnlocked(data) {
                 const { subject, skillName, state } = data;
-                
-                // Update local progress
+                const now = new Date().toISOString();
+
+                // Update local progress with new format
                 if (!this.skillProgress[subject]) {
                     this.skillProgress[subject] = {};
                 }
-                this.skillProgress[subject][skillName] = state;
-                
+                const isMastery = state === 'activated' || state === 'mastered';
+                this.skillProgress[subject][skillName] = {
+                    state: isMastery ? 'mastered' : state,
+                    mastery_score: isMastery ? 100 : 50,
+                    last_practiced: now,
+                    practice_count: 1,
+                    decay_rate: 14,
+                    mastered_at: isMastery ? now : null
+                };
+
                 // Save to database
                 if (this.portal.auth.isAuthenticated()) {
                     try {
                         const userId = this.portal.auth.getUserInfo().profile.id;
-                        
-                        // Save to Supabase
+
+                        // Save to Supabase with all new fields
                         const { error } = await this.portal.auth.supabase
                             .from('skill_progress')
                             .upsert({
                                 user_id: userId,
                                 subject: subject,
                                 skill_name: skillName,
-                                state: state,
-                                updated_at: new Date().toISOString()
+                                state: isMastery ? 'mastered' : state,
+                                mastery_score: isMastery ? 100 : 50,
+                                last_practiced: now,
+                                practice_count: 1,
+                                mastered_at: isMastery ? now : null,
+                                updated_at: now
                             });
                         
                         if (error) {
@@ -2372,7 +2433,132 @@
                     }
                 }
             }
-        
+
+            // Handle skill practice from games
+            async handleSkillPractice(data) {
+                const { subject, skillName, score, gameId } = data;
+
+                if (!this.portal.auth.isAuthenticated()) return;
+
+                try {
+                    const userId = this.portal.auth.getUserInfo().profile.id;
+
+                    // Record practice session
+                    const { error: sessionError } = await this.portal.auth.supabase
+                        .from('skill_practice_sessions')
+                        .insert({
+                            user_id: userId,
+                            subject: subject,
+                            skill_name: skillName,
+                            source_type: 'game',
+                            game_id: gameId,
+                            score: score,
+                            started_at: new Date().toISOString()
+                        });
+
+                    if (sessionError) {
+                        console.warn('Failed to record practice session:', sessionError);
+                    }
+
+                    // Update local progress cache
+                    await this.loadUserProgress();
+
+                    // Show notification
+                    if (score >= 80) {
+                        window.PortalUI?.showNotification(
+                            `Great practice on ${skillName}! Score: ${score}%`,
+                            'success',
+                            3000
+                        );
+                    }
+
+                } catch (error) {
+                    console.error('Error handling skill practice:', error);
+                }
+            }
+
+            // Handle complete game session with multiple skill updates
+            async handleGameSessionComplete(data) {
+                const { gameId, subject, skills, duration, totalScore } = data;
+
+                if (!this.portal.auth.isAuthenticated()) return;
+
+                try {
+                    const userId = this.portal.auth.getUserInfo().profile.id;
+
+                    // Record each skill practiced
+                    for (const skill of skills) {
+                        await this.portal.auth.supabase
+                            .from('skill_practice_sessions')
+                            .insert({
+                                user_id: userId,
+                                subject: subject,
+                                skill_name: skill.name,
+                                source_type: 'game',
+                                game_id: gameId,
+                                score: skill.score,
+                                correct_count: skill.correct,
+                                total_count: skill.total,
+                                duration_seconds: duration,
+                                started_at: new Date().toISOString()
+                            });
+                    }
+
+                    // Refresh progress
+                    await this.loadUserProgress();
+
+                    // Check for mastery achievements
+                    const masteredSkills = skills.filter(s => s.score >= 80);
+                    if (masteredSkills.length > 0) {
+                        window.PortalUI?.showNotification(
+                            `Session complete! Mastered ${masteredSkills.length} skill(s)`,
+                            'success',
+                            4000
+                        );
+                    }
+
+                } catch (error) {
+                    console.error('Error handling game session:', error);
+                }
+            }
+
+            // Send available skills for games to use
+            sendSkillsForGame(data, source) {
+                const { subject, includeStates } = data;
+                const states = includeStates || ['available', 'in_progress', 'mastered', 'activated', 'needs_review'];
+
+                const subjectProgress = this.skillProgress[subject] || {};
+                const availableSkills = [];
+
+                Object.entries(subjectProgress).forEach(([skillName, skillData]) => {
+                    const state = typeof skillData === 'string' ? skillData : skillData.state;
+                    if (states.includes(state)) {
+                        availableSkills.push({
+                            name: skillName,
+                            state: state,
+                            mastery_score: typeof skillData === 'object' ? skillData.mastery_score : 0,
+                            last_practiced: typeof skillData === 'object' ? skillData.last_practiced : null,
+                            needs_review: state === 'needs_review' ||
+                                (typeof skillData === 'object' && skillData.last_practiced &&
+                                Math.floor((Date.now() - new Date(skillData.last_practiced)) / (1000 * 60 * 60 * 24)) > (skillData.decay_rate || 14))
+                        });
+                    }
+                });
+
+                // Sort by priority: needs_review first, then by mastery score
+                availableSkills.sort((a, b) => {
+                    if (a.needs_review && !b.needs_review) return -1;
+                    if (!a.needs_review && b.needs_review) return 1;
+                    return a.mastery_score - b.mastery_score;
+                });
+
+                source.postMessage({
+                    type: 'SKILLS_FOR_GAME_RESPONSE',
+                    subject: subject,
+                    skills: availableSkills
+                }, '*');
+            }
+
             async loadSkillTree(subject) {
                 const container = document.getElementById('skill-tree-container');
                 if (!container) return;
