@@ -700,6 +700,13 @@
             constructor() {
                 this.supabase = null;
                 this.currentUser = null;
+
+                // Homework assignment tracking
+                this.homeworkId = null;
+                this.assignedSubject = 'Math';
+                this.sessionStartTime = null;
+                this.skillsWorkedOn = [];
+
                 this.studentData = {
                     current_range: { min: 0, max: 8 },
                     mastery_level: 'Bronze',
@@ -738,7 +745,17 @@
             
             async init() {
                 console.log('🎯 Initializing Mathletics...');
-                
+
+                // Parse URL parameters for homework assignments
+                const urlParams = new URLSearchParams(window.location.search);
+                this.homeworkId = urlParams.get('homework');
+                this.assignedSubject = urlParams.get('subject') || 'Math';
+
+                if (this.homeworkId) {
+                    console.log(`📝 Homework assignment mode: ${this.homeworkId}`);
+                    console.log(`📚 Subject: ${this.assignedSubject}`);
+                }
+
                 // Initialize Supabase - check if we have access to portal auth
                 if (window.portalAuth && window.portalAuth.supabase) {
                     this.supabase = window.portalAuth.supabase;
@@ -747,14 +764,14 @@
                 } else {
                     // Fallback to standalone Supabase (you'll need to configure this)
                     console.log('Using standalone mode');
-                    this.currentUser = { 
-                        profile: { 
+                    this.currentUser = {
+                        profile: {
                             first_name: 'Student',
                             id: 'demo-student'
                         }
                     };
                 }
-                
+
                 // Load student data
                 await this.loadStudentData();
                 
@@ -1256,9 +1273,78 @@
                 
                 // Check for mastery progression
                 this.checkMasteryProgression(correctResponses, totalTime);
-                
+
                 // Save data
                 await this.saveStudentData();
+
+                // Report skill progress to parent window (portal)
+                this.reportSkillProgress(correctResponses, totalTime);
+            }
+
+            // Report progress to the parent portal window
+            reportSkillProgress(correctResponses, totalTime) {
+                // Calculate score (0-100)
+                const accuracy = this.currentSession.responses.length > 0
+                    ? (correctResponses.length / this.currentSession.responses.length * 100)
+                    : 0;
+
+                const score = Math.round(accuracy);
+
+                // Determine which math skills were practiced based on problem types
+                const skillsMap = {
+                    multiplication: { correct: 0, total: 0 },
+                    addition: { correct: 0, total: 0 },
+                    division: { correct: 0, total: 0 }
+                };
+
+                // Count by skill (for multiplication facts, it's multiplication)
+                correctResponses.forEach(r => {
+                    skillsMap.multiplication.correct++;
+                    skillsMap.multiplication.total++;
+                });
+
+                // Also count incorrect responses
+                this.currentSession.responses.forEach(r => {
+                    if (!r.correct) {
+                        skillsMap.multiplication.total++;
+                    }
+                });
+
+                // Report to parent window if embedded
+                if (window.parent !== window) {
+                    // Report individual skill practice
+                    window.parent.postMessage({
+                        type: 'SKILL_PRACTICE',
+                        subject: this.assignedSubject,
+                        skillName: 'Multiplication',
+                        score: score,
+                        gameId: 'mathletics'
+                    }, '*');
+
+                    // Report complete game session
+                    const skills = Object.entries(skillsMap)
+                        .filter(([_, data]) => data.total > 0)
+                        .map(([name, data]) => ({
+                            name: name.charAt(0).toUpperCase() + name.slice(1),
+                            score: Math.round((data.correct / data.total) * 100),
+                            correct: data.correct,
+                            total: data.total
+                        }));
+
+                    window.parent.postMessage({
+                        type: 'GAME_SESSION_COMPLETE',
+                        gameId: 'mathletics',
+                        subject: this.assignedSubject,
+                        homeworkId: this.homeworkId,
+                        skills: skills,
+                        duration: Math.round(totalTime),
+                        totalScore: score,
+                        problemsSolved: correctResponses.length,
+                        totalProblems: this.currentSession.responses.length
+                    }, '*');
+
+                    console.log('📊 Reported skill progress to portal:', { score, skills });
+                }
             }
             
             checkMasteryProgression(correctResponses, totalTime) {

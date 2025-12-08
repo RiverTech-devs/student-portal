@@ -4156,6 +4156,18 @@
         // Game State
         class Game {
             constructor(seed, selectedAscension = 0) {
+                // Parse URL parameters for homework assignments
+                const urlParams = new URLSearchParams(window.location.search);
+                this.homeworkId = urlParams.get('homework');
+                this.assignedSubject = urlParams.get('subject') || 'Math';
+                this.sessionStartTime = Date.now();
+                this.combatsWon = 0;
+                this.cardsPlayed = { attack: 0, skill: 0, power: 0, utility: 0 };
+
+                if (this.homeworkId) {
+                    console.log(`📝 Homework assignment mode: ${this.homeworkId}`);
+                }
+
                 // Seed setup
                 this.seed = seed || this.generateSeed();
                 this.seedString = String(this.seed);
@@ -7013,6 +7025,9 @@
             }
 
             winCombat() {
+                // Track combat wins for skill progress reporting
+                this.combatsWon++;
+
                 // Check if this was an elite or boss fight
                 const wasElite = this.enemies.some(enemy => enemy.tier === 'elite') || this.wasEventElite;
                 const wasBoss = this.enemies.some(enemy => enemy.tier === 'boss');
@@ -8282,23 +8297,91 @@
             victory() {
                 document.getElementById('victory-seed-value').textContent = this.seedString;
                 document.getElementById('victory-screen').classList.add('active');
+
+                // Report progress - victory is high score
+                this.reportSkillProgress(true);
             }
 
             gameOver() {
                 console.log('=== GAME OVER ===');
                 console.log('Player HP:', this.player.hp);
-                
+
                 this.hideAllViews();
-                
+
                 document.getElementById('defeat-seed-value').textContent = this.seedString;
-                
+
                 const defeatScreen = document.getElementById('defeat-screen');
                 if (defeatScreen) {
                     defeatScreen.style.display = 'flex';
                     defeatScreen.classList.add('active');
                 }
-                
+
                 console.log('Defeat screen shown');
+
+                // Report progress - partial score based on progress
+                this.reportSkillProgress(false);
+            }
+
+            // Report progress to the parent portal window
+            reportSkillProgress(victory) {
+                const sessionDuration = Math.round((Date.now() - this.sessionStartTime) / 1000);
+                const floorsCleared = this.currentNode || 0;
+                const maxFloors = 50; // Approximate max floors
+
+                // Calculate score based on progress
+                // Victory = 100, otherwise scale by floors cleared and combats won
+                let score;
+                if (victory) {
+                    score = 100;
+                } else {
+                    // Base score on how far they got
+                    const progressScore = Math.min(80, Math.round((floorsCleared / maxFloors) * 80));
+                    const combatBonus = Math.min(20, this.combatsWon * 2);
+                    score = progressScore + combatBonus;
+                }
+
+                // Map card types to math skills
+                const skillsMap = {
+                    'Problem Solving': { score: score, practiced: true },
+                    'Strategy': { score: Math.min(100, this.combatsWon * 10), practiced: this.combatsWon > 0 }
+                };
+
+                // Report to parent window if embedded
+                if (window.parent !== window) {
+                    // Report skill practice
+                    window.parent.postMessage({
+                        type: 'SKILL_PRACTICE',
+                        subject: this.assignedSubject,
+                        skillName: 'Problem Solving',
+                        score: score,
+                        gameId: 'mathspire'
+                    }, '*');
+
+                    // Report complete game session
+                    const skills = Object.entries(skillsMap)
+                        .filter(([_, data]) => data.practiced)
+                        .map(([name, data]) => ({
+                            name: name,
+                            score: data.score,
+                            correct: victory ? 1 : 0,
+                            total: 1
+                        }));
+
+                    window.parent.postMessage({
+                        type: 'GAME_SESSION_COMPLETE',
+                        gameId: 'mathspire',
+                        subject: this.assignedSubject,
+                        homeworkId: this.homeworkId,
+                        skills: skills,
+                        duration: sessionDuration,
+                        totalScore: score,
+                        floorsCleared: floorsCleared,
+                        victory: victory,
+                        ascensionLevel: this.ascensionLevel
+                    }, '*');
+
+                    console.log('📊 Reported skill progress to portal:', { score, victory, floorsCleared });
+                }
             }
 
             copySeed() {
