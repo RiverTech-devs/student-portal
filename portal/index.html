@@ -6167,6 +6167,41 @@
               <label for="max-students">Maximum Students</label>
               <input type="number" id="max-students" min="1" max="100" value="30">
             </div>
+
+            <!-- Class Schedule Section -->
+            <div class="form-group" style="margin-top: 20px; padding-top: 20px; border-top: 2px solid var(--border);">
+              <label style="font-weight: 600; margin-bottom: 10px; display: block;">
+                📅 Class Schedule
+                <span style="font-size: 11px; color: var(--muted); font-weight: normal; display: block; margin-top: 4px;">When does this class meet?</span>
+              </label>
+              <div id="class-schedule-slots" style="display: flex; flex-direction: column; gap: 10px;">
+                <div class="schedule-slot" style="display: flex; gap: 10px; align-items: center;">
+                  <select name="schedule-day" style="flex: 1; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+                    <option value="">Select Day</option>
+                    <option value="1">Monday</option>
+                    <option value="2">Tuesday</option>
+                    <option value="3">Wednesday</option>
+                    <option value="4">Thursday</option>
+                    <option value="5">Friday</option>
+                  </select>
+                  <select name="schedule-period" style="width: 100px; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+                    <option value="">Period</option>
+                    <option value="1">Period 1</option>
+                    <option value="2">Period 2</option>
+                    <option value="3">Period 3</option>
+                    <option value="4">Period 4</option>
+                    <option value="5">Period 5</option>
+                    <option value="6">Period 6</option>
+                    <option value="7">Period 7</option>
+                    <option value="8">Period 8</option>
+                  </select>
+                  <button type="button" onclick="app.removeScheduleSlot(this)" class="btn btn-secondary" style="padding: 8px 12px;">✕</button>
+                </div>
+              </div>
+              <button type="button" onclick="app.addScheduleSlot()" class="btn btn-secondary" style="margin-top: 10px;">
+                + Add Another Time Slot
+              </button>
+            </div>
           </form>
         `;
 
@@ -6181,9 +6216,72 @@
         });
       }
 
+      addScheduleSlot() {
+        const container = document.getElementById('class-schedule-slots') || document.getElementById('edit-class-schedule-slots');
+        if (!container) return;
+
+        const slot = document.createElement('div');
+        slot.className = 'schedule-slot';
+        slot.style.cssText = 'display: flex; gap: 10px; align-items: center;';
+        slot.innerHTML = `
+          <select name="schedule-day" style="flex: 1; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+            <option value="">Select Day</option>
+            <option value="1">Monday</option>
+            <option value="2">Tuesday</option>
+            <option value="3">Wednesday</option>
+            <option value="4">Thursday</option>
+            <option value="5">Friday</option>
+          </select>
+          <select name="schedule-period" style="width: 100px; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+            <option value="">Period</option>
+            <option value="1">Period 1</option>
+            <option value="2">Period 2</option>
+            <option value="3">Period 3</option>
+            <option value="4">Period 4</option>
+            <option value="5">Period 5</option>
+            <option value="6">Period 6</option>
+            <option value="7">Period 7</option>
+            <option value="8">Period 8</option>
+          </select>
+          <button type="button" onclick="app.removeScheduleSlot(this)" class="btn btn-secondary" style="padding: 8px 12px;">✕</button>
+        `;
+        container.appendChild(slot);
+      }
+
+      removeScheduleSlot(button) {
+        const slot = button.closest('.schedule-slot');
+        const container = slot.parentElement;
+        // Keep at least one slot
+        if (container.querySelectorAll('.schedule-slot').length > 1) {
+          slot.remove();
+        } else {
+          // Clear the selects instead of removing
+          slot.querySelectorAll('select').forEach(s => s.value = '');
+        }
+      }
+
+      getScheduleSlotsData() {
+        const slots = document.querySelectorAll('.schedule-slot');
+        const scheduleData = [];
+
+        slots.forEach(slot => {
+          const day = slot.querySelector('select[name="schedule-day"]')?.value;
+          const period = slot.querySelector('select[name="schedule-period"]')?.value;
+
+          if (day && period) {
+            scheduleData.push({
+              day_of_week: parseInt(day),
+              period: parseInt(period)
+            });
+          }
+        });
+
+        return scheduleData;
+      }
+
       async submitCreateClass() {
         const gradingWeight = document.querySelector('input[name="grading-weight"]:checked')?.value || 'even';
-        
+
         const classData = {
           name: document.getElementById('class-name').value,
           subject: document.getElementById('class-subject').value,
@@ -6193,7 +6291,7 @@
           teacher_id: this.userInfo.user.id,
           grading_weight: gradingWeight
         };
-      
+
         if (!classData.name || !classData.subject) {
           if (window.PortalUI) {
             window.PortalUI.showNotification('Please fill in required fields', 'error');
@@ -6202,36 +6300,52 @@
           }
           return;
         }
-      
+
+        // Get schedule data
+        const scheduleData = this.getScheduleSlotsData();
+
         try {
           if (window.portalLoading) {
             window.portalLoading.show('create-class', 'Creating class...');
           }
-          
+
           const { data, error } = await this.supabaseQuery(() => this.auth.supabase
             .from('classes')
             .insert([classData])
             .select()
             .single());
-      
+
           if (error) throw error;
-      
+
+          // Save class schedule if any
+          if (scheduleData.length > 0 && data?.id) {
+            const classSchedule = scheduleData.map(slot => ({
+              class_id: data.id,
+              day_of_week: slot.day_of_week,
+              period: slot.period
+            }));
+
+            await this.auth.supabase
+              .from('class_schedule')
+              .insert(classSchedule);
+          }
+
           if (window.PortalUI) {
             window.PortalUI.showNotification('Class created successfully!', 'success');
           } else {
             this.showNotification('Class created successfully!', 'success');
           }
-          
+
           if (window.portalModal) {
             window.portalModal.close('create-class');
           } else {
             this.closeModal();
           }
-          
+
           await this.loadTeacherData();
-          this.setupHomeContent(); 
+          this.setupHomeContent();
           this.renderClasses();
-      
+
         } catch (error) {
           console.error('Error creating class:', error);
           if (window.PortalUI) {
@@ -6395,6 +6509,9 @@
                   </button>
                   <button class="btn btn-primary" onclick="teacherGrades.showGradeManagementModal('${classId}')">
                     📊 Manage Grades
+                  </button>
+                  <button class="btn btn-primary" onclick="app.showClassAttendance('${classId}')">
+                    📋 Class Attendance
                   </button>
                 ` : isParent ? `
                   <button class="btn btn-secondary" onclick="app.viewChildrenGrades('${classId}')">
@@ -7256,6 +7373,56 @@
         const courseWeight = classData.course_weight || 'normal';
         const isAdmin = this.userInfo.profile?.user_type === 'admin';
 
+        // Load existing class schedule
+        const { data: existingSchedule } = await this.auth.supabase
+          .from('class_schedule')
+          .select('*')
+          .eq('class_id', classId)
+          .order('day_of_week')
+          .order('period');
+
+        const dayNames = { 1: 'Monday', 2: 'Tuesday', 3: 'Wednesday', 4: 'Thursday', 5: 'Friday' };
+
+        // Generate schedule slots HTML
+        const scheduleSlots = existingSchedule && existingSchedule.length > 0
+          ? existingSchedule.map(slot => `
+              <div class="schedule-slot" style="display: flex; gap: 10px; align-items: center;">
+                <select name="schedule-day" style="flex: 1; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+                  <option value="">Select Day</option>
+                  ${[1,2,3,4,5].map(d => `<option value="${d}" ${slot.day_of_week === d ? 'selected' : ''}>${dayNames[d]}</option>`).join('')}
+                </select>
+                <select name="schedule-period" style="width: 100px; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+                  <option value="">Period</option>
+                  ${[1,2,3,4,5,6,7,8].map(p => `<option value="${p}" ${slot.period === p ? 'selected' : ''}>Period ${p}</option>`).join('')}
+                </select>
+                <button type="button" onclick="app.removeScheduleSlot(this)" class="btn btn-secondary" style="padding: 8px 12px;">✕</button>
+              </div>
+            `).join('')
+          : `
+              <div class="schedule-slot" style="display: flex; gap: 10px; align-items: center;">
+                <select name="schedule-day" style="flex: 1; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+                  <option value="">Select Day</option>
+                  <option value="1">Monday</option>
+                  <option value="2">Tuesday</option>
+                  <option value="3">Wednesday</option>
+                  <option value="4">Thursday</option>
+                  <option value="5">Friday</option>
+                </select>
+                <select name="schedule-period" style="width: 100px; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+                  <option value="">Period</option>
+                  <option value="1">Period 1</option>
+                  <option value="2">Period 2</option>
+                  <option value="3">Period 3</option>
+                  <option value="4">Period 4</option>
+                  <option value="5">Period 5</option>
+                  <option value="6">Period 6</option>
+                  <option value="7">Period 7</option>
+                  <option value="8">Period 8</option>
+                </select>
+                <button type="button" onclick="app.removeScheduleSlot(this)" class="btn btn-secondary" style="padding: 8px 12px;">✕</button>
+              </div>
+            `;
+
         const modalContent = `
           <form id="edit-class-form">
             <div class="form-group">
@@ -7350,6 +7517,20 @@
               </div>
             </div>
             ` : ''}
+
+            <!-- Class Schedule Section -->
+            <div class="form-group" style="margin-top: 20px; padding-top: 20px; border-top: 2px solid var(--border);">
+              <label style="font-weight: 600; margin-bottom: 10px; display: block;">
+                📅 Class Schedule
+                <span style="font-size: 11px; color: var(--muted); font-weight: normal; display: block; margin-top: 4px;">When does this class meet?</span>
+              </label>
+              <div id="edit-class-schedule-slots" style="display: flex; flex-direction: column; gap: 10px;">
+                ${scheduleSlots}
+              </div>
+              <button type="button" onclick="app.addScheduleSlot()" class="btn btn-secondary" style="margin-top: 10px;">
+                + Add Another Time Slot
+              </button>
+            </div>
           </form>
 
           <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
@@ -7383,7 +7564,10 @@
           this.showNotification('Please fill in required fields', 'error');
           return;
         }
-        
+
+        // Get schedule data
+        const scheduleData = this.getScheduleSlotsData();
+
         try {
           // Build query - admins can update any class, teachers only their own
           let query = this.auth.supabase
@@ -7398,14 +7582,32 @@
           const { error } = await this.supabaseQuery(() => query);
 
           if (error) throw error;
-          
+
+          // Update class schedule - delete existing and insert new
+          await this.auth.supabase
+            .from('class_schedule')
+            .delete()
+            .eq('class_id', classId);
+
+          if (scheduleData.length > 0) {
+            const classSchedule = scheduleData.map(slot => ({
+              class_id: classId,
+              day_of_week: slot.day_of_week,
+              period: slot.period
+            }));
+
+            await this.auth.supabase
+              .from('class_schedule')
+              .insert(classSchedule);
+          }
+
           this.showNotification('Class updated successfully!', 'success');
           this.closeModal('edit-class');
-          
+
           // Reload classes
           await this.loadTeacherData();
           this.renderClasses();
-          
+
         } catch (error) {
           console.error('Error updating class:', error);
           this.showNotification('Error updating class: ' + error.message, 'error');
@@ -15762,6 +15964,9 @@
               <div class="card" style="margin-bottom: 30px; background: linear-gradient(135deg, rgba(106, 169, 255, 0.1), rgba(139, 255, 176, 0.1));">
                 <h3 style="margin-bottom: 15px;">⚡ Quick Actions</h3>
                 <div style="display: flex; flex-wrap: wrap; gap: 10px;">
+                  <button class="btn btn-primary" onclick="app.showDailyAttendanceRoster()">
+                    📋 Take Attendance
+                  </button>
                   <button class="btn btn-primary" onclick="app.showBroadcastModal()">
                     📢 Send Announcement
                   </button>
@@ -17086,6 +17291,12 @@
                   <button class="btn btn-secondary" onclick="app.viewStudentNotes('${studentId}', '${student.first_name} ${student.last_name}')">
                     📝 View Notes
                   </button>
+                  <button class="btn btn-secondary" onclick="app.showStudentScheduleModal('${studentId}', '${student.first_name} ${student.last_name}')">
+                    📅 Attendance Days
+                  </button>
+                  <button class="btn btn-secondary" onclick="app.showStudentAttendanceHistory('${studentId}', '${student.first_name} ${student.last_name}')">
+                    📊 Attendance History
+                  </button>
                   ${student.account_status === 'inactive' ? `
                     <button class="btn btn-primary" onclick="app.activateStudent('${studentId}', '${student.first_name} ${student.last_name}')">
                       ✅ Activate Account
@@ -18196,7 +18407,29 @@
                         <label for="inactive-email">Email (Optional)</label>
                         <input type="email" id="inactive-email" name="email" placeholder="Leave blank if unknown">
                     </div>
-                    
+
+                    <div class="form-group">
+                        <label style="font-weight: 600; margin-bottom: 10px; display: block;">Attendance Schedule</label>
+                        <p style="color: var(--muted-color); font-size: 12px; margin-bottom: 10px;">Select the days this student is expected to attend.</p>
+                        <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+                          <label style="display: flex; align-items: center; gap: 6px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">
+                            <input type="checkbox" name="attendance-day" value="1" checked> Mon
+                          </label>
+                          <label style="display: flex; align-items: center; gap: 6px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">
+                            <input type="checkbox" name="attendance-day" value="2" checked> Tue
+                          </label>
+                          <label style="display: flex; align-items: center; gap: 6px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">
+                            <input type="checkbox" name="attendance-day" value="3" checked> Wed
+                          </label>
+                          <label style="display: flex; align-items: center; gap: 6px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">
+                            <input type="checkbox" name="attendance-day" value="4" checked> Thu
+                          </label>
+                          <label style="display: flex; align-items: center; gap: 6px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">
+                            <input type="checkbox" name="attendance-day" value="5" checked> Fri
+                          </label>
+                        </div>
+                    </div>
+
                     <div style="display: flex; gap: 10px; margin-top: 20px;">
                         <button type="submit" class="btn btn-primary" style="flex: 1;">Create Student</button>
                         <button type="button" class="btn btn-secondary" data-action="close-student-mgmt">Cancel</button>
@@ -18216,7 +18449,7 @@
           // Find this section in showCreateInactiveStudentForm (around line 1657-1687)
           document.getElementById('create-inactive-student-form').addEventListener('submit', async (e) => {
               e.preventDefault();
-              
+
               const formData = new FormData(e.target);
               const studentData = {
                   username: formData.get('username'),
@@ -18227,10 +18460,13 @@
                   enrollmentType: formData.get('enrollmentType'),
                   activationGrade: formData.get('activationGrade')
               };
-              
+
+              // Get selected attendance days
+              const attendanceDays = formData.getAll('attendance-day').map(d => parseInt(d));
+
               try {
                   const result = await this.createInactiveStudent(studentData);
-                  
+
                   if (result.error) {
                       // Check for specific conflict errors
                       if (result.error.code === '23505') {
@@ -18248,11 +18484,23 @@
                       }
                       return;
                   }
-                  
+
+                  // Save attendance schedule if days were selected
+                  if (attendanceDays.length > 0 && result.data?.id) {
+                      const scheduleData = attendanceDays.map(day => ({
+                          student_id: result.data.id,
+                          day_of_week: day
+                      }));
+
+                      await this.auth.supabase
+                          .from('student_schedule')
+                          .insert(scheduleData);
+                  }
+
                   window.PortalUI.showNotification('✅ Inactive student created successfully!', 'success');
                   const overlay = document.getElementById('student-mgmt-modal-overlay');
                   if (overlay) overlay.remove();
-                  
+
               } catch (error) {
                   console.error('Error creating inactive student:', error);
                   window.PortalUI.showNotification('Error: ' + error.message, 'error');
@@ -18416,8 +18664,805 @@
             console.error('Error loading inactive students:', error);
             document.getElementById('inactive-students-list').innerHTML = '<p style="color: var(--danger);">Error loading students</p>';
         }
-    } 
-             
+    }
+
+    // ==================== ATTENDANCE SCHEDULE MANAGEMENT ====================
+
+    async showStudentScheduleModal(studentId, studentName) {
+      this.showLoading('Loading schedule...');
+
+      try {
+        // Load current schedule
+        const { data: schedule, error } = await this.auth.supabase
+          .from('student_schedule')
+          .select('*')
+          .eq('student_id', studentId);
+
+        if (error) throw error;
+
+        const scheduledDays = schedule?.map(s => s.day_of_week) || [];
+
+        const days = [
+          { num: 0, name: 'Sunday', short: 'Sun' },
+          { num: 1, name: 'Monday', short: 'Mon' },
+          { num: 2, name: 'Tuesday', short: 'Tue' },
+          { num: 3, name: 'Wednesday', short: 'Wed' },
+          { num: 4, name: 'Thursday', short: 'Thu' },
+          { num: 5, name: 'Friday', short: 'Fri' },
+          { num: 6, name: 'Saturday', short: 'Sat' }
+        ];
+
+        const modalContent = `
+          <div style="margin-bottom: 20px;">
+            <p style="color: var(--muted); margin-bottom: 15px;">
+              Select the days ${studentName} is expected to attend school.
+              Attendance can only be marked on scheduled days.
+            </p>
+
+            <div style="display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; margin-bottom: 20px;">
+              ${days.map(day => `
+                <label style="
+                  display: flex;
+                  flex-direction: column;
+                  align-items: center;
+                  padding: 15px 10px;
+                  border: 2px solid ${scheduledDays.includes(day.num) ? 'var(--accent)' : 'var(--border)'};
+                  border-radius: 8px;
+                  cursor: pointer;
+                  transition: all 0.2s;
+                  background: ${scheduledDays.includes(day.num) ? 'rgba(106, 169, 255, 0.1)' : 'transparent'};
+                ">
+                  <input type="checkbox"
+                         name="schedule-day"
+                         value="${day.num}"
+                         ${scheduledDays.includes(day.num) ? 'checked' : ''}
+                         style="margin-bottom: 8px;"
+                         onchange="this.parentElement.style.borderColor = this.checked ? 'var(--accent)' : 'var(--border)'; this.parentElement.style.background = this.checked ? 'rgba(106, 169, 255, 0.1)' : 'transparent';">
+                  <span style="font-weight: 600;">${day.short}</span>
+                </label>
+              `).join('')}
+            </div>
+
+            <div style="display: flex; gap: 10px;">
+              <button class="btn btn-secondary" onclick="app.selectAllDays()" style="flex: 1;">
+                Select Weekdays (M-F)
+              </button>
+              <button class="btn btn-secondary" onclick="app.clearAllDays()" style="flex: 1;">
+                Clear All
+              </button>
+            </div>
+          </div>
+
+          <div style="display: flex; gap: 10px; justify-content: flex-end;">
+            <button class="btn btn-secondary" onclick="app.closeModal('student-schedule')">Cancel</button>
+            <button class="btn btn-primary" onclick="app.saveStudentSchedule('${studentId}')">Save Schedule</button>
+          </div>
+        `;
+
+        this.showModal('student-schedule', `📅 Attendance Schedule - ${studentName}`, modalContent);
+
+      } catch (error) {
+        console.error('Error loading student schedule:', error);
+        this.showNotification('Error loading schedule: ' + error.message, 'error');
+      }
+    }
+
+    selectAllDays() {
+      // Select Monday through Friday (1-5)
+      const checkboxes = document.querySelectorAll('input[name="schedule-day"]');
+      checkboxes.forEach(cb => {
+        const day = parseInt(cb.value);
+        const shouldCheck = day >= 1 && day <= 5;
+        cb.checked = shouldCheck;
+        cb.parentElement.style.borderColor = shouldCheck ? 'var(--accent)' : 'var(--border)';
+        cb.parentElement.style.background = shouldCheck ? 'rgba(106, 169, 255, 0.1)' : 'transparent';
+      });
+    }
+
+    clearAllDays() {
+      const checkboxes = document.querySelectorAll('input[name="schedule-day"]');
+      checkboxes.forEach(cb => {
+        cb.checked = false;
+        cb.parentElement.style.borderColor = 'var(--border)';
+        cb.parentElement.style.background = 'transparent';
+      });
+    }
+
+    async saveStudentSchedule(studentId) {
+      const checkboxes = document.querySelectorAll('input[name="schedule-day"]:checked');
+      const selectedDays = Array.from(checkboxes).map(cb => parseInt(cb.value));
+
+      try {
+        // Delete existing schedule
+        await this.auth.supabase
+          .from('student_schedule')
+          .delete()
+          .eq('student_id', studentId);
+
+        // Insert new schedule
+        if (selectedDays.length > 0) {
+          const scheduleData = selectedDays.map(day => ({
+            student_id: studentId,
+            day_of_week: day
+          }));
+
+          const { error } = await this.auth.supabase
+            .from('student_schedule')
+            .insert(scheduleData);
+
+          if (error) throw error;
+        }
+
+        this.showNotification('Schedule saved successfully!', 'success');
+        this.closeModal('student-schedule');
+
+      } catch (error) {
+        console.error('Error saving schedule:', error);
+        this.showNotification('Error saving schedule: ' + error.message, 'error');
+      }
+    }
+
+    // ==================== DAILY ATTENDANCE MANAGEMENT ====================
+
+    async showDailyAttendanceRoster(dateStr = null) {
+      this.showLoading('Loading attendance roster...');
+
+      const today = dateStr || new Date().toISOString().split('T')[0];
+      const dayOfWeek = new Date(today + 'T12:00:00').getDay();
+
+      const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+      const dayName = dayNames[dayOfWeek];
+
+      try {
+        // Get students scheduled for this day
+        const { data: scheduledStudents, error: schedError } = await this.auth.supabase
+          .from('student_schedule')
+          .select('student_id')
+          .eq('day_of_week', dayOfWeek);
+
+        if (schedError) throw schedError;
+
+        const scheduledIds = scheduledStudents?.map(s => s.student_id) || [];
+
+        // Get all students (both active and inactive) who are scheduled for this day
+        let students = [];
+        if (scheduledIds.length > 0) {
+          const { data: studentData, error: studentError } = await this.auth.supabase
+            .from('user_profiles')
+            .select('id, first_name, last_name, grade_level, enrollment_type')
+            .eq('user_type', 'student')
+            .in('id', scheduledIds)
+            .order('last_name');
+
+          if (studentError) throw studentError;
+          students = studentData || [];
+        }
+
+        // Get existing attendance for this date
+        const { data: attendanceData, error: attError } = await this.auth.supabase
+          .from('daily_attendance')
+          .select('*')
+          .eq('date', today);
+
+        if (attError) throw attError;
+
+        const attendanceMap = {};
+        attendanceData?.forEach(a => {
+          attendanceMap[a.student_id] = a;
+        });
+
+        const statusOptions = [
+          { value: 'present', label: 'Present', icon: '✅' },
+          { value: 'absent', label: 'Absent', icon: '❌' },
+          { value: 'late', label: 'Late', icon: '⏰' },
+          { value: 'left_early', label: 'Left Early', icon: '🚪' },
+          { value: 'late_left_early', label: 'Late & Left Early', icon: '⚠️' }
+        ];
+
+        const modalContent = `
+          <div style="margin-bottom: 20px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+              <div style="display: flex; align-items: center; gap: 15px;">
+                <button class="btn btn-secondary" onclick="app.changeAttendanceDate(-1, '${today}')">◀ Prev</button>
+                <div>
+                  <input type="date" id="attendance-date" value="${today}"
+                         onchange="app.showDailyAttendanceRoster(this.value)"
+                         style="padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+                  <div style="text-align: center; font-size: 12px; color: var(--muted); margin-top: 5px;">${dayName}</div>
+                </div>
+                <button class="btn btn-secondary" onclick="app.changeAttendanceDate(1, '${today}')">Next ▶</button>
+              </div>
+              <div>
+                <span style="color: var(--muted);">${students.length} students scheduled</span>
+              </div>
+            </div>
+
+            ${students.length === 0 ? `
+              <div style="text-align: center; padding: 40px; color: var(--muted);">
+                <div style="font-size: 48px; margin-bottom: 15px;">📅</div>
+                <p>No students are scheduled to attend on ${dayName}.</p>
+                <p style="font-size: 13px; margin-top: 10px;">Configure student schedules in Student Management.</p>
+              </div>
+            ` : `
+              <div style="max-height: 60vh; overflow-y: auto;">
+                <table style="width: 100%; border-collapse: collapse;">
+                  <thead style="position: sticky; top: 0; background: var(--card); z-index: 1;">
+                    <tr>
+                      <th style="text-align: left; padding: 12px; border-bottom: 2px solid var(--border);">Student</th>
+                      <th style="text-align: left; padding: 12px; border-bottom: 2px solid var(--border);">Grade</th>
+                      <th style="text-align: center; padding: 12px; border-bottom: 2px solid var(--border);">Status</th>
+                      <th style="text-align: center; padding: 12px; border-bottom: 2px solid var(--border);">Period Details</th>
+                      <th style="text-align: center; padding: 12px; border-bottom: 2px solid var(--border);">Excused</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${students.map(student => {
+                      const att = attendanceMap[student.id] || {};
+                      return `
+                        <tr data-student-id="${student.id}" style="border-bottom: 1px solid var(--border);">
+                          <td style="padding: 12px;">
+                            <div style="font-weight: 600;">${student.first_name} ${student.last_name}</div>
+                            <div style="font-size: 12px; color: var(--muted);">${student.enrollment_type === 'homeschool' ? 'Homeschool' : 'Full-Time'}</div>
+                          </td>
+                          <td style="padding: 12px;">${student.grade_level || 'N/A'}</td>
+                          <td style="padding: 12px; text-align: center;">
+                            <select class="attendance-status" data-student-id="${student.id}"
+                                    style="padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);"
+                                    onchange="app.onAttendanceStatusChange(this)">
+                              <option value="">-- Select --</option>
+                              ${statusOptions.map(opt => `
+                                <option value="${opt.value}" ${att.status === opt.value ? 'selected' : ''}>
+                                  ${opt.icon} ${opt.label}
+                                </option>
+                              `).join('')}
+                            </select>
+                          </td>
+                          <td style="padding: 12px; text-align: center;">
+                            <div class="period-details" data-student-id="${student.id}" style="display: ${['late', 'left_early', 'late_left_early'].includes(att.status) ? 'flex' : 'none'}; gap: 10px; justify-content: center;">
+                              <div class="arrived-period" style="display: ${['late', 'late_left_early'].includes(att.status) ? 'block' : 'none'};">
+                                <label style="font-size: 11px; color: var(--muted);">Arrived:</label>
+                                <select class="arrived-at-period" data-student-id="${student.id}" style="padding: 4px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+                                  ${[1,2,3,4,5,6,7,8,9,10].map(p => `<option value="${p}" ${att.arrived_at_period === p ? 'selected' : ''}>P${p}</option>`).join('')}
+                                </select>
+                              </div>
+                              <div class="left-period" style="display: ${['left_early', 'late_left_early'].includes(att.status) ? 'block' : 'none'};">
+                                <label style="font-size: 11px; color: var(--muted);">Left:</label>
+                                <select class="left-at-period" data-student-id="${student.id}" style="padding: 4px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+                                  ${[1,2,3,4,5,6,7,8,9,10].map(p => `<option value="${p}" ${att.left_at_period === p ? 'selected' : ''}>P${p}</option>`).join('')}
+                                </select>
+                              </div>
+                            </div>
+                          </td>
+                          <td style="padding: 12px; text-align: center;">
+                            <div class="excused-section" data-student-id="${student.id}" style="display: ${att.status === 'absent' ? 'block' : 'none'};">
+                              <label style="display: flex; align-items: center; gap: 8px; justify-content: center;">
+                                <input type="checkbox" class="excused-checkbox" data-student-id="${student.id}" ${att.excused ? 'checked' : ''}>
+                                <span style="font-size: 12px;">Excused</span>
+                              </label>
+                            </div>
+                          </td>
+                        </tr>
+                        <tr class="excuse-note-row" data-student-id="${student.id}" style="display: ${att.excused ? 'table-row' : 'none'};">
+                          <td colspan="5" style="padding: 0 12px 12px 12px;">
+                            <input type="text" class="excuse-note" data-student-id="${student.id}"
+                                   placeholder="Excuse note (optional)"
+                                   value="${att.excuse_note || ''}"
+                                   style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+                          </td>
+                        </tr>
+                      `;
+                    }).join('')}
+                  </tbody>
+                </table>
+              </div>
+
+              <div style="display: flex; gap: 10px; margin-top: 20px;">
+                <button class="btn btn-secondary" onclick="app.markAllPresent('${today}')" style="flex: 1;">
+                  ✅ Mark All Present
+                </button>
+              </div>
+            `}
+          </div>
+
+          <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; padding-top: 15px; border-top: 1px solid var(--border);">
+            <button class="btn btn-secondary" onclick="app.closeModal('daily-attendance')">Close</button>
+            ${students.length > 0 ? `<button class="btn btn-primary" onclick="app.saveDailyAttendance('${today}')">Save Attendance</button>` : ''}
+          </div>
+        `;
+
+        this.showModal('daily-attendance', '📋 Daily Attendance', modalContent, true);
+
+      } catch (error) {
+        console.error('Error loading attendance roster:', error);
+        this.showNotification('Error loading attendance: ' + error.message, 'error');
+      }
+    }
+
+    changeAttendanceDate(direction, currentDate) {
+      const date = new Date(currentDate + 'T12:00:00');
+      date.setDate(date.getDate() + direction);
+      const newDate = date.toISOString().split('T')[0];
+      this.showDailyAttendanceRoster(newDate);
+    }
+
+    onAttendanceStatusChange(select) {
+      const studentId = select.dataset.studentId;
+      const status = select.value;
+
+      // Show/hide period details based on status
+      const periodDetails = document.querySelector(`.period-details[data-student-id="${studentId}"]`);
+      const arrivedPeriod = periodDetails.querySelector('.arrived-period');
+      const leftPeriod = periodDetails.querySelector('.left-period');
+      const excusedSection = document.querySelector(`.excused-section[data-student-id="${studentId}"]`);
+      const excuseNoteRow = document.querySelector(`.excuse-note-row[data-student-id="${studentId}"]`);
+
+      // Reset visibility
+      periodDetails.style.display = 'none';
+      arrivedPeriod.style.display = 'none';
+      leftPeriod.style.display = 'none';
+      excusedSection.style.display = 'none';
+      excuseNoteRow.style.display = 'none';
+
+      if (status === 'late') {
+        periodDetails.style.display = 'flex';
+        arrivedPeriod.style.display = 'block';
+      } else if (status === 'left_early') {
+        periodDetails.style.display = 'flex';
+        leftPeriod.style.display = 'block';
+      } else if (status === 'late_left_early') {
+        periodDetails.style.display = 'flex';
+        arrivedPeriod.style.display = 'block';
+        leftPeriod.style.display = 'block';
+      } else if (status === 'absent') {
+        excusedSection.style.display = 'block';
+      }
+    }
+
+    markAllPresent(date) {
+      const selects = document.querySelectorAll('.attendance-status');
+      selects.forEach(select => {
+        select.value = 'present';
+        this.onAttendanceStatusChange(select);
+      });
+    }
+
+    async saveDailyAttendance(date) {
+      const rows = document.querySelectorAll('tr[data-student-id]');
+      const attendanceRecords = [];
+
+      rows.forEach(row => {
+        const studentId = row.dataset.studentId;
+        if (!studentId) return;
+
+        const statusSelect = row.querySelector('.attendance-status');
+        if (!statusSelect || !statusSelect.value) return;
+
+        const status = statusSelect.value;
+        const record = {
+          student_id: studentId,
+          date: date,
+          status: status,
+          marked_by: this.userInfo.user.id
+        };
+
+        // Add period details if applicable
+        if (['late', 'late_left_early'].includes(status)) {
+          const arrivedSelect = document.querySelector(`.arrived-at-period[data-student-id="${studentId}"]`);
+          if (arrivedSelect) record.arrived_at_period = parseInt(arrivedSelect.value);
+        }
+
+        if (['left_early', 'late_left_early'].includes(status)) {
+          const leftSelect = document.querySelector(`.left-at-period[data-student-id="${studentId}"]`);
+          if (leftSelect) record.left_at_period = parseInt(leftSelect.value);
+        }
+
+        // Add excused info if absent
+        if (status === 'absent') {
+          const excusedCheckbox = document.querySelector(`.excused-checkbox[data-student-id="${studentId}"]`);
+          record.excused = excusedCheckbox?.checked || false;
+
+          if (record.excused) {
+            const excuseNote = document.querySelector(`.excuse-note[data-student-id="${studentId}"]`);
+            record.excuse_note = excuseNote?.value || null;
+          }
+        }
+
+        attendanceRecords.push(record);
+      });
+
+      if (attendanceRecords.length === 0) {
+        this.showNotification('No attendance records to save', 'info');
+        return;
+      }
+
+      try {
+        // Upsert attendance records
+        const { error } = await this.auth.supabase
+          .from('daily_attendance')
+          .upsert(attendanceRecords, { onConflict: 'student_id,date' });
+
+        if (error) throw error;
+
+        this.showNotification(`Saved attendance for ${attendanceRecords.length} students`, 'success');
+
+      } catch (error) {
+        console.error('Error saving attendance:', error);
+        this.showNotification('Error saving attendance: ' + error.message, 'error');
+      }
+    }
+
+    // ==================== STUDENT ATTENDANCE HISTORY ====================
+
+    async showStudentAttendanceHistory(studentId, studentName) {
+      this.showLoading('Loading attendance history...');
+
+      try {
+        // Get attendance records for this student
+        const { data: attendance, error } = await this.auth.supabase
+          .from('daily_attendance')
+          .select('*')
+          .eq('student_id', studentId)
+          .order('date', { ascending: false });
+
+        if (error) throw error;
+
+        // Get student's schedule
+        const { data: schedule } = await this.auth.supabase
+          .from('student_schedule')
+          .select('day_of_week')
+          .eq('student_id', studentId);
+
+        const scheduledDays = schedule?.map(s => s.day_of_week) || [];
+        const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+        const scheduledDayNames = scheduledDays.map(d => dayNames[d]).join(', ') || 'Not set';
+
+        // Calculate stats
+        const stats = {
+          present: attendance?.filter(a => a.status === 'present').length || 0,
+          absent: attendance?.filter(a => a.status === 'absent').length || 0,
+          excused: attendance?.filter(a => a.status === 'absent' && a.excused).length || 0,
+          late: attendance?.filter(a => ['late', 'late_left_early'].includes(a.status)).length || 0,
+          leftEarly: attendance?.filter(a => ['left_early', 'late_left_early'].includes(a.status)).length || 0
+        };
+
+        const total = attendance?.length || 0;
+        const attendanceRate = total > 0 ? ((stats.present / total) * 100).toFixed(1) : 'N/A';
+
+        const statusIcons = {
+          present: '✅',
+          absent: '❌',
+          late: '⏰',
+          left_early: '🚪',
+          late_left_early: '⚠️'
+        };
+
+        const modalContent = `
+          <div>
+            <!-- Stats Overview -->
+            <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 20px;">
+              <div style="text-align: center; padding: 15px; background: rgba(139, 255, 176, 0.1); border-radius: 8px; border: 1px solid rgba(139, 255, 176, 0.3);">
+                <div style="font-size: 24px; font-weight: bold; color: var(--accent-2);">${stats.present}</div>
+                <div style="font-size: 11px; color: var(--muted);">Present</div>
+              </div>
+              <div style="text-align: center; padding: 15px; background: rgba(255, 106, 106, 0.1); border-radius: 8px; border: 1px solid rgba(255, 106, 106, 0.3);">
+                <div style="font-size: 24px; font-weight: bold; color: var(--danger);">${stats.absent}</div>
+                <div style="font-size: 11px; color: var(--muted);">Absent</div>
+              </div>
+              <div style="text-align: center; padding: 15px; background: rgba(255, 211, 106, 0.1); border-radius: 8px; border: 1px solid rgba(255, 211, 106, 0.3);">
+                <div style="font-size: 24px; font-weight: bold; color: var(--warning);">${stats.late}</div>
+                <div style="font-size: 11px; color: var(--muted);">Late</div>
+              </div>
+              <div style="text-align: center; padding: 15px; background: rgba(106, 169, 255, 0.1); border-radius: 8px; border: 1px solid rgba(106, 169, 255, 0.3);">
+                <div style="font-size: 24px; font-weight: bold; color: var(--accent);">${stats.leftEarly}</div>
+                <div style="font-size: 11px; color: var(--muted);">Left Early</div>
+              </div>
+              <div style="text-align: center; padding: 15px; background: rgba(106, 169, 255, 0.1); border-radius: 8px; border: 1px solid rgba(106, 169, 255, 0.3);">
+                <div style="font-size: 24px; font-weight: bold; color: var(--accent);">${attendanceRate}%</div>
+                <div style="font-size: 11px; color: var(--muted);">Attendance Rate</div>
+              </div>
+            </div>
+
+            <div style="margin-bottom: 15px; padding: 10px; background: var(--card); border-radius: 6px; border: 1px solid var(--border);">
+              <span style="color: var(--muted);">Scheduled Days:</span>
+              <strong>${scheduledDayNames}</strong>
+            </div>
+
+            <!-- Attendance Records -->
+            <div style="max-height: 50vh; overflow-y: auto;">
+              ${attendance && attendance.length > 0 ? `
+                <table style="width: 100%; border-collapse: collapse;">
+                  <thead style="position: sticky; top: 0; background: var(--card);">
+                    <tr>
+                      <th style="text-align: left; padding: 10px; border-bottom: 2px solid var(--border);">Date</th>
+                      <th style="text-align: center; padding: 10px; border-bottom: 2px solid var(--border);">Status</th>
+                      <th style="text-align: left; padding: 10px; border-bottom: 2px solid var(--border);">Details</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${attendance.map(record => {
+                      const date = new Date(record.date + 'T12:00:00');
+                      const dayName = dayNames[date.getDay()];
+                      const formattedDate = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+                      let details = '';
+                      if (record.arrived_at_period) details += `Arrived P${record.arrived_at_period} `;
+                      if (record.left_at_period) details += `Left P${record.left_at_period} `;
+                      if (record.excused) details += '(Excused) ';
+                      if (record.excuse_note) details += record.excuse_note;
+
+                      return `
+                        <tr style="border-bottom: 1px solid var(--border);">
+                          <td style="padding: 10px;">
+                            <div>${formattedDate}</div>
+                            <div style="font-size: 11px; color: var(--muted);">${dayName}</div>
+                          </td>
+                          <td style="padding: 10px; text-align: center;">
+                            <span style="font-size: 18px;">${statusIcons[record.status] || '❓'}</span>
+                            <div style="font-size: 11px; color: var(--muted);">${record.status.replace(/_/g, ' ')}</div>
+                          </td>
+                          <td style="padding: 10px; font-size: 13px; color: var(--muted);">${details || '-'}</td>
+                        </tr>
+                      `;
+                    }).join('')}
+                  </tbody>
+                </table>
+              ` : `
+                <div style="text-align: center; padding: 40px; color: var(--muted);">
+                  <div style="font-size: 48px; margin-bottom: 15px;">📅</div>
+                  <p>No attendance records found.</p>
+                </div>
+              `}
+            </div>
+          </div>
+
+          <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px;">
+            <button class="btn btn-secondary" onclick="app.showStudentScheduleModal('${studentId}', '${studentName}')">
+              📅 Edit Schedule
+            </button>
+            <button class="btn btn-secondary" onclick="app.closeModal('attendance-history')">Close</button>
+          </div>
+        `;
+
+        this.showModal('attendance-history', `📊 Attendance History - ${studentName}`, modalContent, true);
+
+      } catch (error) {
+        console.error('Error loading attendance history:', error);
+        this.showNotification('Error loading history: ' + error.message, 'error');
+      }
+    }
+
+    // Toggle excuse note visibility when checkbox changes
+    setupExcuseCheckboxListeners() {
+      document.querySelectorAll('.excused-checkbox').forEach(checkbox => {
+        checkbox.addEventListener('change', function() {
+          const studentId = this.dataset.studentId;
+          const excuseRow = document.querySelector(`.excuse-note-row[data-student-id="${studentId}"]`);
+          excuseRow.style.display = this.checked ? 'table-row' : 'none';
+        });
+      });
+    }
+
+    // ==================== CLASS ATTENDANCE (Teacher) ====================
+
+    async showClassAttendance(classId, dateStr = null) {
+      this.showLoading('Loading class attendance...');
+
+      const today = dateStr || new Date().toISOString().split('T')[0];
+      const dayOfWeek = new Date(today + 'T12:00:00').getDay();
+      const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+      const dayName = dayNames[dayOfWeek];
+
+      try {
+        // Get class info
+        const classData = this.classes.find(c => c.id === classId);
+        const className = classData?.name || 'Class';
+
+        // Get class schedule to see if class meets on this day
+        const { data: classSchedule } = await this.auth.supabase
+          .from('class_schedule')
+          .select('*')
+          .eq('class_id', classId)
+          .eq('day_of_week', dayOfWeek);
+
+        const meetsThatDay = classSchedule && classSchedule.length > 0;
+        const periods = classSchedule?.map(s => s.period).sort((a, b) => a - b) || [];
+
+        // Get enrolled students
+        const { data: enrollments } = await this.auth.supabase
+          .from('class_enrollments')
+          .select('student_id')
+          .eq('class_id', classId)
+          .eq('status', 'active');
+
+        const studentIds = enrollments?.map(e => e.student_id) || [];
+
+        let students = [];
+        if (studentIds.length > 0) {
+          const { data: studentData } = await this.auth.supabase
+            .from('user_profiles')
+            .select('id, first_name, last_name, grade_level')
+            .in('id', studentIds)
+            .order('last_name');
+
+          students = studentData || [];
+        }
+
+        // Get existing class attendance for this date
+        const { data: attendanceData } = await this.auth.supabase
+          .from('class_attendance')
+          .select('*')
+          .eq('class_id', classId)
+          .eq('date', today);
+
+        const attendanceMap = {};
+        attendanceData?.forEach(a => {
+          attendanceMap[a.student_id] = a;
+        });
+
+        const statusOptions = [
+          { value: 'present', label: 'Present', icon: '✅' },
+          { value: 'absent', label: 'Absent', icon: '❌' },
+          { value: 'late', label: 'Late', icon: '⏰' },
+          { value: 'left_early', label: 'Left Early', icon: '🚪' },
+          { value: 'late_left_early', label: 'Late & Left Early', icon: '⚠️' }
+        ];
+
+        const modalContent = `
+          <div style="margin-bottom: 20px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+              <div style="display: flex; align-items: center; gap: 15px;">
+                <button class="btn btn-secondary" onclick="app.changeClassAttendanceDate(-1, '${classId}', '${today}')">◀ Prev</button>
+                <div>
+                  <input type="date" id="class-attendance-date" value="${today}"
+                         onchange="app.showClassAttendance('${classId}', this.value)"
+                         style="padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+                  <div style="text-align: center; font-size: 12px; color: var(--muted); margin-top: 5px;">${dayName}</div>
+                </div>
+                <button class="btn btn-secondary" onclick="app.changeClassAttendanceDate(1, '${classId}', '${today}')">Next ▶</button>
+              </div>
+              <div style="text-align: right;">
+                <div style="font-weight: 600;">${className}</div>
+                <div style="font-size: 12px; color: var(--muted);">
+                  ${meetsThatDay ? `Periods: ${periods.join(', ')}` : 'Does not meet on ' + dayName}
+                </div>
+              </div>
+            </div>
+
+            ${!meetsThatDay ? `
+              <div style="text-align: center; padding: 40px; background: rgba(255, 211, 106, 0.1); border: 1px solid var(--warning); border-radius: 8px;">
+                <div style="font-size: 48px; margin-bottom: 15px;">📅</div>
+                <p style="color: var(--warning); font-weight: 600;">This class does not meet on ${dayName}.</p>
+                <p style="color: var(--muted); font-size: 13px; margin-top: 10px;">Edit the class to set up the schedule.</p>
+              </div>
+            ` : students.length === 0 ? `
+              <div style="text-align: center; padding: 40px; color: var(--muted);">
+                <div style="font-size: 48px; margin-bottom: 15px;">👥</div>
+                <p>No students enrolled in this class.</p>
+              </div>
+            ` : `
+              <div style="max-height: 50vh; overflow-y: auto;">
+                <table style="width: 100%; border-collapse: collapse;">
+                  <thead style="position: sticky; top: 0; background: var(--card); z-index: 1;">
+                    <tr>
+                      <th style="text-align: left; padding: 12px; border-bottom: 2px solid var(--border);">Student</th>
+                      <th style="text-align: left; padding: 12px; border-bottom: 2px solid var(--border);">Grade</th>
+                      <th style="text-align: center; padding: 12px; border-bottom: 2px solid var(--border);">Status</th>
+                      <th style="text-align: left; padding: 12px; border-bottom: 2px solid var(--border);">Notes</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${students.map(student => {
+                      const att = attendanceMap[student.id] || {};
+                      return `
+                        <tr data-student-id="${student.id}" style="border-bottom: 1px solid var(--border);">
+                          <td style="padding: 12px;">
+                            <div style="font-weight: 600;">${student.first_name} ${student.last_name}</div>
+                          </td>
+                          <td style="padding: 12px;">${student.grade_level || 'N/A'}</td>
+                          <td style="padding: 12px; text-align: center;">
+                            <select class="class-attendance-status" data-student-id="${student.id}"
+                                    style="padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+                              <option value="">-- Select --</option>
+                              ${statusOptions.map(opt => `
+                                <option value="${opt.value}" ${att.status === opt.value ? 'selected' : ''}>
+                                  ${opt.icon} ${opt.label}
+                                </option>
+                              `).join('')}
+                            </select>
+                          </td>
+                          <td style="padding: 12px;">
+                            <input type="text" class="class-attendance-notes" data-student-id="${student.id}"
+                                   placeholder="Optional notes"
+                                   value="${att.notes || ''}"
+                                   style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+                          </td>
+                        </tr>
+                      `;
+                    }).join('')}
+                  </tbody>
+                </table>
+              </div>
+
+              <div style="display: flex; gap: 10px; margin-top: 20px;">
+                <button class="btn btn-secondary" onclick="app.markAllClassPresent('${classId}', '${today}')" style="flex: 1;">
+                  ✅ Mark All Present
+                </button>
+              </div>
+            `}
+          </div>
+
+          <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; padding-top: 15px; border-top: 1px solid var(--border);">
+            <button class="btn btn-secondary" onclick="app.closeModal('class-attendance')">Close</button>
+            ${meetsThatDay && students.length > 0 ? `<button class="btn btn-primary" onclick="app.saveClassAttendance('${classId}', '${today}')">Save Attendance</button>` : ''}
+          </div>
+        `;
+
+        this.showModal('class-attendance', `📋 Class Attendance - ${className}`, modalContent, true);
+
+      } catch (error) {
+        console.error('Error loading class attendance:', error);
+        this.showNotification('Error loading attendance: ' + error.message, 'error');
+      }
+    }
+
+    changeClassAttendanceDate(direction, classId, currentDate) {
+      const date = new Date(currentDate + 'T12:00:00');
+      date.setDate(date.getDate() + direction);
+      const newDate = date.toISOString().split('T')[0];
+      this.showClassAttendance(classId, newDate);
+    }
+
+    markAllClassPresent(classId, date) {
+      const selects = document.querySelectorAll('.class-attendance-status');
+      selects.forEach(select => {
+        select.value = 'present';
+      });
+    }
+
+    async saveClassAttendance(classId, date) {
+      const rows = document.querySelectorAll('tr[data-student-id]');
+      const attendanceRecords = [];
+
+      rows.forEach(row => {
+        const studentId = row.dataset.studentId;
+        if (!studentId) return;
+
+        const statusSelect = row.querySelector('.class-attendance-status');
+        if (!statusSelect || !statusSelect.value) return;
+
+        const notesInput = row.querySelector('.class-attendance-notes');
+
+        attendanceRecords.push({
+          class_id: classId,
+          student_id: studentId,
+          date: date,
+          status: statusSelect.value,
+          notes: notesInput?.value || null,
+          marked_by: this.userInfo.user.id
+        });
+      });
+
+      if (attendanceRecords.length === 0) {
+        this.showNotification('No attendance records to save', 'info');
+        return;
+      }
+
+      try {
+        // Upsert attendance records
+        const { error } = await this.auth.supabase
+          .from('class_attendance')
+          .upsert(attendanceRecords, { onConflict: 'class_id,student_id,date' });
+
+        if (error) throw error;
+
+        this.showNotification(`Saved attendance for ${attendanceRecords.length} students`, 'success');
+
+      } catch (error) {
+        console.error('Error saving class attendance:', error);
+        this.showNotification('Error saving attendance: ' + error.message, 'error');
+      }
+    }
+
     } // ============================= END OF CLASSAPP ===================================
 
     class TeacherGradeManagement {
