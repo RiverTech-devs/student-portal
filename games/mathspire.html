@@ -5677,9 +5677,14 @@
                     const card = CARD_DATABASE[cardId];
                     if (!card) {
                         console.error('Card not found in database:', cardId);
+                        // Show placeholder for missing card instead of silently skipping
+                        const cardEl = document.createElement('div');
+                        cardEl.className = 'card error';
+                        cardEl.innerHTML = `<div class="card-name">???</div><div class="card-type">error</div><div class="card-description">Missing card: ${cardId}</div>`;
+                        handEl.appendChild(cardEl);
                         return;
                     }
-                    
+
                     const cardEl = document.createElement('div');
                     cardEl.className = `card ${card.type}`;
                     
@@ -5706,8 +5711,9 @@
 
             renderPlayerDebuffs() {
                 const debuffsEl = document.getElementById('player-debuffs');
+                if (!debuffsEl) return; // Element not in DOM yet
                 debuffsEl.innerHTML = '';
-            
+
                 const debuffInfo = {
                     confused: { 
                         icon: '😵', 
@@ -5880,17 +5886,19 @@
             
             isEquationComplete() {
                 if (this.currentEquation.length === 0) return false;
-                
+
                 const lastCard = CARD_DATABASE[this.currentEquation[this.currentEquation.length - 1]];
-                
+                if (!lastCard) return false; // Invalid card
+
                 // Equation is complete if it ends with a number
                 // and has balanced parentheses (if any)
                 if (lastCard.type !== 'number') return false;
-                
+
                 // Check parentheses balance
                 let openCount = 0;
                 for (const cardId of this.currentEquation) {
                     const card = CARD_DATABASE[cardId];
+                    if (!card) continue; // Skip invalid cards
                     if (card.type === 'grouping') {
                         if (card.group === 'open') openCount++;
                         else if (card.group === 'close') openCount--;
@@ -6031,7 +6039,11 @@
             }
             
             showEvaluationFeedback(message, operatorCount) {
+                // Clean up any existing feedback elements to prevent accumulation
+                document.querySelectorAll('.evaluation-feedback').forEach(el => el.remove());
+
                 const feedback = document.createElement('div');
+                feedback.className = 'evaluation-feedback';
                 feedback.style.cssText = `
                     position: fixed;
                     top: 30%;
@@ -6048,28 +6060,31 @@
                     pointer-events: none;
                     animation: feedback-float 1s ease-out forwards;
                 `;
-                
+
                 let displayText = message;
                 if (operatorCount > 0) {
                     displayText += ` <span style="font-size: 20px; color: #f39c12;">(+${Math.round(this.getComboBonus(operatorCount) * 100)}% combo!)</span>`;
                 }
-                
+
                 feedback.innerHTML = displayText;
                 document.body.appendChild(feedback);
-                
+
                 setTimeout(() => {
-                    feedback.remove();
+                    if (feedback.parentNode) feedback.remove();
                 }, 1000);
             }
             
             canPlayCard(card) {
+                if (!card) return false; // Invalid card
+
                 // Empty equation - can only start with number or grouping
                 if (this.currentEquation.length === 0) {
                     return card.type === 'number' || card.type === 'grouping';
                 }
-            
+
                 const lastCard = CARD_DATABASE[this.currentEquation[this.currentEquation.length - 1]];
-            
+                if (!lastCard) return false; // Invalid last card
+
                 // After number: can play operator, grouping close, or function
                 if (lastCard.type === 'number') {
                     return card.type === 'operator' || 
@@ -6107,10 +6122,11 @@
             calculateEquation(equationCards) {
                 // Convert cards to mathematical expression
                 let expression = '';
-                
+
                 equationCards.forEach(cardId => {
                     const card = CARD_DATABASE[cardId];
-                    
+                    if (!card) return; // Skip invalid cards
+
                     if (card.type === 'number') {
                         expression += card.value;
                     } else if (card.type === 'operator') {
@@ -6161,15 +6177,23 @@
                     return null; // Unbalanced parentheses
                 }
             
-                // Evaluate the expression safely
+                // Validate expression contains only safe characters before evaluating
+                // Allow: digits, operators, parentheses, Math functions, dots, spaces
+                if (!/^[\d\+\-\*\/\(\)\.\s]*(Math\.(pow|sqrt)\([\d\+\-\*\/\(\)\.\s,]*\))*[\d\+\-\*\/\(\)\.\s]*$/.test(expression) &&
+                    !/^[\d\+\-\*\/\(\)\.\s]+$/.test(expression)) {
+                    console.log('Expression contains unsafe characters:', expression);
+                    return null;
+                }
+
+                // Evaluate the expression using Function constructor (slightly safer than eval)
                 try {
-                    const result = eval(expression);
-                    
+                    const result = new Function('return ' + expression)();
+
                     // Check for invalid results
                     if (result === undefined || result === null || isNaN(result) || !isFinite(result)) {
                         return null;
                     }
-                    
+
                     return result;
                 } catch (e) {
                     console.log('Evaluation error (safe):', e.message);
@@ -6385,7 +6409,7 @@
                     targetIndex = this.currentTarget !== undefined ? this.currentTarget : 0;
                 }
                 
-                if (targetIndex >= this.enemies.length) targetIndex = 0;
+                if (targetIndex < 0 || targetIndex >= this.enemies.length) targetIndex = 0;
                 
                 let finalDamage = amount;
 
@@ -6783,20 +6807,21 @@
                             document.body.appendChild(splitFeedback);
                             
                             setTimeout(() => {
-                                splitFeedback.remove();
+                                if (splitFeedback.parentNode) splitFeedback.remove();
                             }, 1000);
                             
                             console.log(`${enemy.name} split! Both now have ${newHp} HP. Total enemies: ${this.enemies.length}`);
-                            
+
                             // CRITICAL: Update target dropdown and force render IMMEDIATELY
                             this.updateTargetDropdown();
                             this.renderCombat();
-                            
+
                             // Wait so player can see the split
                             await this.wait(800);
-                            
-                            // DON'T increment i - we want to continue the loop normally
-                            // The new enemy will act on the next turn
+
+                            // Skip the newly inserted enemy so it acts next turn, not this turn
+                            // The for loop will increment i, so we increment here to skip the new enemy
+                            i++;
                         }
                     } else if (intent.intent === 'special') {
                         let damage = intent.value;
@@ -7643,7 +7668,9 @@
                     } else {
                         // Generic attack upgrade
                         upgraded.effect = (game) => {
-                            game.dealDamage(parseInt(baseCard.description.match(/\d+/)[0]) + 3);
+                            const match = baseCard.description.match(/\d+/);
+                            const baseDamage = match ? parseInt(match[0]) : 5;
+                            game.dealDamage(baseDamage + 3);
                         };
                     }
                 } else if (baseCard.type === 'skill') {
@@ -7762,19 +7789,6 @@
                 }
                 
                 return desc + ' (Improved!)';
-            }
-            
-            getUpgradeDetails(card) {
-                if (card.type === 'attack') {
-                    return 'Damage increased by 3!';
-                } else if (card.type === 'skill') {
-                    return 'Block increased by 3!';
-                } else if (card.type === 'power') {
-                    return 'Effects improved!';
-                } else if (card.type === 'utility') {
-                    return 'Effects enhanced!';
-                }
-                return 'Card improved!';
             }
 
             showTreasure() {
@@ -8049,8 +8063,10 @@
                     const relicEl = document.createElement('div');
                     relicEl.className = 'boss-relic-choice';
                     
-                    // Parse description to separate benefit and drawback
-                    const [benefit, drawback] = relic.description.split('. ');
+                    // Parse description to separate benefit and drawback (handle missing separator)
+                    const parts = relic.description.split('. ');
+                    const benefit = parts[0] || relic.description;
+                    const drawback = parts[1] || null;
                     
                     relicEl.innerHTML = `
                         <div class="boss-relic-choice-icon">${relic.icon}</div>
@@ -8296,6 +8312,9 @@
             }
 
             hideAllViews() {
+                // Clean up any floating feedback/tooltip elements to prevent accumulation
+                document.querySelectorAll('.evaluation-feedback, .debuff-tooltip, .relic-tooltip').forEach(el => el.remove());
+
                 const views = [
                     'seed-view',
                     'starting-choices-view',
@@ -8313,7 +8332,7 @@
                     'card-removal-modal',
                     'collection-viewer'
                 ];
-                
+
                 views.forEach(viewId => {
                     const view = document.getElementById(viewId);
                     if (view) {
