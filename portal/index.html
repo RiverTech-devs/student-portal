@@ -1543,6 +1543,11 @@
             <section id="admin-reports-section" class="hidden">
               <!-- Will be populated by renderAdminReports() -->
             </section>
+
+            <!-- Admin Attendance Section (Admin only) -->
+            <section id="admin-attendance-section" class="hidden">
+              <!-- Will be populated by renderAdminAttendance() -->
+            </section>
           </div>
         </div>
       </div>
@@ -16411,7 +16416,501 @@
         
         this.showNotification('Report exported successfully!', 'success');
       }
-      
+
+      // ==================== ATTENDANCE REPORTS ====================
+
+      async renderAdminAttendance() {
+        const section = document.getElementById('admin-attendance-section');
+        if (!section) {
+          console.error('❌ Admin attendance section not found!');
+          return;
+        }
+
+        const today = new Date().toISOString().split('T')[0];
+        const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+        section.innerHTML = `
+          <div style="padding: 20px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+              <h2>📋 Attendance Reports</h2>
+              <button class="btn btn-secondary" onclick="app.showSection('admin-home'); app.renderAdminHome();">
+                ← Back to Dashboard
+              </button>
+            </div>
+
+            <!-- Filters -->
+            <div class="card" style="margin-bottom: 20px;">
+              <h3 style="margin-bottom: 15px;">🔍 Search Filters</h3>
+              <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 15px; align-items: end;">
+                <div>
+                  <label style="display: block; margin-bottom: 5px; font-weight: bold;">Start Date</label>
+                  <input type="date" id="attendance-start-date" value="${thirtyDaysAgo}"
+                         style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+                </div>
+                <div>
+                  <label style="display: block; margin-bottom: 5px; font-weight: bold;">End Date</label>
+                  <input type="date" id="attendance-end-date" value="${today}"
+                         style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+                </div>
+                <div>
+                  <label style="display: block; margin-bottom: 5px; font-weight: bold;">Student</label>
+                  <select id="attendance-student" style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+                    <option value="all">All Students</option>
+                  </select>
+                </div>
+                <div>
+                  <label style="display: block; margin-bottom: 5px; font-weight: bold;">Class</label>
+                  <select id="attendance-class" style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+                    <option value="all">All Classes</option>
+                  </select>
+                </div>
+                <div>
+                  <label style="display: block; margin-bottom: 5px; font-weight: bold;">Status</label>
+                  <select id="attendance-status" style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+                    <option value="all">All Statuses</option>
+                    <option value="present">✅ Present</option>
+                    <option value="absent">❌ Absent</option>
+                    <option value="late">⏰ Late</option>
+                    <option value="left_early">🚪 Left Early</option>
+                    <option value="late_left_early">⚠️ Late & Left Early</option>
+                  </select>
+                </div>
+                <div>
+                  <label style="display: block; margin-bottom: 5px; font-weight: bold;">Type</label>
+                  <select id="attendance-type" style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+                    <option value="class">Class Attendance</option>
+                    <option value="daily">Daily Attendance</option>
+                  </select>
+                </div>
+                <button class="btn btn-primary" onclick="app.searchAttendance()">
+                  🔍 Search
+                </button>
+                <button class="btn btn-secondary" onclick="app.exportAttendanceReport()">
+                  📥 Export CSV
+                </button>
+              </div>
+            </div>
+
+            <!-- Results -->
+            <div id="attendance-results" class="card">
+              <p style="color: var(--muted); text-align: center; padding: 40px;">
+                Select filters and click "Search" to view attendance records
+              </p>
+            </div>
+          </div>
+        `;
+
+        // Load filter options
+        await this.loadAttendanceFilters();
+      }
+
+      async loadAttendanceFilters() {
+        try {
+          // Load students
+          const { data: students } = await this.auth.supabase
+            .from('user_profiles')
+            .select('id, first_name, last_name, grade_level')
+            .eq('user_type', 'student')
+            .order('last_name');
+
+          const studentSelect = document.getElementById('attendance-student');
+          if (studentSelect && students) {
+            students.forEach(s => {
+              const option = document.createElement('option');
+              option.value = s.id;
+              option.textContent = `${s.last_name}, ${s.first_name} (Grade ${s.grade_level || 'N/A'})`;
+              studentSelect.appendChild(option);
+            });
+          }
+
+          // Load classes
+          const { data: classes } = await this.auth.supabase
+            .from('classes')
+            .select('id, name, subject')
+            .eq('is_active', true)
+            .order('name');
+
+          const classSelect = document.getElementById('attendance-class');
+          if (classSelect && classes) {
+            classes.forEach(c => {
+              const option = document.createElement('option');
+              option.value = c.id;
+              option.textContent = `${c.name} (${c.subject})`;
+              classSelect.appendChild(option);
+            });
+          }
+        } catch (error) {
+          console.error('Error loading attendance filters:', error);
+        }
+      }
+
+      async searchAttendance() {
+        const startDate = document.getElementById('attendance-start-date').value;
+        const endDate = document.getElementById('attendance-end-date').value;
+        const studentId = document.getElementById('attendance-student').value;
+        const classId = document.getElementById('attendance-class').value;
+        const status = document.getElementById('attendance-status').value;
+        const type = document.getElementById('attendance-type').value;
+        const resultsDiv = document.getElementById('attendance-results');
+
+        resultsDiv.innerHTML = '<div style="text-align: center; padding: 40px;"><div class="loading-spinner"></div><p>Searching...</p></div>';
+
+        try {
+          let records = [];
+
+          if (type === 'class') {
+            // Query class attendance
+            let query = this.auth.supabase
+              .from('class_attendance')
+              .select('*, class:classes(id, name, subject)')
+              .gte('date', startDate)
+              .lte('date', endDate)
+              .order('date', { ascending: false });
+
+            if (studentId !== 'all') query = query.eq('student_id', studentId);
+            if (classId !== 'all') query = query.eq('class_id', classId);
+            if (status !== 'all') query = query.eq('status', status);
+
+            const { data, error } = await query;
+            if (error) throw error;
+            records = data || [];
+          } else {
+            // Query daily attendance
+            let query = this.auth.supabase
+              .from('daily_attendance')
+              .select('*')
+              .gte('date', startDate)
+              .lte('date', endDate)
+              .order('date', { ascending: false });
+
+            if (studentId !== 'all') query = query.eq('student_id', studentId);
+            if (status !== 'all') query = query.eq('status', status);
+
+            const { data, error } = await query;
+            if (error) throw error;
+            records = data || [];
+          }
+
+          // Get student info for all records
+          const studentIds = [...new Set(records.map(r => r.student_id))];
+          let studentMap = {};
+          if (studentIds.length > 0) {
+            const { data: students } = await this.auth.supabase
+              .from('user_profiles')
+              .select('id, first_name, last_name, grade_level')
+              .in('id', studentIds);
+
+            (students || []).forEach(s => {
+              studentMap[s.id] = s;
+            });
+          }
+
+          // Store for export
+          this.currentAttendanceData = { records, studentMap, type };
+
+          if (records.length === 0) {
+            resultsDiv.innerHTML = '<p style="color: var(--muted); text-align: center; padding: 40px;">No attendance records found for selected filters</p>';
+            return;
+          }
+
+          // Calculate statistics
+          const stats = this.calculateAttendanceStats(records, type);
+
+          // Build results table
+          const statusIcons = {
+            present: '✅',
+            absent: '❌',
+            late: '⏰',
+            left_early: '🚪',
+            late_left_early: '⚠️'
+          };
+
+          // Build statistics HTML
+          let html = `
+            <!-- Overall Statistics -->
+            <div style="margin-bottom: 20px;">
+              <h3 style="margin-bottom: 15px;">📊 Attendance Statistics</h3>
+              <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 15px; margin-bottom: 20px;">
+                <div style="background: rgba(139, 255, 176, 0.15); border: 1px solid var(--accent-2); border-radius: 8px; padding: 15px; text-align: center;">
+                  <div style="font-size: 28px; font-weight: bold; color: var(--accent-2);">${stats.present}</div>
+                  <div style="font-size: 12px; color: var(--muted);">Present</div>
+                  <div style="font-size: 11px; color: var(--accent-2);">${stats.presentPercent}%</div>
+                </div>
+                <div style="background: rgba(255, 106, 106, 0.15); border: 1px solid var(--danger); border-radius: 8px; padding: 15px; text-align: center;">
+                  <div style="font-size: 28px; font-weight: bold; color: var(--danger);">${stats.absent}</div>
+                  <div style="font-size: 12px; color: var(--muted);">Absent</div>
+                  <div style="font-size: 11px; color: var(--danger);">${stats.absentPercent}%</div>
+                </div>
+                <div style="background: rgba(255, 211, 106, 0.15); border: 1px solid var(--warning); border-radius: 8px; padding: 15px; text-align: center;">
+                  <div style="font-size: 28px; font-weight: bold; color: var(--warning);">${stats.late}</div>
+                  <div style="font-size: 12px; color: var(--muted);">Late</div>
+                  <div style="font-size: 11px; color: var(--warning);">${stats.latePercent}%</div>
+                </div>
+                <div style="background: rgba(106, 169, 255, 0.15); border: 1px solid var(--accent); border-radius: 8px; padding: 15px; text-align: center;">
+                  <div style="font-size: 28px; font-weight: bold; color: var(--accent);">${stats.leftEarly + stats.lateLeftEarly}</div>
+                  <div style="font-size: 12px; color: var(--muted);">Left Early</div>
+                  <div style="font-size: 11px; color: var(--accent);">${((stats.leftEarly + stats.lateLeftEarly) / stats.total * 100).toFixed(1)}%</div>
+                </div>
+                <div style="background: rgba(151, 162, 176, 0.15); border: 1px solid var(--muted); border-radius: 8px; padding: 15px; text-align: center;">
+                  <div style="font-size: 28px; font-weight: bold; color: var(--text);">${stats.total}</div>
+                  <div style="font-size: 12px; color: var(--muted);">Total Records</div>
+                  <div style="font-size: 11px; color: var(--muted);">${stats.uniqueStudents} student${stats.uniqueStudents !== 1 ? 's' : ''}</div>
+                </div>
+              </div>
+
+              <!-- Attendance Rate Bar -->
+              <div style="background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 15px;">
+                <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                  <span style="font-weight: 600;">Overall Attendance Rate</span>
+                  <span style="font-weight: bold; color: ${stats.attendanceRate >= 90 ? 'var(--accent-2)' : stats.attendanceRate >= 75 ? 'var(--warning)' : 'var(--danger)'};">
+                    ${stats.attendanceRate}%
+                  </span>
+                </div>
+                <div style="height: 12px; background: rgba(255, 106, 106, 0.3); border-radius: 6px; overflow: hidden;">
+                  <div style="height: 100%; width: ${stats.attendanceRate}%; background: linear-gradient(90deg, var(--accent-2) 0%, ${stats.attendanceRate >= 90 ? 'var(--accent-2)' : stats.attendanceRate >= 75 ? 'var(--warning)' : 'var(--danger)'} 100%); border-radius: 6px;"></div>
+                </div>
+                <div style="font-size: 11px; color: var(--muted); margin-top: 5px;">
+                  Present + Late counts as attended (${stats.present + stats.late} of ${stats.total})
+                </div>
+              </div>
+            </div>
+
+            ${type === 'class' && stats.byClass && Object.keys(stats.byClass).length > 1 ? `
+              <!-- Per-Class Breakdown -->
+              <div style="margin-bottom: 20px;">
+                <h4 style="margin-bottom: 10px;">📚 Breakdown by Class</h4>
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 10px;">
+                  ${Object.entries(stats.byClass).map(([className, classStats]) => `
+                    <div style="background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px;">
+                      <div style="font-weight: 600; margin-bottom: 8px;">${className}</div>
+                      <div style="display: flex; gap: 15px; font-size: 13px;">
+                        <span style="color: var(--accent-2);">✅ ${classStats.present}</span>
+                        <span style="color: var(--danger);">❌ ${classStats.absent}</span>
+                        <span style="color: var(--warning);">⏰ ${classStats.late}</span>
+                        <span style="color: var(--muted);">Total: ${classStats.total}</span>
+                      </div>
+                      <div style="height: 6px; background: rgba(255, 106, 106, 0.3); border-radius: 3px; margin-top: 8px; overflow: hidden;">
+                        <div style="height: 100%; width: ${classStats.attendanceRate}%; background: var(--accent-2); border-radius: 3px;"></div>
+                      </div>
+                      <div style="font-size: 11px; color: var(--muted); margin-top: 4px;">${classStats.attendanceRate}% attendance rate</div>
+                    </div>
+                  `).join('')}
+                </div>
+              </div>
+            ` : ''}
+
+            ${stats.byStudent && Object.keys(stats.byStudent).length > 0 && Object.keys(stats.byStudent).length <= 20 ? `
+              <!-- Per-Student Breakdown -->
+              <div style="margin-bottom: 20px;">
+                <h4 style="margin-bottom: 10px;">👤 Breakdown by Student</h4>
+                <div style="max-height: 300px; overflow-y: auto;">
+                  <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+                    <thead style="position: sticky; top: 0; background: var(--card);">
+                      <tr>
+                        <th style="text-align: left; padding: 8px; border-bottom: 1px solid var(--border);">Student</th>
+                        <th style="text-align: center; padding: 8px; border-bottom: 1px solid var(--border);">Present</th>
+                        <th style="text-align: center; padding: 8px; border-bottom: 1px solid var(--border);">Absent</th>
+                        <th style="text-align: center; padding: 8px; border-bottom: 1px solid var(--border);">Late</th>
+                        <th style="text-align: center; padding: 8px; border-bottom: 1px solid var(--border);">Total</th>
+                        <th style="text-align: center; padding: 8px; border-bottom: 1px solid var(--border);">Rate</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${Object.entries(stats.byStudent).sort((a, b) => a[1].name.localeCompare(b[1].name)).map(([studentId, studentStats]) => `
+                        <tr style="border-bottom: 1px solid var(--border);">
+                          <td style="padding: 8px; font-weight: 500;">${studentStats.name}</td>
+                          <td style="padding: 8px; text-align: center; color: var(--accent-2);">${studentStats.present}</td>
+                          <td style="padding: 8px; text-align: center; color: var(--danger);">${studentStats.absent}</td>
+                          <td style="padding: 8px; text-align: center; color: var(--warning);">${studentStats.late}</td>
+                          <td style="padding: 8px; text-align: center;">${studentStats.total}</td>
+                          <td style="padding: 8px; text-align: center;">
+                            <span style="padding: 2px 8px; border-radius: 4px; font-weight: 600; background: ${studentStats.attendanceRate >= 90 ? 'rgba(139, 255, 176, 0.2)' : studentStats.attendanceRate >= 75 ? 'rgba(255, 211, 106, 0.2)' : 'rgba(255, 106, 106, 0.2)'}; color: ${studentStats.attendanceRate >= 90 ? 'var(--accent-2)' : studentStats.attendanceRate >= 75 ? 'var(--warning)' : 'var(--danger)'};">
+                              ${studentStats.attendanceRate}%
+                            </span>
+                          </td>
+                        </tr>
+                      `).join('')}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ` : ''}
+
+            <!-- Records Table -->
+            <div style="margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center;">
+              <h3>📝 ${type === 'class' ? 'Class' : 'Daily'} Attendance Records</h3>
+              <span style="color: var(--muted);">${records.length} records found</span>
+            </div>
+            <div style="max-height: 50vh; overflow-y: auto;">
+              <table style="width: 100%; border-collapse: collapse;">
+                <thead style="position: sticky; top: 0; background: var(--card); z-index: 1;">
+                  <tr>
+                    <th style="text-align: left; padding: 12px; border-bottom: 2px solid var(--border);">Date</th>
+                    <th style="text-align: left; padding: 12px; border-bottom: 2px solid var(--border);">Student</th>
+                    <th style="text-align: left; padding: 12px; border-bottom: 2px solid var(--border);">Grade</th>
+                    ${type === 'class' ? '<th style="text-align: left; padding: 12px; border-bottom: 2px solid var(--border);">Class</th>' : ''}
+                    ${type === 'class' ? '<th style="text-align: center; padding: 12px; border-bottom: 2px solid var(--border);">Period</th>' : ''}
+                    <th style="text-align: center; padding: 12px; border-bottom: 2px solid var(--border);">Status</th>
+                    ${type === 'daily' ? '<th style="text-align: center; padding: 12px; border-bottom: 2px solid var(--border);">Excused</th>' : ''}
+                    <th style="text-align: left; padding: 12px; border-bottom: 2px solid var(--border);">Notes</th>
+                  </tr>
+                </thead>
+                <tbody>
+          `;
+
+          records.forEach(record => {
+            const student = studentMap[record.student_id] || {};
+            const studentName = student.first_name ? `${student.last_name}, ${student.first_name}` : 'Unknown';
+            const statusIcon = statusIcons[record.status] || '?';
+            const statusLabel = record.status.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase());
+
+            html += `
+              <tr style="border-bottom: 1px solid var(--border);">
+                <td style="padding: 12px;">${new Date(record.date).toLocaleDateString()}</td>
+                <td style="padding: 12px; font-weight: 600;">${studentName}</td>
+                <td style="padding: 12px;">${student.grade_level || 'N/A'}</td>
+                ${type === 'class' ? `<td style="padding: 12px;">${record.class?.name || 'Unknown'}</td>` : ''}
+                ${type === 'class' ? `<td style="padding: 12px; text-align: center;">${record.period || '-'}</td>` : ''}
+                <td style="padding: 12px; text-align: center;">
+                  <span style="padding: 4px 8px; border-radius: 4px; background: ${record.status === 'present' ? 'rgba(139, 255, 176, 0.2)' : record.status === 'absent' ? 'rgba(255, 106, 106, 0.2)' : 'rgba(255, 211, 106, 0.2)'};">
+                    ${statusIcon} ${statusLabel}
+                  </span>
+                </td>
+                ${type === 'daily' ? `<td style="padding: 12px; text-align: center;">${record.excused ? '✓ Yes' : '-'}</td>` : ''}
+                <td style="padding: 12px; color: var(--muted); font-size: 13px;">${record.notes || record.excuse_note || '-'}</td>
+              </tr>
+            `;
+          });
+
+          html += '</tbody></table></div>';
+          resultsDiv.innerHTML = html;
+
+        } catch (error) {
+          console.error('Error searching attendance:', error);
+          resultsDiv.innerHTML = `<p style="color: var(--danger); text-align: center; padding: 40px;">Error: ${error.message}</p>`;
+        }
+      }
+
+      exportAttendanceReport() {
+        if (!this.currentAttendanceData || !this.currentAttendanceData.records.length) {
+          this.showNotification('Search for attendance records first', 'error');
+          return;
+        }
+
+        const { records, studentMap, type } = this.currentAttendanceData;
+
+        let csv = type === 'class'
+          ? 'Date,Student,Grade,Class,Period,Status,Notes\n'
+          : 'Date,Student,Grade,Status,Excused,Notes\n';
+
+        records.forEach(record => {
+          const student = studentMap[record.student_id] || {};
+          const studentName = student.first_name ? `${student.last_name}, ${student.first_name}` : 'Unknown';
+          const statusLabel = record.status.replace('_', ' ');
+
+          if (type === 'class') {
+            csv += `"${record.date}","${studentName}","${student.grade_level || ''}","${record.class?.name || ''}","${record.period || ''}","${statusLabel}","${record.notes || ''}"\n`;
+          } else {
+            csv += `"${record.date}","${studentName}","${student.grade_level || ''}","${statusLabel}","${record.excused ? 'Yes' : 'No'}","${record.excuse_note || ''}"\n`;
+          }
+        });
+
+        const blob = new Blob([csv], { type: 'text/csv' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `Attendance_Report_${type}_${new Date().toISOString().split('T')[0]}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+
+        this.showNotification('Attendance report exported!', 'success');
+      }
+
+      calculateAttendanceStats(records, type) {
+        const stats = {
+          total: records.length,
+          present: 0,
+          absent: 0,
+          late: 0,
+          leftEarly: 0,
+          lateLeftEarly: 0,
+          uniqueStudents: new Set(records.map(r => r.student_id)).size,
+          byClass: {},
+          byStudent: {}
+        };
+
+        records.forEach(record => {
+          // Count by status
+          switch (record.status) {
+            case 'present': stats.present++; break;
+            case 'absent': stats.absent++; break;
+            case 'late': stats.late++; break;
+            case 'left_early': stats.leftEarly++; break;
+            case 'late_left_early': stats.lateLeftEarly++; break;
+          }
+
+          // Group by class (for class attendance)
+          if (type === 'class' && record.class) {
+            const className = record.class.name || 'Unknown Class';
+            if (!stats.byClass[className]) {
+              stats.byClass[className] = { present: 0, absent: 0, late: 0, leftEarly: 0, total: 0 };
+            }
+            stats.byClass[className].total++;
+            if (record.status === 'present') stats.byClass[className].present++;
+            else if (record.status === 'absent') stats.byClass[className].absent++;
+            else if (record.status === 'late') stats.byClass[className].late++;
+            else if (record.status === 'left_early' || record.status === 'late_left_early') stats.byClass[className].leftEarly++;
+          }
+
+          // Group by student
+          const studentId = record.student_id;
+          if (!stats.byStudent[studentId]) {
+            const studentInfo = this.currentAttendanceData?.studentMap?.[studentId];
+            stats.byStudent[studentId] = {
+              name: studentInfo ? `${studentInfo.last_name}, ${studentInfo.first_name}` : 'Unknown',
+              present: 0,
+              absent: 0,
+              late: 0,
+              leftEarly: 0,
+              total: 0
+            };
+          }
+          stats.byStudent[studentId].total++;
+          if (record.status === 'present') stats.byStudent[studentId].present++;
+          else if (record.status === 'absent') stats.byStudent[studentId].absent++;
+          else if (record.status === 'late') stats.byStudent[studentId].late++;
+          else if (record.status === 'left_early' || record.status === 'late_left_early') stats.byStudent[studentId].leftEarly++;
+        });
+
+        // Calculate percentages
+        stats.presentPercent = stats.total > 0 ? ((stats.present / stats.total) * 100).toFixed(1) : '0.0';
+        stats.absentPercent = stats.total > 0 ? ((stats.absent / stats.total) * 100).toFixed(1) : '0.0';
+        stats.latePercent = stats.total > 0 ? ((stats.late / stats.total) * 100).toFixed(1) : '0.0';
+
+        // Attendance rate: present + late counts as "attended"
+        stats.attendanceRate = stats.total > 0
+          ? (((stats.present + stats.late) / stats.total) * 100).toFixed(1)
+          : '0.0';
+
+        // Calculate per-class attendance rates
+        Object.values(stats.byClass).forEach(classStats => {
+          classStats.attendanceRate = classStats.total > 0
+            ? (((classStats.present + classStats.late) / classStats.total) * 100).toFixed(1)
+            : '0.0';
+        });
+
+        // Calculate per-student attendance rates
+        Object.values(stats.byStudent).forEach(studentStats => {
+          studentStats.attendanceRate = studentStats.total > 0
+            ? (((studentStats.present + studentStats.late) / studentStats.total) * 100).toFixed(1)
+            : '0.0';
+        });
+
+        return stats;
+      }
+
       // ==================== ADMIN DASHBOARD & TOOLS ====================
       async renderAdminDashboard() {
         console.log('🔍 renderAdminDashboard called');
@@ -16611,8 +17110,8 @@
                 </div>
 
                 <!-- Reports -->
-                <div class="card" style="cursor: pointer; border: 2px solid var(--accent); transition: all 0.2s;" 
-                     onmouseover="this.style.background='rgba(106, 169, 255, 0.1)'" 
+                <div class="card" style="cursor: pointer; border: 2px solid var(--accent); transition: all 0.2s;"
+                     onmouseover="this.style.background='rgba(106, 169, 255, 0.1)'"
                      onmouseout="this.style.background='var(--card)'"
                      onclick="app.showAdminSection('reports')">
                   <div style="display: flex; align-items: center; gap: 15px; margin-bottom: 15px;">
@@ -16626,6 +17125,25 @@
                     <span>✓ By Quarter</span>
                     <span>✓ All Classes</span>
                     <span>✓ Export Data</span>
+                  </div>
+                </div>
+
+                <!-- Attendance Reports -->
+                <div class="card" style="cursor: pointer; border: 2px solid #f5576c; transition: all 0.2s;"
+                     onmouseover="this.style.background='rgba(245, 87, 108, 0.1)'"
+                     onmouseout="this.style.background='var(--card)'"
+                     onclick="app.showAdminSection('attendance')">
+                  <div style="display: flex; align-items: center; gap: 15px; margin-bottom: 15px;">
+                    <div style="font-size: 48px;">📋</div>
+                    <div>
+                      <h3 style="margin: 0;">Attendance Reports</h3>
+                      <p style="color: var(--muted); margin: 5px 0 0 0; font-size: 13px;">Search and filter attendance records</p>
+                    </div>
+                  </div>
+                  <div style="display: flex; gap: 10px; font-size: 12px; color: var(--muted);">
+                    <span>✓ By Student</span>
+                    <span>✓ By Class</span>
+                    <span>✓ Date Range</span>
                   </div>
                 </div>
               </div>
@@ -16801,6 +17319,10 @@
           case 'reports':
             this.showSection('admin-reports');
             this.renderAdminReports();
+            break;
+          case 'attendance':
+            this.showSection('admin-attendance');
+            this.renderAdminAttendance();
             break;
           default:
             console.warn('Unknown admin section:', section);
