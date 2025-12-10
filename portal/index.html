@@ -19846,7 +19846,7 @@
 
     // ==================== CLASS ATTENDANCE (Teacher) ====================
 
-    async showClassAttendance(classId, dateStr = null) {
+    async showClassAttendance(classId, dateStr = null, selectedPeriod = null) {
       // Close existing class attendance modal first to prevent stacking
       this.closeModal('class-attendance');
 
@@ -19872,6 +19872,9 @@
         const meetsThatDay = classSchedule && classSchedule.length > 0;
         const periods = classSchedule?.map(s => s.period).sort((a, b) => a - b) || [];
 
+        // Default to first period if not specified, or null if only one period
+        const currentPeriod = selectedPeriod !== null ? parseInt(selectedPeriod) : (periods.length > 0 ? periods[0] : null);
+
         // Get enrolled students
         const { data: enrollments } = await this.auth.supabase
           .from('class_enrollments')
@@ -19892,12 +19895,37 @@
           students = studentData || [];
         }
 
-        // Get existing class attendance for this date
-        const { data: attendanceData } = await this.auth.supabase
+        // Get existing attendance session for this date and period
+        let sessionQuery = this.auth.supabase
+          .from('class_attendance_sessions')
+          .select('*')
+          .eq('class_id', classId)
+          .eq('date', today);
+
+        if (currentPeriod !== null) {
+          sessionQuery = sessionQuery.eq('period', currentPeriod);
+        } else {
+          sessionQuery = sessionQuery.is('period', null);
+        }
+
+        const { data: sessionData } = await sessionQuery;
+        const session = sessionData && sessionData.length > 0 ? sessionData[0] : null;
+        const isCanceled = session?.status === 'canceled';
+        const attendanceTaken = session?.status === 'completed';
+
+        // Get existing class attendance for this date and period
+        let attendanceQuery = this.auth.supabase
           .from('class_attendance')
           .select('*')
           .eq('class_id', classId)
           .eq('date', today);
+
+        // Filter by period if we have one
+        if (currentPeriod !== null) {
+          attendanceQuery = attendanceQuery.eq('period', currentPeriod);
+        }
+
+        const { data: attendanceData } = await attendanceQuery;
 
         const attendanceMap = {};
         attendanceData?.forEach(a => {
@@ -19914,30 +19942,86 @@
 
         const modalContent = `
           <div style="margin-bottom: 20px;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px; margin-bottom: 20px;">
               <div style="display: flex; align-items: center; gap: 15px;">
-                <button class="btn btn-secondary" onclick="app.changeClassAttendanceDate(-1, '${classId}', '${today}')">◀ Prev</button>
+                <button class="btn btn-secondary" onclick="app.changeClassAttendanceDate(-1, '${classId}', '${today}', ${currentPeriod})">◀ Prev</button>
                 <div>
                   <input type="date" id="class-attendance-date" value="${today}"
-                         onchange="app.showClassAttendance('${classId}', this.value)"
+                         onchange="app.showClassAttendance('${classId}', this.value, ${currentPeriod})"
                          style="padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
                   <div style="text-align: center; font-size: 12px; color: var(--muted); margin-top: 5px;">${dayName}</div>
                 </div>
-                <button class="btn btn-secondary" onclick="app.changeClassAttendanceDate(1, '${classId}', '${today}')">Next ▶</button>
+                <button class="btn btn-secondary" onclick="app.changeClassAttendanceDate(1, '${classId}', '${today}', ${currentPeriod})">Next ▶</button>
               </div>
+              ${periods.length > 1 ? `
+                <div style="display: flex; align-items: center; gap: 10px;">
+                  <label style="font-weight: 600; color: var(--muted);">Period:</label>
+                  <select id="class-attendance-period"
+                          onchange="app.showClassAttendance('${classId}', '${today}', this.value)"
+                          style="padding: 8px 12px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text); font-weight: 600;">
+                    ${periods.map(p => `<option value="${p}" ${p === currentPeriod ? 'selected' : ''}>Period ${p}</option>`).join('')}
+                  </select>
+                </div>
+              ` : ''}
               <div style="text-align: right;">
                 <div style="font-weight: 600;">${className}</div>
                 <div style="font-size: 12px; color: var(--muted);">
-                  ${meetsThatDay ? `Periods: ${periods.join(', ')}` : 'Does not meet on ' + dayName}
+                  ${meetsThatDay ? (periods.length === 1 ? `Period ${periods[0]}` : `${periods.length} periods today`) : 'Does not meet on ' + dayName}
                 </div>
               </div>
             </div>
+
+            ${isCanceled ? `
+              <div style="background: rgba(255, 106, 106, 0.15); border: 1px solid var(--danger); border-radius: 8px; padding: 15px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                <div>
+                  <div style="font-weight: 600; color: var(--danger);">🚫 Class Canceled</div>
+                  <div style="font-size: 13px; color: var(--muted); margin-top: 4px;">
+                    ${session?.cancel_reason ? `Reason: ${session.cancel_reason}` : 'Students will not be marked absent for this session.'}
+                  </div>
+                </div>
+                <button class="btn btn-secondary" onclick="app.uncancelClass('${classId}', '${today}', ${currentPeriod})" style="white-space: nowrap;">
+                  ↩️ Restore Class
+                </button>
+              </div>
+            ` : attendanceTaken ? `
+              <div style="background: rgba(139, 255, 176, 0.15); border: 1px solid var(--accent-2); border-radius: 8px; padding: 15px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                <div>
+                  <div style="font-weight: 600; color: var(--accent-2);">✅ Attendance Recorded</div>
+                  <div style="font-size: 13px; color: var(--muted); margin-top: 4px;">
+                    Taken on ${new Date(session.taken_at).toLocaleString()}
+                  </div>
+                </div>
+                <div style="display: flex; gap: 10px;">
+                  <button class="btn btn-secondary" onclick="app.showCancelClassModal('${classId}', '${today}', ${currentPeriod})" style="white-space: nowrap; background: rgba(255, 106, 106, 0.3);">
+                    🚫 Cancel Class
+                  </button>
+                </div>
+              </div>
+            ` : meetsThatDay && students.length > 0 ? `
+              <div style="background: rgba(255, 211, 106, 0.15); border: 1px solid var(--warning); border-radius: 8px; padding: 15px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                <div>
+                  <div style="font-weight: 600; color: var(--warning);">⏳ Attendance Not Yet Taken</div>
+                  <div style="font-size: 13px; color: var(--muted); margin-top: 4px;">
+                    Students won't be penalized until attendance is saved.
+                  </div>
+                </div>
+                <button class="btn btn-secondary" onclick="app.showCancelClassModal('${classId}', '${today}', ${currentPeriod})" style="white-space: nowrap; background: rgba(255, 106, 106, 0.3);">
+                  🚫 Cancel Class
+                </button>
+              </div>
+            ` : ''}
 
             ${!meetsThatDay ? `
               <div style="text-align: center; padding: 40px; background: rgba(255, 211, 106, 0.1); border: 1px solid var(--warning); border-radius: 8px;">
                 <div style="font-size: 48px; margin-bottom: 15px;">📅</div>
                 <p style="color: var(--warning); font-weight: 600;">This class does not meet on ${dayName}.</p>
                 <p style="color: var(--muted); font-size: 13px; margin-top: 10px;">Edit the class to set up the schedule.</p>
+              </div>
+            ` : isCanceled ? `
+              <div style="text-align: center; padding: 40px; color: var(--muted);">
+                <div style="font-size: 48px; margin-bottom: 15px;">🚫</div>
+                <p>Class was canceled for this date.</p>
+                <p style="font-size: 13px; margin-top: 10px;">Click "Restore Class" above to take attendance.</p>
               </div>
             ` : students.length === 0 ? `
               <div style="text-align: center; padding: 40px; color: var(--muted);">
@@ -19998,11 +20082,12 @@
 
           <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; padding-top: 15px; border-top: 1px solid var(--border);">
             <button class="btn btn-secondary" onclick="app.closeModal('class-attendance')">Close</button>
-            ${meetsThatDay && students.length > 0 ? `<button class="btn btn-primary" onclick="app.saveClassAttendance('${classId}', '${today}')">Save Attendance</button>` : ''}
+            ${meetsThatDay && students.length > 0 ? `<button class="btn btn-primary" onclick="app.saveClassAttendance('${classId}', '${today}', ${currentPeriod})">Save Attendance</button>` : ''}
           </div>
         `;
 
-        this.showModal('class-attendance', `📋 Class Attendance - ${className}`, modalContent, true);
+        const periodLabel = currentPeriod ? ` (Period ${currentPeriod})` : '';
+        this.showModal('class-attendance', `📋 Class Attendance - ${className}${periodLabel}`, modalContent, true);
 
       } catch (error) {
         console.error('Error loading class attendance:', error);
@@ -20010,11 +20095,12 @@
       }
     }
 
-    changeClassAttendanceDate(direction, classId, currentDate) {
+    changeClassAttendanceDate(direction, classId, currentDate, period = null) {
       const date = new Date(currentDate + 'T12:00:00');
       date.setDate(date.getDate() + direction);
       const newDate = date.toISOString().split('T')[0];
-      this.showClassAttendance(classId, newDate);
+      // Pass null for period so it auto-selects the first period for the new date
+      this.showClassAttendance(classId, newDate, null);
     }
 
     markAllClassPresent(classId, date) {
@@ -20024,7 +20110,7 @@
       });
     }
 
-    async saveClassAttendance(classId, date) {
+    async saveClassAttendance(classId, date, period = null) {
       const rows = document.querySelectorAll('tr[data-student-id]');
       const attendanceRecords = [];
 
@@ -20041,6 +20127,7 @@
           class_id: classId,
           student_id: studentId,
           date: date,
+          period: period,
           status: statusSelect.value,
           notes: notesInput?.value || null,
           marked_by: this.userInfo.user.id
@@ -20053,18 +20140,184 @@
       }
 
       try {
-        // Upsert attendance records
+        // Delete existing records for this class/date/period combination first
+        // (since the unique index uses COALESCE for NULL handling)
+        let deleteQuery = this.auth.supabase
+          .from('class_attendance')
+          .delete()
+          .eq('class_id', classId)
+          .eq('date', date);
+
+        if (period !== null) {
+          deleteQuery = deleteQuery.eq('period', period);
+        } else {
+          deleteQuery = deleteQuery.is('period', null);
+        }
+
+        await deleteQuery;
+
+        // Insert new records
         const { error } = await this.auth.supabase
           .from('class_attendance')
-          .upsert(attendanceRecords, { onConflict: 'class_id,student_id,date' });
+          .insert(attendanceRecords);
 
         if (error) throw error;
 
-        this.showNotification(`Saved attendance for ${attendanceRecords.length} students`, 'success');
+        // Create/update attendance session to mark that attendance was taken
+        const sessionData = {
+          class_id: classId,
+          date: date,
+          period: period,
+          status: 'completed',
+          taken_by: this.userInfo.user.id,
+          taken_at: new Date().toISOString()
+        };
+
+        // Delete existing session first (to handle COALESCE unique constraint)
+        let deleteSessionQuery = this.auth.supabase
+          .from('class_attendance_sessions')
+          .delete()
+          .eq('class_id', classId)
+          .eq('date', date);
+
+        if (period !== null) {
+          deleteSessionQuery = deleteSessionQuery.eq('period', period);
+        } else {
+          deleteSessionQuery = deleteSessionQuery.is('period', null);
+        }
+
+        await deleteSessionQuery;
+
+        // Insert new session
+        await this.auth.supabase
+          .from('class_attendance_sessions')
+          .insert(sessionData);
+
+        const periodLabel = period ? ` for Period ${period}` : '';
+        this.showNotification(`Saved attendance for ${attendanceRecords.length} students${periodLabel}`, 'success');
+
+        // Refresh the modal to show updated status
+        this.showClassAttendance(classId, date, period);
 
       } catch (error) {
         console.error('Error saving class attendance:', error);
         this.showNotification('Error saving attendance: ' + error.message, 'error');
+      }
+    }
+
+    // Show modal to cancel a class session
+    showCancelClassModal(classId, date, period) {
+      const periodLabel = period ? ` (Period ${period})` : '';
+      const modalContent = `
+        <div style="margin-bottom: 20px;">
+          <p style="margin-bottom: 15px;">Are you sure you want to mark this class as canceled?</p>
+          <p style="color: var(--muted); font-size: 13px; margin-bottom: 20px;">
+            Students will not be marked absent for this session. You can restore the class later if needed.
+          </p>
+          <div class="form-group">
+            <label for="cancel-reason">Reason (optional)</label>
+            <input type="text" id="cancel-reason" placeholder="e.g., Teacher sick, Field trip, Holiday..."
+                   style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+          </div>
+        </div>
+        <div style="display: flex; gap: 10px; justify-content: flex-end;">
+          <button class="btn btn-secondary" onclick="app.closeModal('cancel-class')">Keep Class</button>
+          <button class="btn btn-danger" onclick="app.cancelClass('${classId}', '${date}', ${period})" style="background: var(--danger);">
+            🚫 Cancel Class
+          </button>
+        </div>
+      `;
+
+      this.showModal('cancel-class', `Cancel Class${periodLabel}`, modalContent);
+    }
+
+    // Cancel a class session
+    async cancelClass(classId, date, period) {
+      const reason = document.getElementById('cancel-reason')?.value || null;
+
+      try {
+        // Delete any existing session first
+        let deleteQuery = this.auth.supabase
+          .from('class_attendance_sessions')
+          .delete()
+          .eq('class_id', classId)
+          .eq('date', date);
+
+        if (period !== null) {
+          deleteQuery = deleteQuery.eq('period', period);
+        } else {
+          deleteQuery = deleteQuery.is('period', null);
+        }
+
+        await deleteQuery;
+
+        // Insert canceled session
+        const { error } = await this.auth.supabase
+          .from('class_attendance_sessions')
+          .insert({
+            class_id: classId,
+            date: date,
+            period: period,
+            status: 'canceled',
+            cancel_reason: reason,
+            taken_by: this.userInfo.user.id
+          });
+
+        if (error) throw error;
+
+        // Also delete any attendance records for this class/date/period
+        let deleteAttendanceQuery = this.auth.supabase
+          .from('class_attendance')
+          .delete()
+          .eq('class_id', classId)
+          .eq('date', date);
+
+        if (period !== null) {
+          deleteAttendanceQuery = deleteAttendanceQuery.eq('period', period);
+        } else {
+          deleteAttendanceQuery = deleteAttendanceQuery.is('period', null);
+        }
+
+        await deleteAttendanceQuery;
+
+        this.closeModal('cancel-class');
+        this.showNotification('Class marked as canceled', 'success');
+
+        // Refresh the attendance modal
+        this.showClassAttendance(classId, date, period);
+
+      } catch (error) {
+        console.error('Error canceling class:', error);
+        this.showNotification('Error canceling class: ' + error.message, 'error');
+      }
+    }
+
+    // Restore a canceled class
+    async uncancelClass(classId, date, period) {
+      try {
+        // Delete the canceled session
+        let deleteQuery = this.auth.supabase
+          .from('class_attendance_sessions')
+          .delete()
+          .eq('class_id', classId)
+          .eq('date', date);
+
+        if (period !== null) {
+          deleteQuery = deleteQuery.eq('period', period);
+        } else {
+          deleteQuery = deleteQuery.is('period', null);
+        }
+
+        await deleteQuery;
+
+        this.showNotification('Class restored - you can now take attendance', 'success');
+
+        // Refresh the attendance modal
+        this.showClassAttendance(classId, date, period);
+
+      } catch (error) {
+        console.error('Error restoring class:', error);
+        this.showNotification('Error restoring class: ' + error.message, 'error');
       }
     }
 
