@@ -16449,6 +16449,31 @@
             .eq('student_id', studentId)
             .eq('status', 'active');
 
+          // Load past quarter snapshots for this student's enrollments
+          const enrollmentIds = (enrollments || []).map(e => e.id);
+          let snapshots = [];
+          if (enrollmentIds.length > 0) {
+            const { data: snapshotData } = await this.auth.supabase
+              .from('quarter_grade_snapshots')
+              .select('*')
+              .in('enrollment_id', enrollmentIds);
+            snapshots = snapshotData || [];
+          }
+
+          // Build a map of snapshots by enrollment_id and quarter_id
+          const snapshotMap = {};
+          for (const snapshot of snapshots) {
+            const key = `${snapshot.enrollment_id}_${snapshot.quarter_id}`;
+            snapshotMap[key] = snapshot;
+          }
+
+          // Build a map of quarter_id to quarter number
+          const quarterNumMap = {};
+          for (const q of (quarters || [])) {
+            const qNum = this.getQuarterNumber(q);
+            if (qNum) quarterNumMap[q.id] = qNum;
+          }
+
           // Group classes by subject
           const subjectGroups = {};
           const subjectOrder = ['Math', 'English', 'Science', 'Science & Tech', 'Social Studies', 'Humanities', 'Health', 'Health & PE', 'PE', 'Electives', 'Other'];
@@ -16477,7 +16502,24 @@
             const quarterGrades = {};
             const currentQuarterNum = this.getQuarterNumber(currentQuarter);
 
-            // Current quarter grade from enrollment
+            // Load past quarter grades from snapshots
+            for (const q of (quarters || [])) {
+              const qNum = quarterNumMap[q.id];
+              if (!qNum) continue;
+
+              const snapshotKey = `${enrollment.id}_${q.id}`;
+              const snapshot = snapshotMap[snapshotKey];
+
+              if (snapshot) {
+                quarterGrades[`Q${qNum}`] = {
+                  skill: this.percentageToLetter(snapshot.academic_grade),
+                  part: this.percentageToLetter(snapshot.participation_grade),
+                  total: this.percentageToLetter(snapshot.class_grade)
+                };
+              }
+            }
+
+            // Current quarter grade from enrollment (overwrite snapshot if exists)
             if (currentQuarterNum && enrollment.class_grade !== null) {
               const letter = this.percentageToLetter(enrollment.class_grade);
               quarterGrades[`Q${currentQuarterNum}`] = {
