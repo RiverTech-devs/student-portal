@@ -1454,7 +1454,14 @@
                 </div>
               </div>
             </section>
-  
+
+            <!-- My Students Section (Teachers) -->
+            <section id="my-students-section" class="hidden">
+              <div id="my-students-content">
+                <!-- Content loaded dynamically -->
+              </div>
+            </section>
+
             <!-- Profile Section -->
             <section id="profile-section" class="hidden">
               <div class="card">
@@ -2715,6 +2722,7 @@
           navItems.push(
             { section: 'home', label: 'Home', icon: '📊' },
             { section: 'classes', label: 'My Classes', icon: '📚' },
+            { section: 'my-students', label: 'My Students', icon: '👥' },
             { section: 'messaging', label: 'Messages', icon: '💬' },
             { section: 'profile', label: 'Profile', icon: '👤' }
           );
@@ -2800,7 +2808,7 @@
 
       handleHashNavigation() {
         const hash = window.location.hash.substring(1);
-        const validSections = ['home', 'classes', 'messaging', 'profile'];
+        const validSections = ['home', 'classes', 'messaging', 'profile', 'my-students'];
         
         if (hash && validSections.includes(hash)) {
           this.showSection(hash);
@@ -2885,6 +2893,9 @@
             break;
           case 'admin-attendance':
             this.renderAdminAttendance();
+            break;
+          case 'my-students':
+            this.renderMyStudents();
             break;
           default:
             console.warn('Unknown section:', sectionName);
@@ -4597,6 +4608,404 @@
                       break;
               }
           }, true); // Use capture phase
+      }
+
+      // ==================== MY STUDENTS (Teacher View) ====================
+
+      async renderMyStudents() {
+        const content = document.getElementById('my-students-content');
+        if (!content) return;
+
+        content.innerHTML = `
+          <div class="card" style="margin-bottom: 20px;">
+            <h2>👥 My Students</h2>
+            <p style="color: var(--muted);">View student information, parent contacts, and medical notes for students in your classes.</p>
+          </div>
+          <div class="card">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+              <h3>Student Directory</h3>
+              <input type="text" id="student-search" placeholder="Search students..."
+                     style="padding: 8px 12px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text); width: 250px;"
+                     oninput="app.filterMyStudents(this.value)">
+            </div>
+            <div id="my-students-list" style="display: flex; align-items: center; justify-content: center; padding: 40px;">
+              <div class="loading-spinner"></div>
+              <span style="margin-left: 10px; color: var(--muted);">Loading students...</span>
+            </div>
+          </div>
+        `;
+
+        await this.loadMyStudentsList();
+      }
+
+      async loadMyStudentsList() {
+        try {
+          // Get all unique students from teacher's classes
+          const teacherId = this.userInfo.user.id;
+
+          // Get teacher's classes
+          const { data: classes } = await this.auth.supabase
+            .from('classes')
+            .select('id, name')
+            .eq('teacher_id', teacherId);
+
+          if (!classes || classes.length === 0) {
+            document.getElementById('my-students-list').innerHTML = `
+              <p style="color: var(--muted); text-align: center; padding: 40px;">
+                You don't have any classes yet. Create a class to see your students here.
+              </p>
+            `;
+            return;
+          }
+
+          const classIds = classes.map(c => c.id);
+          const classMap = {};
+          classes.forEach(c => classMap[c.id] = c.name);
+
+          // Get enrollments with student info
+          const { data: enrollments } = await this.auth.supabase
+            .from('class_enrollments')
+            .select('student_id, class_id')
+            .in('class_id', classIds)
+            .eq('status', 'active');
+
+          if (!enrollments || enrollments.length === 0) {
+            document.getElementById('my-students-list').innerHTML = `
+              <p style="color: var(--muted); text-align: center; padding: 40px;">
+                No students are currently enrolled in your classes.
+              </p>
+            `;
+            return;
+          }
+
+          // Get unique student IDs and their classes
+          const studentClassMap = {};
+          enrollments.forEach(e => {
+            if (!studentClassMap[e.student_id]) {
+              studentClassMap[e.student_id] = [];
+            }
+            studentClassMap[e.student_id].push(classMap[e.class_id]);
+          });
+
+          const studentIds = Object.keys(studentClassMap);
+
+          // Get student profiles
+          const { data: students } = await this.auth.supabase
+            .from('user_profiles')
+            .select('id, first_name, last_name, email, grade_level, phone')
+            .in('id', studentIds)
+            .order('last_name');
+
+          // Store for filtering
+          this.myStudentsData = students.map(s => ({
+            ...s,
+            classes: studentClassMap[s.id] || []
+          }));
+
+          this.renderMyStudentsTable(this.myStudentsData);
+
+        } catch (error) {
+          console.error('Error loading students:', error);
+          document.getElementById('my-students-list').innerHTML = `
+            <p style="color: var(--danger); text-align: center; padding: 40px;">
+              Error loading students: ${error.message}
+            </p>
+          `;
+        }
+      }
+
+      renderMyStudentsTable(students) {
+        const container = document.getElementById('my-students-list');
+
+        if (!students || students.length === 0) {
+          container.innerHTML = `
+            <p style="color: var(--muted); text-align: center; padding: 40px;">
+              No students found matching your search.
+            </p>
+          `;
+          return;
+        }
+
+        let html = `
+          <table style="width: 100%; border-collapse: collapse;">
+            <thead>
+              <tr style="background: var(--accent); color: white;">
+                <th style="padding: 12px; text-align: left;">Name</th>
+                <th style="padding: 12px; text-align: left;">Grade</th>
+                <th style="padding: 12px; text-align: left;">Classes</th>
+                <th style="padding: 12px; text-align: left;">Email</th>
+                <th style="padding: 12px; text-align: center;">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+        `;
+
+        students.forEach(student => {
+          html += `
+            <tr style="border-bottom: 1px solid var(--border);">
+              <td style="padding: 12px; font-weight: bold;">
+                ${student.last_name}, ${student.first_name}
+              </td>
+              <td style="padding: 12px;">
+                ${student.grade_level ? `Grade ${student.grade_level}` : 'N/A'}
+              </td>
+              <td style="padding: 12px;">
+                <span style="font-size: 12px; color: var(--muted);">
+                  ${student.classes.slice(0, 2).join(', ')}${student.classes.length > 2 ? ` +${student.classes.length - 2} more` : ''}
+                </span>
+              </td>
+              <td style="padding: 12px;">
+                <a href="mailto:${student.email}" style="color: var(--accent);">${student.email}</a>
+              </td>
+              <td style="padding: 12px; text-align: center;">
+                <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;"
+                        onclick="app.showStudentDetailsModal('${student.id}')">
+                  📋 View Details
+                </button>
+              </td>
+            </tr>
+          `;
+        });
+
+        html += `
+            </tbody>
+          </table>
+          <div style="margin-top: 15px; color: var(--muted); font-size: 13px;">
+            Showing ${students.length} student${students.length !== 1 ? 's' : ''}
+          </div>
+        `;
+
+        container.innerHTML = html;
+      }
+
+      filterMyStudents(searchTerm) {
+        if (!this.myStudentsData) return;
+
+        const term = searchTerm.toLowerCase().trim();
+        if (!term) {
+          this.renderMyStudentsTable(this.myStudentsData);
+          return;
+        }
+
+        const filtered = this.myStudentsData.filter(student =>
+          student.first_name.toLowerCase().includes(term) ||
+          student.last_name.toLowerCase().includes(term) ||
+          student.email.toLowerCase().includes(term) ||
+          student.classes.some(c => c.toLowerCase().includes(term))
+        );
+
+        this.renderMyStudentsTable(filtered);
+      }
+
+      async showStudentDetailsModal(studentId) {
+        // Create modal overlay
+        const overlay = document.createElement('div');
+        overlay.id = 'student-details-modal-overlay';
+        overlay.style.cssText = 'position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); z-index: 10000; display: flex; align-items: center; justify-content: center;';
+        overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+
+        overlay.innerHTML = `
+          <div style="background: var(--card); border-radius: 12px; max-width: 800px; width: 95%; max-height: 90vh; overflow-y: auto; padding: 25px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+              <h2 style="margin: 0;">📋 Student Details</h2>
+              <button onclick="this.closest('#student-details-modal-overlay').remove()"
+                      style="background: none; border: none; font-size: 24px; cursor: pointer; color: var(--text);">×</button>
+            </div>
+            <div id="student-details-content" style="display: flex; align-items: center; justify-content: center; padding: 40px;">
+              <div class="loading-spinner"></div>
+              <span style="margin-left: 10px; color: var(--muted);">Loading student details...</span>
+            </div>
+          </div>
+        `;
+
+        document.body.appendChild(overlay);
+
+        await this.loadStudentDetails(studentId);
+      }
+
+      async loadStudentDetails(studentId) {
+        const content = document.getElementById('student-details-content');
+
+        try {
+          // Load student profile, parent links, emergency contacts, and medical info in parallel
+          const [
+            { data: student },
+            { data: parentLinks },
+            { data: emergencyContacts },
+            { data: medicalInfo }
+          ] = await Promise.all([
+            this.auth.supabase
+              .from('user_profiles')
+              .select('*')
+              .eq('id', studentId)
+              .single(),
+            this.auth.supabase
+              .from('parent_child_links')
+              .select('parent_id')
+              .eq('child_id', studentId),
+            this.auth.supabase
+              .from('emergency_contacts')
+              .select('*')
+              .eq('student_id', studentId)
+              .order('is_primary', { ascending: false }),
+            this.auth.supabase
+              .from('student_medical_info')
+              .select('*')
+              .eq('student_id', studentId)
+              .single()
+          ]);
+
+          // Load parent profiles if there are linked parents
+          let parents = [];
+          if (parentLinks && parentLinks.length > 0) {
+            const parentIds = parentLinks.map(p => p.parent_id);
+            const { data: parentProfiles } = await this.auth.supabase
+              .from('user_profiles')
+              .select('id, first_name, last_name, email, phone')
+              .in('id', parentIds);
+            parents = parentProfiles || [];
+          }
+
+          // Render the details
+          content.innerHTML = this.renderStudentDetailsContent(student, parents, emergencyContacts || [], medicalInfo);
+
+        } catch (error) {
+          console.error('Error loading student details:', error);
+          content.innerHTML = `
+            <div style="color: var(--danger); text-align: center; padding: 20px;">
+              Error loading student details: ${error.message}
+            </div>
+          `;
+        }
+      }
+
+      renderStudentDetailsContent(student, parents, emergencyContacts, medicalInfo) {
+        const formatPhone = (phone) => phone || 'Not provided';
+        const formatAddress = (s) => {
+          if (!s.address_line1) return 'Not provided';
+          let addr = s.address_line1;
+          if (s.address_line2) addr += ', ' + s.address_line2;
+          if (s.city) addr += ', ' + s.city;
+          if (s.state) addr += ', ' + s.state;
+          if (s.zip_code) addr += ' ' + s.zip_code;
+          return addr;
+        };
+
+        let html = `
+          <!-- Student Info -->
+          <div style="background: var(--bg); border-radius: 8px; padding: 15px; margin-bottom: 20px;">
+            <h3 style="margin: 0 0 15px 0; color: var(--accent);">👤 Student Information</h3>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+              <div><strong>Name:</strong> ${student.first_name} ${student.last_name}</div>
+              <div><strong>Grade:</strong> ${student.grade_level ? `Grade ${student.grade_level}` : 'N/A'}</div>
+              <div><strong>Email:</strong> <a href="mailto:${student.email}" style="color: var(--accent);">${student.email}</a></div>
+              <div><strong>Phone:</strong> ${formatPhone(student.phone)}</div>
+              <div style="grid-column: 1 / -1;"><strong>Address:</strong> ${formatAddress(student)}</div>
+            </div>
+          </div>
+
+          <!-- Parent/Guardian Info -->
+          <div style="background: var(--bg); border-radius: 8px; padding: 15px; margin-bottom: 20px;">
+            <h3 style="margin: 0 0 15px 0; color: var(--accent);">👨‍👩‍👧 Parent/Guardian</h3>
+            ${parents.length > 0 ? parents.map(parent => `
+              <div style="border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-bottom: 10px;">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                  <div><strong>Name:</strong> ${parent.first_name} ${parent.last_name}</div>
+                  <div><strong>Phone:</strong> ${formatPhone(parent.phone)}</div>
+                  <div style="grid-column: 1 / -1;"><strong>Email:</strong> <a href="mailto:${parent.email}" style="color: var(--accent);">${parent.email}</a></div>
+                </div>
+              </div>
+            `).join('') : `
+              <p style="color: var(--muted); font-style: italic;">No parent/guardian linked to this student.</p>
+            `}
+          </div>
+
+          <!-- Emergency Contacts -->
+          <div style="background: var(--bg); border-radius: 8px; padding: 15px; margin-bottom: 20px;">
+            <h3 style="margin: 0 0 15px 0; color: var(--danger);">🚨 Emergency Contacts</h3>
+            ${emergencyContacts.length > 0 ? emergencyContacts.map(contact => `
+              <div style="border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-bottom: 10px; ${contact.is_primary ? 'border-color: var(--danger); background: rgba(239, 68, 68, 0.1);' : ''}">
+                ${contact.is_primary ? '<span style="background: var(--danger); color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin-bottom: 8px; display: inline-block;">PRIMARY</span>' : ''}
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                  <div><strong>Name:</strong> ${contact.contact_name}</div>
+                  <div><strong>Relationship:</strong> ${contact.relationship}</div>
+                  <div><strong>Phone (Primary):</strong> <a href="tel:${contact.phone_primary}" style="color: var(--accent);">${contact.phone_primary}</a></div>
+                  <div><strong>Phone (Secondary):</strong> ${contact.phone_secondary || 'N/A'}</div>
+                  ${contact.email ? `<div><strong>Email:</strong> <a href="mailto:${contact.email}" style="color: var(--accent);">${contact.email}</a></div>` : ''}
+                  <div><strong>Can Pickup:</strong> ${contact.can_pickup ? '✅ Yes' : '❌ No'}</div>
+                </div>
+                ${contact.notes ? `<div style="margin-top: 8px;"><strong>Notes:</strong> ${contact.notes}</div>` : ''}
+              </div>
+            `).join('') : `
+              <p style="color: var(--muted); font-style: italic;">No emergency contacts on file.</p>
+            `}
+          </div>
+
+          <!-- Medical Information -->
+          <div style="background: var(--bg); border-radius: 8px; padding: 15px;">
+            <h3 style="margin: 0 0 15px 0; color: var(--warning);">🏥 Medical Information</h3>
+            ${medicalInfo ? `
+              <div style="display: grid; gap: 12px;">
+                ${medicalInfo.conditions ? `
+                  <div style="border-left: 3px solid var(--warning); padding-left: 12px;">
+                    <strong>Medical Conditions:</strong><br>
+                    <span style="color: var(--text);">${medicalInfo.conditions}</span>
+                  </div>
+                ` : ''}
+                ${medicalInfo.allergies ? `
+                  <div style="border-left: 3px solid var(--danger); padding-left: 12px;">
+                    <strong>Allergies:</strong><br>
+                    <span style="color: var(--danger);">${medicalInfo.allergies}</span>
+                  </div>
+                ` : ''}
+                ${medicalInfo.medications ? `
+                  <div style="border-left: 3px solid var(--accent); padding-left: 12px;">
+                    <strong>Medications:</strong><br>
+                    <span style="color: var(--text);">${medicalInfo.medications}</span>
+                  </div>
+                ` : ''}
+                ${medicalInfo.dietary_restrictions ? `
+                  <div style="border-left: 3px solid var(--success); padding-left: 12px;">
+                    <strong>Dietary Restrictions:</strong><br>
+                    <span style="color: var(--text);">${medicalInfo.dietary_restrictions}</span>
+                  </div>
+                ` : ''}
+                ${medicalInfo.physical_limitations ? `
+                  <div style="border-left: 3px solid var(--muted); padding-left: 12px;">
+                    <strong>Physical Limitations:</strong><br>
+                    <span style="color: var(--text);">${medicalInfo.physical_limitations}</span>
+                  </div>
+                ` : ''}
+                ${medicalInfo.emergency_instructions ? `
+                  <div style="background: rgba(239, 68, 68, 0.1); border: 1px solid var(--danger); border-radius: 6px; padding: 12px; margin-top: 10px;">
+                    <strong style="color: var(--danger);">⚠️ Emergency Instructions:</strong><br>
+                    <span style="color: var(--text);">${medicalInfo.emergency_instructions}</span>
+                  </div>
+                ` : ''}
+                ${medicalInfo.doctor_name || medicalInfo.doctor_phone ? `
+                  <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border);">
+                    <strong>Healthcare Provider:</strong><br>
+                    ${medicalInfo.doctor_name ? `Dr. ${medicalInfo.doctor_name}` : ''}
+                    ${medicalInfo.doctor_phone ? ` - <a href="tel:${medicalInfo.doctor_phone}" style="color: var(--accent);">${medicalInfo.doctor_phone}</a>` : ''}
+                  </div>
+                ` : ''}
+                ${medicalInfo.notes ? `
+                  <div style="margin-top: 10px;">
+                    <strong>Additional Notes:</strong><br>
+                    <span style="color: var(--muted);">${medicalInfo.notes}</span>
+                  </div>
+                ` : ''}
+                ${!medicalInfo.conditions && !medicalInfo.allergies && !medicalInfo.medications && !medicalInfo.emergency_instructions ? `
+                  <p style="color: var(--muted); font-style: italic;">No specific medical information recorded.</p>
+                ` : ''}
+              </div>
+            ` : `
+              <p style="color: var(--muted); font-style: italic;">No medical information on file.</p>
+            `}
+          </div>
+        `;
+
+        return html;
       }
 
       renderProfile() {
