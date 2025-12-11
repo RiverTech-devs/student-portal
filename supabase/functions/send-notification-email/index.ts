@@ -22,7 +22,7 @@ serve(async (req) => {
           <blockquote style="background: #f5f5f5; padding: 15px; border-left: 4px solid #6aa9ff;">
             ${data.message_preview || ''}...
           </blockquote>
-          <p><a href="https://rivertech.me/student-portal/portal/">View in Student Portal</a></p>
+          <p><a href="https://rivertech.me/student-portal/portal/index.html">View in Student Portal</a></p>
         `
         break
       case 'assignment_posted':
@@ -30,7 +30,7 @@ serve(async (req) => {
           <h2>New Assignment</h2>
           <p>A new assignment has been posted: <strong>${data.assignment_title || 'Untitled'}</strong></p>
           <p>Due: ${data.due_date || 'See portal for details'}</p>
-          <p><a href="https://rivertech.me/student-portal/portal/">View Assignment</a></p>
+          <p><a href="https://rivertech.me/student-portal/portal/index.html">View Assignment</a></p>
         `
         break
       case 'missed_assignment':
@@ -49,7 +49,7 @@ serve(async (req) => {
             <h2>Missed Assignments</h2>
             <p>The following assignments were not submitted by the due date:</p>
             <ul>${assignmentList}</ul>
-            <p><a href="https://rivertech.me/student-portal/portal/">View in Student Portal</a></p>
+            <p><a href="https://rivertech.me/student-portal/portal/index.html">View in Student Portal</a></p>
             <p style="color: #666; font-size: 12px;">You're receiving this because you opted in to missed assignment notifications.</p>
           </div>
         `
@@ -60,14 +60,14 @@ serve(async (req) => {
             <h2>Grade Report</h2>
             <p>A new grade report is available for <strong>${data.student_name || 'your student'}</strong>.</p>
             ${data.summary ? `<p>${data.summary}</p>` : ''}
-            <p><a href="https://rivertech.me/student-portal/portal/">View Full Report</a></p>
+            <p><a href="https://rivertech.me/student-portal/portal/index.html">View Full Report</a></p>
             <p style="color: #666; font-size: 12px;">You're receiving this because you opted in to grade report notifications.</p>
           </div>
         `
         break
       default:
         html = `<p>You have a new notification in Student Portal.</p>
-                <p><a href="https://rivertech.me/student-portal/portal/">View Portal</a></p>`
+                <p><a href="https://rivertech.me/student-portal/portal/index.html">View Portal</a></p>`
     }
   } else {
     // Direct call
