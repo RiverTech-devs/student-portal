@@ -16424,6 +16424,194 @@
         this.showNotification('Report exported successfully!', 'success');
       }
 
+      // ==================== REPORT CARD GENERATION ====================
+
+      async generateReportCard(studentId) {
+        this.showNotification('Generating report card...', 'info');
+
+        try {
+          // Load student profile
+          const { data: student, error: studentError } = await this.auth.supabase
+            .from('user_profiles')
+            .select('*')
+            .eq('id', studentId)
+            .single();
+
+          if (studentError) throw studentError;
+
+          // Load current quarter
+          const { data: currentQuarter } = await this.auth.supabase
+            .from('quarters')
+            .select('*')
+            .eq('is_current', true)
+            .single();
+
+          // Load school settings
+          const { data: settings } = await this.auth.supabase
+            .from('school_settings')
+            .select('key, value');
+
+          const settingsMap = {};
+          (settings || []).forEach(s => settingsMap[s.key] = s.value);
+
+          // Determine current school year
+          const currentSchoolYear = currentQuarter?.school_year || settingsMap['current_school_year'] || this.determineSchoolYear(new Date());
+
+          // Load all quarters for this school year to get grades
+          const [startYear, endYear] = currentSchoolYear.split('-').map(Number);
+          const schoolYearStart = `${startYear}-08-01`;
+          const schoolYearEnd = `${endYear}-07-31`;
+
+          const { data: quarters } = await this.auth.supabase
+            .from('quarters')
+            .select('*')
+            .gte('start_date', schoolYearStart)
+            .lte('start_date', schoolYearEnd)
+            .order('start_date', { ascending: true });
+
+          // Load student's enrollments with class info
+          const { data: enrollments } = await this.auth.supabase
+            .from('class_enrollments')
+            .select('*, classes(*)')
+            .eq('student_id', studentId)
+            .eq('status', 'active');
+
+          // Load archived quarter snapshots for past quarters
+          const { data: snapshots } = await this.auth.supabase
+            .from('quarter_grade_snapshots')
+            .select('*')
+            .eq('class_enrollments.student_id', studentId);
+
+          // Group classes by subject
+          const subjectGroups = {};
+          const subjectOrder = ['Math', 'English', 'Science', 'Science & Tech', 'Social Studies', 'Humanities', 'Health', 'Health & PE', 'PE', 'Electives', 'Other'];
+
+          for (const enrollment of (enrollments || [])) {
+            const cls = enrollment.classes;
+            if (!cls) continue;
+
+            let subject = cls.subject || 'Other';
+            // Normalize subject names
+            if (subject.toLowerCase().includes('math')) subject = 'Math';
+            else if (subject.toLowerCase().includes('english') || subject.toLowerCase().includes('language arts')) subject = 'English';
+            else if (subject.toLowerCase().includes('science')) subject = 'Science & Tech';
+            else if (subject.toLowerCase().includes('history') || subject.toLowerCase().includes('social')) subject = 'Humanities';
+            else if (subject.toLowerCase().includes('health') || subject.toLowerCase().includes('pe') || subject.toLowerCase().includes('physical')) subject = 'Health & PE';
+
+            if (!subjectGroups[subject]) {
+              subjectGroups[subject] = {
+                name: subject,
+                unitsLabel: '',
+                courses: []
+              };
+            }
+
+            // Build quarter grades
+            const quarterGrades = {};
+            const currentQuarterNum = this.getQuarterNumber(currentQuarter);
+
+            // Current quarter grade from enrollment
+            if (currentQuarterNum && enrollment.class_grade !== null) {
+              const letter = this.percentageToLetter(enrollment.class_grade);
+              quarterGrades[`Q${currentQuarterNum}`] = {
+                skill: this.percentageToLetter(enrollment.academic_grade),
+                part: this.percentageToLetter(enrollment.participation_grade),
+                total: letter
+              };
+            }
+
+            // Calculate GPA
+            const baseGPA = this.percentageToGPA(enrollment.class_grade);
+            const modifier = this.getCourseWeightModifier(cls.course_weight);
+            const weightedGPA = baseGPA !== null ? Math.min(baseGPA + modifier, 5.0) : null;
+
+            // Determine H/C label
+            let honorsCollege = 'N/A';
+            if (cls.course_weight === 'honors') honorsCollege = 'H';
+            else if (cls.course_weight === 'ap') honorsCollege = 'AP';
+            else if (cls.course_weight === 'dual_credit') honorsCollege = 'C';
+
+            // Check for flags (at-risk or significant change)
+            const isAtRisk = enrollment.class_grade !== null && enrollment.class_grade < 70;
+
+            subjectGroups[subject].courses.push({
+              courseName: cls.name,
+              credits: cls.credits || 1,
+              quarters: quarterGrades,
+              finalGradeLetter: '', // Only filled at end of year
+              honorsCollege: honorsCollege,
+              gradePoints: baseGPA,
+              weightedGP: weightedGPA,
+              flags: {
+                orange: isAtRisk,
+                purple: false
+              }
+            });
+          }
+
+          // Sort subject groups by standard order
+          const sortedGroups = [];
+          for (const subjectName of subjectOrder) {
+            if (subjectGroups[subjectName]) {
+              sortedGroups.push(subjectGroups[subjectName]);
+              delete subjectGroups[subjectName];
+            }
+          }
+          // Add any remaining subjects
+          for (const key of Object.keys(subjectGroups)) {
+            sortedGroups.push(subjectGroups[key]);
+          }
+
+          // Calculate current GPA
+          const gpaData = await this.calculateStudentGPA(studentId);
+
+          // Build report card data structure
+          const reportCardData = {
+            student: {
+              first_name: student.first_name,
+              last_name: student.last_name,
+              dob: student.dob || student.date_of_birth,
+              grade_level: student.grade_level
+            },
+            currentSchoolYear: currentSchoolYear,
+            currentQuarter: currentQuarter,
+            currentGPA: gpaData?.cumulativeGPA,
+            gpaHistory: {}, // TODO: Load historical GPA from archived years
+            approxCredits: `${(enrollments || []).reduce((sum, e) => sum + (e.classes?.credits || 1), 0)} earned`,
+            subjectGroups: sortedGroups,
+            config: {
+              schoolFoundingYear: 2020 // River Tech founded in 2020, so 2024-2025 = Y5
+            }
+          };
+
+          // Store data in sessionStorage and open report card
+          sessionStorage.setItem('reportCardData', JSON.stringify(reportCardData));
+          window.open('report-card.html', '_blank');
+
+        } catch (error) {
+          console.error('Error generating report card:', error);
+          this.showNotification('Error generating report card: ' + error.message, 'error');
+        }
+      }
+
+      // Helper to convert percentage to letter grade
+      percentageToLetter(percentage) {
+        if (percentage === null || percentage === undefined) return '';
+        if (percentage >= 97) return 'A+';
+        if (percentage >= 93) return 'A';
+        if (percentage >= 90) return 'A-';
+        if (percentage >= 87) return 'B+';
+        if (percentage >= 83) return 'B';
+        if (percentage >= 80) return 'B-';
+        if (percentage >= 77) return 'C+';
+        if (percentage >= 73) return 'C';
+        if (percentage >= 70) return 'C-';
+        if (percentage >= 67) return 'D+';
+        if (percentage >= 63) return 'D';
+        if (percentage >= 60) return 'D-';
+        return 'F';
+      }
+
       // ==================== ATTENDANCE REPORTS ====================
 
       async renderAdminAttendance() {
@@ -18440,6 +18628,9 @@
                   </button>
                   <button class="btn btn-secondary" onclick="app.showStudentAttendanceHistory('${studentId}', '${student.first_name} ${student.last_name}')">
                     📊 Attendance History
+                  </button>
+                  <button class="btn btn-secondary" onclick="app.generateReportCard('${studentId}')">
+                    📄 Report Card
                   </button>
                   ${student.account_status === 'inactive' ? `
                     <button class="btn btn-primary" onclick="app.activateStudent('${studentId}', '${student.first_name} ${student.last_name}')">
