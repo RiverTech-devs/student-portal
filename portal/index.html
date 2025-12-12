@@ -4830,7 +4830,8 @@
             { data: student },
             { data: parentLinks },
             { data: emergencyContacts },
-            { data: medicalInfo }
+            { data: medicalInfo },
+            { data: studentNotes }
           ] = await Promise.all([
             this.auth.supabase
               .from('user_profiles')
@@ -4850,7 +4851,12 @@
               .from('student_medical_info')
               .select('*')
               .eq('student_id', studentId)
-              .single()
+              .single(),
+            this.auth.supabase
+              .from('student_notes')
+              .select('*, user_profiles!student_notes_teacher_id_fkey(first_name, last_name), classes(name)')
+              .eq('student_id', studentId)
+              .order('created_at', { ascending: false })
           ]);
 
           // Load parent profiles if there are linked parents
@@ -4864,8 +4870,11 @@
             parents = parentProfiles || [];
           }
 
+          // Store current student ID for adding notes
+          this._currentStudentDetailsId = studentId;
+
           // Render the details
-          content.innerHTML = this.renderStudentDetailsContent(student, parents, emergencyContacts || [], medicalInfo);
+          content.innerHTML = this.renderStudentDetailsContent(student, parents, emergencyContacts || [], medicalInfo, studentNotes || []);
 
         } catch (error) {
           console.error('Error loading student details:', error);
@@ -4877,7 +4886,7 @@
         }
       }
 
-      renderStudentDetailsContent(student, parents, emergencyContacts, medicalInfo) {
+      renderStudentDetailsContent(student, parents, emergencyContacts, medicalInfo, studentNotes = []) {
         const formatPhone = (phone) => phone || 'Not provided';
         const formatAddress = (s) => {
           if (!s.address_line1) return 'Not provided';
@@ -4887,6 +4896,18 @@
           if (s.state) addr += ', ' + s.state;
           if (s.zip_code) addr += ' ' + s.zip_code;
           return addr;
+        };
+
+        const sentimentIcons = {
+          positive: '👍',
+          negative: '👎',
+          neutral: '➖'
+        };
+
+        const sentimentColors = {
+          positive: 'var(--success)',
+          negative: 'var(--danger)',
+          neutral: 'var(--muted)'
         };
 
         let html = `
@@ -5001,9 +5022,137 @@
               <p style="color: var(--muted); font-style: italic;">No medical information on file.</p>
             `}
           </div>
+
+          <!-- Student Notes -->
+          <div style="background: var(--bg); border-radius: 8px; padding: 15px; margin-top: 20px;">
+            <h3 style="margin: 0 0 15px 0; color: var(--accent);">📝 Notes</h3>
+
+            <!-- Add Note Form -->
+            <div style="border: 1px solid var(--border); border-radius: 8px; padding: 15px; margin-bottom: 15px; background: var(--card);">
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+                <select id="note-sentiment" style="padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text);">
+                  <option value="neutral">➖ Neutral</option>
+                  <option value="positive">👍 Positive</option>
+                  <option value="negative">👎 Negative</option>
+                </select>
+                <select id="note-category" style="padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text);">
+                  <option value="academic">Academic</option>
+                  <option value="behavior">Behavior</option>
+                  <option value="responsibility">Responsibility</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </div>
+              <textarea id="note-content" placeholder="Add a note about this student..." rows="3"
+                style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); resize: vertical; box-sizing: border-box;"></textarea>
+              <div style="display: flex; justify-content: flex-end; margin-top: 10px;">
+                <button class="btn btn-primary" onclick="app.addStudentNote()" style="padding: 8px 16px;">
+                  Add Note
+                </button>
+              </div>
+            </div>
+
+            <!-- Existing Notes -->
+            <div id="student-notes-list">
+              ${studentNotes.length > 0 ? studentNotes.map(note => {
+                const teacherName = note.user_profiles ? `${note.user_profiles.first_name} ${note.user_profiles.last_name}` : 'Unknown';
+                const className = note.classes?.name || 'General';
+                const date = new Date(note.created_at).toLocaleDateString();
+                const icon = sentimentIcons[note.sentiment] || '➖';
+                const color = sentimentColors[note.sentiment] || 'var(--muted)';
+                return `
+                  <div style="border: 1px solid var(--border); border-left: 4px solid ${color}; border-radius: 6px; padding: 12px; margin-bottom: 10px;">
+                    <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px;">
+                      <div>
+                        <span style="font-size: 16px;">${icon}</span>
+                        <span style="font-weight: 600; margin-left: 5px; text-transform: capitalize;">${note.category}</span>
+                        <span style="color: var(--muted); font-size: 12px; margin-left: 10px;">${className}</span>
+                      </div>
+                      <span style="color: var(--muted); font-size: 12px;">${date}</span>
+                    </div>
+                    <p style="margin: 0 0 8px 0; color: var(--text);">${note.note}</p>
+                    <div style="font-size: 12px; color: var(--muted);">— ${teacherName}</div>
+                  </div>
+                `;
+              }).join('') : `
+                <p style="color: var(--muted); font-style: italic; text-align: center; padding: 20px;">No notes have been added for this student yet.</p>
+              `}
+            </div>
+          </div>
         `;
 
         return html;
+      }
+
+      async addStudentNote() {
+        const studentId = this._currentStudentDetailsId;
+        if (!studentId) {
+          this.showNotification('Error: Student ID not found', 'error');
+          return;
+        }
+
+        const sentiment = document.getElementById('note-sentiment')?.value || 'neutral';
+        const category = document.getElementById('note-category')?.value || 'academic';
+        const content = document.getElementById('note-content')?.value?.trim();
+
+        if (!content) {
+          this.showNotification('Please enter a note', 'error');
+          return;
+        }
+
+        try {
+          // Get the first class this teacher teaches that the student is in
+          const { data: enrollments } = await this.auth.supabase
+            .from('class_enrollments')
+            .select('class_id, classes!inner(teacher_id)')
+            .eq('student_id', studentId)
+            .eq('classes.teacher_id', this.userInfo.user.id)
+            .limit(1);
+
+          let classId = enrollments?.[0]?.class_id;
+
+          // If teacher doesn't teach this student directly (admin case), get any class the student is in
+          if (!classId) {
+            const { data: anyEnrollment } = await this.auth.supabase
+              .from('class_enrollments')
+              .select('class_id')
+              .eq('student_id', studentId)
+              .limit(1);
+            classId = anyEnrollment?.[0]?.class_id;
+          }
+
+          if (!classId) {
+            this.showNotification('Error: Could not find a class for this student', 'error');
+            return;
+          }
+
+          // Determine value based on sentiment
+          let value = null;
+          if (sentiment === 'positive') value = 1;
+          else if (sentiment === 'negative') value = -1;
+
+          const { error } = await this.auth.supabase
+            .from('student_notes')
+            .insert({
+              student_id: studentId,
+              teacher_id: this.userInfo.user.id,
+              class_id: classId,
+              sentiment: sentiment,
+              category: category,
+              note: content,
+              value: value
+            });
+
+          if (error) throw error;
+
+          this.showNotification('Note added successfully', 'success');
+
+          // Reload the student details to show the new note
+          await this.loadStudentDetails(studentId);
+
+        } catch (error) {
+          console.error('Error adding note:', error);
+          this.showNotification('Error adding note: ' + error.message, 'error');
+        }
       }
 
       renderProfile() {
