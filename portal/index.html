@@ -1555,6 +1555,11 @@
             <section id="admin-attendance-section" class="hidden">
               <!-- Will be populated by renderAdminAttendance() -->
             </section>
+
+            <!-- Admin Student Records Section (Admin only) -->
+            <section id="admin-student-records-section" class="hidden">
+              <!-- Will be populated by renderAdminStudentRecords() -->
+            </section>
           </div>
         </div>
       </div>
@@ -5152,6 +5157,728 @@
         } catch (error) {
           console.error('Error adding note:', error);
           this.showNotification('Error adding note: ' + error.message, 'error');
+        }
+      }
+
+      // ==================== ADMIN STUDENT RECORDS ====================
+      async renderAdminStudentRecords() {
+        const section = document.getElementById('admin-student-records-section');
+        if (!section) {
+          console.error('Admin student records section not found');
+          return;
+        }
+
+        section.innerHTML = '<div style="text-align: center; padding: 40px;"><div class="loading-spinner"></div><p>Loading students...</p></div>';
+
+        try {
+          // Load all students
+          const { data: students, error } = await this.auth.supabase
+            .from('user_profiles')
+            .select('id, first_name, last_name, email, grade_level, phone, address_line1, city, state')
+            .eq('user_type', 'student')
+            .order('last_name', { ascending: true });
+
+          if (error) throw error;
+
+          this._adminStudentsData = students || [];
+
+          section.innerHTML = `
+            <div style="padding: 20px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 15px;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                  <button class="btn btn-secondary" onclick="app.showSection('admin-dashboard'); app.renderAdminDashboard();">
+                    ← Back to Dashboard
+                  </button>
+                  <h2 style="margin: 0;">📁 Student Records</h2>
+                </div>
+                <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                  <input type="text" id="admin-student-records-search" placeholder="Search students..."
+                         style="padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); min-width: 200px;"
+                         oninput="app.filterAdminStudentRecords()">
+                  <select id="admin-student-records-grade" style="padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);"
+                          onchange="app.filterAdminStudentRecords()">
+                    <option value="">All Grades</option>
+                    ${[...new Set((students || []).map(s => s.grade_level).filter(Boolean))].sort((a,b) => a - b).map(g =>
+                      `<option value="${g}">Grade ${g}</option>`
+                    ).join('')}
+                  </select>
+                </div>
+              </div>
+
+              <div id="admin-student-records-table">
+                ${this.renderAdminStudentRecordsTable(students || [])}
+              </div>
+            </div>
+          `;
+
+        } catch (error) {
+          console.error('Error loading students:', error);
+          section.innerHTML = `
+            <div style="padding: 20px; text-align: center; color: var(--danger);">
+              Error loading students: ${error.message}
+            </div>
+          `;
+        }
+      }
+
+      renderAdminStudentRecordsTable(students) {
+        if (!students || students.length === 0) {
+          return '<div style="text-align: center; padding: 40px; color: var(--muted);">No students found.</div>';
+        }
+
+        return `
+          <div style="overflow-x: auto;">
+            <table class="data-table" style="width: 100%; border-collapse: collapse;">
+              <thead>
+                <tr style="background: var(--bg); border-bottom: 2px solid var(--border);">
+                  <th style="padding: 12px; text-align: left;">Name</th>
+                  <th style="padding: 12px; text-align: left;">Grade</th>
+                  <th style="padding: 12px; text-align: left;">Email</th>
+                  <th style="padding: 12px; text-align: left;">Phone</th>
+                  <th style="padding: 12px; text-align: center;">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${students.map(student => `
+                  <tr style="border-bottom: 1px solid var(--border);">
+                    <td style="padding: 12px;">${student.first_name} ${student.last_name}</td>
+                    <td style="padding: 12px;">${student.grade_level ? `Grade ${student.grade_level}` : 'N/A'}</td>
+                    <td style="padding: 12px;"><a href="mailto:${student.email}" style="color: var(--accent);">${student.email}</a></td>
+                    <td style="padding: 12px;">${student.phone || 'Not set'}</td>
+                    <td style="padding: 12px; text-align: center;">
+                      <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 13px;"
+                              onclick="app.showAdminStudentRecordModal('${student.id}')">
+                        Edit Records
+                      </button>
+                    </td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        `;
+      }
+
+      filterAdminStudentRecords() {
+        const searchTerm = document.getElementById('admin-student-records-search')?.value?.toLowerCase() || '';
+        const gradeFilter = document.getElementById('admin-student-records-grade')?.value || '';
+
+        const filtered = (this._adminStudentsData || []).filter(student => {
+          const matchesSearch = !searchTerm ||
+            `${student.first_name} ${student.last_name}`.toLowerCase().includes(searchTerm) ||
+            student.email?.toLowerCase().includes(searchTerm);
+          const matchesGrade = !gradeFilter || student.grade_level == gradeFilter;
+          return matchesSearch && matchesGrade;
+        });
+
+        const tableContainer = document.getElementById('admin-student-records-table');
+        if (tableContainer) {
+          tableContainer.innerHTML = this.renderAdminStudentRecordsTable(filtered);
+        }
+      }
+
+      async showAdminStudentRecordModal(studentId) {
+        const overlay = document.createElement('div');
+        overlay.id = 'admin-student-record-modal-overlay';
+        overlay.style.cssText = 'position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); z-index: 10000; display: flex; align-items: flex-start; justify-content: center; padding: 20px; overflow-y: auto;';
+        overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+
+        overlay.innerHTML = `
+          <div style="background: var(--card); border-radius: 12px; max-width: 900px; width: 100%; padding: 25px; margin: auto;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; position: sticky; top: 0; background: var(--card); padding-bottom: 10px; border-bottom: 1px solid var(--border);">
+              <h2 style="margin: 0;">📝 Edit Student Records</h2>
+              <button onclick="this.closest('#admin-student-record-modal-overlay').remove()"
+                      style="background: none; border: none; font-size: 24px; cursor: pointer; color: var(--text);">×</button>
+            </div>
+            <div id="admin-student-record-content" style="display: flex; align-items: center; justify-content: center; padding: 40px;">
+              <div class="loading-spinner"></div>
+              <span style="margin-left: 10px; color: var(--muted);">Loading student records...</span>
+            </div>
+          </div>
+        `;
+
+        document.body.appendChild(overlay);
+
+        await this.loadAdminStudentRecord(studentId);
+      }
+
+      async loadAdminStudentRecord(studentId) {
+        const content = document.getElementById('admin-student-record-content');
+        this._currentAdminStudentId = studentId;
+
+        try {
+          const [
+            { data: student },
+            { data: emergencyContacts },
+            { data: medicalInfo }
+          ] = await Promise.all([
+            this.auth.supabase
+              .from('user_profiles')
+              .select('*')
+              .eq('id', studentId)
+              .single(),
+            this.auth.supabase
+              .from('emergency_contacts')
+              .select('*')
+              .eq('student_id', studentId)
+              .order('is_primary', { ascending: false }),
+            this.auth.supabase
+              .from('student_medical_info')
+              .select('*')
+              .eq('student_id', studentId)
+              .single()
+          ]);
+
+          content.innerHTML = this.renderAdminStudentRecordForm(student, emergencyContacts || [], medicalInfo);
+
+        } catch (error) {
+          console.error('Error loading student record:', error);
+          content.innerHTML = `<div style="color: var(--danger); text-align: center;">Error: ${error.message}</div>`;
+        }
+      }
+
+      renderAdminStudentRecordForm(student, emergencyContacts, medicalInfo) {
+        return `
+          <!-- Tab Navigation -->
+          <div style="display: flex; gap: 5px; margin-bottom: 20px; border-bottom: 1px solid var(--border); padding-bottom: 10px;">
+            <button class="btn" id="tab-contact" onclick="app.switchStudentRecordTab('contact')"
+                    style="background: var(--accent); color: white;">Contact Info</button>
+            <button class="btn btn-secondary" id="tab-emergency" onclick="app.switchStudentRecordTab('emergency')">Emergency Contacts</button>
+            <button class="btn btn-secondary" id="tab-medical" onclick="app.switchStudentRecordTab('medical')">Medical Info</button>
+          </div>
+
+          <!-- Contact Info Tab -->
+          <div id="tab-content-contact">
+            <h3 style="margin: 0 0 15px 0; color: var(--accent);">👤 Contact Information</h3>
+            <form id="contact-info-form" onsubmit="event.preventDefault(); app.saveStudentContactInfo();">
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                <div>
+                  <label style="display: block; margin-bottom: 5px; color: var(--muted); font-size: 13px;">First Name</label>
+                  <input type="text" id="student-first-name" value="${student.first_name || ''}" readonly
+                         style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--muted); cursor: not-allowed;">
+                </div>
+                <div>
+                  <label style="display: block; margin-bottom: 5px; color: var(--muted); font-size: 13px;">Last Name</label>
+                  <input type="text" id="student-last-name" value="${student.last_name || ''}" readonly
+                         style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--muted); cursor: not-allowed;">
+                </div>
+                <div>
+                  <label style="display: block; margin-bottom: 5px; color: var(--muted); font-size: 13px;">Email</label>
+                  <input type="email" id="student-email" value="${student.email || ''}" readonly
+                         style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--muted); cursor: not-allowed;">
+                </div>
+                <div>
+                  <label style="display: block; margin-bottom: 5px; color: var(--muted); font-size: 13px;">Phone</label>
+                  <input type="tel" id="student-phone" value="${student.phone || ''}"
+                         style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+                </div>
+                <div style="grid-column: 1 / -1;">
+                  <label style="display: block; margin-bottom: 5px; color: var(--muted); font-size: 13px;">Address Line 1</label>
+                  <input type="text" id="student-address1" value="${student.address_line1 || ''}"
+                         style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+                </div>
+                <div style="grid-column: 1 / -1;">
+                  <label style="display: block; margin-bottom: 5px; color: var(--muted); font-size: 13px;">Address Line 2</label>
+                  <input type="text" id="student-address2" value="${student.address_line2 || ''}" placeholder="Apt, Suite, etc."
+                         style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+                </div>
+                <div>
+                  <label style="display: block; margin-bottom: 5px; color: var(--muted); font-size: 13px;">City</label>
+                  <input type="text" id="student-city" value="${student.city || ''}"
+                         style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+                </div>
+                <div>
+                  <label style="display: block; margin-bottom: 5px; color: var(--muted); font-size: 13px;">State</label>
+                  <input type="text" id="student-state" value="${student.state || ''}"
+                         style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+                </div>
+                <div>
+                  <label style="display: block; margin-bottom: 5px; color: var(--muted); font-size: 13px;">ZIP Code</label>
+                  <input type="text" id="student-zip" value="${student.zip_code || ''}"
+                         style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+                </div>
+              </div>
+              <div style="margin-top: 20px; display: flex; justify-content: flex-end;">
+                <button type="submit" class="btn btn-primary">Save Contact Info</button>
+              </div>
+            </form>
+          </div>
+
+          <!-- Emergency Contacts Tab -->
+          <div id="tab-content-emergency" style="display: none;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+              <h3 style="margin: 0; color: var(--danger);">🚨 Emergency Contacts</h3>
+              <button class="btn btn-primary" onclick="app.addEmergencyContactForm()">+ Add Contact</button>
+            </div>
+            <div id="emergency-contacts-list">
+              ${emergencyContacts.length > 0 ? emergencyContacts.map((contact, idx) => this.renderEmergencyContactCard(contact, idx)).join('') : `
+                <div style="text-align: center; padding: 30px; color: var(--muted); background: var(--bg); border-radius: 8px;">
+                  No emergency contacts on file. Click "Add Contact" to add one.
+                </div>
+              `}
+            </div>
+          </div>
+
+          <!-- Medical Info Tab -->
+          <div id="tab-content-medical" style="display: none;">
+            <h3 style="margin: 0 0 15px 0; color: var(--warning);">🏥 Medical Information</h3>
+            <form id="medical-info-form" onsubmit="event.preventDefault(); app.saveStudentMedicalInfo();">
+              <div style="display: grid; gap: 15px;">
+                <div>
+                  <label style="display: block; margin-bottom: 5px; color: var(--muted); font-size: 13px;">Medical Conditions</label>
+                  <textarea id="medical-conditions" rows="2" placeholder="e.g., Asthma, Diabetes, Epilepsy"
+                            style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); resize: vertical;">${medicalInfo?.conditions || ''}</textarea>
+                </div>
+                <div>
+                  <label style="display: block; margin-bottom: 5px; color: var(--danger); font-size: 13px;">Allergies (Important)</label>
+                  <textarea id="medical-allergies" rows="2" placeholder="Food, medication, environmental allergies"
+                            style="width: 100%; padding: 10px; border: 1px solid var(--danger); border-radius: 6px; background: var(--bg); color: var(--text); resize: vertical;">${medicalInfo?.allergies || ''}</textarea>
+                </div>
+                <div>
+                  <label style="display: block; margin-bottom: 5px; color: var(--muted); font-size: 13px;">Current Medications</label>
+                  <textarea id="medical-medications" rows="2" placeholder="List any medications the student takes"
+                            style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); resize: vertical;">${medicalInfo?.medications || ''}</textarea>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                  <div>
+                    <label style="display: block; margin-bottom: 5px; color: var(--muted); font-size: 13px;">Dietary Restrictions</label>
+                    <input type="text" id="medical-dietary" value="${medicalInfo?.dietary_restrictions || ''}" placeholder="Vegetarian, gluten-free, etc."
+                           style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+                  </div>
+                  <div>
+                    <label style="display: block; margin-bottom: 5px; color: var(--muted); font-size: 13px;">Physical Limitations</label>
+                    <input type="text" id="medical-physical" value="${medicalInfo?.physical_limitations || ''}" placeholder="PE restrictions, mobility issues"
+                           style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+                  </div>
+                </div>
+                <div>
+                  <label style="display: block; margin-bottom: 5px; color: var(--danger); font-size: 13px;">Emergency Instructions</label>
+                  <textarea id="medical-emergency-instructions" rows="3" placeholder="What to do in case of a medical emergency"
+                            style="width: 100%; padding: 10px; border: 1px solid var(--danger); border-radius: 6px; background: var(--bg); color: var(--text); resize: vertical;">${medicalInfo?.emergency_instructions || ''}</textarea>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                  <div>
+                    <label style="display: block; margin-bottom: 5px; color: var(--muted); font-size: 13px;">Doctor's Name</label>
+                    <input type="text" id="medical-doctor-name" value="${medicalInfo?.doctor_name || ''}"
+                           style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+                  </div>
+                  <div>
+                    <label style="display: block; margin-bottom: 5px; color: var(--muted); font-size: 13px;">Doctor's Phone</label>
+                    <input type="tel" id="medical-doctor-phone" value="${medicalInfo?.doctor_phone || ''}"
+                           style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+                  </div>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                  <div>
+                    <label style="display: block; margin-bottom: 5px; color: var(--muted); font-size: 13px;">Insurance Provider</label>
+                    <input type="text" id="medical-insurance" value="${medicalInfo?.insurance_provider || ''}"
+                           style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+                  </div>
+                  <div>
+                    <label style="display: block; margin-bottom: 5px; color: var(--muted); font-size: 13px;">Policy Number</label>
+                    <input type="text" id="medical-policy" value="${medicalInfo?.insurance_policy_number || ''}"
+                           style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+                  </div>
+                </div>
+                <div>
+                  <label style="display: block; margin-bottom: 5px; color: var(--muted); font-size: 13px;">Additional Notes</label>
+                  <textarea id="medical-notes" rows="2" placeholder="Any other important medical information"
+                            style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); resize: vertical;">${medicalInfo?.notes || ''}</textarea>
+                </div>
+              </div>
+              <div style="margin-top: 20px; display: flex; justify-content: flex-end;">
+                <button type="submit" class="btn btn-primary">Save Medical Info</button>
+              </div>
+            </form>
+          </div>
+        `;
+      }
+
+      switchStudentRecordTab(tab) {
+        // Update tab buttons
+        document.querySelectorAll('[id^="tab-"]:not([id^="tab-content"])').forEach(btn => {
+          btn.classList.remove('btn-primary');
+          btn.classList.add('btn-secondary');
+          btn.style.background = '';
+          btn.style.color = '';
+        });
+        const activeBtn = document.getElementById(`tab-${tab}`);
+        if (activeBtn) {
+          activeBtn.classList.remove('btn-secondary');
+          activeBtn.style.background = 'var(--accent)';
+          activeBtn.style.color = 'white';
+        }
+
+        // Show/hide content
+        document.querySelectorAll('[id^="tab-content-"]').forEach(el => el.style.display = 'none');
+        const content = document.getElementById(`tab-content-${tab}`);
+        if (content) content.style.display = 'block';
+      }
+
+      renderEmergencyContactCard(contact, idx) {
+        return `
+          <div id="emergency-contact-${contact.id}" style="border: 1px solid var(--border); border-radius: 8px; padding: 15px; margin-bottom: 15px; ${contact.is_primary ? 'border-color: var(--danger); background: rgba(239, 68, 68, 0.05);' : ''}">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 15px;">
+              <div style="display: flex; align-items: center; gap: 10px;">
+                ${contact.is_primary ? '<span style="background: var(--danger); color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px;">PRIMARY</span>' : ''}
+                <strong>${contact.contact_name}</strong>
+                <span style="color: var(--muted);">(${contact.relationship})</span>
+              </div>
+              <div style="display: flex; gap: 5px;">
+                <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;"
+                        onclick="app.editEmergencyContact('${contact.id}')">Edit</button>
+                <button class="btn" style="padding: 4px 10px; font-size: 12px; background: var(--danger); color: white;"
+                        onclick="app.deleteEmergencyContact('${contact.id}')">Delete</button>
+              </div>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 14px;">
+              <div><strong>Phone:</strong> ${contact.phone_primary}</div>
+              <div><strong>Alt Phone:</strong> ${contact.phone_secondary || 'N/A'}</div>
+              <div><strong>Email:</strong> ${contact.email || 'N/A'}</div>
+              <div><strong>Can Pickup:</strong> ${contact.can_pickup ? '✅ Yes' : '❌ No'}</div>
+            </div>
+            ${contact.notes ? `<div style="margin-top: 10px; font-size: 13px;"><strong>Notes:</strong> ${contact.notes}</div>` : ''}
+          </div>
+        `;
+      }
+
+      addEmergencyContactForm() {
+        const list = document.getElementById('emergency-contacts-list');
+        const formId = 'new-emergency-contact-form';
+
+        // Remove existing form if present
+        const existingForm = document.getElementById(formId);
+        if (existingForm) {
+          existingForm.remove();
+          return;
+        }
+
+        const formHtml = `
+          <div id="${formId}" style="border: 2px solid var(--accent); border-radius: 8px; padding: 15px; margin-bottom: 15px; background: rgba(106, 169, 255, 0.05);">
+            <h4 style="margin: 0 0 15px 0;">Add New Emergency Contact</h4>
+            <form onsubmit="event.preventDefault(); app.saveNewEmergencyContact();">
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                <div>
+                  <label style="display: block; margin-bottom: 3px; font-size: 12px; color: var(--muted);">Contact Name *</label>
+                  <input type="text" id="new-ec-name" required
+                         style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text);">
+                </div>
+                <div>
+                  <label style="display: block; margin-bottom: 3px; font-size: 12px; color: var(--muted);">Relationship *</label>
+                  <select id="new-ec-relationship" required
+                          style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text);">
+                    <option value="">Select...</option>
+                    <option value="Mother">Mother</option>
+                    <option value="Father">Father</option>
+                    <option value="Guardian">Guardian</option>
+                    <option value="Grandparent">Grandparent</option>
+                    <option value="Aunt">Aunt</option>
+                    <option value="Uncle">Uncle</option>
+                    <option value="Sibling">Sibling</option>
+                    <option value="Other">Other</option>
+                  </select>
+                </div>
+                <div>
+                  <label style="display: block; margin-bottom: 3px; font-size: 12px; color: var(--muted);">Primary Phone *</label>
+                  <input type="tel" id="new-ec-phone1" required
+                         style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text);">
+                </div>
+                <div>
+                  <label style="display: block; margin-bottom: 3px; font-size: 12px; color: var(--muted);">Secondary Phone</label>
+                  <input type="tel" id="new-ec-phone2"
+                         style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text);">
+                </div>
+                <div>
+                  <label style="display: block; margin-bottom: 3px; font-size: 12px; color: var(--muted);">Email</label>
+                  <input type="email" id="new-ec-email"
+                         style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text);">
+                </div>
+                <div style="display: flex; gap: 20px; align-items: center;">
+                  <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+                    <input type="checkbox" id="new-ec-primary"> Primary Contact
+                  </label>
+                  <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+                    <input type="checkbox" id="new-ec-pickup" checked> Can Pickup
+                  </label>
+                </div>
+                <div style="grid-column: 1 / -1;">
+                  <label style="display: block; margin-bottom: 3px; font-size: 12px; color: var(--muted);">Notes</label>
+                  <textarea id="new-ec-notes" rows="2"
+                            style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); resize: vertical;"></textarea>
+                </div>
+              </div>
+              <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 15px;">
+                <button type="button" class="btn btn-secondary" onclick="document.getElementById('${formId}').remove()">Cancel</button>
+                <button type="submit" class="btn btn-primary">Save Contact</button>
+              </div>
+            </form>
+          </div>
+        `;
+
+        list.insertAdjacentHTML('afterbegin', formHtml);
+      }
+
+      async saveNewEmergencyContact() {
+        const studentId = this._currentAdminStudentId;
+        if (!studentId) return;
+
+        const data = {
+          student_id: studentId,
+          contact_name: document.getElementById('new-ec-name').value.trim(),
+          relationship: document.getElementById('new-ec-relationship').value,
+          phone_primary: document.getElementById('new-ec-phone1').value.trim(),
+          phone_secondary: document.getElementById('new-ec-phone2').value.trim() || null,
+          email: document.getElementById('new-ec-email').value.trim() || null,
+          is_primary: document.getElementById('new-ec-primary').checked,
+          can_pickup: document.getElementById('new-ec-pickup').checked,
+          notes: document.getElementById('new-ec-notes').value.trim() || null,
+          created_by: this.userInfo.user.id
+        };
+
+        try {
+          // If setting as primary, unset other primary contacts first
+          if (data.is_primary) {
+            await this.auth.supabase
+              .from('emergency_contacts')
+              .update({ is_primary: false })
+              .eq('student_id', studentId);
+          }
+
+          const { error } = await this.auth.supabase
+            .from('emergency_contacts')
+            .insert(data);
+
+          if (error) throw error;
+
+          this.showNotification('Emergency contact added', 'success');
+          await this.loadAdminStudentRecord(studentId);
+
+        } catch (error) {
+          console.error('Error adding emergency contact:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+        }
+      }
+
+      async editEmergencyContact(contactId) {
+        try {
+          const { data: contact } = await this.auth.supabase
+            .from('emergency_contacts')
+            .select('*')
+            .eq('id', contactId)
+            .single();
+
+          if (!contact) {
+            this.showNotification('Contact not found', 'error');
+            return;
+          }
+
+          const cardEl = document.getElementById(`emergency-contact-${contactId}`);
+          if (!cardEl) return;
+
+          cardEl.innerHTML = `
+            <form onsubmit="event.preventDefault(); app.updateEmergencyContact('${contactId}');">
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                <div>
+                  <label style="display: block; margin-bottom: 3px; font-size: 12px; color: var(--muted);">Contact Name *</label>
+                  <input type="text" id="edit-ec-name" value="${contact.contact_name}" required
+                         style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text);">
+                </div>
+                <div>
+                  <label style="display: block; margin-bottom: 3px; font-size: 12px; color: var(--muted);">Relationship *</label>
+                  <select id="edit-ec-relationship" required
+                          style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text);">
+                    <option value="Mother" ${contact.relationship === 'Mother' ? 'selected' : ''}>Mother</option>
+                    <option value="Father" ${contact.relationship === 'Father' ? 'selected' : ''}>Father</option>
+                    <option value="Guardian" ${contact.relationship === 'Guardian' ? 'selected' : ''}>Guardian</option>
+                    <option value="Grandparent" ${contact.relationship === 'Grandparent' ? 'selected' : ''}>Grandparent</option>
+                    <option value="Aunt" ${contact.relationship === 'Aunt' ? 'selected' : ''}>Aunt</option>
+                    <option value="Uncle" ${contact.relationship === 'Uncle' ? 'selected' : ''}>Uncle</option>
+                    <option value="Sibling" ${contact.relationship === 'Sibling' ? 'selected' : ''}>Sibling</option>
+                    <option value="Other" ${contact.relationship === 'Other' ? 'selected' : ''}>Other</option>
+                  </select>
+                </div>
+                <div>
+                  <label style="display: block; margin-bottom: 3px; font-size: 12px; color: var(--muted);">Primary Phone *</label>
+                  <input type="tel" id="edit-ec-phone1" value="${contact.phone_primary}" required
+                         style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text);">
+                </div>
+                <div>
+                  <label style="display: block; margin-bottom: 3px; font-size: 12px; color: var(--muted);">Secondary Phone</label>
+                  <input type="tel" id="edit-ec-phone2" value="${contact.phone_secondary || ''}"
+                         style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text);">
+                </div>
+                <div>
+                  <label style="display: block; margin-bottom: 3px; font-size: 12px; color: var(--muted);">Email</label>
+                  <input type="email" id="edit-ec-email" value="${contact.email || ''}"
+                         style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text);">
+                </div>
+                <div style="display: flex; gap: 20px; align-items: center;">
+                  <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+                    <input type="checkbox" id="edit-ec-primary" ${contact.is_primary ? 'checked' : ''}> Primary Contact
+                  </label>
+                  <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+                    <input type="checkbox" id="edit-ec-pickup" ${contact.can_pickup ? 'checked' : ''}> Can Pickup
+                  </label>
+                </div>
+                <div style="grid-column: 1 / -1;">
+                  <label style="display: block; margin-bottom: 3px; font-size: 12px; color: var(--muted);">Notes</label>
+                  <textarea id="edit-ec-notes" rows="2"
+                            style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); resize: vertical;">${contact.notes || ''}</textarea>
+                </div>
+              </div>
+              <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 15px;">
+                <button type="button" class="btn btn-secondary" onclick="app.loadAdminStudentRecord('${this._currentAdminStudentId}')">Cancel</button>
+                <button type="submit" class="btn btn-primary">Save Changes</button>
+              </div>
+            </form>
+          `;
+
+        } catch (error) {
+          console.error('Error loading contact for edit:', error);
+          this.showNotification('Error loading contact', 'error');
+        }
+      }
+
+      async updateEmergencyContact(contactId) {
+        const studentId = this._currentAdminStudentId;
+
+        const data = {
+          contact_name: document.getElementById('edit-ec-name').value.trim(),
+          relationship: document.getElementById('edit-ec-relationship').value,
+          phone_primary: document.getElementById('edit-ec-phone1').value.trim(),
+          phone_secondary: document.getElementById('edit-ec-phone2').value.trim() || null,
+          email: document.getElementById('edit-ec-email').value.trim() || null,
+          is_primary: document.getElementById('edit-ec-primary').checked,
+          can_pickup: document.getElementById('edit-ec-pickup').checked,
+          notes: document.getElementById('edit-ec-notes').value.trim() || null,
+          updated_by: this.userInfo.user.id
+        };
+
+        try {
+          // If setting as primary, unset other primary contacts first
+          if (data.is_primary) {
+            await this.auth.supabase
+              .from('emergency_contacts')
+              .update({ is_primary: false })
+              .eq('student_id', studentId)
+              .neq('id', contactId);
+          }
+
+          const { error } = await this.auth.supabase
+            .from('emergency_contacts')
+            .update(data)
+            .eq('id', contactId);
+
+          if (error) throw error;
+
+          this.showNotification('Emergency contact updated', 'success');
+          await this.loadAdminStudentRecord(studentId);
+
+        } catch (error) {
+          console.error('Error updating emergency contact:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+        }
+      }
+
+      async deleteEmergencyContact(contactId) {
+        if (!confirm('Are you sure you want to delete this emergency contact?')) return;
+
+        try {
+          const { error } = await this.auth.supabase
+            .from('emergency_contacts')
+            .delete()
+            .eq('id', contactId);
+
+          if (error) throw error;
+
+          this.showNotification('Emergency contact deleted', 'success');
+          await this.loadAdminStudentRecord(this._currentAdminStudentId);
+
+        } catch (error) {
+          console.error('Error deleting emergency contact:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+        }
+      }
+
+      async saveStudentContactInfo() {
+        const studentId = this._currentAdminStudentId;
+        if (!studentId) return;
+
+        const data = {
+          phone: document.getElementById('student-phone').value.trim() || null,
+          address_line1: document.getElementById('student-address1').value.trim() || null,
+          address_line2: document.getElementById('student-address2').value.trim() || null,
+          city: document.getElementById('student-city').value.trim() || null,
+          state: document.getElementById('student-state').value.trim() || null,
+          zip_code: document.getElementById('student-zip').value.trim() || null
+        };
+
+        try {
+          const { error } = await this.auth.supabase
+            .from('user_profiles')
+            .update(data)
+            .eq('id', studentId);
+
+          if (error) throw error;
+
+          this.showNotification('Contact info saved', 'success');
+
+        } catch (error) {
+          console.error('Error saving contact info:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+        }
+      }
+
+      async saveStudentMedicalInfo() {
+        const studentId = this._currentAdminStudentId;
+        if (!studentId) return;
+
+        const data = {
+          student_id: studentId,
+          conditions: document.getElementById('medical-conditions').value.trim() || null,
+          allergies: document.getElementById('medical-allergies').value.trim() || null,
+          medications: document.getElementById('medical-medications').value.trim() || null,
+          dietary_restrictions: document.getElementById('medical-dietary').value.trim() || null,
+          physical_limitations: document.getElementById('medical-physical').value.trim() || null,
+          emergency_instructions: document.getElementById('medical-emergency-instructions').value.trim() || null,
+          doctor_name: document.getElementById('medical-doctor-name').value.trim() || null,
+          doctor_phone: document.getElementById('medical-doctor-phone').value.trim() || null,
+          insurance_provider: document.getElementById('medical-insurance').value.trim() || null,
+          insurance_policy_number: document.getElementById('medical-policy').value.trim() || null,
+          notes: document.getElementById('medical-notes').value.trim() || null,
+          updated_by: this.userInfo.user.id
+        };
+
+        try {
+          // Try to update first, if no rows affected then insert
+          const { data: existing } = await this.auth.supabase
+            .from('student_medical_info')
+            .select('id')
+            .eq('student_id', studentId)
+            .single();
+
+          let error;
+          if (existing) {
+            const result = await this.auth.supabase
+              .from('student_medical_info')
+              .update(data)
+              .eq('student_id', studentId);
+            error = result.error;
+          } else {
+            data.created_by = this.userInfo.user.id;
+            const result = await this.auth.supabase
+              .from('student_medical_info')
+              .insert(data);
+            error = result.error;
+          }
+
+          if (error) throw error;
+
+          this.showNotification('Medical info saved', 'success');
+
+        } catch (error) {
+          console.error('Error saving medical info:', error);
+          this.showNotification('Error: ' + error.message, 'error');
         }
       }
 
@@ -17880,6 +18607,25 @@
                     <span>✓ Date Range</span>
                   </div>
                 </div>
+
+                <!-- Student Records -->
+                <div class="card" style="cursor: pointer; border: 2px solid #9b59b6; transition: all 0.2s;"
+                     onmouseover="this.style.background='rgba(155, 89, 182, 0.1)'"
+                     onmouseout="this.style.background='var(--card)'"
+                     onclick="app.showAdminSection('student-records')">
+                  <div style="display: flex; align-items: center; gap: 15px; margin-bottom: 15px;">
+                    <div style="font-size: 48px;">📁</div>
+                    <div>
+                      <h3 style="margin: 0;">Student Records</h3>
+                      <p style="color: var(--muted); margin: 5px 0 0 0; font-size: 13px;">Edit contact info, emergency contacts, and medical info</p>
+                    </div>
+                  </div>
+                  <div style="display: flex; gap: 10px; font-size: 12px; color: var(--muted);">
+                    <span>✓ Contact Info</span>
+                    <span>✓ Emergency Contacts</span>
+                    <span>✓ Medical Info</span>
+                  </div>
+                </div>
               </div>
             </div>
           `;
@@ -18057,6 +18803,10 @@
           case 'attendance':
             this.showSection('admin-attendance');
             this.renderAdminAttendance();
+            break;
+          case 'student-records':
+            this.showSection('admin-student-records');
+            this.renderAdminStudentRecords();
             break;
           default:
             console.warn('Unknown admin section:', section);
