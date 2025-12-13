@@ -6495,20 +6495,44 @@
             .select('parent_id')
             .eq('child_id', studentId);
 
-          if (!parentLinks || parentLinks.length === 0) {
-            console.log('No parents linked to student, skipping email notification');
-            return;
+          // Get parent emails if any parents exist
+          let parents = [];
+          if (parentLinks && parentLinks.length > 0) {
+            const parentIds = parentLinks.map(p => p.parent_id);
+            const { data: parentData } = await this.auth.supabase
+              .from('user_profiles')
+              .select('email, first_name, email_notifications')
+              .in('id', parentIds);
+            parents = parentData || [];
           }
 
-          // Get parent emails
-          const parentIds = parentLinks.map(p => p.parent_id);
-          const { data: parents } = await this.auth.supabase
-            .from('user_profiles')
-            .select('email, first_name, email_notifications')
-            .in('id', parentIds);
+          // Get all teachers who have this student in their classes
+          const { data: enrollments } = await this.auth.supabase
+            .from('class_enrollments')
+            .select('class_id')
+            .eq('student_id', studentId)
+            .eq('status', 'active');
+
+          let teachers = [];
+          if (enrollments && enrollments.length > 0) {
+            const classIds = enrollments.map(e => e.class_id);
+            const { data: classes } = await this.auth.supabase
+              .from('classes')
+              .select('teacher_id')
+              .in('id', classIds);
+
+            if (classes && classes.length > 0) {
+              const teacherIds = [...new Set(classes.map(c => c.teacher_id).filter(Boolean))];
+              const { data: teacherData } = await this.auth.supabase
+                .from('user_profiles')
+                .select('id')
+                .in('id', teacherIds);
+              teachers = teacherData || [];
+            }
+          }
 
           // Send notification to each parent
-          for (const parent of (parents || [])) {
+          for (const parent of parents) {
             // Check if parent has strike notifications enabled (default to true)
             const emailPrefs = parent.email_notifications || {};
             if (emailPrefs.strike_notifications === false) {
@@ -6527,6 +6551,18 @@
                 }
               }
             });
+          }
+
+          // Send internal notification to each teacher (not email)
+          for (const teacher of teachers) {
+            await this.createNotificationFor(
+              teacher.id,
+              'strike',
+              `Student Strike: ${student.first_name} ${student.last_name}`,
+              `${student.first_name} ${student.last_name} has received a strike (${strikeCount}/3). Reason: ${reason}`,
+              null,
+              { studentId: studentId, strikeCount: strikeCount }
+            );
           }
         } catch (error) {
           console.error('Error sending strike notification:', error);
