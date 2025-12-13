@@ -72,8 +72,57 @@ serve(async (req) => {
   } else {
     // Direct call
     to = payload.to
-    subject = payload.subject
-    html = payload.html
+
+    // Handle typed notifications
+    if (payload.type === 'strike_issued') {
+      const data = payload.data || {}
+      const strikeColor = data.strikeCount >= 3 ? '#f5576c' : data.strikeCount === 2 ? '#ffcb6b' : '#6aa9ff'
+      subject = `⚠️ ${data.studentName} has received a strike (${data.strikeCount}/3)`
+      html = `
+        <div style="font-family: Inter, system-ui, Segoe UI, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="background: ${strikeColor}; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+            <h2 style="margin: 0;">⚠️ Disciplinary Strike Issued</h2>
+          </div>
+          <div style="padding: 20px; border: 1px solid #ddd; border-top: none; border-radius: 0 0 8px 8px;">
+            <p>Dear ${data.parentName || 'Parent'},</p>
+            <p>Your child <strong>${data.studentName}</strong> has received a disciplinary strike.</p>
+
+            <div style="background: #f5f5f5; padding: 15px; border-radius: 8px; margin: 20px 0;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                <strong>Current Strike Count:</strong>
+                <span style="background: ${strikeColor}; color: white; padding: 4px 12px; border-radius: 12px; font-weight: bold;">
+                  ${data.strikeCount}/3
+                </span>
+              </div>
+              <div style="margin-top: 15px;">
+                <strong>Reason:</strong>
+                <p style="margin: 5px 0 0 0; padding: 10px; background: white; border-radius: 4px;">${data.reason}</p>
+              </div>
+            </div>
+
+            ${data.strikeCount >= 3 ? `
+              <div style="background: #fff0f0; border: 1px solid #f5576c; padding: 15px; border-radius: 8px; margin: 20px 0;">
+                <strong style="color: #f5576c;">⚠️ Maximum Strikes Reached</strong>
+                <p style="margin: 5px 0 0 0; color: #666;">Your child has reached the maximum of 3 strikes. Please contact the school administration to discuss next steps.</p>
+              </div>
+            ` : ''}
+
+            <p style="color: #666; font-size: 13px;">
+              Strikes automatically decay 3 months after the most recent strike was issued.
+            </p>
+
+            <p><a href="https://rivertech.me/student-portal/portal/index.html" style="display: inline-block; background: #6aa9ff; color: white; padding: 10px 20px; border-radius: 6px; text-decoration: none;">View in Student Portal</a></p>
+
+            <p style="color: #999; font-size: 12px; margin-top: 30px;">
+              You're receiving this because you have a child linked in the Student Portal.
+            </p>
+          </div>
+        </div>
+      `
+    } else {
+      subject = payload.subject
+      html = payload.html
+    }
   }
 
   const res = await fetch('https://api.resend.com/emails', {

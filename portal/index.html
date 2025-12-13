@@ -1560,6 +1560,11 @@
             <section id="admin-student-records-section" class="hidden">
               <!-- Will be populated by renderAdminStudentRecords() -->
             </section>
+
+            <!-- Admin Strikes Section (Admin only) -->
+            <section id="admin-strikes-section" class="hidden">
+              <!-- Will be populated by renderAdminStrikes() -->
+            </section>
           </div>
         </div>
       </div>
@@ -3661,8 +3666,12 @@
           homeContent.innerHTML = this.getStudentHomeContent();
           // Load GPA after DOM is updated
           this.loadStudentGPADisplay();
+          // Load strikes count
+          this.loadStudentStrikesDisplay();
         } else {
           homeContent.innerHTML = this.getParentHomeContent();
+          // Load strikes for each child
+          this.loadChildrenStrikesDisplay();
         }
       }
       
@@ -3829,6 +3838,13 @@
                     ${this.messageThreads?.reduce((total, thread) => total + thread.unreadCount, 0) || 0}
                   </div>
                 </div>
+                <div class="list-item" id="student-strikes-overview">
+                  <div class="list-item-content">
+                    <div class="list-item-title">Active Strikes</div>
+                    <div class="list-item-meta">Decays after 3 months</div>
+                  </div>
+                  <div id="student-strikes-count" style="font-size: 20px; font-weight: 700; color: var(--accent-2);">-</div>
+                </div>
               </div>
             </div>
           </div>
@@ -3948,6 +3964,56 @@
         }
       }
 
+      /**
+       * Loads and displays the student's strike count on their home dashboard
+       */
+      async loadStudentStrikesDisplay() {
+        const countEl = document.getElementById('student-strikes-count');
+        if (!countEl) return;
+
+        try {
+          const studentId = this.userInfo.user.id;
+          const { count } = await this.getStudentStrikes(studentId);
+
+          // Determine color based on strike count
+          let strikeColor = '#43e97b'; // green for 0
+          if (count >= 3) strikeColor = '#f5576c'; // red for 3
+          else if (count > 0) strikeColor = '#ffcb6b'; // yellow for 1-2
+
+          countEl.style.color = strikeColor;
+          countEl.textContent = `${count}/3`;
+        } catch (error) {
+          console.error('Error loading strikes display:', error);
+          countEl.textContent = '-';
+        }
+      }
+
+      /**
+       * Loads and displays strike counts for each child in parent dashboard
+       */
+      async loadChildrenStrikesDisplay() {
+        const children = this.children || [];
+
+        for (const child of children) {
+          const badgeEl = document.getElementById(`child-strikes-${child.id}`);
+          if (!badgeEl) continue;
+
+          try {
+            const { count } = await this.getStudentStrikes(child.id);
+
+            // Determine color based on strike count
+            let bgColor = '#43e97b'; // green for 0
+            if (count >= 3) bgColor = '#f5576c'; // red for 3
+            else if (count > 0) bgColor = '#ffcb6b'; // yellow for 1-2
+
+            badgeEl.style.background = bgColor;
+            badgeEl.textContent = `${count}/3`;
+          } catch (error) {
+            console.error(`Error loading strikes for child ${child.id}:`, error);
+          }
+        }
+      }
+
       getParentHomeContent() {
         const children = this.children || [];
         const totalClasses = children.reduce((sum, child) => sum + (child.classes?.length || 0), 0);
@@ -3975,7 +4041,10 @@
                   Grade ${child.grade_level || 'N/A'} • ${child.enrollment_type === 'homeschool' ? 'Homeschool' : 'Full-Time'} • ${child.classes?.length || 0} class${child.classes?.length !== 1 ? 'es' : ''}
                 </div>
               </div>
-              <span style="color: var(--accent);">→</span>
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <span id="child-strikes-${child.id}" style="font-size: 12px; padding: 2px 8px; border-radius: 10px; background: var(--accent-2); color: white;">-</span>
+                <span style="color: var(--accent);">→</span>
+              </div>
             </div>
           `).join('');
         }
@@ -4122,6 +4191,10 @@
         const quarterLabels = ['Q1', 'Q2', 'Q3', 'Q4'];
         const quarterWeightLabels = ['20%', '25%', '25%', '30%'];
 
+        // Get child's strikes
+        const { strikes, count: strikeCount, nextDecayDate } = await this.getStudentStrikes(childId);
+        const strikeColor = strikeCount === 0 ? '#43e97b' : strikeCount >= 3 ? '#f5576c' : '#ffcb6b';
+
         const gpaQuartersHTML = gpaData ? quarterLabels.map((label, i) => {
           const qNum = i + 1;
           const qData = gpaData.quarters[qNum];
@@ -4171,6 +4244,38 @@
             <div class="list" style="max-height: 300px; overflow-y: auto;">
               ${assignmentsHTML}
             </div>
+          </div>
+
+          <!-- Strikes Section -->
+          <div style="margin-bottom: 20px; padding: 15px; border-radius: 8px; border: 2px solid ${strikeColor}; background: ${strikeCount > 0 ? 'rgba(255, 203, 107, 0.05)' : 'rgba(67, 233, 123, 0.05)'};">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+              <h4 style="margin: 0;">⚠️ Disciplinary Strikes</h4>
+              <span style="background: ${strikeColor}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 14px; font-weight: 600;">
+                ${strikeCount}/3
+              </span>
+            </div>
+            ${strikeCount === 0 ? `
+              <p style="color: var(--muted); margin: 0;">No active strikes. Great job!</p>
+            ` : `
+              ${nextDecayDate ? `
+                <p style="font-size: 12px; color: var(--muted); margin-bottom: 10px;">
+                  Next strike decays on: ${nextDecayDate.toLocaleDateString()}
+                </p>
+              ` : ''}
+              <div class="list">
+                ${strikes.map((strike, idx) => `
+                  <div class="list-item" style="border-left: 3px solid ${strikeColor}; background: var(--bg); padding: 10px; border-radius: 0 6px 6px 0; margin-bottom: 8px;">
+                    <div>
+                      <div style="font-weight: 500; font-size: 13px;">Strike #${strikeCount - idx}</div>
+                      <div style="font-size: 12px; color: var(--muted);">
+                        ${new Date(strike.created_at).toLocaleDateString()} • Decays: ${strike.decayDate.toLocaleDateString()}
+                      </div>
+                      <div style="margin-top: 5px; font-size: 13px;">${strike.reason}</div>
+                    </div>
+                  </div>
+                `).join('')}
+              </div>
+            `}
           </div>
 
           <div style="text-align: right;">
@@ -5879,6 +5984,583 @@
         } catch (error) {
           console.error('Error saving medical info:', error);
           this.showNotification('Error: ' + error.message, 'error');
+        }
+      }
+
+      // ==================== STUDENT STRIKES SYSTEM ====================
+
+      /**
+       * Get active strikes for a student with decay logic
+       * Strikes decay 3 months from when the most recent strike was given
+       * Returns: { strikes: [...], count: number, nextDecayDate: Date|null }
+       */
+      async getStudentStrikes(studentId) {
+        try {
+          const { data: strikes, error } = await this.supabaseQuery(() =>
+            this.auth.supabase
+              .from('student_strikes')
+              .select('*, issued_by_profile:issued_by(first_name, last_name)')
+              .eq('student_id', studentId)
+              .order('created_at', { ascending: false })
+          );
+
+          if (error) throw error;
+
+          if (!strikes || strikes.length === 0) {
+            return { strikes: [], count: 0, nextDecayDate: null };
+          }
+
+          // Calculate decay - strikes decay from the most recent strike date
+          const mostRecentStrikeDate = new Date(strikes[0].created_at);
+          const now = new Date();
+
+          // Decay calculation: Each strike decays 3 months after the most recent strike was given
+          // The oldest strike decays first, then the next, etc.
+          const strikesToDelete = [];
+          const activeStrikes = [];
+
+          for (let i = 0; i < strikes.length; i++) {
+            // Position from most recent (0 = most recent, 1 = second, 2 = oldest)
+            // Decay date = most recent strike + (position + 1) * 3 months
+            const decayDate = new Date(mostRecentStrikeDate);
+            decayDate.setMonth(decayDate.getMonth() + (3 * (strikes.length - i)));
+
+            if (now >= decayDate) {
+              // This strike should be deleted
+              strikesToDelete.push(strikes[i].id);
+            } else {
+              activeStrikes.push({
+                ...strikes[i],
+                decayDate: decayDate
+              });
+            }
+          }
+
+          // Delete decayed strikes
+          if (strikesToDelete.length > 0) {
+            await this.auth.supabase
+              .from('student_strikes')
+              .delete()
+              .in('id', strikesToDelete);
+          }
+
+          // Calculate next decay date for remaining strikes
+          let nextDecayDate = null;
+          if (activeStrikes.length > 0) {
+            // Next to decay is the oldest active strike
+            nextDecayDate = activeStrikes[activeStrikes.length - 1].decayDate;
+          }
+
+          return {
+            strikes: activeStrikes,
+            count: activeStrikes.length,
+            nextDecayDate: nextDecayDate
+          };
+
+        } catch (error) {
+          console.error('Error getting student strikes:', error);
+          return { strikes: [], count: 0, nextDecayDate: null };
+        }
+      }
+
+      async renderAdminStrikes() {
+        const section = document.getElementById('admin-strikes-section');
+        if (!section) {
+          console.error('Admin strikes section not found');
+          return;
+        }
+
+        section.innerHTML = '<div style="text-align: center; padding: 40px;"><div class="loading-spinner"></div><p>Loading strikes...</p></div>';
+
+        try {
+          // Get all students
+          const { data: students, error } = await this.supabaseQuery(() =>
+            this.auth.supabase
+              .from('user_profiles')
+              .select('id, first_name, last_name, email, grade_level')
+              .eq('user_type', 'student')
+              .order('last_name', { ascending: true })
+          );
+
+          if (error) throw error;
+
+          // Get all strikes
+          const { data: allStrikes } = await this.supabaseQuery(() =>
+            this.auth.supabase
+              .from('student_strikes')
+              .select('student_id, created_at')
+          );
+
+          // Count strikes per student (we'll do decay calculation when viewing individual student)
+          const strikeCounts = {};
+          (allStrikes || []).forEach(s => {
+            strikeCounts[s.student_id] = (strikeCounts[s.student_id] || 0) + 1;
+          });
+
+          // Add strike count to students
+          const studentsWithStrikes = (students || []).map(s => ({
+            ...s,
+            strikeCount: strikeCounts[s.id] || 0
+          }));
+
+          // Separate students with 3 strikes (flagged for review)
+          const flaggedStudents = studentsWithStrikes.filter(s => s.strikeCount >= 3);
+          const otherStudents = studentsWithStrikes;
+
+          this._adminStrikesStudents = otherStudents;
+
+          section.innerHTML = `
+            <div style="padding: 20px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <div>
+                  <h2 style="margin: 0;">⚠️ Student Strikes</h2>
+                  <p style="color: var(--muted); margin: 5px 0 0 0;">Issue and manage disciplinary strikes. Max 3 strikes per student. Strikes decay after 3 months.</p>
+                </div>
+                <button class="btn btn-secondary" onclick="app.showAdminSection('dashboard')">
+                  ← Back to Dashboard
+                </button>
+              </div>
+
+              ${flaggedStudents.length > 0 ? `
+                <div class="card" style="margin-bottom: 20px; border: 2px solid var(--danger); background: rgba(245, 87, 108, 0.05);">
+                  <h3 style="color: var(--danger); margin-bottom: 15px;">🚨 Students at Maximum Strikes (Review Required)</h3>
+                  <div class="list">
+                    ${flaggedStudents.map(s => `
+                      <div class="list-item" style="cursor: pointer;" onclick="app.showStudentStrikesModal('${s.id}')">
+                        <div class="list-item-content">
+                          <div class="list-item-title">${s.first_name} ${s.last_name}</div>
+                          <div class="list-item-meta">Grade ${s.grade_level || 'N/A'} • ${s.email}</div>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                          <span style="background: var(--danger); color: white; padding: 4px 12px; border-radius: 12px; font-size: 13px; font-weight: 600;">
+                            ${s.strikeCount}/3 Strikes
+                          </span>
+                          <span style="color: var(--accent);">→</span>
+                        </div>
+                      </div>
+                    `).join('')}
+                  </div>
+                </div>
+              ` : ''}
+
+              <div class="card">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                  <h3 style="margin: 0;">All Students</h3>
+                  <div style="display: flex; gap: 10px;">
+                    <input type="text" id="strikes-search" placeholder="Search by name or email..."
+                           style="padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); width: 250px;"
+                           oninput="app.filterAdminStrikes()">
+                    <select id="strikes-filter" style="padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);"
+                            onchange="app.filterAdminStrikes()">
+                      <option value="all">All Students</option>
+                      <option value="with-strikes">With Strikes</option>
+                      <option value="no-strikes">No Strikes</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div id="admin-strikes-table">
+                  ${this.renderAdminStrikesTable(otherStudents)}
+                </div>
+              </div>
+            </div>
+          `;
+
+        } catch (error) {
+          console.error('Error loading strikes:', error);
+          section.innerHTML = `<div class="card" style="margin: 20px;"><p style="color: var(--danger);">Error loading strikes: ${error.message}</p></div>`;
+        }
+      }
+
+      renderAdminStrikesTable(students) {
+        if (!students || students.length === 0) {
+          return '<p style="text-align: center; color: var(--muted); padding: 20px;">No students found</p>';
+        }
+
+        return `
+          <table style="width: 100%; border-collapse: collapse;">
+            <thead>
+              <tr style="border-bottom: 2px solid var(--border);">
+                <th style="padding: 12px; text-align: left;">Student</th>
+                <th style="padding: 12px; text-align: left;">Grade</th>
+                <th style="padding: 12px; text-align: center;">Strikes</th>
+                <th style="padding: 12px; text-align: right;">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${students.map(s => {
+                const strikeColor = s.strikeCount === 0 ? 'var(--accent-2)' :
+                                   s.strikeCount >= 3 ? 'var(--danger)' : 'var(--warning)';
+                return `
+                  <tr style="border-bottom: 1px solid var(--border);">
+                    <td style="padding: 12px;">
+                      <div style="font-weight: 500;">${s.first_name} ${s.last_name}</div>
+                      <div style="font-size: 12px; color: var(--muted);">${s.email}</div>
+                    </td>
+                    <td style="padding: 12px; color: var(--muted);">${s.grade_level || 'N/A'}</td>
+                    <td style="padding: 12px; text-align: center;">
+                      <span style="background: ${strikeColor}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 13px; font-weight: 600;">
+                        ${s.strikeCount}/3
+                      </span>
+                    </td>
+                    <td style="padding: 12px; text-align: right;">
+                      <button class="btn btn-secondary" style="margin-right: 8px;" onclick="app.showStudentStrikesModal('${s.id}')">
+                        View
+                      </button>
+                      ${s.strikeCount < 3 ? `
+                        <button class="btn btn-primary" style="background: var(--danger);" onclick="app.showIssueStrikeModal('${s.id}')">
+                          + Strike
+                        </button>
+                      ` : `
+                        <button class="btn" disabled style="opacity: 0.5; cursor: not-allowed;">
+                          Max Reached
+                        </button>
+                      `}
+                    </td>
+                  </tr>
+                `;
+              }).join('')}
+            </tbody>
+          </table>
+        `;
+      }
+
+      filterAdminStrikes() {
+        const search = document.getElementById('strikes-search')?.value.toLowerCase() || '';
+        const filter = document.getElementById('strikes-filter')?.value || 'all';
+
+        let filtered = this._adminStrikesStudents || [];
+
+        // Apply search
+        if (search) {
+          filtered = filtered.filter(s =>
+            s.first_name.toLowerCase().includes(search) ||
+            s.last_name.toLowerCase().includes(search) ||
+            s.email.toLowerCase().includes(search)
+          );
+        }
+
+        // Apply filter
+        if (filter === 'with-strikes') {
+          filtered = filtered.filter(s => s.strikeCount > 0);
+        } else if (filter === 'no-strikes') {
+          filtered = filtered.filter(s => s.strikeCount === 0);
+        }
+
+        const tableContainer = document.getElementById('admin-strikes-table');
+        if (tableContainer) {
+          tableContainer.innerHTML = this.renderAdminStrikesTable(filtered);
+        }
+      }
+
+      async showStudentStrikesModal(studentId) {
+        // Get student info
+        const { data: student } = await this.supabaseQuery(() =>
+          this.auth.supabase
+            .from('user_profiles')
+            .select('id, first_name, last_name, email, grade_level')
+            .eq('id', studentId)
+            .single()
+        );
+
+        if (!student) {
+          this.showNotification('Student not found', 'error');
+          return;
+        }
+
+        // Get strikes with decay calculation
+        const { strikes, count, nextDecayDate } = await this.getStudentStrikes(studentId);
+
+        const strikeColor = count === 0 ? '#43e97b' : count >= 3 ? '#f5576c' : '#ffcb6b';
+
+        const modalContent = `
+          <div style="margin-bottom: 20px;">
+            <div style="background: linear-gradient(135deg, rgba(106, 169, 255, 0.1), rgba(139, 255, 176, 0.1)); padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                  <h3 style="margin: 0;">${student.first_name} ${student.last_name}</h3>
+                  <div style="color: var(--muted); font-size: 13px; margin-top: 5px;">
+                    Grade ${student.grade_level || 'N/A'} • ${student.email}
+                  </div>
+                </div>
+                <div style="text-align: center;">
+                  <div style="font-size: 36px; font-weight: 700; color: ${strikeColor};">${count}/3</div>
+                  <div style="font-size: 12px; color: var(--muted);">Active Strikes</div>
+                </div>
+              </div>
+            </div>
+
+            ${nextDecayDate ? `
+              <div style="background: rgba(106, 169, 255, 0.1); padding: 10px 15px; border-radius: 6px; margin-bottom: 15px; font-size: 13px;">
+                <strong>Next strike decay:</strong> ${nextDecayDate.toLocaleDateString()} (oldest strike will be removed)
+              </div>
+            ` : ''}
+
+            ${count < 3 ? `
+              <button class="btn btn-primary" style="background: var(--danger); width: 100%; margin-bottom: 15px;" onclick="app.closeModal('student-strikes'); app.showIssueStrikeModal('${studentId}')">
+                + Issue New Strike
+              </button>
+            ` : `
+              <div style="background: rgba(245, 87, 108, 0.1); border: 1px solid var(--danger); padding: 10px 15px; border-radius: 6px; margin-bottom: 15px; color: var(--danger); font-size: 13px;">
+                <strong>Maximum strikes reached.</strong> This student is flagged for review.
+              </div>
+            `}
+
+            <h4 style="margin-bottom: 10px;">Strike History</h4>
+            ${strikes.length === 0 ? `
+              <p style="color: var(--muted); text-align: center; padding: 20px;">No active strikes</p>
+            ` : `
+              <div class="list">
+                ${strikes.map((strike, idx) => `
+                  <div class="list-item" style="border-left: 3px solid ${strikeColor}; margin-bottom: 10px; background: var(--bg); padding: 12px; border-radius: 0 6px 6px 0;">
+                    <div style="flex: 1;">
+                      <div style="display: flex; justify-content: space-between; align-items: start;">
+                        <div>
+                          <div style="font-weight: 500; margin-bottom: 5px;">Strike #${count - idx}</div>
+                          <div style="color: var(--muted); font-size: 13px; margin-bottom: 5px;">
+                            Issued: ${new Date(strike.created_at).toLocaleDateString()} at ${new Date(strike.created_at).toLocaleTimeString()}
+                          </div>
+                          <div style="color: var(--muted); font-size: 12px;">
+                            By: ${strike.issued_by_profile?.first_name || 'Unknown'} ${strike.issued_by_profile?.last_name || ''}
+                          </div>
+                        </div>
+                        <div style="text-align: right;">
+                          <div style="font-size: 11px; color: var(--muted);">Decays on</div>
+                          <div style="font-size: 12px; color: var(--accent);">${strike.decayDate.toLocaleDateString()}</div>
+                        </div>
+                      </div>
+                      <div style="margin-top: 10px; padding: 10px; background: var(--card); border-radius: 6px;">
+                        <div style="font-size: 12px; color: var(--muted); margin-bottom: 3px;">Reason:</div>
+                        <div>${strike.reason}</div>
+                      </div>
+                    </div>
+                    <button class="btn btn-secondary" style="margin-left: 10px; padding: 5px 10px; font-size: 12px;"
+                            onclick="app.deleteStrike('${strike.id}', '${studentId}')">
+                      Remove
+                    </button>
+                  </div>
+                `).join('')}
+              </div>
+            `}
+          </div>
+
+          <div style="text-align: right;">
+            <button class="btn btn-secondary" onclick="app.closeModal('student-strikes')">Close</button>
+          </div>
+        `;
+
+        this.showModal('student-strikes', `⚠️ Strikes for ${student.first_name}`, modalContent);
+      }
+
+      async showIssueStrikeModal(studentId) {
+        // Get student info
+        const { data: student } = await this.supabaseQuery(() =>
+          this.auth.supabase
+            .from('user_profiles')
+            .select('id, first_name, last_name, email, grade_level')
+            .eq('id', studentId)
+            .single()
+        );
+
+        if (!student) {
+          this.showNotification('Student not found', 'error');
+          return;
+        }
+
+        // Get current strike count
+        const { count } = await this.getStudentStrikes(studentId);
+
+        if (count >= 3) {
+          this.showNotification('Student already has maximum strikes', 'error');
+          return;
+        }
+
+        const newCount = count + 1;
+        const warningColor = newCount >= 3 ? 'var(--danger)' : 'var(--warning)';
+
+        const modalContent = `
+          <div style="margin-bottom: 20px;">
+            <div style="background: var(--bg); padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                  <div style="font-weight: 500;">${student.first_name} ${student.last_name}</div>
+                  <div style="color: var(--muted); font-size: 13px;">Grade ${student.grade_level || 'N/A'}</div>
+                </div>
+                <div style="text-align: center;">
+                  <div style="font-size: 24px; font-weight: 700;">${count}/3 → <span style="color: ${warningColor};">${newCount}/3</span></div>
+                  <div style="font-size: 12px; color: var(--muted);">Current → After</div>
+                </div>
+              </div>
+            </div>
+
+            <div style="background: rgba(255, 203, 107, 0.15); border: 1px solid var(--warning); padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+              <div style="display: flex; align-items: start; gap: 10px;">
+                <span style="font-size: 20px;">⚠️</span>
+                <div>
+                  <div style="font-weight: 500; margin-bottom: 5px;">Warning</div>
+                  <div style="font-size: 13px; color: var(--muted);">
+                    ${count === 0
+                      ? `This will be ${student.first_name}'s first strike.`
+                      : count === 1
+                        ? `${student.first_name} already has 1 strike. This will be their second strike.`
+                        : `${student.first_name} already has 2 strikes. <strong style="color: var(--danger);">This will be their THIRD strike and they will be flagged for review.</strong>`
+                    }
+                  </div>
+                  <div style="font-size: 12px; color: var(--muted); margin-top: 8px;">
+                    Strikes automatically decay 3 months after the most recent strike was issued.
+                    Parents will be notified via email.
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <form id="issue-strike-form" onsubmit="event.preventDefault(); app.issueStrike('${studentId}');">
+              <div style="margin-bottom: 15px;">
+                <label style="display: block; margin-bottom: 5px; font-weight: 500;">Reason for Strike <span style="color: var(--danger);">*</span></label>
+                <textarea id="strike-reason" required rows="4" placeholder="Describe the reason for this strike..."
+                          style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); resize: vertical;"></textarea>
+              </div>
+
+              <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                <button type="button" class="btn btn-secondary" onclick="app.closeModal('issue-strike')">Cancel</button>
+                <button type="submit" class="btn btn-primary" style="background: var(--danger);">
+                  Issue Strike
+                </button>
+              </div>
+            </form>
+          </div>
+        `;
+
+        this.showModal('issue-strike', `⚠️ Issue Strike to ${student.first_name}`, modalContent);
+      }
+
+      async issueStrike(studentId) {
+        const reason = document.getElementById('strike-reason')?.value.trim();
+
+        if (!reason) {
+          this.showNotification('Please provide a reason for the strike', 'error');
+          return;
+        }
+
+        try {
+          // Get current strike count to verify still under max
+          const { count } = await this.getStudentStrikes(studentId);
+
+          if (count >= 3) {
+            this.showNotification('Student already has maximum strikes', 'error');
+            this.closeModal('issue-strike');
+            return;
+          }
+
+          // Insert the strike
+          const { error } = await this.auth.supabase
+            .from('student_strikes')
+            .insert({
+              student_id: studentId,
+              issued_by: this.userInfo.user.id,
+              reason: reason
+            });
+
+          if (error) throw error;
+
+          // Get student info for notification
+          const { data: student } = await this.auth.supabase
+            .from('user_profiles')
+            .select('first_name, last_name')
+            .eq('id', studentId)
+            .single();
+
+          const newCount = count + 1;
+
+          // Send email notification to parents
+          await this.sendStrikeNotification(studentId, student, newCount, reason);
+
+          this.showNotification(`Strike issued to ${student?.first_name || 'student'}. Current strikes: ${newCount}/3`, 'success');
+          this.closeModal('issue-strike');
+
+          // Refresh the strikes section
+          this.renderAdminStrikes();
+
+        } catch (error) {
+          console.error('Error issuing strike:', error);
+          this.showNotification('Error issuing strike: ' + error.message, 'error');
+        }
+      }
+
+      async sendStrikeNotification(studentId, student, strikeCount, reason) {
+        try {
+          // Get parents linked to this student
+          const { data: parentLinks } = await this.auth.supabase
+            .from('parent_child_links')
+            .select('parent_id')
+            .eq('child_id', studentId);
+
+          if (!parentLinks || parentLinks.length === 0) {
+            console.log('No parents linked to student, skipping email notification');
+            return;
+          }
+
+          // Get parent emails
+          const parentIds = parentLinks.map(p => p.parent_id);
+          const { data: parents } = await this.auth.supabase
+            .from('user_profiles')
+            .select('email, first_name, email_notifications')
+            .in('id', parentIds);
+
+          // Send notification to each parent
+          for (const parent of (parents || [])) {
+            // Check if parent has strike notifications enabled (default to true)
+            const emailPrefs = parent.email_notifications || {};
+            if (emailPrefs.strike_notifications === false) {
+              continue;
+            }
+
+            await this.auth.supabase.functions.invoke('send-notification-email', {
+              body: {
+                to: parent.email,
+                type: 'strike_issued',
+                data: {
+                  parentName: parent.first_name,
+                  studentName: `${student.first_name} ${student.last_name}`,
+                  strikeCount: strikeCount,
+                  reason: reason
+                }
+              }
+            });
+          }
+        } catch (error) {
+          console.error('Error sending strike notification:', error);
+          // Don't throw - strike was still issued successfully
+        }
+      }
+
+      async deleteStrike(strikeId, studentId) {
+        if (!confirm('Are you sure you want to remove this strike? This action cannot be undone.')) {
+          return;
+        }
+
+        try {
+          const { error } = await this.auth.supabase
+            .from('student_strikes')
+            .delete()
+            .eq('id', strikeId);
+
+          if (error) throw error;
+
+          this.showNotification('Strike removed', 'success');
+
+          // Refresh the modal
+          this.closeModal('student-strikes');
+          this.showStudentStrikesModal(studentId);
+
+          // Also refresh the main list if visible
+          if (document.getElementById('admin-strikes-section')?.classList.contains('hidden') === false) {
+            this.renderAdminStrikes();
+          }
+
+        } catch (error) {
+          console.error('Error deleting strike:', error);
+          this.showNotification('Error removing strike: ' + error.message, 'error');
         }
       }
 
@@ -18639,6 +19321,25 @@
                     <span>✓ Medical Info</span>
                   </div>
                 </div>
+
+                <!-- Student Strikes -->
+                <div class="card" style="cursor: pointer; border: 2px solid #e74c3c; transition: all 0.2s;"
+                     onmouseover="this.style.background='rgba(231, 76, 60, 0.1)'"
+                     onmouseout="this.style.background='var(--card)'"
+                     onclick="app.showAdminSection('strikes')">
+                  <div style="display: flex; align-items: center; gap: 15px; margin-bottom: 15px;">
+                    <div style="font-size: 48px;">⚠️</div>
+                    <div>
+                      <h3 style="margin: 0;">Student Strikes</h3>
+                      <p style="color: var(--muted); margin: 5px 0 0 0; font-size: 13px;">Issue and manage disciplinary strikes</p>
+                    </div>
+                  </div>
+                  <div style="display: flex; gap: 10px; font-size: 12px; color: var(--muted);">
+                    <span>✓ Issue Strikes</span>
+                    <span>✓ Auto-decay</span>
+                    <span>✓ Max 3 per student</span>
+                  </div>
+                </div>
               </div>
             </div>
           `;
@@ -18820,6 +19521,10 @@
           case 'student-records':
             this.showSection('admin-student-records');
             this.renderAdminStudentRecords();
+            break;
+          case 'strikes':
+            this.showSection('admin-strikes');
+            this.renderAdminStrikes();
             break;
           default:
             console.warn('Unknown admin section:', section);
