@@ -4965,7 +4965,7 @@
         const content = document.getElementById('student-details-content');
 
         try {
-          // Load student profile, parent links, emergency contacts, and medical info in parallel
+          // Load student profile, parent links, emergency contacts, medical info, and notes in parallel
           const [
             { data: student },
             { data: parentLinks },
@@ -5010,11 +5010,14 @@
             parents = parentProfiles || [];
           }
 
+          // Load strikes using the existing getStudentStrikes method
+          const strikesData = await this.getStudentStrikes(studentId);
+
           // Store current student ID for adding notes
           this._currentStudentDetailsId = studentId;
 
           // Render the details
-          content.innerHTML = this.renderStudentDetailsContent(student, parents, emergencyContacts || [], medicalInfo, studentNotes || []);
+          content.innerHTML = this.renderStudentDetailsContent(student, parents, emergencyContacts || [], medicalInfo, studentNotes || [], strikesData);
 
         } catch (error) {
           console.error('Error loading student details:', error);
@@ -5026,7 +5029,7 @@
         }
       }
 
-      renderStudentDetailsContent(student, parents, emergencyContacts, medicalInfo, studentNotes = []) {
+      renderStudentDetailsContent(student, parents, emergencyContacts, medicalInfo, studentNotes = [], strikesData = { strikes: [], count: 0, nextDecayDate: null }) {
         const formatPhone = (phone) => phone || 'Not provided';
         const formatAddress = (s) => {
           if (!s.address_line1) return 'Not provided';
@@ -5050,149 +5053,158 @@
           neutral: 'var(--muted)'
         };
 
+        // Strike color based on count
+        const strikeColor = strikesData.count === 0 ? 'var(--success)' :
+                           strikesData.count === 1 ? 'var(--warning)' :
+                           strikesData.count === 2 ? '#f97316' : 'var(--danger)';
+
         let html = `
+          <!-- Add Note Dropdown -->
+          <div style="background: var(--bg); border-radius: 8px; margin-bottom: 15px; overflow: hidden;">
+            <button onclick="this.parentElement.classList.toggle('expanded'); this.querySelector('.chevron').style.transform = this.parentElement.classList.contains('expanded') ? 'rotate(180deg)' : 'rotate(0deg)';"
+                    style="width: 100%; padding: 12px 15px; background: var(--accent); color: white; border: none; cursor: pointer; display: flex; align-items: center; justify-content: space-between; font-size: 14px; font-weight: 600;">
+              <span>📝 Add Note</span>
+              <span class="chevron" style="transition: transform 0.2s;">▼</span>
+            </button>
+            <div style="max-height: 0; overflow: hidden; transition: max-height 0.3s ease-out;">
+              <div style="padding: 15px;">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+                  <select id="note-sentiment" style="padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text);">
+                    <option value="neutral">➖ Neutral</option>
+                    <option value="positive">👍 Positive</option>
+                    <option value="negative">👎 Negative</option>
+                  </select>
+                  <select id="note-category" style="padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text);">
+                    <option value="academic">Academic</option>
+                    <option value="behavior">Behavior</option>
+                    <option value="responsibility">Responsibility</option>
+                    <option value="custom">Custom</option>
+                  </select>
+                </div>
+                <textarea id="note-content" placeholder="Add a note about this student..." rows="3"
+                  style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text); resize: vertical; box-sizing: border-box;"></textarea>
+                <div style="display: flex; justify-content: flex-end; margin-top: 10px;">
+                  <button class="btn btn-primary" onclick="app.addStudentNote()" style="padding: 8px 16px;">
+                    Add Note
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <style>
+            .expanded > div:last-child { max-height: 300px !important; }
+          </style>
+
           <!-- Student Info -->
-          <div style="background: var(--bg); border-radius: 8px; padding: 15px; margin-bottom: 20px;">
-            <h3 style="margin: 0 0 15px 0; color: var(--accent);">👤 Student Information</h3>
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+          <div style="background: var(--bg); border-radius: 8px; padding: 15px; margin-bottom: 15px;">
+            <h3 style="margin: 0 0 12px 0; color: var(--accent); font-size: 15px; border-bottom: 1px solid var(--border); padding-bottom: 8px;">👤 Student Information</h3>
+            <div style="display: grid; gap: 6px; font-size: 14px;">
               <div><strong>Name:</strong> ${student.first_name} ${student.last_name}</div>
               <div><strong>Grade:</strong> ${student.grade_level ? `Grade ${student.grade_level}` : 'N/A'}</div>
               <div><strong>Email:</strong> <a href="mailto:${student.email}" style="color: var(--accent);">${student.email}</a></div>
               <div><strong>Phone:</strong> ${formatPhone(student.phone)}</div>
-              <div style="grid-column: 1 / -1;"><strong>Address:</strong> ${formatAddress(student)}</div>
+              <div><strong>Address:</strong> ${formatAddress(student)}</div>
             </div>
           </div>
 
+          <!-- Strikes -->
+          <div style="background: var(--bg); border-radius: 8px; padding: 15px; margin-bottom: 15px;">
+            <h3 style="margin: 0 0 12px 0; color: var(--danger); font-size: 15px; border-bottom: 1px solid var(--border); padding-bottom: 8px;">⚠️ Disciplinary Strikes</h3>
+            <div style="display: flex; align-items: center; gap: 15px; margin-bottom: ${strikesData.strikes.length > 0 ? '12px' : '0'};">
+              <div style="font-size: 24px; font-weight: bold; color: ${strikeColor};">${strikesData.count}/3</div>
+              <div style="font-size: 13px; color: var(--muted);">
+                ${strikesData.count === 0 ? 'No active strikes' :
+                  strikesData.count === 3 ? 'Maximum strikes reached!' :
+                  `${3 - strikesData.count} strike${3 - strikesData.count > 1 ? 's' : ''} remaining`}
+                ${strikesData.nextDecayDate ? `<br>Next decay: ${strikesData.nextDecayDate.toLocaleDateString()}` : ''}
+              </div>
+            </div>
+            ${strikesData.strikes.length > 0 ? `
+              <div style="display: grid; gap: 8px;">
+                ${strikesData.strikes.map(strike => `
+                  <div style="border-left: 3px solid var(--danger); padding: 8px 12px; background: var(--card); border-radius: 4px; font-size: 13px;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                      <strong>${new Date(strike.created_at).toLocaleDateString()}</strong>
+                      <span style="color: var(--muted); font-size: 12px;">Decays: ${strike.decayDate.toLocaleDateString()}</span>
+                    </div>
+                    <div style="color: var(--text);">${strike.reason}</div>
+                    <div style="color: var(--muted); font-size: 12px; margin-top: 4px;">
+                      By: ${strike.issued_by_profile?.first_name || 'Unknown'} ${strike.issued_by_profile?.last_name || ''}
+                    </div>
+                  </div>
+                `).join('')}
+              </div>
+            ` : ''}
+          </div>
+
           <!-- Parent/Guardian Info -->
-          <div style="background: var(--bg); border-radius: 8px; padding: 15px; margin-bottom: 20px;">
-            <h3 style="margin: 0 0 15px 0; color: var(--accent);">👨‍👩‍👧 Parent/Guardian</h3>
+          <div style="background: var(--bg); border-radius: 8px; padding: 15px; margin-bottom: 15px;">
+            <h3 style="margin: 0 0 12px 0; color: var(--accent); font-size: 15px; border-bottom: 1px solid var(--border); padding-bottom: 8px;">👨‍👩‍👧 Parent/Guardian</h3>
             ${parents.length > 0 ? parents.map(parent => `
-              <div style="border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-bottom: 10px;">
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
-                  <div><strong>Name:</strong> ${parent.first_name} ${parent.last_name}</div>
-                  <div><strong>Phone:</strong> ${formatPhone(parent.phone)}</div>
-                  <div style="grid-column: 1 / -1;"><strong>Email:</strong> <a href="mailto:${parent.email}" style="color: var(--accent);">${parent.email}</a></div>
-                </div>
+              <div style="border: 1px solid var(--border); border-radius: 6px; padding: 10px; margin-bottom: 8px; font-size: 14px;">
+                <div><strong>Name:</strong> ${parent.first_name} ${parent.last_name}</div>
+                <div><strong>Phone:</strong> ${formatPhone(parent.phone)}</div>
+                <div><strong>Email:</strong> <a href="mailto:${parent.email}" style="color: var(--accent);">${parent.email}</a></div>
               </div>
             `).join('') : `
-              <p style="color: var(--muted); font-style: italic;">No parent/guardian linked to this student.</p>
+              <p style="color: var(--muted); font-style: italic; font-size: 14px; margin: 0;">No parent/guardian linked to this student.</p>
             `}
           </div>
 
           <!-- Emergency Contacts -->
-          <div style="background: var(--bg); border-radius: 8px; padding: 15px; margin-bottom: 20px;">
-            <h3 style="margin: 0 0 15px 0; color: var(--danger);">🚨 Emergency Contacts</h3>
+          <div style="background: var(--bg); border-radius: 8px; padding: 15px; margin-bottom: 15px;">
+            <h3 style="margin: 0 0 12px 0; color: var(--danger); font-size: 15px; border-bottom: 1px solid var(--border); padding-bottom: 8px;">🚨 Emergency Contacts</h3>
             ${emergencyContacts.length > 0 ? emergencyContacts.map(contact => `
-              <div style="border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-bottom: 10px; ${contact.is_primary ? 'border-color: var(--danger); background: rgba(239, 68, 68, 0.1);' : ''}">
-                ${contact.is_primary ? '<span style="background: var(--danger); color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin-bottom: 8px; display: inline-block;">PRIMARY</span>' : ''}
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
-                  <div><strong>Name:</strong> ${contact.contact_name}</div>
-                  <div><strong>Relationship:</strong> ${contact.relationship}</div>
-                  <div><strong>Phone (Primary):</strong> <a href="tel:${contact.phone_primary}" style="color: var(--accent);">${contact.phone_primary}</a></div>
-                  <div><strong>Phone (Secondary):</strong> ${contact.phone_secondary || 'N/A'}</div>
-                  ${contact.email ? `<div><strong>Email:</strong> <a href="mailto:${contact.email}" style="color: var(--accent);">${contact.email}</a></div>` : ''}
-                  <div><strong>Can Pickup:</strong> ${contact.can_pickup ? '✅ Yes' : '❌ No'}</div>
-                </div>
-                ${contact.notes ? `<div style="margin-top: 8px;"><strong>Notes:</strong> ${contact.notes}</div>` : ''}
+              <div style="border: 1px solid var(--border); border-radius: 6px; padding: 10px; margin-bottom: 8px; font-size: 14px; ${contact.is_primary ? 'border-color: var(--danger); background: rgba(239, 68, 68, 0.1);' : ''}">
+                ${contact.is_primary ? '<span style="background: var(--danger); color: white; padding: 2px 6px; border-radius: 4px; font-size: 10px; margin-bottom: 6px; display: inline-block;">PRIMARY</span>' : ''}
+                <div><strong>Name:</strong> ${contact.contact_name} (${contact.relationship})</div>
+                <div><strong>Phone:</strong> <a href="tel:${contact.phone_primary}" style="color: var(--accent);">${contact.phone_primary}</a>${contact.phone_secondary ? ` / ${contact.phone_secondary}` : ''}</div>
+                ${contact.email ? `<div><strong>Email:</strong> <a href="mailto:${contact.email}" style="color: var(--accent);">${contact.email}</a></div>` : ''}
+                <div><strong>Can Pickup:</strong> ${contact.can_pickup ? '✅ Yes' : '❌ No'}</div>
+                ${contact.notes ? `<div style="margin-top: 4px; color: var(--muted);"><strong>Notes:</strong> ${contact.notes}</div>` : ''}
               </div>
             `).join('') : `
-              <p style="color: var(--muted); font-style: italic;">No emergency contacts on file.</p>
+              <p style="color: var(--muted); font-style: italic; font-size: 14px; margin: 0;">No emergency contacts on file.</p>
             `}
           </div>
 
           <!-- Medical Information -->
-          <div style="background: var(--bg); border-radius: 8px; padding: 15px;">
-            <h3 style="margin: 0 0 15px 0; color: var(--warning);">🏥 Medical Information</h3>
+          <div style="background: var(--bg); border-radius: 8px; padding: 15px; margin-bottom: 15px;">
+            <h3 style="margin: 0 0 12px 0; color: var(--warning); font-size: 15px; border-bottom: 1px solid var(--border); padding-bottom: 8px;">🏥 Medical Information</h3>
             ${medicalInfo ? `
-              <div style="display: grid; gap: 12px;">
-                ${medicalInfo.conditions ? `
-                  <div style="border-left: 3px solid var(--warning); padding-left: 12px;">
-                    <strong>Medical Conditions:</strong><br>
-                    <span style="color: var(--text);">${medicalInfo.conditions}</span>
-                  </div>
-                ` : ''}
-                ${medicalInfo.allergies ? `
-                  <div style="border-left: 3px solid var(--danger); padding-left: 12px;">
-                    <strong>Allergies:</strong><br>
-                    <span style="color: var(--danger);">${medicalInfo.allergies}</span>
-                  </div>
-                ` : ''}
-                ${medicalInfo.medications ? `
-                  <div style="border-left: 3px solid var(--accent); padding-left: 12px;">
-                    <strong>Medications:</strong><br>
-                    <span style="color: var(--text);">${medicalInfo.medications}</span>
-                  </div>
-                ` : ''}
-                ${medicalInfo.dietary_restrictions ? `
-                  <div style="border-left: 3px solid var(--success); padding-left: 12px;">
-                    <strong>Dietary Restrictions:</strong><br>
-                    <span style="color: var(--text);">${medicalInfo.dietary_restrictions}</span>
-                  </div>
-                ` : ''}
-                ${medicalInfo.physical_limitations ? `
-                  <div style="border-left: 3px solid var(--muted); padding-left: 12px;">
-                    <strong>Physical Limitations:</strong><br>
-                    <span style="color: var(--text);">${medicalInfo.physical_limitations}</span>
-                  </div>
-                ` : ''}
+              <div style="display: grid; gap: 10px; font-size: 14px;">
+                ${medicalInfo.conditions ? `<div><strong>Conditions:</strong> ${medicalInfo.conditions}</div>` : ''}
+                ${medicalInfo.allergies ? `<div style="color: var(--danger);"><strong>Allergies:</strong> ${medicalInfo.allergies}</div>` : ''}
+                ${medicalInfo.medications ? `<div><strong>Medications:</strong> ${medicalInfo.medications}</div>` : ''}
+                ${medicalInfo.dietary_restrictions ? `<div><strong>Dietary Restrictions:</strong> ${medicalInfo.dietary_restrictions}</div>` : ''}
+                ${medicalInfo.physical_limitations ? `<div><strong>Physical Limitations:</strong> ${medicalInfo.physical_limitations}</div>` : ''}
                 ${medicalInfo.emergency_instructions ? `
-                  <div style="background: rgba(239, 68, 68, 0.1); border: 1px solid var(--danger); border-radius: 6px; padding: 12px; margin-top: 10px;">
+                  <div style="background: rgba(239, 68, 68, 0.1); border: 1px solid var(--danger); border-radius: 6px; padding: 10px; margin-top: 5px;">
                     <strong style="color: var(--danger);">⚠️ Emergency Instructions:</strong><br>
-                    <span style="color: var(--text);">${medicalInfo.emergency_instructions}</span>
+                    ${medicalInfo.emergency_instructions}
                   </div>
                 ` : ''}
                 ${medicalInfo.doctor_name || medicalInfo.doctor_phone ? `
-                  <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border);">
-                    <strong>Healthcare Provider:</strong><br>
+                  <div style="padding-top: 8px; border-top: 1px solid var(--border);">
+                    <strong>Healthcare Provider:</strong>
                     ${medicalInfo.doctor_name ? `Dr. ${medicalInfo.doctor_name}` : ''}
                     ${medicalInfo.doctor_phone ? ` - <a href="tel:${medicalInfo.doctor_phone}" style="color: var(--accent);">${medicalInfo.doctor_phone}</a>` : ''}
                   </div>
                 ` : ''}
-                ${medicalInfo.notes ? `
-                  <div style="margin-top: 10px;">
-                    <strong>Additional Notes:</strong><br>
-                    <span style="color: var(--muted);">${medicalInfo.notes}</span>
-                  </div>
-                ` : ''}
+                ${medicalInfo.notes ? `<div><strong>Notes:</strong> <span style="color: var(--muted);">${medicalInfo.notes}</span></div>` : ''}
                 ${!medicalInfo.conditions && !medicalInfo.allergies && !medicalInfo.medications && !medicalInfo.emergency_instructions ? `
-                  <p style="color: var(--muted); font-style: italic;">No specific medical information recorded.</p>
+                  <p style="color: var(--muted); font-style: italic; margin: 0;">No specific medical information recorded.</p>
                 ` : ''}
               </div>
             ` : `
-              <p style="color: var(--muted); font-style: italic;">No medical information on file.</p>
+              <p style="color: var(--muted); font-style: italic; font-size: 14px; margin: 0;">No medical information on file.</p>
             `}
           </div>
 
-          <!-- Student Notes -->
-          <div style="background: var(--bg); border-radius: 8px; padding: 15px; margin-top: 20px;">
-            <h3 style="margin: 0 0 15px 0; color: var(--accent);">📝 Notes</h3>
-
-            <!-- Add Note Form -->
-            <div style="border: 1px solid var(--border); border-radius: 8px; padding: 15px; margin-bottom: 15px; background: var(--card);">
-              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
-                <select id="note-sentiment" style="padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text);">
-                  <option value="neutral">➖ Neutral</option>
-                  <option value="positive">👍 Positive</option>
-                  <option value="negative">👎 Negative</option>
-                </select>
-                <select id="note-category" style="padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text);">
-                  <option value="academic">Academic</option>
-                  <option value="behavior">Behavior</option>
-                  <option value="responsibility">Responsibility</option>
-                  <option value="custom">Custom</option>
-                </select>
-              </div>
-              <textarea id="note-content" placeholder="Add a note about this student..." rows="3"
-                style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); resize: vertical; box-sizing: border-box;"></textarea>
-              <div style="display: flex; justify-content: flex-end; margin-top: 10px;">
-                <button class="btn btn-primary" onclick="app.addStudentNote()" style="padding: 8px 16px;">
-                  Add Note
-                </button>
-              </div>
-            </div>
-
-            <!-- Existing Notes -->
-            <div id="student-notes-list">
+          <!-- Notes History -->
+          <div style="background: var(--bg); border-radius: 8px; padding: 15px;">
+            <h3 style="margin: 0 0 12px 0; color: var(--accent); font-size: 15px; border-bottom: 1px solid var(--border); padding-bottom: 8px;">📝 Notes History (${studentNotes.length})</h3>
+            <div id="student-notes-list" style="max-height: 300px; overflow-y: auto;">
               ${studentNotes.length > 0 ? studentNotes.map(note => {
                 const teacherName = note.user_profiles ? `${note.user_profiles.first_name} ${note.user_profiles.last_name}` : 'Unknown';
                 const className = note.classes?.name || 'General';
@@ -5200,21 +5212,21 @@
                 const icon = sentimentIcons[note.sentiment] || '➖';
                 const color = sentimentColors[note.sentiment] || 'var(--muted)';
                 return `
-                  <div style="border: 1px solid var(--border); border-left: 4px solid ${color}; border-radius: 6px; padding: 12px; margin-bottom: 10px;">
-                    <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px;">
+                  <div style="border: 1px solid var(--border); border-left: 3px solid ${color}; border-radius: 4px; padding: 10px; margin-bottom: 8px; font-size: 13px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
                       <div>
-                        <span style="font-size: 16px;">${icon}</span>
-                        <span style="font-weight: 600; margin-left: 5px; text-transform: capitalize;">${note.category}</span>
-                        <span style="color: var(--muted); font-size: 12px; margin-left: 10px;">${className}</span>
+                        <span>${icon}</span>
+                        <span style="font-weight: 600; margin-left: 4px; text-transform: capitalize;">${note.category}</span>
+                        <span style="color: var(--muted); font-size: 11px; margin-left: 8px;">${className}</span>
                       </div>
-                      <span style="color: var(--muted); font-size: 12px;">${date}</span>
+                      <span style="color: var(--muted); font-size: 11px;">${date}</span>
                     </div>
-                    <p style="margin: 0 0 8px 0; color: var(--text);">${note.note}</p>
-                    <div style="font-size: 12px; color: var(--muted);">— ${teacherName}</div>
+                    <p style="margin: 0 0 6px 0; color: var(--text);">${note.note}</p>
+                    <div style="font-size: 11px; color: var(--muted);">— ${teacherName}</div>
                   </div>
                 `;
               }).join('') : `
-                <p style="color: var(--muted); font-style: italic; text-align: center; padding: 20px;">No notes have been added for this student yet.</p>
+                <p style="color: var(--muted); font-style: italic; text-align: center; padding: 15px; margin: 0;">No notes have been added for this student yet.</p>
               `}
             </div>
           </div>
