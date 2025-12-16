@@ -6215,63 +6215,96 @@
       }
 
       parseCSV(text) {
-        const lines = text.split(/\r?\n/);
-        if (lines.length < 2) {
-          throw new Error('CSV must have a header row and at least one data row');
-        }
-
-        // Parse header
-        const headers = this.parseCSVLine(lines[0]);
-
-        // Parse data rows
+        // Parse the entire CSV handling multi-line quoted fields
         const rows = [];
-        for (let i = 1; i < lines.length; i++) {
-          const line = lines[i].trim();
-          if (!line) continue;
-
-          const values = this.parseCSVLine(line);
-          const row = {};
-          headers.forEach((header, idx) => {
-            row[header.trim()] = values[idx] || '';
-          });
-          rows.push(row);
-        }
-
-        return { headers, rows };
-      }
-
-      parseCSVLine(line) {
-        const result = [];
-        let current = '';
+        let currentRow = [];
+        let currentCell = '';
         let inQuotes = false;
+        let i = 0;
 
-        for (let i = 0; i < line.length; i++) {
-          const char = line[i];
-          const nextChar = line[i + 1];
+        while (i < text.length) {
+          const char = text[i];
+          const nextChar = text[i + 1];
 
           if (inQuotes) {
             if (char === '"' && nextChar === '"') {
-              current += '"';
-              i++; // Skip next quote
+              // Escaped quote
+              currentCell += '"';
+              i += 2;
             } else if (char === '"') {
+              // End of quoted field
               inQuotes = false;
+              i++;
             } else {
-              current += char;
+              // Regular character inside quotes (including newlines)
+              currentCell += char;
+              i++;
             }
           } else {
             if (char === '"') {
+              // Start of quoted field
               inQuotes = true;
+              i++;
             } else if (char === ',') {
-              result.push(current);
-              current = '';
+              // End of cell
+              currentRow.push(currentCell);
+              currentCell = '';
+              i++;
+            } else if (char === '\r' && nextChar === '\n') {
+              // Windows line ending - end of row
+              currentRow.push(currentCell);
+              currentCell = '';
+              if (currentRow.length > 1 || currentRow[0] !== '') {
+                rows.push(currentRow);
+              }
+              currentRow = [];
+              i += 2;
+            } else if (char === '\n') {
+              // Unix line ending - end of row
+              currentRow.push(currentCell);
+              currentCell = '';
+              if (currentRow.length > 1 || currentRow[0] !== '') {
+                rows.push(currentRow);
+              }
+              currentRow = [];
+              i++;
             } else {
-              current += char;
+              currentCell += char;
+              i++;
             }
           }
         }
-        result.push(current);
 
-        return result;
+        // Don't forget the last cell/row
+        if (currentCell || currentRow.length > 0) {
+          currentRow.push(currentCell);
+          if (currentRow.length > 1 || currentRow[0] !== '') {
+            rows.push(currentRow);
+          }
+        }
+
+        if (rows.length < 2) {
+          throw new Error('CSV must have a header row and at least one data row');
+        }
+
+        // First row is headers
+        const headers = rows[0];
+
+        // Convert remaining rows to objects
+        const dataRows = [];
+        for (let r = 1; r < rows.length; r++) {
+          const values = rows[r];
+          const row = {};
+          headers.forEach((header, idx) => {
+            row[header.trim()] = (values[idx] || '').trim();
+          });
+          // Skip rows that look like section headers (e.g., "Active Students" or "Past Students")
+          if (row['First Name'] && row['Last Name']) {
+            dataRows.push(row);
+          }
+        }
+
+        return { headers, rows: dataRows };
       }
 
       matchCSVToStudents(csvRows, students) {
