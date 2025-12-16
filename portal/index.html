@@ -6029,12 +6029,30 @@
           const { data: strikes, error } = await this.supabaseQuery(() =>
             this.auth.supabase
               .from('student_strikes')
-              .select('*, issued_by_profile:issued_by(first_name, last_name)')
+              .select('*')
               .eq('student_id', studentId)
               .order('created_at', { ascending: false })
           );
 
           if (error) throw error;
+
+          // Fetch issuer profiles separately (issued_by FK points to auth.users, not user_profiles)
+          if (strikes && strikes.length > 0) {
+            const issuerIds = [...new Set(strikes.map(s => s.issued_by))];
+            const { data: issuers } = await this.supabaseQuery(() =>
+              this.auth.supabase
+                .from('user_profiles')
+                .select('id, first_name, last_name')
+                .in('id', issuerIds)
+            );
+
+            const issuerMap = {};
+            (issuers || []).forEach(i => issuerMap[i.id] = i);
+
+            strikes.forEach(s => {
+              s.issued_by_profile = issuerMap[s.issued_by] || null;
+            });
+          }
 
           if (!strikes || strikes.length === 0) {
             return { strikes: [], count: 0, nextDecayDate: null };
