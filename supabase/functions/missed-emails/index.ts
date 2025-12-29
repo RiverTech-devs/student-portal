@@ -37,26 +37,25 @@ Deno.serve(async () => {
 
     const parentIds = uniq(links.map(l => l.parent_id));
 
-    // Check notification preferences (opt-in only)
+    // Check notification preferences
     const { data: prefs, error: perr } = await sb
       .from("notification_prefs")
-      .select("user_id, email_missed_assignments")
+      .select("user_id, child_late_assignment")
       .in("user_id", parentIds);
     if (perr) throw perr;
 
-    const opted = new Map((prefs || [])
-      .filter(p => p.email_missed_assignments)
-      .map(p => [p.user_id, p]));
-
-    if (!opted.size) return new Response("no opted-in parents", { status: 200 });
+    // Build set of parents who explicitly opted OUT
+    const optedOut = new Set((prefs || [])
+      .filter(p => p.child_late_assignment === false)
+      .map(p => p.user_id));
 
     // Get parent emails and student names
     const { data: parents } = await sb
-      .from("profiles")
+      .from("user_profiles")
       .select("id, email, first_name, last_name")
       .in("id", parentIds);
     const { data: students } = await sb
-      .from("profiles")
+      .from("user_profiles")
       .select("id, first_name, last_name")
       .in("id", studentIds);
 
@@ -86,7 +85,7 @@ Deno.serve(async () => {
     // Build per-parent notification payloads
     const toSend = new Map<string, Array<{ student_id: string; items: typeof rows }>>();
     for (const link of links || []) {
-      if (!opted.has(link.parent_id)) continue;
+      if (optedOut.has(link.parent_id)) continue;
       const items = (rowsByStudent.get(link.child_id) || [])
         .filter(r => !sentKey.has(`${r.assignment_id}:${link.child_id}:${link.parent_id}`));
       if (!items.length) continue;
