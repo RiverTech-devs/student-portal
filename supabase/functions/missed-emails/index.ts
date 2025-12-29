@@ -100,7 +100,6 @@ Deno.serve(async () => {
     // Send notifications via send-notification-email function
     for (const [parent_id, buckets] of toSend) {
       const email = parentEmail.get(parent_id);
-      if (!email) continue;
 
       // Build template data for missed_assignment
       const studentsData = buckets.map(b => ({
@@ -111,21 +110,47 @@ Deno.serve(async () => {
         }))
       }));
 
-      // Call send-notification-email edge function
-      const { error: invokeErr } = await sb.functions.invoke("send-notification-email", {
-        body: {
-          record: {
-            recipient_email: email,
-            subject: "Missed Assignment Alert",
-            template: "missed_assignment",
-            data: { students: studentsData }
-          }
-        }
-      });
+      // Build in-app notification message
+      const totalMissed = buckets.reduce((sum, b) => sum + b.items.length, 0);
+      const childNames = buckets.map(b => studentName.get(b.student_id) || "Student").join(", ");
+      const notifMessage = totalMissed === 1
+        ? `${childNames} has 1 missed assignment`
+        : `${childNames} ${buckets.length > 1 ? 'have' : 'has'} ${totalMissed} missed assignments`;
 
-      if (invokeErr) {
-        console.error(`Failed to send to ${email}:`, invokeErr);
-        continue;
+      // Create in-app notification for parent
+      const { error: notifErr } = await sb
+        .from("notifications")
+        .insert({
+          user_id: parent_id,
+          type: "child_late_assignment",
+          title: "Missed Assignment Alert",
+          message: notifMessage,
+          metadata: {
+            students: studentsData,
+            totalMissed
+          }
+        });
+
+      if (notifErr) {
+        console.error(`Failed to create in-app notification for ${parent_id}:`, notifErr);
+      }
+
+      // Send email notification
+      if (email) {
+        const { error: invokeErr } = await sb.functions.invoke("send-notification-email", {
+          body: {
+            record: {
+              recipient_email: email,
+              subject: "Missed Assignment Alert",
+              template: "missed_assignment",
+              data: { students: studentsData }
+            }
+          }
+        });
+
+        if (invokeErr) {
+          console.error(`Failed to send email to ${email}:`, invokeErr);
+        }
       }
 
       // Record sent notifications to prevent duplicates
