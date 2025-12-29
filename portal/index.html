@@ -7983,6 +7983,156 @@
         }
       }
 
+      // Send new assignment notifications to students and their parents
+      async sendNewAssignmentNotifications(assignmentId, assignmentTitle, dueDate, classId, studentIds = null) {
+        try {
+          // Get class info
+          const { data: classData } = await this.supabaseQuery(() => this.auth.supabase
+            .from('classes')
+            .select('name')
+            .eq('id', classId)
+            .single());
+
+          const className = classData?.name || 'Class';
+          const formattedDueDate = new Date(dueDate).toLocaleDateString();
+
+          // Get students - either specific ones or all enrolled
+          let students = [];
+          if (studentIds && studentIds.length > 0) {
+            const { data } = await this.supabaseQuery(() => this.auth.supabase
+              .from('user_profiles')
+              .select('id, first_name, last_name')
+              .in('id', studentIds));
+            students = data || [];
+          } else {
+            // Get all enrolled students
+            const { data: enrollments } = await this.supabaseQuery(() => this.auth.supabase
+              .from('class_enrollments')
+              .select('student_id')
+              .eq('class_id', classId)
+              .eq('status', 'active'));
+
+            if (enrollments && enrollments.length > 0) {
+              const { data } = await this.supabaseQuery(() => this.auth.supabase
+                .from('user_profiles')
+                .select('id, first_name, last_name')
+                .in('id', enrollments.map(e => e.student_id)));
+              students = data || [];
+            }
+          }
+
+          if (students.length === 0) return;
+
+          // Get student notification preferences
+          const studentIdList = students.map(s => s.id);
+          const { data: studentPrefs } = await this.supabaseQuery(() => this.auth.supabase
+            .from('notification_prefs')
+            .select('user_id, assignment_posted')
+            .in('user_id', studentIdList));
+
+          const studentPrefsMap = {};
+          studentPrefs?.forEach(p => { studentPrefsMap[p.user_id] = p; });
+
+          // Notify each student (in-app only)
+          for (const student of students) {
+            const prefs = studentPrefsMap[student.id];
+            // Default to true if no preference set
+            if (prefs?.assignment_posted === false) continue;
+
+            await this.createNotificationFor(
+              student.id,
+              'assignment_posted',
+              'New Assignment',
+              `New assignment "${assignmentTitle}" posted in ${className}. Due: ${formattedDueDate}`,
+              null,
+              { assignmentId, assignmentTitle, className, dueDate }
+            );
+          }
+
+          // Find parent(s) for all students
+          const { data: parentLinks } = await this.supabaseQuery(() => this.auth.supabase
+            .from('parent_child_links')
+            .select('parent_id, child_id')
+            .in('child_id', studentIdList));
+
+          if (!parentLinks || parentLinks.length === 0) return;
+
+          // Get unique parent IDs
+          const parentIds = [...new Set(parentLinks.map(l => l.parent_id))];
+
+          // Get parent info
+          const { data: parents } = await this.supabaseQuery(() => this.auth.supabase
+            .from('user_profiles')
+            .select('id, first_name, email')
+            .in('id', parentIds));
+
+          if (!parents || parents.length === 0) return;
+
+          // Get notification preferences for parents
+          const { data: prefs } = await this.supabaseQuery(() => this.auth.supabase
+            .from('notification_prefs')
+            .select('user_id, child_assignment_posted')
+            .in('user_id', parentIds));
+
+          const prefsMap = {};
+          prefs?.forEach(p => { prefsMap[p.user_id] = p; });
+
+          // Build map of parent to their children in this assignment
+          const parentChildrenMap = {};
+          for (const link of parentLinks) {
+            if (!parentChildrenMap[link.parent_id]) {
+              parentChildrenMap[link.parent_id] = [];
+            }
+            const student = students.find(s => s.id === link.child_id);
+            if (student) {
+              parentChildrenMap[link.parent_id].push(student);
+            }
+          }
+
+          // Notify each parent
+          for (const parent of parents) {
+            const parentPrefs = prefsMap[parent.id];
+            // Default to true if no preference set
+            if (parentPrefs?.child_assignment_posted === false) continue;
+
+            const children = parentChildrenMap[parent.id] || [];
+            if (children.length === 0) continue;
+
+            const childNames = children.map(c => c.first_name).join(', ');
+
+            // Create in-app notification for parent
+            await this.createNotificationFor(
+              parent.id,
+              'child_assignment',
+              'New Assignment Posted',
+              `${childNames} ${children.length > 1 ? 'have' : 'has'} a new assignment "${assignmentTitle}" in ${className}. Due: ${formattedDueDate}`,
+              null,
+              { assignmentId, assignmentTitle, className, dueDate, childNames }
+            );
+
+            // Send email notification to parent
+            if (parent.email) {
+              await this.auth.supabase.functions.invoke('send-notification-email', {
+                body: {
+                  to: parent.email,
+                  type: 'child_assignment_posted',
+                  data: {
+                    parentName: parent.first_name,
+                    childNames: childNames,
+                    assignmentTitle: assignmentTitle,
+                    className: className,
+                    dueDate: formattedDueDate
+                  }
+                }
+              });
+            }
+          }
+        } catch (error) {
+          console.error('Error sending new assignment notifications:', error);
+          // Don't throw - assignment creation should still succeed
+        }
+      }
+
       // Admin broadcast announcement
       showBroadcastModal() {
         const modal = document.createElement('div');
@@ -12122,8 +12272,38 @@
 
           if (studentError) throw studentError;
 
+          // Send notifications if published
+          if (assignmentData.is_published) {
+            try {
+              await this.sendNewAssignmentNotifications(
+                newAssignment.id,
+                assignmentData.title,
+                assignmentData.due_date,
+                classId,
+                selectedStudents
+              );
+            } catch (notifError) {
+              console.error('Error sending assignment notifications:', notifError);
+            }
+          }
+
           this.showNotification(`Assignment created for ${selectedStudents.length} student(s)!`, 'success');
         } else {
+          // Send notifications if published (to all students)
+          if (assignmentData.is_published) {
+            try {
+              await this.sendNewAssignmentNotifications(
+                newAssignment.id,
+                assignmentData.title,
+                assignmentData.due_date,
+                classId,
+                null // null means all enrolled students
+              );
+            } catch (notifError) {
+              console.error('Error sending assignment notifications:', notifError);
+            }
+          }
+
           this.showNotification('Assignment created for all students!', 'success');
         }
 
