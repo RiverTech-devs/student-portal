@@ -5822,7 +5822,11 @@
 
       async saveNewEmergencyContact() {
         const studentId = this._currentAdminStudentId;
-        if (!studentId) return;
+        console.log('Saving emergency contact for student ID:', studentId);
+        if (!studentId) {
+          this.showNotification('Error: No student selected', 'error');
+          return;
+        }
 
         const data = {
           student_id: studentId,
@@ -7883,6 +7887,99 @@
             }]);
         } catch (error) {
           console.warn('Failed to create notification:', error);
+        }
+      }
+
+      // Send grade notifications to student and parent(s)
+      async sendGradeNotifications(studentId, assignmentTitle, letterGrade, pointsEarned, maxPoints) {
+        try {
+          // Get student info
+          const { data: student } = await this.supabaseQuery(() => this.auth.supabase
+            .from('user_profiles')
+            .select('first_name, last_name, email')
+            .eq('id', studentId)
+            .single());
+
+          if (!student) return;
+
+          const studentName = `${student.first_name} ${student.last_name}`;
+          const gradeText = `${letterGrade} (${pointsEarned}/${maxPoints} points)`;
+
+          // Create in-app notification for student
+          await this.createNotificationFor(
+            studentId,
+            'assignment_graded',
+            'Assignment Graded',
+            `Your assignment "${assignmentTitle}" has been graded: ${gradeText}`,
+            null,
+            { assignmentTitle, grade: letterGrade, points: pointsEarned, maxPoints }
+          );
+
+          // Find parent(s) linked to this student
+          const { data: parentLinks } = await this.supabaseQuery(() => this.auth.supabase
+            .from('parent_child_links')
+            .select('parent_id')
+            .eq('child_id', studentId));
+
+          if (!parentLinks || parentLinks.length === 0) return;
+
+          // Get parent info and their notification preferences
+          const parentIds = parentLinks.map(l => l.parent_id);
+          const { data: parents } = await this.supabaseQuery(() => this.auth.supabase
+            .from('user_profiles')
+            .select('id, first_name, email')
+            .in('id', parentIds));
+
+          if (!parents || parents.length === 0) return;
+
+          // Get notification preferences for parents
+          const { data: prefs } = await this.supabaseQuery(() => this.auth.supabase
+            .from('notification_prefs')
+            .select('user_id, child_assignment_graded')
+            .in('user_id', parentIds));
+
+          const prefsMap = {};
+          prefs?.forEach(p => { prefsMap[p.user_id] = p; });
+
+          // Notify each parent
+          for (const parent of parents) {
+            const parentPrefs = prefsMap[parent.id];
+            // Default to true if no preference set
+            const wantsNotification = parentPrefs?.child_assignment_graded !== false;
+
+            if (!wantsNotification) continue;
+
+            // Create in-app notification for parent
+            await this.createNotificationFor(
+              parent.id,
+              'child_grade',
+              'Assignment Graded',
+              `${student.first_name}'s assignment "${assignmentTitle}" has been graded: ${gradeText}`,
+              null,
+              { studentId, studentName, assignmentTitle, grade: letterGrade, points: pointsEarned, maxPoints }
+            );
+
+            // Send email notification to parent
+            if (parent.email) {
+              await this.auth.supabase.functions.invoke('send-notification-email', {
+                body: {
+                  to: parent.email,
+                  type: 'assignment_graded',
+                  data: {
+                    parentName: parent.first_name,
+                    studentName: studentName,
+                    assignmentTitle: assignmentTitle,
+                    grade: letterGrade,
+                    pointsEarned: pointsEarned,
+                    maxPoints: maxPoints
+                  }
+                }
+              });
+            }
+          }
+        } catch (error) {
+          console.error('Error sending grade notifications:', error);
+          // Don't throw - grading should still succeed even if notifications fail
         }
       }
 
@@ -15216,10 +15313,17 @@
       
       async submitGradeNonSubmitted(studentId, assignmentId, isRubricGrading = false) {
         try {
+          // Get assignment info for notifications
+          const { data: assignment } = await this.supabaseQuery(() => this.auth.supabase
+            .from('assignments')
+            .select('title, max_points')
+            .eq('id', assignmentId)
+            .single());
+
           const isExcused = document.getElementById('excuse-assignment')?.checked;
 
           isRubricGrading = isRubricGrading === true || isRubricGrading === 'true';
-          
+
           if (isExcused) {
             // Handle excused assignment
             const excuseReason = document.getElementById('excuse-reason')?.value || '';
@@ -15279,17 +15383,24 @@
                 submitted_at: new Date().toISOString(),
                 grade_override: isRubricGrading && document.getElementById('grade-override')?.checked
               }));
-            
+
             if (error) throw error;
-            
+
+            // Send notifications (don't block on errors)
+            try {
+              await this.sendGradeNotifications(studentId, assignment.title, grade, pointsEarned, assignment.max_points);
+            } catch (notifError) {
+              console.error('Error sending grade notifications:', notifError);
+            }
+
             this.showNotification('Grade saved successfully!', 'success');
           }
-          
+
           this.closeModal('grade-non-submitted');
-          
+
           // Refresh submissions view
           await this.viewSubmissions(assignmentId);
-          
+
         } catch (error) {
           console.error('Error saving grade:', error);
           this.showNotification('Error: ' + error.message, 'error');
@@ -15439,20 +15550,27 @@
       
       async submitGrade(event, submissionId, assignmentId) {
         event.preventDefault();
-      
+
         if (this.isProcessing) return;
         this.isProcessing = true;
-      
+
         try {
           if (window.portalLoading) {
             window.portalLoading.show('submit-grade', 'Submitting grade...');
           }
-      
-          // Get assignment info to determine grading type
+
+          // Get assignment info to determine grading type (include title for notifications)
           const { data: assignment } = await this.supabaseQuery(() => this.auth.supabase
             .from('assignments')
-            .select('grading_type, max_points')
+            .select('grading_type, max_points, title')
             .eq('id', assignmentId)
+            .single());
+
+          // Get submission to find the student
+          const { data: submission } = await this.supabaseQuery(() => this.auth.supabase
+            .from('assignment_submissions')
+            .select('student_id')
+            .eq('id', submissionId)
             .single());
       
           let gradeData;
@@ -15510,17 +15628,25 @@
             .from('assignment_submissions')
             .update(gradeData)
             .eq('id', submissionId));
-      
+
           if (error) throw error;
-      
+
+          // Send notifications (don't block on errors)
+          try {
+            await this.sendGradeNotifications(submission.student_id, assignment.title, gradeData.grade, gradeData.points_earned, assignment.max_points);
+          } catch (notifError) {
+            console.error('Error sending grade notifications:', notifError);
+            // Don't throw - grade was still saved successfully
+          }
+
           this.showNotification('Grade submitted successfully!', 'success');
           this.closeModal('grade-submission');
-      
+
           // Refresh the submissions view
           setTimeout(() => {
             this.viewSubmissions(assignmentId);
           }, 100);
-      
+
         } catch (error) {
           console.error('Error submitting grade:', error);
           this.showNotification('Error: ' + error.message, 'error');

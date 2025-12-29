@@ -74,7 +74,42 @@ serve(async (req) => {
     to = payload.to
 
     // Handle typed notifications
-    if (payload.type === 'strike_issued') {
+    if (payload.type === 'assignment_graded') {
+      const data = payload.data || {}
+      subject = `📝 ${data.studentName}'s Assignment Graded: ${data.assignmentTitle}`
+      html = `
+        <div style="font-family: Inter, system-ui, Segoe UI, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+            <h2 style="margin: 0;">📝 Assignment Graded</h2>
+          </div>
+          <div style="padding: 20px; border: 1px solid #ddd; border-top: none; border-radius: 0 0 8px 8px;">
+            <p>Dear ${data.parentName || 'Parent'},</p>
+            <p>Your child <strong>${data.studentName}</strong>'s assignment has been graded.</p>
+
+            <div style="background: #f5f5f5; padding: 15px; border-radius: 8px; margin: 20px 0;">
+              <div style="margin-bottom: 10px;">
+                <strong>Assignment:</strong> ${data.assignmentTitle}
+              </div>
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <strong>Grade:</strong>
+                <span style="background: #667eea; color: white; padding: 6px 16px; border-radius: 12px; font-weight: bold; font-size: 16px;">
+                  ${data.grade}
+                </span>
+              </div>
+              <div style="margin-top: 10px; color: #666;">
+                Points: ${data.pointsEarned} / ${data.maxPoints}
+              </div>
+            </div>
+
+            <p><a href="https://rivertech.me/student-portal/portal/index.html" style="display: inline-block; background: #667eea; color: white; padding: 10px 20px; border-radius: 6px; text-decoration: none;">View in Student Portal</a></p>
+
+            <p style="color: #999; font-size: 12px; margin-top: 30px;">
+              You're receiving this because you have grade notifications enabled for your child.
+            </p>
+          </div>
+        </div>
+      `
+    } else if (payload.type === 'strike_issued') {
       const data = payload.data || {}
       const strikeColor = data.strikeCount >= 3 ? '#f5576c' : data.strikeCount === 2 ? '#ffcb6b' : '#6aa9ff'
       subject = `⚠️ ${data.studentName} has received a strike (${data.strikeCount}/3)`
