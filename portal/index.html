@@ -8133,6 +8133,216 @@
         }
       }
 
+      // Send submission notification to teacher when student submits assignment
+      async sendSubmissionNotification(assignmentId, studentId, isLate = false) {
+        try {
+          // Get assignment and class info
+          const { data: assignment } = await this.supabaseQuery(() => this.auth.supabase
+            .from('assignments')
+            .select('title, class_id, due_date')
+            .eq('id', assignmentId)
+            .single());
+
+          if (!assignment) return;
+
+          // Get class and teacher info
+          const { data: classData } = await this.supabaseQuery(() => this.auth.supabase
+            .from('classes')
+            .select('name, teacher_id')
+            .eq('id', assignment.class_id)
+            .single());
+
+          if (!classData) return;
+
+          // Get student name
+          const { data: student } = await this.supabaseQuery(() => this.auth.supabase
+            .from('user_profiles')
+            .select('first_name, last_name')
+            .eq('id', studentId)
+            .single());
+
+          if (!student) return;
+
+          const studentName = `${student.first_name} ${student.last_name}`;
+
+          // Get teacher's notification preferences
+          const { data: prefs } = await this.supabaseQuery(() => this.auth.supabase
+            .from('notification_prefs')
+            .select('assignment_submitted, late_submissions')
+            .eq('user_id', classData.teacher_id)
+            .single());
+
+          // Check if teacher wants this notification
+          const prefKey = isLate ? 'late_submissions' : 'assignment_submitted';
+          // Default to true if no preference set
+          if (prefs && prefs[prefKey] === false) return;
+
+          const notificationType = isLate ? 'late_submission' : 'submission_received';
+          const title = isLate ? 'Late Submission' : 'New Submission';
+          const message = isLate
+            ? `${studentName} submitted "${assignment.title}" late in ${classData.name}`
+            : `${studentName} submitted "${assignment.title}" in ${classData.name}`;
+
+          // Create in-app notification for teacher
+          await this.createNotificationFor(
+            classData.teacher_id,
+            notificationType,
+            title,
+            message,
+            null,
+            { assignmentId, studentId, studentName, assignmentTitle: assignment.title, className: classData.name, isLate }
+          );
+
+          // Send email to teacher for late submissions only (to avoid email overload)
+          if (isLate) {
+            const { data: teacher } = await this.supabaseQuery(() => this.auth.supabase
+              .from('user_profiles')
+              .select('first_name, email')
+              .eq('id', classData.teacher_id)
+              .single());
+
+            if (teacher?.email) {
+              await this.auth.supabase.functions.invoke('send-notification-email', {
+                body: {
+                  to: teacher.email,
+                  type: 'late_submission',
+                  data: {
+                    teacherName: teacher.first_name,
+                    studentName: studentName,
+                    assignmentTitle: assignment.title,
+                    className: classData.name,
+                    dueDate: new Date(assignment.due_date).toLocaleDateString(),
+                    submittedAt: new Date().toLocaleDateString()
+                  }
+                }
+              });
+            }
+          }
+        } catch (error) {
+          console.error('Error sending submission notification:', error);
+        }
+      }
+
+      // Send notification to admins when a new user registers
+      async sendNewUserRegistrationNotification(userId, firstName, lastName, email, userType) {
+        try {
+          // Get all admins
+          const { data: admins } = await this.supabaseQuery(() => this.auth.supabase
+            .from('user_profiles')
+            .select('id, first_name, email')
+            .eq('user_type', 'admin'));
+
+          if (!admins || admins.length === 0) return;
+
+          // Get admin notification preferences
+          const adminIds = admins.map(a => a.id);
+          const { data: prefs } = await this.supabaseQuery(() => this.auth.supabase
+            .from('notification_prefs')
+            .select('user_id, new_user_registration')
+            .in('user_id', adminIds));
+
+          const prefsMap = {};
+          prefs?.forEach(p => { prefsMap[p.user_id] = p; });
+
+          const userName = `${firstName} ${lastName}`;
+          const userTypeLabel = userType.charAt(0).toUpperCase() + userType.slice(1);
+
+          // Notify each admin
+          for (const admin of admins) {
+            const adminPrefs = prefsMap[admin.id];
+            // Default to true if no preference set
+            if (adminPrefs?.new_user_registration === false) continue;
+
+            // Create in-app notification for admin
+            await this.createNotificationFor(
+              admin.id,
+              'new_user_registration',
+              'New User Registration',
+              `${userName} registered as a ${userTypeLabel} (${email})`,
+              null,
+              { userId, userName, email, userType }
+            );
+
+            // Send email to admin
+            if (admin.email) {
+              await this.auth.supabase.functions.invoke('send-notification-email', {
+                body: {
+                  to: admin.email,
+                  type: 'new_user_registration',
+                  data: {
+                    adminName: admin.first_name,
+                    userName: userName,
+                    userEmail: email,
+                    userType: userTypeLabel
+                  }
+                }
+              });
+            }
+          }
+        } catch (error) {
+          console.error('Error sending new user registration notification:', error);
+        }
+      }
+
+      // Send system alert to admins
+      async sendSystemAlert(alertType, title, message, details = {}) {
+        try {
+          // Get all admins
+          const { data: admins } = await this.supabaseQuery(() => this.auth.supabase
+            .from('user_profiles')
+            .select('id, first_name, email')
+            .eq('user_type', 'admin'));
+
+          if (!admins || admins.length === 0) return;
+
+          // Get admin notification preferences
+          const adminIds = admins.map(a => a.id);
+          const { data: prefs } = await this.supabaseQuery(() => this.auth.supabase
+            .from('notification_prefs')
+            .select('user_id, system_alerts')
+            .in('user_id', adminIds));
+
+          const prefsMap = {};
+          prefs?.forEach(p => { prefsMap[p.user_id] = p; });
+
+          // Notify each admin
+          for (const admin of admins) {
+            const adminPrefs = prefsMap[admin.id];
+            // Default to true if no preference set
+            if (adminPrefs?.system_alerts === false) continue;
+
+            // Create in-app notification for admin
+            await this.createNotificationFor(
+              admin.id,
+              'system_alert',
+              title,
+              message,
+              null,
+              { alertType, ...details }
+            );
+
+            // Send email for critical alerts
+            if (details.critical && admin.email) {
+              await this.auth.supabase.functions.invoke('send-notification-email', {
+                body: {
+                  to: admin.email,
+                  type: 'system_alert',
+                  data: {
+                    adminName: admin.first_name,
+                    alertType: alertType,
+                    title: title,
+                    message: message,
+                    critical: details.critical
+                  }
+                }
+              });
+            }
+          }
+        } catch (error) {
+          console.error('Error sending system alert:', error);
+        }
+      }
+
       // Admin broadcast announcement
       showBroadcastModal() {
         const modal = document.createElement('div');
@@ -15048,12 +15258,22 @@
           this.showNotification(`Assignment ${isEdit ? 'updated' : 'submitted'} successfully!`, 'success');
           this.closeModal('submit-assignment');
 
-         // Get  the class ID to refresh the correct view
+         // Get the class ID and due date to refresh the correct view and check if late
           const { data: assignment } = await this.supabaseQuery(() => this.auth.supabase
             .from('assignments')
-            .select('class_id')
+            .select('class_id, due_date')
             .eq('id', assignmentId)
             .single());
+
+          // Send notification to teacher (don't block on errors)
+          if (!isEdit) {
+            try {
+              const isLate = assignment?.due_date && new Date(assignment.due_date) < new Date();
+              await this.sendSubmissionNotification(assignmentId, this.userInfo.user.id, isLate);
+            } catch (notifError) {
+              console.error('Error sending submission notification:', notifError);
+            }
+          }
             
           if (assignment) {
             // Close the assignments modal first if it's open

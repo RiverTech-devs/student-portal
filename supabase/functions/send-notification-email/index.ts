@@ -144,6 +144,113 @@ serve(async (req) => {
           </div>
         </div>
       `
+    } else if (payload.type === 'late_submission') {
+      const data = payload.data || {}
+      subject = `⏰ Late Submission: ${data.studentName} - ${data.assignmentTitle}`
+      html = `
+        <div style="font-family: Inter, system-ui, Segoe UI, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="background: #f5576c; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+            <h2 style="margin: 0;">⏰ Late Assignment Submission</h2>
+          </div>
+          <div style="padding: 20px; border: 1px solid #ddd; border-top: none; border-radius: 0 0 8px 8px;">
+            <p>Dear ${data.teacherName || 'Teacher'},</p>
+            <p>A student has submitted an assignment after the due date.</p>
+
+            <div style="background: #f5f5f5; padding: 15px; border-radius: 8px; margin: 20px 0;">
+              <div style="margin-bottom: 10px;">
+                <strong>Student:</strong> ${data.studentName}
+              </div>
+              <div style="margin-bottom: 10px;">
+                <strong>Assignment:</strong> ${data.assignmentTitle}
+              </div>
+              <div style="margin-bottom: 10px;">
+                <strong>Class:</strong> ${data.className}
+              </div>
+              <div style="margin-bottom: 10px;">
+                <strong>Due Date:</strong> <span style="color: #f5576c;">${data.dueDate}</span>
+              </div>
+              <div>
+                <strong>Submitted:</strong> ${data.submittedAt}
+              </div>
+            </div>
+
+            <p><a href="https://rivertech.me/student-portal/portal/index.html" style="display: inline-block; background: #667eea; color: white; padding: 10px 20px; border-radius: 6px; text-decoration: none;">View Submission</a></p>
+
+            <p style="color: #999; font-size: 12px; margin-top: 30px;">
+              You're receiving this because you have late submission notifications enabled.
+            </p>
+          </div>
+        </div>
+      `
+    } else if (payload.type === 'new_user_registration') {
+      const data = payload.data || {}
+      subject = `👤 New User Registration: ${data.userName} (${data.userType})`
+      html = `
+        <div style="font-family: Inter, system-ui, Segoe UI, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+            <h2 style="margin: 0;">👤 New User Registration</h2>
+          </div>
+          <div style="padding: 20px; border: 1px solid #ddd; border-top: none; border-radius: 0 0 8px 8px;">
+            <p>Dear ${data.adminName || 'Admin'},</p>
+            <p>A new user has registered on the Student Portal.</p>
+
+            <div style="background: #f5f5f5; padding: 15px; border-radius: 8px; margin: 20px 0;">
+              <div style="margin-bottom: 10px;">
+                <strong>Name:</strong> ${data.userName}
+              </div>
+              <div style="margin-bottom: 10px;">
+                <strong>Email:</strong> ${data.userEmail}
+              </div>
+              <div>
+                <strong>Account Type:</strong>
+                <span style="background: #11998e; color: white; padding: 4px 12px; border-radius: 12px; font-weight: bold;">
+                  ${data.userType}
+                </span>
+              </div>
+            </div>
+
+            <p><a href="https://rivertech.me/student-portal/portal/index.html" style="display: inline-block; background: #11998e; color: white; padding: 10px 20px; border-radius: 6px; text-decoration: none;">View in Admin Dashboard</a></p>
+
+            <p style="color: #999; font-size: 12px; margin-top: 30px;">
+              You're receiving this because you have new user registration notifications enabled.
+            </p>
+          </div>
+        </div>
+      `
+    } else if (payload.type === 'system_alert') {
+      const data = payload.data || {}
+      const alertColor = data.critical ? '#f5576c' : '#ff9800'
+      subject = `${data.critical ? '🚨' : '⚠️'} System Alert: ${data.title}`
+      html = `
+        <div style="font-family: Inter, system-ui, Segoe UI, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="background: ${alertColor}; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+            <h2 style="margin: 0;">${data.critical ? '🚨 Critical' : '⚠️'} System Alert</h2>
+          </div>
+          <div style="padding: 20px; border: 1px solid #ddd; border-top: none; border-radius: 0 0 8px 8px;">
+            <p>Dear ${data.adminName || 'Admin'},</p>
+            <p>A system alert requires your attention.</p>
+
+            <div style="background: ${data.critical ? '#fff0f0' : '#fff8e1'}; border: 1px solid ${alertColor}; padding: 15px; border-radius: 8px; margin: 20px 0;">
+              <div style="margin-bottom: 10px;">
+                <strong>Alert Type:</strong> ${data.alertType || 'System'}
+              </div>
+              <div style="margin-bottom: 10px;">
+                <strong>Title:</strong> ${data.title}
+              </div>
+              <div>
+                <strong>Details:</strong>
+                <p style="margin: 5px 0 0 0;">${data.message}</p>
+              </div>
+            </div>
+
+            <p><a href="https://rivertech.me/student-portal/portal/index.html" style="display: inline-block; background: ${alertColor}; color: white; padding: 10px 20px; border-radius: 6px; text-decoration: none;">View Admin Dashboard</a></p>
+
+            <p style="color: #999; font-size: 12px; margin-top: 30px;">
+              You're receiving this because you have system alert notifications enabled.
+            </p>
+          </div>
+        </div>
+      `
     } else if (payload.type === 'strike_issued') {
       const data = payload.data || {}
       const strikeColor = data.strikeCount >= 3 ? '#f5576c' : data.strikeCount === 2 ? '#ffcb6b' : '#6aa9ff'
