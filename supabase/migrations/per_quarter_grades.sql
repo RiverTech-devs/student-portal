@@ -58,7 +58,7 @@ END;
 $$;
 
 -- Create or replace function to calculate and store quarter grades
--- This replaces the enrollment-based calculation with quarter-specific storage
+-- Simplified version: averages all graded assignments in the quarter
 CREATE OR REPLACE FUNCTION calculate_quarter_grades(
   p_enrollment_id UUID,
   p_quarter_id UUID
@@ -69,19 +69,17 @@ SECURITY DEFINER
 AS $$
 DECLARE
   v_class_id UUID;
+  v_student_id UUID;
   v_grading_weight TEXT;
   v_academic NUMERIC := 0;
   v_participation NUMERIC;
   v_class NUMERIC;
   v_quarter_start DATE;
   v_quarter_end DATE;
-  v_category RECORD;
-  v_category_sum NUMERIC := 0;
-  v_category_weight_sum NUMERIC := 0;
 BEGIN
-  -- Get class info and quarter dates
-  SELECT ce.class_id, c.grading_weight
-  INTO v_class_id, v_grading_weight
+  -- Get class info, student id, and quarter dates
+  SELECT ce.class_id, ce.student_id, c.grading_weight
+  INTO v_class_id, v_student_id, v_grading_weight
   FROM class_enrollments ce
   JOIN classes c ON c.id = ce.class_id
   WHERE ce.id = p_enrollment_id;
@@ -98,56 +96,26 @@ BEGIN
   LEFT JOIN quarter_grade_snapshots qgs ON qgs.enrollment_id = ce.id AND qgs.quarter_id = p_quarter_id
   WHERE ce.id = p_enrollment_id;
 
-  -- Calculate academic grade from assignments within the quarter date range
-  FOR v_category IN
-    SELECT gc.id, gc.weight
-    FROM grade_categories gc
-    WHERE gc.class_id = v_class_id
-  LOOP
-    DECLARE
-      v_cat_avg NUMERIC;
-      v_cat_count INT;
-    BEGIN
-      SELECT
-        AVG(CASE WHEN asub.points_earned IS NOT NULL THEN (asub.points_earned / a.max_points) * 100 END),
-        COUNT(CASE WHEN asub.points_earned IS NOT NULL THEN 1 END)
-      INTO v_cat_avg, v_cat_count
-      FROM assignments a
-      LEFT JOIN assignment_submissions asub ON asub.assignment_id = a.id
-        AND asub.student_id = (SELECT student_id FROM class_enrollments WHERE id = p_enrollment_id)
-      WHERE a.class_id = v_class_id
-        AND a.category_id = v_category.id
-        AND a.due_date >= v_quarter_start
-        AND a.due_date <= v_quarter_end;
-
-      IF v_cat_count > 0 AND v_cat_avg IS NOT NULL THEN
-        v_category_sum := v_category_sum + (v_cat_avg * v_category.weight);
-        v_category_weight_sum := v_category_weight_sum + v_category.weight;
-      END IF;
-    END;
-  END LOOP;
-
-  -- Calculate weighted academic grade
-  IF v_category_weight_sum > 0 THEN
-    v_academic := v_category_sum / v_category_weight_sum;
-  ELSE
-    -- Fallback: simple average of all graded assignments in quarter
-    SELECT AVG((asub.points_earned / a.max_points) * 100)
-    INTO v_academic
-    FROM assignments a
-    JOIN assignment_submissions asub ON asub.assignment_id = a.id
-      AND asub.student_id = (SELECT student_id FROM class_enrollments WHERE id = p_enrollment_id)
-    WHERE a.class_id = v_class_id
-      AND a.due_date >= v_quarter_start
-      AND a.due_date <= v_quarter_end
-      AND asub.points_earned IS NOT NULL;
-  END IF;
+  -- Calculate academic grade: simple average of all graded assignments in quarter
+  -- Use ::numeric cast to avoid integer division
+  SELECT AVG((asub.points_earned::numeric / NULLIF(a.max_points::numeric, 0)) * 100)
+  INTO v_academic
+  FROM assignments a
+  JOIN assignment_submissions asub ON asub.assignment_id = a.id
+  WHERE a.class_id = v_class_id
+    AND asub.student_id = v_student_id
+    AND a.due_date >= v_quarter_start
+    AND a.due_date <= v_quarter_end
+    AND asub.points_earned IS NOT NULL
+    AND asub.status = 'graded';
 
   v_academic := COALESCE(v_academic, 0);
-  v_participation := COALESCE(v_participation, 0);
 
   -- Calculate class grade based on grading weight
-  IF v_grading_weight = 'skill' THEN
+  -- If participation is NULL, use academic grade only
+  IF v_participation IS NULL THEN
+    v_class := v_academic;
+  ELSIF v_grading_weight = 'skill' THEN
     v_class := (v_academic * 0.6) + (v_participation * 0.4);
   ELSIF v_grading_weight = 'participation' THEN
     v_class := (v_academic * 0.4) + (v_participation * 0.6);
