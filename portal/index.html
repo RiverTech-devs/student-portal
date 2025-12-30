@@ -7270,13 +7270,19 @@
               const teacherIds = [...new Set(classes.map(c => c.teacher_id).filter(Boolean))];
               const { data: teacherData } = await this.auth.supabase
                 .from('user_profiles')
-                .select('id')
+                .select('id, email, first_name, email_notifications')
                 .in('id', teacherIds);
               teachers = teacherData || [];
             }
           }
 
-          // Send notification to each parent
+          // Get all admins for notification
+          const { data: admins } = await this.auth.supabase
+            .from('user_profiles')
+            .select('id, email, first_name, email_notifications')
+            .eq('user_type', 'admin');
+
+          // Send email notification to each parent
           for (const parent of parents) {
             // Check if parent has strike notifications enabled (default to true)
             const emailPrefs = parent.email_notifications || {};
@@ -7298,8 +7304,9 @@
             });
           }
 
-          // Send internal notification to each teacher (not email)
+          // Send email and in-app notification to each teacher (who opted in for email)
           for (const teacher of teachers) {
+            // Always send in-app notification
             await this.createNotificationFor(
               teacher.id,
               'strike',
@@ -7308,10 +7315,156 @@
               null,
               { studentId: studentId, strikeCount: strikeCount }
             );
+
+            // Send email if opted in (default to false for teachers - must opt in)
+            const emailPrefs = teacher.email_notifications || {};
+            if (emailPrefs.strike_notifications === true) {
+              await this.auth.supabase.functions.invoke('send-notification-email', {
+                body: {
+                  to: teacher.email,
+                  type: 'strike_issued_staff',
+                  data: {
+                    recipientName: teacher.first_name,
+                    studentName: `${student.first_name} ${student.last_name}`,
+                    strikeCount: strikeCount,
+                    reason: reason
+                  }
+                }
+              });
+            }
+          }
+
+          // Send email and in-app notification to each admin (who opted in for email)
+          for (const admin of (admins || [])) {
+            // Always send in-app notification
+            await this.createNotificationFor(
+              admin.id,
+              'strike',
+              `Student Strike: ${student.first_name} ${student.last_name}`,
+              `${student.first_name} ${student.last_name} has received a strike (${strikeCount}/3). Reason: ${reason}`,
+              null,
+              { studentId: studentId, strikeCount: strikeCount }
+            );
+
+            // Send email if opted in (default to false for admins - must opt in)
+            const emailPrefs = admin.email_notifications || {};
+            if (emailPrefs.strike_notifications === true) {
+              await this.auth.supabase.functions.invoke('send-notification-email', {
+                body: {
+                  to: admin.email,
+                  type: 'strike_issued_staff',
+                  data: {
+                    recipientName: admin.first_name,
+                    studentName: `${student.first_name} ${student.last_name}`,
+                    strikeCount: strikeCount,
+                    reason: reason
+                  }
+                }
+              });
+            }
           }
         } catch (error) {
           console.error('Error sending strike notification:', error);
           // Don't throw - strike was still issued successfully
+        }
+      }
+
+      // Send attendance alert notifications to teachers and admins when a student is late or leaves early
+      // Only sends once per student/date combination
+      async sendAttendanceAlertNotifications(attendanceRecords, attendanceType = 'daily') {
+        try {
+          // Filter for late or left_early statuses
+          const alertRecords = attendanceRecords.filter(r =>
+            ['late', 'left_early', 'late_left_early'].includes(r.status)
+          );
+
+          if (alertRecords.length === 0) return;
+
+          // Get student info for all students that need notifications
+          const studentIds = alertRecords.map(r => r.student_id);
+          const { data: students } = await this.auth.supabase
+            .from('user_profiles')
+            .select('id, first_name, last_name')
+            .in('id', studentIds);
+
+          if (!students || students.length === 0) return;
+
+          const studentMap = new Map(students.map(s => [s.id, s]));
+
+          // Get all admins
+          const { data: admins } = await this.auth.supabase
+            .from('user_profiles')
+            .select('id')
+            .eq('user_type', 'admin');
+
+          // Get all teachers
+          const { data: teachers } = await this.auth.supabase
+            .from('user_profiles')
+            .select('id')
+            .eq('user_type', 'teacher');
+
+          // Combine recipients (admins + teachers), exclude current user
+          const recipientIds = new Set();
+          (admins || []).forEach(a => recipientIds.add(a.id));
+          (teachers || []).forEach(t => recipientIds.add(t.id));
+          recipientIds.delete(this.userInfo.user.id);
+
+          if (recipientIds.size === 0) return;
+
+          // Check for existing notifications to avoid duplicates
+          // Use metadata to track: studentId + date + status
+          const today = alertRecords[0]?.date || new Date().toISOString().split('T')[0];
+
+          for (const record of alertRecords) {
+            const student = studentMap.get(record.student_id);
+            if (!student) continue;
+
+            const studentName = `${student.first_name} ${student.last_name}`;
+            const statusText = record.status === 'late' ? 'arrived late' :
+                               record.status === 'left_early' ? 'left early' :
+                               'arrived late and left early';
+
+            // Create unique key for this notification
+            const notificationKey = `${record.student_id}_${record.date}_${record.status}`;
+
+            // Check if notification already sent for this student/date/status combination
+            const { data: existingNotification } = await this.auth.supabase
+              .from('notifications')
+              .select('id')
+              .eq('type', 'attendance_alert')
+              .contains('metadata', { notificationKey: notificationKey })
+              .limit(1);
+
+            if (existingNotification && existingNotification.length > 0) {
+              // Already sent notification for this student/date/status
+              continue;
+            }
+
+            const typeLabel = attendanceType === 'class' ? 'Class' : 'Daily';
+            const title = `Attendance Alert: ${studentName}`;
+            const message = `${studentName} ${statusText} on ${record.date} (${typeLabel} Attendance)`;
+
+            // Send notification to all recipients
+            for (const recipientId of recipientIds) {
+              await this.createNotificationFor(
+                recipientId,
+                'attendance_alert',
+                title,
+                message,
+                null,
+                {
+                  studentId: record.student_id,
+                  date: record.date,
+                  status: record.status,
+                  attendanceType: attendanceType,
+                  notificationKey: notificationKey
+                }
+              );
+            }
+          }
+        } catch (error) {
+          console.error('Error sending attendance alert notifications:', error);
+          // Don't throw - attendance was still saved successfully
         }
       }
 
@@ -7446,12 +7599,14 @@
 
         const teacherOptions = [
           { key: 'assignment_submitted', label: 'Assignment Submissions', description: 'Get notified when a student submits an assignment' },
-          { key: 'late_submissions', label: 'Late Submissions', description: 'Get notified when a student submits late work' }
+          { key: 'late_submissions', label: 'Late Submissions', description: 'Get notified when a student submits late work' },
+          { key: 'strike_notifications', label: 'Disciplinary Strikes', description: 'Get notified when a student receives a disciplinary strike' }
         ];
 
         const adminOptions = [
           { key: 'new_user_registration', label: 'New Registrations', description: 'Get notified when a new user registers' },
-          { key: 'system_alerts', label: 'System Alerts', description: 'Get notified about important system events' }
+          { key: 'system_alerts', label: 'System Alerts', description: 'Get notified about important system events' },
+          { key: 'strike_notifications', label: 'Disciplinary Strikes', description: 'Get notified when a student receives a disciplinary strike' }
         ];
 
         switch (userType) {
@@ -23896,6 +24051,9 @@
 
         this.showNotification(`Saved attendance for ${attendanceRecords.length} students`, 'success');
 
+        // Send notifications for late/left_early students (async, don't block)
+        this.sendAttendanceAlertNotifications(attendanceRecords, 'daily');
+
       } catch (error) {
         console.error('Error saving attendance:', error);
         this.showNotification('Error saving attendance: ' + error.message, 'error');
@@ -24404,6 +24562,9 @@
 
         const periodLabel = period ? ` for Period ${period}` : '';
         this.showNotification(`Saved attendance for ${attendanceRecords.length} students${periodLabel}`, 'success');
+
+        // Send notifications for late/left_early students (async, don't block)
+        this.sendAttendanceAlertNotifications(attendanceRecords, 'class');
 
         // Refresh the modal to show updated status
         this.showClassAttendance(classId, date, period);
