@@ -12192,21 +12192,32 @@
 
       async createAssignment(classId) {
         const classData = this.classes.find(c => c.id === classId);
-      
+
         // Load categories for this class
         const { data: categories } = await this.supabaseQuery(() => this.auth.supabase
           .from('grade_categories')
           .select('*')
           .eq('class_id', classId)
           .order('display_order'));
-        
+
+        // Load all non-archived quarters
+        const { data: quarters } = await this.supabaseQuery(() => this.auth.supabase
+          .from('quarters')
+          .select('*')
+          .eq('is_archived', false)
+          .order('start_date', { ascending: false }));
+
+        // Store quarters for due date validation
+        this.assignmentQuarters = quarters || [];
+        const currentQuarter = quarters?.find(q => q.is_current) || quarters?.[0];
+
         // Load students in this class
         const { data: enrollments } = await this.supabaseQuery(() => this.auth.supabase
           .from('class_enrollments')
           .select('student_id')
           .eq('class_id', classId)
           .eq('status', 'active'));
-          
+
         let studentProfiles = [];
         if (enrollments && enrollments.length > 0) {
           const { data: profiles } = await this.supabaseQuery(() => this.auth.supabase
@@ -12216,7 +12227,14 @@
             .order('last_name'));
           studentProfiles = profiles || [];
         }
-        
+
+        // Build quarter options
+        const quarterOptions = quarters?.map(q =>
+          `<option value="${q.id}" ${q.id === currentQuarter?.id ? 'selected' : ''}>
+            ${q.name} (${q.school_year})${q.is_current ? ' - Current' : ''}
+          </option>`
+        ).join('') || '<option value="">No quarters available</option>';
+
         const modalContent = `
           <form id="create-assignment-form">
             <!-- Assignment Type Selector -->
@@ -12314,8 +12332,19 @@
             </div>
 
             <div class="form-group">
+              <label for="assignment-quarter">Quarter *</label>
+              <select id="assignment-quarter" required onchange="app.onAssignmentQuarterChange()">
+                ${quarterOptions}
+              </select>
+              <small style="color: var(--muted); display: block; margin-top: 5px;">
+                Select which quarter this assignment counts toward.
+              </small>
+            </div>
+
+            <div class="form-group">
               <label for="assignment-due-date">Due Date *</label>
               <input type="datetime-local" id="assignment-due-date" required>
+              <small id="assignment-due-date-hint" style="color: var(--muted); display: block; margin-top: 5px;"></small>
             </div>
 
             <div id="points-section" class="form-group">
@@ -12427,7 +12456,10 @@
           console.error('Error loading rubrics:', err);
           document.getElementById('assignment-rubric').innerHTML = '<option value="">Error loading rubrics</option>';
         });
-        
+
+        // Initialize quarter date hint
+        setTimeout(() => this.onAssignmentQuarterChange(), 50);
+
         // Initialize Quill editor after modal is shown
         setTimeout(() => {
           this.assignmentDescriptionEditor = new Quill('#assignment-description-editor', {
@@ -12448,14 +12480,59 @@
         }, 100);
       }
 
+      onAssignmentQuarterChange() {
+        const quarterSelect = document.getElementById('assignment-quarter');
+        const dueDateInput = document.getElementById('assignment-due-date');
+        const hint = document.getElementById('assignment-due-date-hint');
+
+        if (!quarterSelect || !this.assignmentQuarters) return;
+
+        const selectedQuarter = this.assignmentQuarters.find(q => q.id === quarterSelect.value);
+        if (!selectedQuarter) return;
+
+        // Format dates for display
+        const startDate = new Date(selectedQuarter.start_date);
+        const endDate = new Date(selectedQuarter.end_date);
+        const formatDate = (d) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+        hint.textContent = `Due date must be between ${formatDate(startDate)} and ${formatDate(endDate)}`;
+
+        // Set min/max on the date input
+        dueDateInput.min = selectedQuarter.start_date.split('T')[0] + 'T00:00';
+        dueDateInput.max = selectedQuarter.end_date.split('T')[0] + 'T23:59';
+
+        // If current due date is outside the quarter range, clear it
+        if (dueDateInput.value) {
+          const currentDue = new Date(dueDateInput.value);
+          if (currentDue < startDate || currentDue > endDate) {
+            dueDateInput.value = '';
+          }
+        }
+      }
+
       async submitCreateAssignment(classId) {
         const assignmentType = document.getElementById('assignment-type').value;
         const dueDate = document.getElementById('assignment-due-date').value;
         const title = document.getElementById('assignment-title').value;
+        const selectedQuarterId = document.getElementById('assignment-quarter')?.value;
 
         if (!dueDate) {
           this.showNotification('Please set a due date', 'error');
           return;
+        }
+
+        // Validate due date falls within selected quarter
+        if (selectedQuarterId && this.assignmentQuarters) {
+          const selectedQuarter = this.assignmentQuarters.find(q => q.id === selectedQuarterId);
+          if (selectedQuarter) {
+            const dueDateObj = new Date(dueDate);
+            const startDate = new Date(selectedQuarter.start_date);
+            const endDate = new Date(selectedQuarter.end_date);
+            if (dueDateObj < startDate || dueDateObj > endDate) {
+              this.showNotification(`Due date must be within ${selectedQuarter.name} (${startDate.toLocaleDateString()} - ${endDate.toLocaleDateString()})`, 'error');
+              return;
+            }
+          }
         }
 
         // Handle game and skill_mastery types differently
@@ -24463,19 +24540,20 @@
         this.pendingChanges = {};
       }
       
-      async showGradeManagementModal(classId) {
+      async showGradeManagementModal(classId, selectedQuarterId = null) {
        console.log('Opening grade management for class:', classId);
-  
+
         // Reset everything
         this.currentClassId = classId;
         this.pendingChanges = {};
         this.enrollments = [];
         this.currentQuarterId = null;
         this.currentClassGradingWeight = 'even';
-        
+        this.allQuarters = [];
+
         const modal = document.getElementById('grade-management-modal');
         if (!modal) return;
-        
+
         // Clear previous content immediately and show loading
         const content = document.getElementById('grade-modal-content');
         if (content) {
@@ -24486,26 +24564,26 @@
             </div>
           `;
         }
-        
+
         // Reset title
         document.getElementById('grade-modal-title').textContent = 'Loading...';
         document.getElementById('grade-modal-subtitle').textContent = '';
-        
+
         modal.style.display = 'block';
-        
+
         try {
-          // Get current quarter
-          const { data: quarter, error: quarterError } = await window.app.auth.supabase
+          // Get all non-archived quarters
+          const { data: quarters, error: quartersError } = await window.app.auth.supabase
             .from('quarters')
             .select('*')
-            .eq('is_current', true)
-            .single();
-          
-          if (quarterError || !quarter) {
+            .eq('is_archived', false)
+            .order('start_date', { ascending: false });
+
+          if (quartersError || !quarters || quarters.length === 0) {
             document.getElementById('grade-modal-content').innerHTML = `
               <div class="card" style="background: rgba(255, 107, 107, 0.1); border: 1px solid var(--danger); padding: 20px; text-align: center;">
-                <h3 style="color: var(--danger);">⚠️ No Active Quarter</h3>
-                <p style="margin: 15px 0;">There is no active grading quarter. Please create one first.</p>
+                <h3 style="color: var(--danger);">⚠️ No Active Quarters</h3>
+                <p style="margin: 15px 0;">There are no active grading quarters. Please create one first.</p>
                 <button class="btn btn-primary" onclick="teacherGrades.showCreateQuarterForm()">
                   ➕ Create Quarter
                 </button>
@@ -24513,7 +24591,18 @@
             `;
             return;
           }
-          
+
+          this.allQuarters = quarters;
+
+          // Use selected quarter, or default to current quarter, or first available
+          let quarter;
+          if (selectedQuarterId) {
+            quarter = quarters.find(q => q.id === selectedQuarterId);
+          }
+          if (!quarter) {
+            quarter = quarters.find(q => q.is_current) || quarters[0];
+          }
+
           this.currentQuarterId = quarter.id;
           
           // Get class info
@@ -24525,16 +24614,35 @@
 
           // Store the grading weight for calculations
           this.currentClassGradingWeight = classData?.grading_weight || 'even';
-          
+
           // Update subtitle to show the weight
           const weightLabel = {
             'even': '50/50',
             'skill': '60/40 Skill',
             'participation': '40/60 Participation'
           }[this.currentClassGradingWeight];
-          
+
           document.getElementById('grade-modal-title').textContent = `${classData?.name || 'Class'} - Student Grades`;
-         document.getElementById('grade-modal-subtitle').textContent = `${quarter.name} (${quarter.school_year}) • Grading: ${weightLabel}`;
+
+          // Build quarter selector dropdown
+          const quarterOptions = this.allQuarters.map(q =>
+            `<option value="${q.id}" ${q.id === quarter.id ? 'selected' : ''}>
+              ${q.name} (${q.school_year})${q.is_current ? ' - Current' : ''}
+            </option>`
+          ).join('');
+
+          document.getElementById('grade-modal-subtitle').innerHTML = `
+            <div style="display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <label style="font-weight: 500;">Quarter:</label>
+                <select id="grade-quarter-selector" onchange="teacherGrades.switchQuarter(this.value)"
+                  style="padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--card-bg); color: var(--text-color);">
+                  ${quarterOptions}
+                </select>
+              </div>
+              <span style="color: var(--muted-color);">Grading: ${weightLabel}</span>
+            </div>
+          `;
           
           // Get enrollments WITHOUT relationship join
           const { data: enrollments, error: enrollError } = await window.app.auth.supabase
@@ -24588,67 +24696,71 @@
           
           this.enrollments = enrollments;
 
-          // Update current_quarter_id for enrollments that need it (in parallel)
-          const quarterUpdates = this.enrollments
-            .filter(e => e.current_quarter_id !== quarter.id)
-            .map(e => window.app.auth.supabase
-              .from('class_enrollments')
-              .update({ current_quarter_id: quarter.id })
-              .eq('id', e.id)
-            );
+          // Load quarter-specific grades from quarter_grade_snapshots
+          const enrollmentIds = enrollments.map(e => e.id);
+          const { data: quarterGrades } = await window.app.auth.supabase
+            .from('quarter_grade_snapshots')
+            .select('*')
+            .eq('quarter_id', quarter.id)
+            .in('enrollment_id', enrollmentIds);
 
-          if (quarterUpdates.length > 0) {
-            await Promise.allSettled(quarterUpdates);
-          }
+          // Create a map of quarter grades by enrollment_id
+          const quarterGradeMap = {};
+          quarterGrades?.forEach(qg => {
+            quarterGradeMap[qg.enrollment_id] = qg;
+          });
 
-          // Only calculate grades for students who don't have them yet (first time)
-          // Process sequentially to avoid database timeouts
-          const needsGradeCalc = this.enrollments.filter(e => e.academic_grade === null);
+          // Calculate grades for enrollments that don't have quarter-specific grades yet
+          const needsGradeCalc = this.enrollments.filter(e => !quarterGradeMap[e.id]);
           if (needsGradeCalc.length > 0) {
-            console.log(`Calculating grades for ${needsGradeCalc.length} students (first time)...`);
+            console.log(`Calculating quarter grades for ${needsGradeCalc.length} students...`);
             for (const enrollment of needsGradeCalc) {
               try {
-                await window.app.auth.supabase.rpc('update_enrollment_grades', {
-                  p_enrollment_id: enrollment.id
+                const { data: calcResult } = await window.app.auth.supabase.rpc('calculate_quarter_grades', {
+                  p_enrollment_id: enrollment.id,
+                  p_quarter_id: quarter.id
                 });
+                if (calcResult && calcResult[0]) {
+                  quarterGradeMap[enrollment.id] = {
+                    enrollment_id: enrollment.id,
+                    quarter_id: quarter.id,
+                    academic_grade: calcResult[0].academic_grade,
+                    participation_grade: calcResult[0].participation_grade,
+                    class_grade: calcResult[0].class_grade
+                  };
+                }
               } catch (err) {
-                console.warn('Grade calc failed for', enrollment.id, err.message);
+                console.warn('Quarter grade calc failed for', enrollment.id, err.message);
+                // Fallback: use enrollment grades if RPC not available yet
+                quarterGradeMap[enrollment.id] = {
+                  enrollment_id: enrollment.id,
+                  quarter_id: quarter.id,
+                  academic_grade: enrollment.academic_grade,
+                  participation_grade: enrollment.participation_grade,
+                  class_grade: enrollment.class_grade
+                };
               }
             }
-
-            // Reload enrollments to get calculated grades
-            const { data: refreshedEnrollments } = await window.app.auth.supabase
-              .from('class_enrollments')
-              .select('*')
-              .eq('class_id', classId)
-              .eq('status', 'active');
-
-            // Re-attach student profiles
-            refreshedEnrollments?.forEach(e => {
-              e.user_profiles = studentMap[e.student_id] || {
-                first_name: 'Unknown',
-                last_name: 'User',
-                email: 'N/A'
-              };
-            });
-
-            // Re-sort by last name
-            refreshedEnrollments?.sort((a, b) => {
-              const nameA = a.user_profiles.last_name?.toLowerCase() || '';
-              const nameB = b.user_profiles.last_name?.toLowerCase() || '';
-              return nameA.localeCompare(nameB);
-            });
-
-            this.enrollments = refreshedEnrollments || [];
           }
+
+          // Merge quarter-specific grades into enrollments for display
+          this.enrollments.forEach(e => {
+            const qg = quarterGradeMap[e.id];
+            if (qg) {
+              e.academic_grade = qg.academic_grade;
+              e.participation_grade = qg.participation_grade;
+              e.class_grade = qg.class_grade;
+              e.teacher_notes = qg.teacher_notes || e.teacher_notes;
+            }
+          });
 
           // Check categories
           const { data: categories } = await window.app.auth.supabase
             .from('grade_categories')
             .select('*')
             .eq('class_id', classId);
-          
-          // Check assignments
+
+          // Check assignments for this quarter
           const { data: assignments } = await window.app.auth.supabase
             .from('assignments')
             .select('*')
@@ -24656,7 +24768,9 @@
             .gte('due_date', quarter.start_date)
             .lte('due_date', quarter.end_date);
 
-          // enrollments already sorted and stored in this.enrollments above
+          // Store quarter info for save operation
+          this.currentQuarter = quarter;
+
           this.renderGradeTable();
           
         } catch (error) {
@@ -24859,49 +24973,74 @@
       
       async saveAllGrades() {
         const changeCount = Object.keys(this.pendingChanges).length;
-        
+
         if (changeCount === 0) {
           window.app.showNotification('No changes to save', 'info');
           return;
         }
-        
+
         try {
           window.app.showNotification(`Saving ${changeCount} student grade(s)...`, 'info');
-          
+
           for (const [enrollmentId, changes] of Object.entries(this.pendingChanges)) {
-            const updateData = {};
-            
+            let participationGrade = null;
+            let teacherNotes = null;
+
             if (changes.participation_grade !== undefined) {
               const grade = parseFloat(changes.participation_grade);
-              updateData.participation_grade = isNaN(grade) || changes.participation_grade === '' ? null : grade;
+              participationGrade = isNaN(grade) || changes.participation_grade === '' ? null : grade;
             }
-            
+
             if (changes.teacher_notes !== undefined) {
-              updateData.teacher_notes = changes.teacher_notes.trim() || null;
+              teacherNotes = changes.teacher_notes.trim() || null;
             }
-            
-            // Update the enrollment
-            const { error: updateError } = await window.app.auth.supabase
-              .from('class_enrollments')
-              .update(updateData)
-              .eq('id', enrollmentId);
-            
-            if (updateError) throw updateError;
-            
-            // Recalculate grades
-            await window.app.auth.supabase.rpc('update_enrollment_grades', {
-              p_enrollment_id: enrollmentId
-            });
+
+            // Try to use the new per-quarter grade storage
+            try {
+              await window.app.auth.supabase.rpc('upsert_quarter_grade', {
+                p_enrollment_id: enrollmentId,
+                p_quarter_id: this.currentQuarterId,
+                p_participation_grade: participationGrade,
+                p_teacher_notes: teacherNotes
+              });
+
+              // Recalculate grades for this quarter
+              await window.app.auth.supabase.rpc('calculate_quarter_grades', {
+                p_enrollment_id: enrollmentId,
+                p_quarter_id: this.currentQuarterId
+              });
+            } catch (rpcError) {
+              console.warn('Per-quarter save failed, falling back to enrollment update:', rpcError.message);
+
+              // Fallback: update class_enrollments directly (for backwards compatibility)
+              const updateData = {};
+              if (participationGrade !== null) updateData.participation_grade = participationGrade;
+              if (teacherNotes !== null) updateData.teacher_notes = teacherNotes;
+
+              if (Object.keys(updateData).length > 0) {
+                const { error: updateError } = await window.app.auth.supabase
+                  .from('class_enrollments')
+                  .update(updateData)
+                  .eq('id', enrollmentId);
+
+                if (updateError) throw updateError;
+              }
+
+              // Recalculate using old method
+              await window.app.auth.supabase.rpc('update_enrollment_grades', {
+                p_enrollment_id: enrollmentId
+              });
+            }
           }
-          
-          window.app.showNotification('✅ All grades saved successfully!', 'success');
-          
+
+          window.app.showNotification('All grades saved successfully!', 'success');
+
           // Clear pending changes
           this.pendingChanges = {};
-          
-          // Reload the modal to show updated grades
-          await this.showGradeManagementModal(this.currentClassId);
-          
+
+          // Reload the modal to show updated grades (with the same quarter)
+          await this.showGradeManagementModal(this.currentClassId, this.currentQuarterId);
+
         } catch (error) {
           console.error('Error saving grades:', error);
           window.app.showNotification(`Failed to save grades: ${error.message}`, 'error');
@@ -24991,19 +25130,36 @@
         if (modal) {
           modal.style.display = 'none';
         }
-        
+
         // Clear the content so it doesn't flash old data next time
         const content = document.getElementById('grade-modal-content');
         if (content) {
           content.innerHTML = '';
         }
-        
+
         // Reset all state
         this.currentClassId = null;
         this.currentQuarterId = null;
         this.currentClassGradingWeight = 'even';
         this.enrollments = [];
         this.pendingChanges = {};
+        this.allQuarters = [];
+      }
+
+      async switchQuarter(quarterId) {
+        // Save any pending changes first
+        if (Object.keys(this.pendingChanges).length > 0) {
+          const confirmed = confirm('You have unsaved changes. Switch quarters anyway? Changes will be lost.');
+          if (!confirmed) {
+            // Reset dropdown to current quarter
+            const selector = document.getElementById('grade-quarter-selector');
+            if (selector) selector.value = this.currentQuarterId;
+            return;
+          }
+        }
+
+        // Reload with the selected quarter
+        await this.showGradeManagementModal(this.currentClassId, quarterId);
       }
         
       async showCategoryManagement() {
