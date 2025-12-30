@@ -24889,42 +24889,6 @@
         content.innerHTML = html;
       }
 
-      async recalculateAllGrades() {
-        try {
-          // Check if there are unsaved changes
-          const changeCount = Object.keys(this.pendingChanges).length;
-          
-          if (changeCount > 0) {
-            const confirm = window.confirm(`You have ${changeCount} unsaved change(s). Save them before recalculating?`);
-            if (confirm) {
-              // Save changes first
-              await this.saveAllGrades();
-            } else {
-              // User cancelled
-              return;
-            }
-          }
-          
-          window.app.showNotification('Recalculating academic grades...', 'info');
-
-          // Run grade updates in parallel
-          await Promise.allSettled(this.enrollments.map(enrollment =>
-            window.app.auth.supabase.rpc('update_enrollment_grades', {
-              p_enrollment_id: enrollment.id
-            })
-          ));
-
-          window.app.showNotification('Academic grades recalculated!', 'success');
-          
-          // Reload the modal
-          await this.showGradeManagementModal(this.currentClassId);
-          
-        } catch (error) {
-          console.error('Error recalculating grades:', error);
-          window.app.showNotification('Error: ' + error.message, 'error');
-        }
-      }
-      
       handleGradeChange(enrollmentId, field, value) {
         if (!this.pendingChanges[enrollmentId]) {
           this.pendingChanges[enrollmentId] = {};
@@ -25056,18 +25020,34 @@
         try {
           window.app.showNotification(`Recalculating grades for ${this.enrollments.length} students...`, 'info');
 
+          let successCount = 0;
+          let errorCount = 0;
+
           for (const enrollment of this.enrollments) {
             try {
-              await window.app.auth.supabase.rpc('calculate_quarter_grades', {
+              const { data, error } = await window.app.auth.supabase.rpc('calculate_quarter_grades', {
                 p_enrollment_id: enrollment.id,
                 p_quarter_id: this.currentQuarterId
               });
+
+              if (error) {
+                console.error('RPC error for', enrollment.id, error);
+                errorCount++;
+              } else {
+                console.log('Recalculated grades for', enrollment.id, data);
+                successCount++;
+              }
             } catch (err) {
-              console.warn('Recalc failed for', enrollment.id, err.message);
+              console.error('Recalc exception for', enrollment.id, err);
+              errorCount++;
             }
           }
 
-          window.app.showNotification('Grades recalculated successfully!', 'success');
+          if (errorCount > 0) {
+            window.app.showNotification(`Recalculated ${successCount} students, ${errorCount} failed. Check console for details.`, 'warning');
+          } else {
+            window.app.showNotification(`Grades recalculated for ${successCount} students!`, 'success');
+          }
 
           // Reload to show updated grades
           await this.showGradeManagementModal(this.currentClassId, this.currentQuarterId);
