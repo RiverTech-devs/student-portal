@@ -367,6 +367,29 @@ serve(async (req) => {
           </div>
         </div>
       `
+    } else if (payload.type === 'broadcast_announcement') {
+      const data = payload.data || {}
+      subject = `📢 ${data.title}`
+      html = `
+        <div style="font-family: Inter, system-ui, Segoe UI, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+            <h2 style="margin: 0;">📢 School Announcement</h2>
+          </div>
+          <div style="padding: 20px; border: 1px solid #ddd; border-top: none; border-radius: 0 0 8px 8px;">
+            <h3 style="margin-top: 0; color: #333;">${data.title}</h3>
+
+            <div style="background: #f5f5f5; padding: 15px; border-radius: 8px; margin: 20px 0;">
+              <p style="margin: 0; white-space: pre-wrap;">${data.message}</p>
+            </div>
+
+            <p><a href="https://rivertech.me/portal/" style="display: inline-block; background: #667eea; color: white; padding: 10px 20px; border-radius: 6px; text-decoration: none;">View in Student Portal</a></p>
+
+            <p style="color: #999; font-size: 12px; margin-top: 30px;">
+              This is an official announcement from the school administration.
+            </p>
+          </div>
+        </div>
+      `
     } else {
       subject = payload.subject
       html = payload.html

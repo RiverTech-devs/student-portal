@@ -8580,6 +8580,16 @@
                 style="width: 100%; padding: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); resize: vertical;"></textarea>
             </div>
 
+            <div class="form-group" style="margin-top: 15px;">
+              <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                <input type="checkbox" id="broadcast-send-email" style="width: 18px; height: 18px;">
+                <span>Also send as email</span>
+              </label>
+              <p style="color: var(--muted); font-size: 12px; margin-top: 5px; margin-left: 28px;">
+                Emails will be sent to all users in the selected audience. This may take a moment for large groups.
+              </p>
+            </div>
+
             <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px;">
               <button class="btn btn-secondary" onclick="app.closeModal('broadcast-modal')">Cancel</button>
               <button class="btn btn-primary" onclick="app.sendBroadcast()" id="send-broadcast-btn">
@@ -8595,6 +8605,7 @@
         const audience = document.getElementById('broadcast-audience').value;
         const title = document.getElementById('broadcast-title').value.trim();
         const message = document.getElementById('broadcast-message').value.trim();
+        const sendEmail = document.getElementById('broadcast-send-email')?.checked || false;
 
         if (!title || !message) {
           window.PortalUI?.showNotification('Please enter a title and message', 'error');
@@ -8603,14 +8614,14 @@
 
         const btn = document.getElementById('send-broadcast-btn');
         btn.disabled = true;
-        btn.textContent = 'Sending...';
+        btn.textContent = sendEmail ? 'Sending emails...' : 'Sending...';
 
         try {
           // Get users to notify (direct call, no wrapper)
           // Only active users - exclude inactive student records
           let query = this.auth.supabase
             .from('user_profiles')
-            .select('id, user_type, account_status')
+            .select('id, email, first_name, user_type, account_status')
             .or('account_status.eq.active,account_status.is.null');
 
           if (audience !== 'all') {
@@ -8632,7 +8643,7 @@
             title: title,
             message: message,
             link: null,
-            metadata: { broadcast: true, from_admin: this.userInfo.user.id }
+            metadata: { broadcast: true, from_admin: this.userInfo.user.id, emailSent: sendEmail }
           }));
 
           const { error: insertError } = await this.auth.supabase
@@ -8641,7 +8652,37 @@
 
           if (insertError) throw insertError;
 
-          window.PortalUI?.showNotification(`Announcement sent to ${users.length} users!`, 'success');
+          // Send emails if checkbox was checked
+          let emailsSent = 0;
+          let emailErrors = 0;
+          if (sendEmail) {
+            for (const user of users) {
+              if (!user.email) continue;
+
+              try {
+                await this.auth.supabase.functions.invoke('send-notification-email', {
+                  body: {
+                    to: user.email,
+                    type: 'broadcast_announcement',
+                    data: {
+                      title: title,
+                      message: message
+                    }
+                  }
+                });
+                emailsSent++;
+              } catch (emailError) {
+                console.warn('Failed to send email to:', user.email, emailError);
+                emailErrors++;
+              }
+            }
+          }
+
+          let successMessage = `Announcement sent to ${users.length} users!`;
+          if (sendEmail) {
+            successMessage += ` (${emailsSent} emails sent${emailErrors > 0 ? `, ${emailErrors} failed` : ''})`;
+          }
+          window.PortalUI?.showNotification(successMessage, 'success');
           this.closeModal('broadcast-modal');
 
         } catch (error) {
