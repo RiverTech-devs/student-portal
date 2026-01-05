@@ -851,6 +851,9 @@
                 } catch (error) {
                     console.error('Login error:', error);
                     window.PortalUI.showNotification(error.message, 'error');
+
+                    // Track failed login attempts for security
+                    this.trackFailedLogin(email, error.message);
                 } finally {
                     if (loginBtn) {
                         loginBtn.disabled = false;
@@ -2049,6 +2052,67 @@
                 } catch (error) {
                     console.error('Error in linkChildByEmail:', error);
                     window.PortalUI?.showNotification('An error occurred. Please try again.', 'error');
+                }
+            }
+
+            // Track failed login attempts and alert admins for security
+            async trackFailedLogin(email, errorMessage) {
+                try {
+                    // Store failed attempt count in sessionStorage
+                    const key = `failed_login_${email}`;
+                    const attempts = parseInt(sessionStorage.getItem(key) || '0') + 1;
+                    sessionStorage.setItem(key, attempts.toString());
+
+                    // Only alert admins after 3+ failed attempts (to reduce noise)
+                    if (attempts >= 3) {
+                        // Get all admins
+                        const { data: admins } = await this.auth.supabase
+                            .from('user_profiles')
+                            .select('id')
+                            .eq('user_type', 'admin');
+
+                        if (admins && admins.length > 0) {
+                            // Get admin notification preferences
+                            const adminIds = admins.map(a => a.id);
+                            const { data: prefs } = await this.auth.supabase
+                                .from('notification_prefs')
+                                .select('user_id, system_alerts')
+                                .in('user_id', adminIds);
+
+                            const prefsMap = {};
+                            prefs?.forEach(p => { prefsMap[p.user_id] = p; });
+
+                            // Create security alert notification for each admin
+                            for (const admin of admins) {
+                                const adminPrefs = prefsMap[admin.id];
+                                // Default to true if no preference set
+                                if (adminPrefs?.system_alerts === false) continue;
+
+                                await this.auth.supabase
+                                    .from('notifications')
+                                    .insert({
+                                        user_id: admin.id,
+                                        type: 'system_alert',
+                                        title: 'Security Alert: Multiple Failed Login Attempts',
+                                        message: `${attempts} failed login attempts for email: ${email}. Last error: ${errorMessage}`,
+                                        is_read: false,
+                                        metadata: {
+                                            alertType: 'failed_login',
+                                            email: email,
+                                            attempts: attempts,
+                                            errorMessage: errorMessage,
+                                            timestamp: new Date().toISOString()
+                                        }
+                                    });
+                            }
+                        }
+
+                        // Reset counter after alerting
+                        sessionStorage.removeItem(key);
+                    }
+                } catch (err) {
+                    // Don't let tracking errors break the login flow
+                    console.error('Error tracking failed login:', err);
                 }
             }
 
