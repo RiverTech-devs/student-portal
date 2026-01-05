@@ -3405,12 +3405,13 @@
             }
             
             // Get all students
-            const { data: students } = await this.supabaseQuery(() => 
+            const { data: students } = await this.supabaseQuery(() =>
         this.auth.supabase
               .from('user_profiles')
               .select('id, first_name, last_name, email, user_type')
-              .eq('user_type', 'student'));
-            
+              .eq('user_type', 'student')
+              .neq('student_status', 'past'));
+
             if (students) {
               students.forEach(student => {
                 recipients.push({
@@ -5325,16 +5326,20 @@
         section.innerHTML = '<div style="text-align: center; padding: 40px;"><div class="loading-spinner"></div><p>Loading students...</p></div>';
 
         try {
-          // Load all students
+          // Load all students (including past students)
           const { data: students, error } = await this.auth.supabase
             .from('user_profiles')
-            .select('id, first_name, last_name, email, grade_level, phone, address_line1, city, state')
+            .select('id, first_name, last_name, email, grade_level, phone, address_line1, city, state, student_status, left_date, left_reason')
             .eq('user_type', 'student')
             .order('last_name', { ascending: true });
 
           if (error) throw error;
 
           this._adminStudentsData = students || [];
+
+          // Count active vs past students
+          const activeCount = (students || []).filter(s => s.student_status !== 'past').length;
+          const pastCount = (students || []).filter(s => s.student_status === 'past').length;
 
           section.innerHTML = `
             <div style="padding: 20px;">
@@ -5344,11 +5349,19 @@
                     ← Back to Dashboard
                   </button>
                   <h2 style="margin: 0;">📁 Student Records</h2>
+                  <span style="background: var(--accent); color: white; padding: 2px 8px; border-radius: 10px; font-size: 12px;">${activeCount} active</span>
+                  ${pastCount > 0 ? `<span style="background: var(--muted); color: white; padding: 2px 8px; border-radius: 10px; font-size: 12px;">${pastCount} past</span>` : ''}
                 </div>
                 <div style="display: flex; gap: 10px; flex-wrap: wrap;">
                   <input type="text" id="admin-student-records-search" placeholder="Search students..."
                          style="padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); min-width: 200px;"
                          oninput="app.filterAdminStudentRecords()">
+                  <select id="admin-student-records-status" style="padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);"
+                          onchange="app.filterAdminStudentRecords()">
+                    <option value="active">Active Students</option>
+                    <option value="past">Past Students</option>
+                    <option value="">All Students</option>
+                  </select>
                   <select id="admin-student-records-grade" style="padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);"
                           onchange="app.filterAdminStudentRecords()">
                     <option value="">All Grades</option>
@@ -5363,7 +5376,7 @@
               </div>
 
               <div id="admin-student-records-table">
-                ${this.renderAdminStudentRecordsTable(students || [])}
+                ${this.renderAdminStudentRecordsTable((students || []).filter(s => s.student_status !== 'past'))}
               </div>
             </div>
           `;
@@ -5391,25 +5404,44 @@
                   <th style="padding: 12px; text-align: left;">Name</th>
                   <th style="padding: 12px; text-align: left;">Grade</th>
                   <th style="padding: 12px; text-align: left;">Email</th>
-                  <th style="padding: 12px; text-align: left;">Phone</th>
+                  <th style="padding: 12px; text-align: left;">Status</th>
                   <th style="padding: 12px; text-align: center;">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                ${students.map(student => `
-                  <tr style="border-bottom: 1px solid var(--border);">
+                ${students.map(student => {
+                  const isPast = student.student_status === 'past';
+                  const statusBadge = isPast
+                    ? `<span style="background: var(--muted); color: white; padding: 2px 8px; border-radius: 10px; font-size: 11px;">Past</span>
+                       ${student.left_date ? `<br><small style="color: var(--muted);">Left: ${new Date(student.left_date).toLocaleDateString()}</small>` : ''}`
+                    : `<span style="background: var(--success); color: white; padding: 2px 8px; border-radius: 10px; font-size: 11px;">Active</span>`;
+
+                  return `
+                  <tr style="border-bottom: 1px solid var(--border); ${isPast ? 'opacity: 0.7;' : ''}">
                     <td style="padding: 12px;">${student.first_name} ${student.last_name}</td>
                     <td style="padding: 12px;">${student.grade_level ? `Grade ${student.grade_level}` : 'N/A'}</td>
                     <td style="padding: 12px;"><a href="mailto:${student.email}" style="color: var(--accent);">${student.email}</a></td>
-                    <td style="padding: 12px;">${student.phone || 'Not set'}</td>
+                    <td style="padding: 12px;">${statusBadge}</td>
                     <td style="padding: 12px; text-align: center;">
-                      <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 13px;"
-                              onclick="app.showAdminStudentRecordModal('${student.id}')">
-                        Edit Records
-                      </button>
+                      <div style="display: flex; gap: 6px; justify-content: center; flex-wrap: wrap;">
+                        <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 13px;"
+                                onclick="app.showAdminStudentRecordModal('${student.id}')">
+                          Edit Records
+                        </button>
+                        ${isPast
+                          ? `<button class="btn btn-primary" style="padding: 6px 12px; font-size: 13px;"
+                                    onclick="app.reactivateStudent('${student.id}')">
+                              Reactivate
+                            </button>`
+                          : `<button class="btn" style="padding: 6px 12px; font-size: 13px; background: var(--warning); color: #000;"
+                                    onclick="app.showMarkStudentAsPastModal('${student.id}', '${student.first_name} ${student.last_name}')">
+                              Mark as Past
+                            </button>`
+                        }
+                      </div>
                     </td>
                   </tr>
-                `).join('')}
+                `}).join('')}
               </tbody>
             </table>
           </div>
@@ -5419,18 +5451,124 @@
       filterAdminStudentRecords() {
         const searchTerm = document.getElementById('admin-student-records-search')?.value?.toLowerCase() || '';
         const gradeFilter = document.getElementById('admin-student-records-grade')?.value || '';
+        const statusFilter = document.getElementById('admin-student-records-status')?.value || 'active';
 
         const filtered = (this._adminStudentsData || []).filter(student => {
           const matchesSearch = !searchTerm ||
             `${student.first_name} ${student.last_name}`.toLowerCase().includes(searchTerm) ||
             student.email?.toLowerCase().includes(searchTerm);
           const matchesGrade = !gradeFilter || student.grade_level == gradeFilter;
-          return matchesSearch && matchesGrade;
+          const matchesStatus = !statusFilter ||
+            (statusFilter === 'active' && student.student_status !== 'past') ||
+            (statusFilter === 'past' && student.student_status === 'past');
+          return matchesSearch && matchesGrade && matchesStatus;
         });
 
         const tableContainer = document.getElementById('admin-student-records-table');
         if (tableContainer) {
           tableContainer.innerHTML = this.renderAdminStudentRecordsTable(filtered);
+        }
+      }
+
+      showMarkStudentAsPastModal(studentId, studentName) {
+        const overlay = document.createElement('div');
+        overlay.id = 'mark-past-modal-overlay';
+        overlay.style.cssText = 'position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); z-index: 10000; display: flex; align-items: center; justify-content: center; padding: 20px;';
+        overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+
+        const today = new Date().toISOString().split('T')[0];
+
+        overlay.innerHTML = `
+          <div style="background: var(--card); border-radius: 12px; max-width: 500px; width: 100%; padding: 25px;">
+            <h2 style="margin: 0 0 20px 0;">Mark Student as Past</h2>
+            <p style="color: var(--muted); margin-bottom: 20px;">
+              This will mark <strong>${studentName}</strong> as a past student. Their records will be preserved,
+              but they will be removed from active class rosters and won't appear in teacher views.
+            </p>
+
+            <div style="margin-bottom: 15px;">
+              <label style="display: block; margin-bottom: 5px; font-weight: 500;">Date Left</label>
+              <input type="date" id="student-left-date" value="${today}"
+                     style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+            </div>
+
+            <div style="margin-bottom: 20px;">
+              <label style="display: block; margin-bottom: 5px; font-weight: 500;">Reason (optional)</label>
+              <select id="student-left-reason"
+                      style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+                <option value="">Select a reason...</option>
+                <option value="graduated">Graduated</option>
+                <option value="transferred">Transferred to another school</option>
+                <option value="moved">Family moved</option>
+                <option value="withdrawn">Withdrawn by family</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
+
+            <div style="display: flex; gap: 10px;">
+              <button class="btn" style="flex: 1; background: var(--warning); color: #000;"
+                      onclick="app.markStudentAsPast('${studentId}')">
+                Mark as Past
+              </button>
+              <button class="btn btn-secondary" style="flex: 1;"
+                      onclick="document.getElementById('mark-past-modal-overlay').remove()">
+                Cancel
+              </button>
+            </div>
+          </div>
+        `;
+
+        document.body.appendChild(overlay);
+      }
+
+      async markStudentAsPast(studentId) {
+        const leftDate = document.getElementById('student-left-date')?.value || null;
+        const leftReason = document.getElementById('student-left-reason')?.value || null;
+
+        try {
+          this.showNotification('Marking student as past...', 'info');
+
+          // Call the RPC function
+          const { error } = await this.auth.supabase.rpc('mark_student_as_past', {
+            p_student_id: studentId,
+            p_left_date: leftDate,
+            p_left_reason: leftReason
+          });
+
+          if (error) throw error;
+
+          // Close modal and refresh
+          document.getElementById('mark-past-modal-overlay')?.remove();
+          this.showNotification('Student marked as past. Records preserved.', 'success');
+          await this.renderAdminStudentRecords();
+
+        } catch (error) {
+          console.error('Error marking student as past:', error);
+          this.showNotification(`Failed to mark student as past: ${error.message}`, 'error');
+        }
+      }
+
+      async reactivateStudent(studentId) {
+        if (!confirm('Are you sure you want to reactivate this student? They will need to be manually re-enrolled in classes.')) {
+          return;
+        }
+
+        try {
+          this.showNotification('Reactivating student...', 'info');
+
+          // Call the RPC function
+          const { error } = await this.auth.supabase.rpc('reactivate_student', {
+            p_student_id: studentId
+          });
+
+          if (error) throw error;
+
+          this.showNotification('Student reactivated. Please re-enroll them in classes as needed.', 'success');
+          await this.renderAdminStudentRecords();
+
+        } catch (error) {
+          console.error('Error reactivating student:', error);
+          this.showNotification(`Failed to reactivate student: ${error.message}`, 'error');
         }
       }
 
@@ -6205,11 +6343,12 @@
           // Store parsed data for import
           this._csvImportData = parsed;
 
-          // Load all students for matching
+          // Load all active students for matching (exclude past students)
           const { data: students, error } = await this.auth.supabase
             .from('user_profiles')
             .select('id, first_name, last_name')
-            .eq('user_type', 'student');
+            .eq('user_type', 'student')
+            .neq('student_status', 'past');
 
           if (error) throw error;
 
@@ -6789,12 +6928,13 @@
         section.innerHTML = '<div style="text-align: center; padding: 40px;"><div class="loading-spinner"></div><p>Loading strikes...</p></div>';
 
         try {
-          // Get all students
+          // Get all active students (exclude past students from strikes management)
           const { data: students, error } = await this.supabaseQuery(() =>
             this.auth.supabase
               .from('user_profiles')
               .select('id, first_name, last_name, email, grade_level')
               .eq('user_type', 'student')
+              .neq('student_status', 'past')
               .order('last_name', { ascending: true })
           );
 
