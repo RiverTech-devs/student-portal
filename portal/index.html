@@ -24952,9 +24952,30 @@
               e.academic_grade = qg.academic_grade;
               e.participation_grade = qg.participation_grade;
               e.class_grade = qg.class_grade;
+              e.suggested_class_grade = qg.suggested_class_grade;
+              e.class_grade_override = qg.class_grade_override || false;
               e.teacher_notes = qg.teacher_notes || e.teacher_notes;
             }
           });
+
+          // Calculate suggested grades for all enrollments
+          for (const enrollment of this.enrollments) {
+            try {
+              const { data: suggestionData } = await window.app.auth.supabase.rpc('calculate_suggested_grade', {
+                p_enrollment_id: enrollment.id,
+                p_quarter_id: quarter.id
+              });
+              if (suggestionData && suggestionData[0]) {
+                enrollment.suggested_class_grade = suggestionData[0].suggested_grade;
+                enrollment.mode_grade = suggestionData[0].mode_grade;
+                enrollment.recent_avg = suggestionData[0].recent_avg;
+                enrollment.assignment_count = suggestionData[0].assignment_count;
+                enrollment.grade_distribution = suggestionData[0].grade_distribution;
+              }
+            } catch (err) {
+              console.warn('Suggested grade calc failed for', enrollment.id, err.message);
+            }
+          }
 
           // Check categories
           const { data: categories } = await window.app.auth.supabase
@@ -24987,7 +25008,7 @@
       
       renderGradeTable() {
         const content = document.getElementById('grade-modal-content');
-        
+
         if (this.enrollments.length === 0) {
           content.innerHTML = `
             <div style="text-align: center; padding: 40px; color: var(--muted-color);">
@@ -24997,43 +25018,54 @@
           `;
           return;
         }
-        
+
         let html = `
           <div style="margin-bottom: 15px; padding: 12px; background: rgba(106, 169, 255, 0.05); border-radius: 8px; border: 1px solid rgba(106, 169, 255, 0.2);">
-            <strong>📝 How Grades Work:</strong><br>
+            <strong>📝 Holistic Grading System:</strong><br>
             <small style="color: var(--muted-color);">
-              • <strong>Academic:</strong> Auto-calculated from assignment averages (read-only)<br>
+              • <strong>Academic Avg:</strong> Reference average from assignments (read-only)<br>
               • <strong>Participation:</strong> Manually set by you (editable)<br>
-              • <strong>Class Grade:</strong> ${
-                this.currentClassGradingWeight === 'skill' ? 'Weighted 60% Academic + 40% Participation' :
-                this.currentClassGradingWeight === 'participation' ? 'Weighted 40% Academic + 60% Participation' :
-                'Average of Academic + Participation (50/50)'
-              } (auto-calculated)<br>
-              • Categories with no graded assignments are excluded from calculation
+              • <strong>Suggested Grade:</strong> System suggestion based on mode of assignments + recent performance<br>
+              • <strong>Final Grade:</strong> You control this - use suggested or set your own holistic assessment<br>
+              • Click "Use Suggested" to accept the system suggestion, or enter a custom grade
             </small>
           </div>
-          
+
           <div style="overflow-x: auto;">
             <table style="width: 100%; border-collapse: collapse;">
               <thead>
                 <tr>
                   <th style="text-align: left; padding: 12px; background: rgba(0,0,0,0.3);">Student</th>
-                  <th style="text-align: center; padding: 12px; background: rgba(0,0,0,0.3);">Academic</th>
+                  <th style="text-align: center; padding: 12px; background: rgba(0,0,0,0.3);">Academic Avg</th>
                   <th style="text-align: center; padding: 12px; background: rgba(0,0,0,0.3);">Participation</th>
-                  <th style="text-align: center; padding: 12px; background: rgba(0,0,0,0.3);">Class Grade</th>
-                  <th style="text-align: left; padding: 12px; background: rgba(0,0,0,0.3);">Teacher Notes</th>
+                  <th style="text-align: center; padding: 12px; background: rgba(0,0,0,0.3);">Suggested</th>
+                  <th style="text-align: center; padding: 12px; background: rgba(0,0,0,0.3);">Final Grade</th>
+                  <th style="text-align: left; padding: 12px; background: rgba(0,0,0,0.3);">Notes</th>
                 </tr>
               </thead>
               <tbody>
         `;
-        
+
         this.enrollments.forEach(enrollment => {
           const student = enrollment.user_profiles;
           const academicGrade = enrollment.academic_grade?.toFixed(1) || '0.0';
           const participationGrade = enrollment.participation_grade?.toFixed(1) || '';
-          const classGrade = enrollment.class_grade?.toFixed(1) || '0.0';
+          const suggestedGrade = enrollment.suggested_class_grade?.toFixed(1) || academicGrade;
+          const classGrade = enrollment.class_grade?.toFixed(1) || suggestedGrade;
+          const isOverridden = enrollment.class_grade_override || false;
           const notes = enrollment.teacher_notes || '';
-          
+
+          // Grade distribution tooltip
+          const dist = enrollment.grade_distribution || {};
+          const distText = Object.entries(dist).map(([k, v]) => `${k}: ${v}`).join(', ') || 'No data';
+          const assignmentCount = enrollment.assignment_count || 0;
+          const modeGrade = enrollment.mode_grade?.toFixed(1) || 'N/A';
+          const recentAvg = enrollment.recent_avg?.toFixed(1) || 'N/A';
+
+          // Convert suggested grade to letter for display
+          const suggestedLetter = this.percentageToLetterGrade(parseFloat(suggestedGrade));
+          const finalLetter = this.percentageToLetterGrade(parseFloat(classGrade));
+
           html += `
             <tr style="border-bottom: 1px solid var(--border-color);" data-enrollment-id="${enrollment.id}">
               <td style="padding: 12px;">
@@ -25044,18 +25076,18 @@
                 <div style="display: inline-block; padding: 8px 12px; background: rgba(106, 169, 255, 0.1); border-radius: 6px; color: var(--accent); font-weight: 700; font-size: 16px;">
                   ${academicGrade}
                 </div>
-                <br><small style="color: var(--muted-color); font-size: 10px;">AUTO</small>
+                <br><small style="color: var(--muted-color); font-size: 10px;">REFERENCE</small>
               </td>
               <td style="text-align: center; padding: 12px;">
-                <input 
-                  type="number" 
-                  class="grade-input" 
+                <input
+                  type="number"
+                  class="grade-input"
                   data-enrollment-id="${enrollment.id}"
                   data-field="participation"
                   value="${participationGrade}"
                   placeholder="0-100"
-                  min="0" 
-                  max="100" 
+                  min="0"
+                  max="100"
                   step="0.1"
                   onchange="teacherGrades.handleGradeChange('${enrollment.id}', 'participation_grade', this.value)"
                   style="width: 80px; padding: 8px; text-align: center; background: rgba(139, 255, 176, 0.1); border: 1px solid rgba(139, 255, 176, 0.3); border-radius: 6px; color: var(--accent-2); font-weight: 700; font-size: 16px;"
@@ -25063,32 +25095,115 @@
                 <br><small style="color: var(--muted-color); font-size: 10px;">EDITABLE</small>
               </td>
               <td style="text-align: center; padding: 12px;">
-                <div class="class-grade-display" style="display: inline-block; padding: 8px 12px; background: rgba(255, 211, 106, 0.1); border-radius: 6px; color: var(--warning); font-weight: 700; font-size: 18px;">
-                  ${classGrade}
+                <div style="position: relative; display: inline-block;">
+                  <div title="Mode: ${modeGrade} | Recent 5 Avg: ${recentAvg} | Distribution: ${distText} | ${assignmentCount} assignments"
+                       style="display: inline-block; padding: 6px 10px; background: rgba(180, 150, 255, 0.1); border-radius: 6px; color: #b496ff; font-weight: 600; font-size: 14px; cursor: help;">
+                    ${suggestedGrade} (${suggestedLetter})
+                  </div>
+                  <button onclick="teacherGrades.useSuggestedGrade('${enrollment.id}', ${suggestedGrade})"
+                    style="display: block; margin: 4px auto 0; padding: 2px 8px; font-size: 10px; background: rgba(180, 150, 255, 0.2); border: 1px solid rgba(180, 150, 255, 0.4); border-radius: 4px; color: #b496ff; cursor: pointer;"
+                    title="Click to use this suggested grade as the final grade">
+                    Use This
+                  </button>
                 </div>
-                <br><small style="color: var(--muted-color); font-size: 10px;">AUTO</small>
+                <br><small style="color: var(--muted-color); font-size: 10px;">SUGGESTION</small>
+              </td>
+              <td style="text-align: center; padding: 12px;">
+                <div style="display: flex; flex-direction: column; align-items: center; gap: 4px;">
+                  <input
+                    type="number"
+                    class="final-grade-input"
+                    data-enrollment-id="${enrollment.id}"
+                    data-field="class_grade"
+                    value="${classGrade}"
+                    placeholder="0-100"
+                    min="0"
+                    max="100"
+                    step="0.1"
+                    onchange="teacherGrades.handleClassGradeChange('${enrollment.id}', this.value)"
+                    style="width: 80px; padding: 8px; text-align: center; background: ${isOverridden ? 'rgba(255, 159, 67, 0.15)' : 'rgba(255, 211, 106, 0.1)'}; border: 2px solid ${isOverridden ? 'rgba(255, 159, 67, 0.5)' : 'rgba(255, 211, 106, 0.3)'}; border-radius: 6px; color: var(--warning); font-weight: 700; font-size: 18px;"
+                  >
+                  <span class="final-grade-letter" style="font-weight: 700; font-size: 14px; color: var(--warning);">${finalLetter}</span>
+                </div>
+                <br><small style="color: var(--muted-color); font-size: 10px;" class="override-status">${isOverridden ? 'TEACHER SET' : 'USING SUGGESTED'}</small>
               </td>
               <td style="padding: 12px;">
-                <textarea 
+                <textarea
                   class="notes-textarea"
                   data-enrollment-id="${enrollment.id}"
                   data-field="notes"
-                  placeholder="Optional teacher notes..."
+                  placeholder="Holistic assessment notes..."
                   onchange="teacherGrades.handleGradeChange('${enrollment.id}', 'teacher_notes', this.value)"
-                  style="width: 100%; min-width: 200px; min-height: 50px; padding: 8px; background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 6px; color: var(--text-color); font-size: 13px; resize: vertical;"
+                  style="width: 100%; min-width: 150px; min-height: 50px; padding: 8px; background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 6px; color: var(--text-color); font-size: 13px; resize: vertical;"
                 >${notes}</textarea>
               </td>
             </tr>
           `;
         });
-        
+
         html += `
               </tbody>
             </table>
           </div>
         `;
-        
+
         content.innerHTML = html;
+      }
+
+      percentageToLetterGrade(percentage) {
+        if (percentage >= 97) return 'A+';
+        if (percentage >= 93) return 'A';
+        if (percentage >= 90) return 'A-';
+        if (percentage >= 87) return 'B+';
+        if (percentage >= 83) return 'B';
+        if (percentage >= 80) return 'B-';
+        if (percentage >= 77) return 'C+';
+        if (percentage >= 73) return 'C';
+        if (percentage >= 70) return 'C-';
+        if (percentage >= 67) return 'D+';
+        if (percentage >= 63) return 'D';
+        if (percentage >= 60) return 'D-';
+        return 'F';
+      }
+
+      useSuggestedGrade(enrollmentId, suggestedGrade) {
+        // Set the final grade input to the suggested value
+        const row = document.querySelector(`tr[data-enrollment-id="${enrollmentId}"]`);
+        if (row) {
+          const input = row.querySelector('.final-grade-input');
+          if (input) {
+            input.value = suggestedGrade.toFixed(1);
+            this.handleClassGradeChange(enrollmentId, suggestedGrade, false); // false = not an override, using suggested
+          }
+        }
+      }
+
+      handleClassGradeChange(enrollmentId, value, isOverride = true) {
+        if (!this.pendingChanges[enrollmentId]) {
+          this.pendingChanges[enrollmentId] = {};
+        }
+        this.pendingChanges[enrollmentId].class_grade = parseFloat(value) || 0;
+        this.pendingChanges[enrollmentId].class_grade_override = isOverride;
+
+        // Visual feedback
+        const row = document.querySelector(`tr[data-enrollment-id="${enrollmentId}"]`);
+        if (row) {
+          const input = row.querySelector('.final-grade-input');
+          const letterSpan = row.querySelector('.final-grade-letter');
+          const statusSpan = row.querySelector('.override-status');
+
+          if (input) {
+            input.style.borderColor = 'var(--warning)';
+            input.style.borderWidth = '2px';
+            input.style.background = isOverride ? 'rgba(255, 159, 67, 0.15)' : 'rgba(255, 211, 106, 0.1)';
+          }
+          if (letterSpan) {
+            letterSpan.textContent = this.percentageToLetterGrade(parseFloat(value));
+          }
+          if (statusSpan) {
+            statusSpan.textContent = isOverride ? 'TEACHER SET' : 'USING SUGGESTED';
+          }
+        }
       }
 
       handleGradeChange(enrollmentId, field, value) {
@@ -25096,45 +25211,26 @@
           this.pendingChanges[enrollmentId] = {};
         }
         this.pendingChanges[enrollmentId][field] = value;
-        
-        // Visual feedback
-        const inputs = document.querySelectorAll(`[data-enrollment-id="${enrollmentId}"]`);
-        inputs.forEach(input => {
-          input.style.borderColor = 'var(--warning)';
-          input.style.borderWidth = '2px';
-        });
-        
-        // If participation grade changed, update class grade display in real-time
-        if (field === 'participation_grade') {
-          const enrollment = this.enrollments.find(e => e.id === enrollmentId);
-          if (enrollment) {
-            const academicGrade = parseFloat(enrollment.academic_grade) || 0;
-            const participationGrade = parseFloat(value) || 0;
-            
-            // Get weights based on class grading weight
-            let academicWeight = 0.5;
-            let participationWeight = 0.5;
-            
-            if (this.currentClassGradingWeight === 'skill') {
-              academicWeight = 0.6;
-              participationWeight = 0.4;
-            } else if (this.currentClassGradingWeight === 'participation') {
-              academicWeight = 0.4;
-              participationWeight = 0.6;
+
+        // Visual feedback for the changed input
+        const row = document.querySelector(`tr[data-enrollment-id="${enrollmentId}"]`);
+        if (row) {
+          if (field === 'participation_grade') {
+            const input = row.querySelector('.grade-input');
+            if (input) {
+              input.style.borderColor = 'var(--warning)';
+              input.style.borderWidth = '2px';
             }
-            
-            const classGrade = (academicGrade * academicWeight) + (participationGrade * participationWeight);
-            
-            // Find and update the class grade display for this row
-            const row = document.querySelector(`tr[data-enrollment-id="${enrollmentId}"]`);
-            if (row) {
-              const classGradeCell = row.querySelector('.class-grade-display');
-              if (classGradeCell) {
-                classGradeCell.textContent = classGrade.toFixed(1);
-              }
+          } else if (field === 'teacher_notes') {
+            const textarea = row.querySelector('.notes-textarea');
+            if (textarea) {
+              textarea.style.borderColor = 'var(--warning)';
+              textarea.style.borderWidth = '2px';
             }
           }
         }
+        // Note: In holistic grading, participation changes don't auto-update the class grade.
+        // The teacher controls the final grade directly.
       }
       
       async saveAllGrades() {
@@ -25151,6 +25247,8 @@
           for (const [enrollmentId, changes] of Object.entries(this.pendingChanges)) {
             let participationGrade = null;
             let teacherNotes = null;
+            let classGrade = null;
+            let classGradeOverride = null;
 
             if (changes.participation_grade !== undefined) {
               const grade = parseFloat(changes.participation_grade);
@@ -25161,8 +25259,25 @@
               teacherNotes = changes.teacher_notes.trim() || null;
             }
 
-            // Try to use the new per-quarter grade storage
+            // Handle class grade override (holistic grading)
+            if (changes.class_grade !== undefined) {
+              classGrade = parseFloat(changes.class_grade) || null;
+              classGradeOverride = changes.class_grade_override !== undefined ? changes.class_grade_override : true;
+            }
+
+            // Try to use the new per-quarter grade storage with holistic grading support
             try {
+              // If teacher set a class grade, use the override function
+              if (classGrade !== null) {
+                await window.app.auth.supabase.rpc('set_class_grade_override', {
+                  p_enrollment_id: enrollmentId,
+                  p_quarter_id: this.currentQuarterId,
+                  p_class_grade: classGrade,
+                  p_override: classGradeOverride
+                });
+              }
+
+              // Save participation and notes
               await window.app.auth.supabase.rpc('upsert_quarter_grade', {
                 p_enrollment_id: enrollmentId,
                 p_quarter_id: this.currentQuarterId,
@@ -25170,7 +25285,7 @@
                 p_teacher_notes: teacherNotes
               });
 
-              // Recalculate grades for this quarter
+              // Calculate suggested grade (this won't override teacher-set grades)
               await window.app.auth.supabase.rpc('calculate_quarter_grades', {
                 p_enrollment_id: enrollmentId,
                 p_quarter_id: this.currentQuarterId
@@ -25182,6 +25297,10 @@
               const updateData = {};
               if (participationGrade !== null) updateData.participation_grade = participationGrade;
               if (teacherNotes !== null) updateData.teacher_notes = teacherNotes;
+              if (classGrade !== null) {
+                updateData.class_grade = classGrade;
+                updateData.class_grade_override = classGradeOverride;
+              }
 
               if (Object.keys(updateData).length > 0) {
                 const { error: updateError } = await window.app.auth.supabase
@@ -25192,10 +25311,14 @@
                 if (updateError) throw updateError;
               }
 
-              // Recalculate using old method
-              await window.app.auth.supabase.rpc('update_enrollment_grades', {
-                p_enrollment_id: enrollmentId
-              });
+              // Recalculate using old method (if available)
+              try {
+                await window.app.auth.supabase.rpc('update_enrollment_grades', {
+                  p_enrollment_id: enrollmentId
+                });
+              } catch (e) {
+                console.warn('Legacy recalc not available:', e.message);
+              }
             }
           }
 
@@ -25220,13 +25343,15 @@
         }
 
         try {
-          window.app.showNotification(`Recalculating grades for ${this.enrollments.length} students...`, 'info');
+          window.app.showNotification(`Recalculating suggested grades for ${this.enrollments.length} students...`, 'info');
 
           let successCount = 0;
           let errorCount = 0;
 
           for (const enrollment of this.enrollments) {
             try {
+              // This will recalculate academic avg and suggested grade
+              // but will NOT override teacher-set grades (respects class_grade_override flag)
               const { data, error } = await window.app.auth.supabase.rpc('calculate_quarter_grades', {
                 p_enrollment_id: enrollment.id,
                 p_quarter_id: this.currentQuarterId
@@ -25246,9 +25371,9 @@
           }
 
           if (errorCount > 0) {
-            window.app.showNotification(`Recalculated ${successCount} students, ${errorCount} failed. Check console for details.`, 'warning');
+            window.app.showNotification(`Updated suggestions for ${successCount} students, ${errorCount} failed. Teacher overrides preserved.`, 'warning');
           } else {
-            window.app.showNotification(`Grades recalculated for ${successCount} students!`, 'success');
+            window.app.showNotification(`Suggestions updated for ${successCount} students! Teacher overrides preserved.`, 'success');
           }
 
           // Reload to show updated grades
