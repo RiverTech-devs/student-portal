@@ -20,9 +20,16 @@ ON user_profiles(student_status) WHERE user_type = 'student';
 
 -- Update class_enrollments to have an 'archived' status for past students
 -- This preserves their enrollment history while removing them from active class lists
+-- First, update any non-standard status values to 'inactive'
+UPDATE class_enrollments
+SET status = 'inactive'
+WHERE status NOT IN ('active', 'inactive', 'archived');
+
+-- Drop existing constraint if any
 ALTER TABLE class_enrollments
 DROP CONSTRAINT IF EXISTS class_enrollments_status_check;
 
+-- Add new constraint allowing archived status
 ALTER TABLE class_enrollments
 ADD CONSTRAINT class_enrollments_status_check
 CHECK (status IN ('active', 'inactive', 'archived'));
