@@ -25115,6 +25115,8 @@
         this.currentQuarterId = null;
         this.enrollments = [];
         this.pendingChanges = {};
+        // Suggestion method: 'holistic' (mode + recent avg) or 'weighted' (academic/participation weights)
+        this.suggestionMethod = 'holistic';
       }
       
       async showGradeManagementModal(classId, selectedQuarterId = null) {
@@ -25208,6 +25210,10 @@
             </option>`
           ).join('');
 
+          const suggestionMethodLabel = this.suggestionMethod === 'holistic'
+            ? '🎯 Holistic (Mode + Recent)'
+            : '⚖️ Weighted (Acad/Part)';
+
           document.getElementById('grade-modal-subtitle').innerHTML = `
             <div style="display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
               <div style="display: flex; align-items: center; gap: 8px;">
@@ -25218,6 +25224,10 @@
                 </select>
               </div>
               <span style="color: var(--muted-color);">Grading: ${weightLabel}</span>
+              <button onclick="teacherGrades.showSuggestionPreferences()"
+                style="padding: 6px 12px; border-radius: 6px; border: 1px solid rgba(180, 150, 255, 0.4); background: rgba(180, 150, 255, 0.1); color: #b496ff; font-size: 13px; cursor: pointer;">
+                ${suggestionMethodLabel}
+              </button>
             </div>
           `;
           
@@ -25394,13 +25404,21 @@
           return;
         }
 
+        const suggestionMethodDescription = this.suggestionMethod === 'holistic'
+          ? 'System suggestion based on <strong>mode of assignments + recent performance</strong>'
+          : 'System suggestion based on <strong>academic/participation weights</strong> (' + ({
+              'even': '50/50',
+              'skill': '60/40',
+              'participation': '40/60'
+            }[this.currentClassGradingWeight] || '50/50') + ')';
+
         let html = `
           <div style="margin-bottom: 15px; padding: 12px; background: rgba(106, 169, 255, 0.05); border-radius: 8px; border: 1px solid rgba(106, 169, 255, 0.2);">
-            <strong>📝 Holistic Grading System:</strong><br>
+            <strong>📝 Grading System:</strong><br>
             <small style="color: var(--muted-color);">
               • <strong>Academic Avg:</strong> Reference average from assignments (read-only)<br>
               • <strong>Participation:</strong> Manually set by you (editable)<br>
-              • <strong>Suggested Grade:</strong> System suggestion based on mode of assignments + recent performance<br>
+              • <strong>Suggested Grade:</strong> ${suggestionMethodDescription}<br>
               • <strong>Final Grade:</strong> You control this - use suggested or set your own holistic assessment<br>
               • Click "Use Suggested" to accept the system suggestion, or enter a custom grade
             </small>
@@ -25430,12 +25448,23 @@
           const isOverridden = enrollment.class_grade_override || false;
           const notes = enrollment.teacher_notes || '';
 
-          // Grade distribution tooltip
-          const dist = enrollment.grade_distribution || {};
-          const distText = Object.entries(dist).map(([k, v]) => `${k}: ${v}`).join(', ') || 'No data';
-          const assignmentCount = enrollment.assignment_count || 0;
-          const modeGrade = enrollment.mode_grade?.toFixed(1) || 'N/A';
-          const recentAvg = enrollment.recent_avg?.toFixed(1) || 'N/A';
+          // Build tooltip based on suggestion method
+          let tooltipText;
+          if (this.suggestionMethod === 'holistic') {
+            const dist = enrollment.grade_distribution || {};
+            const distText = Object.entries(dist).map(([k, v]) => `${k}: ${v}`).join(', ') || 'No data';
+            const assignmentCount = enrollment.assignment_count || 0;
+            const modeGrade = enrollment.mode_grade?.toFixed(1) || 'N/A';
+            const recentAvg = enrollment.recent_avg?.toFixed(1) || 'N/A';
+            tooltipText = `Mode: ${modeGrade} | Recent 5 Avg: ${recentAvg} | Distribution: ${distText} | ${assignmentCount} assignments`;
+          } else {
+            const weightLabel = {
+              'even': '50/50',
+              'skill': '60/40',
+              'participation': '40/60'
+            }[this.currentClassGradingWeight] || '50/50';
+            tooltipText = `Weighted: Academic ${academicGrade} × ${weightLabel.split('/')[0]}% + Participation ${participationGrade || 'N/A'} × ${weightLabel.split('/')[1]}%`;
+          }
 
           // Convert suggested grade to letter for display
           const suggestedLetter = this.percentageToLetterGrade(parseFloat(suggestedGrade));
@@ -25471,7 +25500,7 @@
               </td>
               <td style="text-align: center; padding: 12px;">
                 <div style="position: relative; display: inline-block;">
-                  <div title="Mode: ${modeGrade} | Recent 5 Avg: ${recentAvg} | Distribution: ${distText} | ${assignmentCount} assignments"
+                  <div title="${tooltipText}"
                        style="display: inline-block; padding: 6px 10px; background: rgba(180, 150, 255, 0.1); border-radius: 6px; color: #b496ff; font-weight: 600; font-size: 14px; cursor: help;">
                     ${suggestedGrade} (${suggestedLetter})
                   </div>
@@ -25550,6 +25579,135 @@
             input.value = suggestedGrade.toFixed(1);
             this.handleClassGradeChange(enrollmentId, suggestedGrade, false); // false = not an override, using suggested
           }
+        }
+      }
+
+      showSuggestionPreferences() {
+        const weightLabel = {
+          'even': '50% / 50%',
+          'skill': '60% / 40%',
+          'participation': '40% / 60%'
+        }[this.currentClassGradingWeight] || '50% / 50%';
+
+        const modalContent = `
+          <div class="card" style="max-width: 500px; margin: 0 auto;">
+            <h3 style="margin-bottom: 20px;">⚙️ Suggestion Method Preferences</h3>
+            <p style="color: var(--muted-color); margin-bottom: 20px;">
+              Choose how the system calculates suggested grades for students in this class.
+            </p>
+
+            <div style="display: flex; flex-direction: column; gap: 15px;">
+              <label style="display: flex; align-items: start; gap: 12px; padding: 15px; border: 2px solid ${this.suggestionMethod === 'holistic' ? 'var(--accent)' : 'var(--border-color)'}; border-radius: 8px; cursor: pointer; background: ${this.suggestionMethod === 'holistic' ? 'rgba(106, 169, 255, 0.1)' : 'transparent'};">
+                <input type="radio" name="suggestion-method" value="holistic" ${this.suggestionMethod === 'holistic' ? 'checked' : ''}
+                       onchange="teacherGrades.setSuggestionMethod('holistic')" style="margin-top: 4px;">
+                <div>
+                  <strong style="font-size: 15px;">🎯 Holistic (Mode + Recent Performance)</strong>
+                  <p style="color: var(--muted-color); margin: 5px 0 0 0; font-size: 13px;">
+                    Uses the <strong>mode</strong> (most common grade) weighted at 60% plus the <strong>average of the last 5 assignments</strong> at 40%.
+                    Best for seeing consistent patterns and recent trajectory.
+                  </p>
+                </div>
+              </label>
+
+              <label style="display: flex; align-items: start; gap: 12px; padding: 15px; border: 2px solid ${this.suggestionMethod === 'weighted' ? 'var(--accent)' : 'var(--border-color)'}; border-radius: 8px; cursor: pointer; background: ${this.suggestionMethod === 'weighted' ? 'rgba(106, 169, 255, 0.1)' : 'transparent'};">
+                <input type="radio" name="suggestion-method" value="weighted" ${this.suggestionMethod === 'weighted' ? 'checked' : ''}
+                       onchange="teacherGrades.setSuggestionMethod('weighted')" style="margin-top: 4px;">
+                <div>
+                  <strong style="font-size: 15px;">⚖️ Weighted (Academic/Participation)</strong>
+                  <p style="color: var(--muted-color); margin: 5px 0 0 0; font-size: 13px;">
+                    Uses the class grading weight (<strong>${weightLabel}</strong> Academic/Participation) to combine the academic average with the participation grade.
+                    Best when participation is a significant factor.
+                  </p>
+                </div>
+              </label>
+            </div>
+
+            <div style="display: flex; gap: 10px; margin-top: 25px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="teacherGrades.closeSuggestionPreferences()">Close</button>
+            </div>
+          </div>
+        `;
+
+        document.getElementById('grade-modal-content').innerHTML = modalContent;
+      }
+
+      setSuggestionMethod(method) {
+        this.suggestionMethod = method;
+
+        // Recalculate suggestions with new method
+        this.recalculateSuggestions();
+
+        // Re-render the modal to show updated button label
+        this.showSuggestionPreferences();
+      }
+
+      async recalculateSuggestions() {
+        if (!this.enrollments || this.enrollments.length === 0) return;
+
+        for (const enrollment of this.enrollments) {
+          if (this.suggestionMethod === 'holistic') {
+            // Use the database RPC for holistic calculation
+            try {
+              const { data: suggestionData } = await window.app.auth.supabase.rpc('calculate_suggested_grade', {
+                p_enrollment_id: enrollment.id,
+                p_quarter_id: this.currentQuarterId
+              });
+              if (suggestionData && suggestionData[0]) {
+                enrollment.suggested_class_grade = suggestionData[0].suggested_grade;
+                enrollment.mode_grade = suggestionData[0].mode_grade;
+                enrollment.recent_avg = suggestionData[0].recent_avg;
+                enrollment.assignment_count = suggestionData[0].assignment_count;
+                enrollment.grade_distribution = suggestionData[0].grade_distribution;
+              }
+            } catch (err) {
+              console.warn('Holistic calculation failed for', enrollment.id, err.message);
+            }
+          } else {
+            // Weighted calculation using academic avg and participation
+            enrollment.suggested_class_grade = this.calculateWeightedSuggestion(enrollment);
+          }
+        }
+      }
+
+      calculateWeightedSuggestion(enrollment) {
+        const academicGrade = enrollment.academic_grade || 0;
+        const participationGrade = enrollment.participation_grade || 0;
+
+        let academicWeight, participationWeight;
+        switch (this.currentClassGradingWeight) {
+          case 'skill':
+            academicWeight = 0.6;
+            participationWeight = 0.4;
+            break;
+          case 'participation':
+            academicWeight = 0.4;
+            participationWeight = 0.6;
+            break;
+          default: // 'even'
+            academicWeight = 0.5;
+            participationWeight = 0.5;
+        }
+
+        // If no participation grade is set, fall back to academic only
+        if (!enrollment.participation_grade && enrollment.participation_grade !== 0) {
+          return academicGrade;
+        }
+
+        return (academicGrade * academicWeight) + (participationGrade * participationWeight);
+      }
+
+      closeSuggestionPreferences() {
+        // Re-render the grade table
+        this.renderGradeTable();
+
+        // Update the subtitle button label
+        const suggestionMethodLabel = this.suggestionMethod === 'holistic'
+          ? '🎯 Holistic (Mode + Recent)'
+          : '⚖️ Weighted (Acad/Part)';
+
+        const btn = document.querySelector('#grade-modal-subtitle button');
+        if (btn) {
+          btn.textContent = suggestionMethodLabel;
         }
       }
 
@@ -25854,6 +26012,7 @@
         this.currentClassId = null;
         this.currentQuarterId = null;
         this.currentClassGradingWeight = 'even';
+        this.suggestionMethod = 'holistic';
         this.enrollments = [];
         this.pendingChanges = {};
         this.allQuarters = [];
