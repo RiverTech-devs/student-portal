@@ -3032,11 +3032,12 @@
         const classIds = enrollments.map(e => e.class_id);
 
         // Parallel fetch: classes and current quarter (performance optimization)
+        // Include closed classes so students can still view their grades
         const [classesResult, quarterResult] = await Promise.all([
           this.supabaseQuery(() =>
             this.auth.supabase
               .from('classes')
-              .select('id, name, subject, description, teacher_id, is_active')
+              .select('id, name, subject, description, teacher_id, is_active, status')
               .in('id', classIds)
               .eq('is_active', true), 30000),
           this.supabaseQuery(() =>
@@ -10047,15 +10048,28 @@
         const classesContent = document.getElementById('classes-content');
         const classesActions = document.getElementById('classes-actions');
         const userType = this.userInfo.profile.user_type;
+        const isTeacherOrAdmin = userType === 'teacher' || userType === 'admin';
 
         console.log('🔍 Rendering classes, userType:', userType, 'classes count:', this.classes?.length);
 
+        // Separate active and closed classes
+        const activeClasses = this.classes.filter(c => c.status !== 'closed');
+        const closedClasses = this.classes.filter(c => c.status === 'closed');
+
         // Setup actions based on user type
-        if (userType === 'teacher' || userType === 'admin') {
+        if (isTeacherOrAdmin) {
+          const hasClosedClasses = closedClasses.length > 0;
           classesActions.innerHTML = `
-            <button class="btn btn-primary" onclick="app.createNewClass()">
-              ➕ Create New Class
-            </button>
+            <div style="display: flex; gap: 10px; align-items: center;">
+              <button class="btn btn-primary" onclick="app.createNewClass()">
+                ➕ Create New Class
+              </button>
+              ${hasClosedClasses ? `
+                <button class="btn btn-secondary" onclick="app.toggleClosedClasses()" id="toggle-closed-btn">
+                  ${this.showClosedClasses ? 'Hide' : 'Show'} Closed (${closedClasses.length})
+                </button>
+              ` : ''}
+            </div>
           `;
         } else if (userType === 'student') {
           classesActions.innerHTML = `
@@ -10070,8 +10084,13 @@
           `;
         }
 
+        // Determine which classes to show
+        const classesToShow = isTeacherOrAdmin && this.showClosedClasses
+          ? this.classes
+          : activeClasses;
+
         // Render classes
-        if (this.classes.length === 0) {
+        if (activeClasses.length === 0 && closedClasses.length === 0) {
           const emptyMessage = userType === 'teacher'
             ? 'Create your first class to get started.'
             : userType === 'parent'
@@ -10084,13 +10103,54 @@
               <p>${emptyMessage}</p>
             </div>
           `;
-        } else {
+        } else if (isTeacherOrAdmin) {
+          // Teacher/admin view - show toggle button handled above
           classesContent.innerHTML = `
             <div class="grid grid-3">
-              ${this.classes.map(cls => this.renderClassCard(cls)).join('')}
+              ${classesToShow.map(cls => this.renderClassCard(cls)).join('')}
             </div>
           `;
+        } else {
+          // Student/parent view - show active classes, with closed classes in a separate collapsed section
+          let html = '';
+
+          if (activeClasses.length > 0) {
+            html += `
+              <div class="grid grid-3">
+                ${activeClasses.map(cls => this.renderClassCard(cls)).join('')}
+              </div>
+            `;
+          } else {
+            html += `
+              <div class="empty-state">
+                <h3>📚 No Active Classes</h3>
+                <p>You have no active classes at this time.</p>
+              </div>
+            `;
+          }
+
+          // Show closed classes section for students/parents to access past grades
+          if (closedClasses.length > 0) {
+            html += `
+              <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid var(--border);">
+                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px;">
+                  <h3 style="color: var(--muted); margin: 0;">Past Classes</h3>
+                  <span style="font-size: 12px; color: var(--muted);">Click to view grades and history</span>
+                </div>
+                <div class="grid grid-3">
+                  ${closedClasses.map(cls => this.renderClassCard(cls)).join('')}
+                </div>
+              </div>
+            `;
+          }
+
+          classesContent.innerHTML = html;
         }
+      }
+
+      toggleClosedClasses() {
+        this.showClosedClasses = !this.showClosedClasses;
+        this.renderClasses();
       }
 
       renderClassCard(cls) {
@@ -10098,6 +10158,7 @@
         const isTeacher = userType === 'teacher' || userType === 'admin';
         const isStudent = userType === 'student';
         const isParent = userType === 'parent';
+        const isClosed = cls.status === 'closed';
 
         // Find which children are enrolled in this class (for parents)
         let enrolledChildrenText = '';
@@ -10111,13 +10172,14 @@
         }
 
         return `
-          <div class="class-card" onclick="app.openClass('${cls.id}')" style="cursor: pointer;">
+          <div class="class-card" onclick="app.openClass('${cls.id}')" style="cursor: pointer; ${isClosed ? 'opacity: 0.7; border-color: var(--muted);' : ''}">
             ${isTeacher ? `
               <div class="class-actions">
                 <button onclick="event.stopPropagation(); app.editClass('${cls.id}')">✏️</button>
                 <button onclick="event.stopPropagation(); app.deleteClass('${cls.id}')" style="background: rgba(255, 106, 106, 0.3);">🗑️</button>
               </div>
             ` : ''}
+            ${isClosed ? `<span style="background: var(--muted); color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; position: absolute; top: 10px; left: 10px;">CLOSED</span>` : ''}
             <h3>${cls.name}</h3>
             <p>${cls.description || 'No description available'}</p>
             <div class="class-stats">
@@ -10486,7 +10548,14 @@
           participationPercent = '50%';
         }
         
+        const isClosed = classData.status === 'closed';
+
         const modalContent = `
+          ${isClosed ? `
+            <div style="background: var(--muted); color: white; padding: 12px 20px; border-radius: 8px; margin-bottom: 20px;">
+              <strong>🔒 This class is closed</strong> - Students can still view their grades and history, but no new activity.
+            </div>
+          ` : ''}
           ${isAdmin && !isOwnClass ? `
             <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 12px 20px; border-radius: 8px; margin-bottom: 20px;">
               <strong>👑 Admin View</strong> - This is another teacher's class
@@ -10581,9 +10650,14 @@
               </div>
             </div>
       
-            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end; flex-wrap: wrap;">
               <button class="btn btn-secondary" onclick="app.closeModal('class-details')">Close</button>
               ${(isOwnClass || isAdmin) ? `
+                ${isClosed ? `
+                  <button class="btn btn-success" onclick="app.reopenClass('${classId}')" style="background: var(--accent-2); color: black;">🔓 Reopen Class</button>
+                ` : `
+                  <button class="btn btn-warning" onclick="app.closeClassForYear('${classId}')" style="background: var(--warning); color: black;">🔒 Close Class</button>
+                `}
                 <button class="btn btn-danger" onclick="app.deleteClass('${classId}')" style="background: rgba(255, 106, 106, 0.8);">🗑️ Delete Class</button>
                 <button class="btn btn-primary" onclick="app.editClass('${classId}')">✏️ Edit Class</button>
               ` : ''}
@@ -11661,6 +11735,86 @@
         } catch (error) {
           console.error('Error deleting class:', error);
           this.showNotification('Error deleting class: ' + error.message, 'error');
+        }
+      }
+
+      async closeClassForYear(classId) {
+        // Get class info for confirmation
+        let classData = this.classes.find(c => c.id === classId);
+        if (!classData && this.currentClass && this.currentClass.id === classId) {
+          classData = this.currentClass;
+        }
+
+        if (!confirm(`Are you sure you want to close "${classData?.name}"?\n\nThe class will be hidden from active views, but students and parents can still access their grades and history. You can reopen it later if needed.`)) {
+          return;
+        }
+
+        const isAdmin = this.userInfo.profile?.user_type === 'admin';
+
+        try {
+          let query = this.auth.supabase
+            .from('classes')
+            .update({ status: 'closed' })
+            .eq('id', classId);
+
+          if (!isAdmin) {
+            query = query.eq('teacher_id', this.userInfo.user.id);
+          }
+
+          const { error } = await this.supabaseQuery(() => query);
+
+          if (error) throw error;
+
+          this.showNotification('Class closed successfully', 'success');
+          this.closeModal('class-details');
+
+          // Reload classes
+          await this.loadTeacherData();
+          this.renderClasses();
+
+        } catch (error) {
+          console.error('Error closing class:', error);
+          this.showNotification('Error closing class: ' + error.message, 'error');
+        }
+      }
+
+      async reopenClass(classId) {
+        // Get class info for confirmation
+        let classData = this.classes.find(c => c.id === classId);
+        if (!classData && this.currentClass && this.currentClass.id === classId) {
+          classData = this.currentClass;
+        }
+
+        if (!confirm(`Reopen "${classData?.name}"?\n\nThe class will appear in active views again and students can resume activity.`)) {
+          return;
+        }
+
+        const isAdmin = this.userInfo.profile?.user_type === 'admin';
+
+        try {
+          let query = this.auth.supabase
+            .from('classes')
+            .update({ status: 'active' })
+            .eq('id', classId);
+
+          if (!isAdmin) {
+            query = query.eq('teacher_id', this.userInfo.user.id);
+          }
+
+          const { error } = await this.supabaseQuery(() => query);
+
+          if (error) throw error;
+
+          this.showNotification('Class reopened successfully', 'success');
+          this.closeModal('class-details');
+
+          // Reload classes
+          await this.loadTeacherData();
+          this.renderClasses();
+
+        } catch (error) {
+          console.error('Error reopening class:', error);
+          this.showNotification('Error reopening class: ' + error.message, 'error');
         }
       }
 
@@ -20449,10 +20603,10 @@
             });
           }
 
-          // Load classes
+          // Load classes (include closed classes for historical attendance reports)
           const { data: classes } = await this.auth.supabase
             .from('classes')
-            .select('id, name, subject')
+            .select('id, name, subject, status')
             .eq('is_active', true)
             .order('name');
 
@@ -20461,7 +20615,7 @@
             classes.forEach(c => {
               const option = document.createElement('option');
               option.value = c.id;
-              option.textContent = `${c.name} (${c.subject})`;
+              option.textContent = `${c.name} (${c.subject})${c.status === 'closed' ? ' [Closed]' : ''}`;
               classSelect.appendChild(option);
             });
           }
@@ -21383,11 +21537,22 @@
               </div>
             `;
           } else {
+            // Separate active and closed classes
+            const activeClasses = allClasses.filter(c => c.status !== 'closed');
+            const closedClasses = allClasses.filter(c => c.status === 'closed');
+
             section.innerHTML = `
               <div style="padding: 20px;">
-                <h2 style="margin-bottom: 20px;">🏫 All Classes (${allClasses.length})</h2>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                  <h2>🏫 All Classes (${activeClasses.length} active${closedClasses.length > 0 ? `, ${closedClasses.length} closed` : ''})</h2>
+                  ${closedClasses.length > 0 ? `
+                    <button class="btn btn-secondary" onclick="app.toggleAdminClosedClasses()">
+                      ${this.showAdminClosedClasses ? 'Hide' : 'Show'} Closed Classes
+                    </button>
+                  ` : ''}
+                </div>
                 <div class="grid grid-3">
-                  ${allClasses.map(cls => `
+                  ${activeClasses.map(cls => `
                     <div class="class-card" onclick="app.openClassAsAdmin('${cls.id}')" style="cursor: pointer;">
                       <h3>${cls.name}</h3>
                       <p>${cls.description || 'No description available'}</p>
@@ -21402,6 +21567,26 @@
                     </div>
                   `).join('')}
                 </div>
+                ${this.showAdminClosedClasses && closedClasses.length > 0 ? `
+                  <h3 style="margin-top: 30px; margin-bottom: 15px; color: var(--muted);">Closed Classes</h3>
+                  <div class="grid grid-3">
+                    ${closedClasses.map(cls => `
+                      <div class="class-card" onclick="app.openClassAsAdmin('${cls.id}')" style="cursor: pointer; opacity: 0.7; border-color: var(--muted);">
+                        <span style="background: var(--muted); color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; position: absolute; top: 10px; left: 10px;">CLOSED</span>
+                        <h3>${cls.name}</h3>
+                        <p>${cls.description || 'No description available'}</p>
+                        <div class="class-stats">
+                          <span>📚 ${cls.subject}</span>
+                          <span>🎓 ${cls.grade_level || 'All Grades'}</span>
+                        </div>
+                        <div class="class-stats" style="margin-top: 8px;">
+                          <span>👥 ${cls.student_count}/${cls.max_students || 30}</span>
+                          <span>👨‍🏫 ${cls.teacher?.first_name} ${cls.teacher?.last_name}</span>
+                        </div>
+                      </div>
+                    `).join('')}
+                  </div>
+                ` : ''}
               </div>
             `;
           }
@@ -21416,7 +21601,12 @@
         this.viewingAsAdmin = true;
         this.openClass(classId);
       }
-      
+
+      toggleAdminClosedClasses() {
+        this.showAdminClosedClasses = !this.showAdminClosedClasses;
+        this.renderAdminClasses();
+      }
+
       async renderAdminUsers() {
         const section = document.getElementById('admin-users-section');
         if (!section) {
