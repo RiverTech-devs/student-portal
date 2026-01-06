@@ -18558,39 +18558,77 @@
             var meleeRange = 1.5;
             
             if (enemy.type === 'melee' && dist > meleeRange) {
-                // Move toward player (up to 2 squares per turn)
-                var moveX = 0;
-                var moveY = 0;
-                
-                if (Math.abs(dx) > Math.abs(dy)) {
-                    moveX = dx > 0 ? Math.min(2, dx) : Math.max(-2, dx);
-                    moveY = dy > 0 ? 1 : (dy < 0 ? -1 : 0);
-                } else {
-                    moveY = dy > 0 ? Math.min(2, dy) : Math.max(-2, dy);
-                    moveX = dx > 0 ? 1 : (dx < 0 ? -1 : 0);
+                // Melee enemies move up to 6 squares per turn (half the battlefield)
+                // They always try to get as close as possible to the player
+                var maxMoveSquares = 6;
+                var bestX = enemy.x;
+                var bestY = enemy.y;
+                var bestDist = dist;
+
+                // Try to move step by step toward the player, up to maxMoveSquares
+                var testX = enemy.x;
+                var testY = enemy.y;
+
+                for (var step = 0; step < maxMoveSquares; step++) {
+                    var stepDx = player.x - testX;
+                    var stepDy = player.y - testY;
+
+                    // Determine next step direction (prioritize the larger distance)
+                    var nextX = testX;
+                    var nextY = testY;
+
+                    if (Math.abs(stepDx) >= Math.abs(stepDy)) {
+                        nextX = testX + (stepDx > 0 ? 1 : (stepDx < 0 ? -1 : 0));
+                    } else {
+                        nextY = testY + (stepDy > 0 ? 1 : (stepDy < 0 ? -1 : 0));
+                    }
+
+                    // Check bounds
+                    nextX = Math.max(0, Math.min(GRID_WIDTH - 1, nextX));
+                    nextY = Math.max(0, Math.min(GRID_HEIGHT - 1, nextY));
+
+                    // Check for walls
+                    var coverAtNext = gameState.combat.cover.find(c => c.x === nextX && c.y === nextY);
+                    var blockedByWall = coverAtNext && coverAtNext.type === 'wall';
+
+                    // Check if another enemy is blocking
+                    var blockedByEnemy = gameState.combat.enemies.some(function(e) {
+                        return e !== enemy && e.alive && e.x === nextX && e.y === nextY;
+                    });
+
+                    // Check if player is there (can't walk through player)
+                    var blockedByPlayer = nextX === player.x && nextY === player.y;
+
+                    // If blocked, stop moving
+                    if (blockedByWall || blockedByEnemy || blockedByPlayer) {
+                        break;
+                    }
+
+                    // Valid move - update test position
+                    testX = nextX;
+                    testY = nextY;
+
+                    // Check if this is closer to player
+                    var newDist = Math.sqrt((player.x - testX) * (player.x - testX) + (player.y - testY) * (player.y - testY));
+                    if (newDist < bestDist) {
+                        bestX = testX;
+                        bestY = testY;
+                        bestDist = newDist;
+                    }
+
+                    // If in melee range, stop
+                    if (newDist <= meleeRange) {
+                        break;
+                    }
                 }
-                
-                var newX = enemy.x + moveX;
-                var newY = enemy.y + moveY;
-                
-                // Check bounds and collisions (walls block movement)
-                newX = Math.max(0, Math.min(GRID_WIDTH - 1, newX));
-                newY = Math.max(0, Math.min(GRID_HEIGHT - 1, newY));
-                
-                var coverAtNew = gameState.combat.cover.find(c => c.x === newX && c.y === newY);
-                var blocked = coverAtNew && coverAtNew.type === 'wall';
 
-                // Check if another enemy is at the target position
-                var enemyBlocking = gameState.combat.enemies.some(function(e) {
-                    return e !== enemy && e.alive && e.x === newX && e.y === newY;
-                });
-
-                if (!blocked && !enemyBlocking && !(newX === player.x && newY === player.y)) {
-                    enemy.x = newX;
-                    enemy.y = newY;
-                    var moveDistSquares = Math.sqrt((newX - oldX) * (newX - oldX) + (newY - oldY) * (newY - oldY));
+                // Apply the best position found
+                if (bestX !== enemy.x || bestY !== enemy.y) {
+                    enemy.x = bestX;
+                    enemy.y = bestY;
+                    var moveDistSquares = Math.sqrt((bestX - oldX) * (bestX - oldX) + (bestY - oldY) * (bestY - oldY));
                     var moveDistFeet = Math.round(moveDistSquares * SQUARE_FEET);
-                    moveLog = 'Moved ' + moveDistFeet + ' ft: (' + oldX + ',' + oldY + ') → (' + newX + ',' + newY + ')';
+                    moveLog = 'Charged ' + moveDistFeet + ' ft: (' + oldX + ',' + oldY + ') → (' + bestX + ',' + bestY + ')';
                 }
             }
             
