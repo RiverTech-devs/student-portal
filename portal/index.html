@@ -21645,6 +21645,9 @@
                     ${this.showAdminClosedClasses ? 'Hide' : 'Show'} Closed Classes
                   </button>
                 ` : ''}
+                <button class="btn btn-secondary" onclick="app.showDeletedClasses()" style="background: rgba(255, 106, 106, 0.1); border-color: rgba(255, 106, 106, 0.3); color: #ff6a6a;">
+                  🗑️ Deleted Classes
+                </button>
               </div>
             </div>
 
@@ -21796,6 +21799,207 @@
           search: ''
         };
         this.renderAdminClasses(true);
+      }
+
+      async showDeletedClasses() {
+        // Fetch soft-deleted classes
+        const { data: deletedClasses, error } = await this.supabaseQuery(() => this.auth.supabase
+          .from('classes')
+          .select('*')
+          .eq('is_active', false)
+          .order('name', { ascending: true }));
+
+        if (error) {
+          this.showNotification('Error loading deleted classes: ' + error.message, 'error');
+          return;
+        }
+
+        // Get teacher info for deleted classes
+        let teacherMap = {};
+        if (deletedClasses && deletedClasses.length > 0) {
+          const teacherIds = [...new Set(deletedClasses.map(c => c.teacher_id).filter(Boolean))];
+          if (teacherIds.length > 0) {
+            const { data: teachers } = await this.supabaseQuery(() => this.auth.supabase
+              .from('user_profiles')
+              .select('id, first_name, last_name')
+              .in('id', teacherIds));
+
+            (teachers || []).forEach(t => {
+              teacherMap[t.id] = t;
+            });
+          }
+        }
+
+        const classListHtml = !deletedClasses || deletedClasses.length === 0
+          ? `<div style="text-align: center; padding: 40px; color: var(--muted);">
+               <div style="font-size: 48px; margin-bottom: 15px;">✨</div>
+               <h3>No Deleted Classes</h3>
+               <p>There are no soft-deleted classes in the system.</p>
+             </div>`
+          : `<div style="max-height: 500px; overflow-y: auto;">
+               ${deletedClasses.map(cls => {
+                 const teacher = teacherMap[cls.teacher_id];
+                 return `
+                   <div class="card" style="margin-bottom: 15px; border-left: 4px solid var(--danger);">
+                     <div style="display: flex; justify-content: space-between; align-items: start; gap: 15px;">
+                       <div style="flex: 1;">
+                         <h4 style="margin-bottom: 8px;">${cls.name}</h4>
+                         <p style="color: var(--muted); font-size: 13px; margin-bottom: 8px;">
+                           ${cls.description || 'No description'}
+                         </p>
+                         <div style="font-size: 12px; color: var(--muted);">
+                           <span>📚 ${cls.subject || 'N/A'}</span> •
+                           <span>🎓 ${cls.grade_level || 'All Grades'}</span> •
+                           <span>👨‍🏫 ${teacher ? `${teacher.first_name} ${teacher.last_name}` : 'No Teacher'}</span>
+                         </div>
+                       </div>
+                       <div style="display: flex; gap: 10px;">
+                         <button class="btn btn-secondary small" onclick="app.restoreClass('${cls.id}')">
+                           ♻️ Restore
+                         </button>
+                         <button class="btn btn-danger small" onclick="app.hardDeleteClass('${cls.id}', '${cls.name.replace(/'/g, "\\'")}')"
+                           style="background: rgba(255, 106, 106, 0.8);">
+                           🗑️ Permanently Delete
+                         </button>
+                       </div>
+                     </div>
+                   </div>
+                 `;
+               }).join('')}
+             </div>`;
+
+        const modalContent = `
+          <p style="color: var(--muted); margin-bottom: 20px;">
+            These classes have been soft-deleted. You can restore them or permanently delete them.
+            <br><strong style="color: var(--danger);">Warning:</strong> Permanent deletion cannot be undone and will remove all associated data.
+          </p>
+          ${classListHtml}
+          <div style="margin-top: 20px;">
+            <button class="btn btn-secondary" onclick="app.closeModal('deleted-classes')" style="width: 100%;">Close</button>
+          </div>
+        `;
+
+        this.showModal('deleted-classes', '🗑️ Deleted Classes', modalContent);
+      }
+
+      async restoreClass(classId) {
+        try {
+          const { error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('classes')
+            .update({ is_active: true })
+            .eq('id', classId));
+
+          if (error) throw error;
+
+          this.showNotification('Class restored successfully!', 'success');
+          this.closeModal('deleted-classes');
+
+          // Clear cache and refresh
+          this.adminClassesData = null;
+          this.renderAdminClasses();
+
+        } catch (error) {
+          console.error('Error restoring class:', error);
+          this.showNotification('Error restoring class: ' + error.message, 'error');
+        }
+      }
+
+      async hardDeleteClass(classId, className) {
+        if (!confirm(`⚠️ PERMANENT DELETION ⚠️\n\nAre you sure you want to permanently delete "${className}"?\n\nThis will remove:\n• All assignments\n• All student submissions and grades\n• All enrollments\n• All discussions and comments\n• All attendance records\n\nThis action CANNOT be undone!`)) {
+          return;
+        }
+
+        // Double confirmation for safety
+        if (!confirm(`FINAL CONFIRMATION\n\nType of deletion: PERMANENT\nClass: ${className}\n\nClick OK to permanently delete this class and ALL associated data.`)) {
+          return;
+        }
+
+        try {
+          // Delete in order of dependencies (child tables first)
+
+          // 1. Delete attendance records
+          await this.supabaseQuery(() => this.auth.supabase
+            .from('class_attendance')
+            .delete()
+            .eq('class_id', classId));
+
+          // 2. Delete attendance sessions
+          await this.supabaseQuery(() => this.auth.supabase
+            .from('class_attendance_sessions')
+            .delete()
+            .eq('class_id', classId));
+
+          // 3. Get all assignment IDs for this class
+          const { data: assignments } = await this.supabaseQuery(() => this.auth.supabase
+            .from('assignments')
+            .select('id')
+            .eq('class_id', classId));
+
+          const assignmentIds = assignments?.map(a => a.id) || [];
+
+          if (assignmentIds.length > 0) {
+            // 4. Delete assignment submissions
+            await this.supabaseQuery(() => this.auth.supabase
+              .from('assignment_submissions')
+              .delete()
+              .in('assignment_id', assignmentIds));
+
+            // 5. Delete assignment_students (selective assignments)
+            await this.supabaseQuery(() => this.auth.supabase
+              .from('assignment_students')
+              .delete()
+              .in('assignment_id', assignmentIds));
+
+            // 6. Delete assignments
+            await this.supabaseQuery(() => this.auth.supabase
+              .from('assignments')
+              .delete()
+              .eq('class_id', classId));
+          }
+
+          // 7. Delete grade categories
+          await this.supabaseQuery(() => this.auth.supabase
+            .from('grade_categories')
+            .delete()
+            .eq('class_id', classId));
+
+          // 8. Delete class enrollments
+          await this.supabaseQuery(() => this.auth.supabase
+            .from('class_enrollments')
+            .delete()
+            .eq('class_id', classId));
+
+          // 9. Delete discussions
+          await this.supabaseQuery(() => this.auth.supabase
+            .from('discussions')
+            .delete()
+            .eq('class_id', classId));
+
+          // 10. Delete student notes for this class
+          await this.supabaseQuery(() => this.auth.supabase
+            .from('student_notes')
+            .delete()
+            .eq('class_id', classId));
+
+          // 11. Finally, delete the class itself
+          const { error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('classes')
+            .delete()
+            .eq('id', classId));
+
+          if (error) throw error;
+
+          this.showNotification('Class permanently deleted', 'success');
+          this.closeModal('deleted-classes');
+
+          // Clear cache and refresh
+          this.adminClassesData = null;
+          this.renderAdminClasses();
+
+        } catch (error) {
+          console.error('Error permanently deleting class:', error);
+          this.showNotification('Error deleting class: ' + error.message, 'error');
+        }
       }
 
       async showChangeTeacherModal(classId, className, currentTeacherId) {
