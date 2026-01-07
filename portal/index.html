@@ -21490,139 +21490,263 @@
         }
       }
 
-      async renderAdminClasses() {
+      async renderAdminClasses(skipFetch = false) {
         const section = document.getElementById('admin-classes-section');
         if (!section) {
           console.error('❌ Admin classes section not found!');
           return;
         }
-        
-        section.innerHTML = '<div style="text-align: center; padding: 40px;"><div class="loading-spinner"></div><p>Loading classes...</p></div>';
-        
-        try {
-          const { data: allClasses, error } = await this.supabaseQuery(() => this.auth.supabase
-            .from('classes')
-            .select('*')
-            .order('name', { ascending: true }));
-          
-          if (error) throw error;
 
-          if (allClasses && allClasses.length > 0) {
-            // Batch query teacher info (fixes N+1 timeout issue)
-            const teacherIds = [...new Set(allClasses.map(c => c.teacher_id).filter(Boolean))];
-            if (teacherIds.length > 0) {
-              const { data: teachers } = await this.supabaseQuery(() => this.auth.supabase
-                .from('user_profiles')
-                .select('id, first_name, last_name')
-                .in('id', teacherIds));
+        // Initialize filter state if not exists
+        if (!this.adminClassFilters) {
+          this.adminClassFilters = {
+            teacher: '',
+            subject: '',
+            gradeLevel: '',
+            search: ''
+          };
+        }
 
-              const teacherMap = {};
-              (teachers || []).forEach(t => {
-                teacherMap[t.id] = t;
+        // Only fetch data if not skipping (for filter updates)
+        if (!skipFetch || !this.adminClassesData) {
+          section.innerHTML = '<div style="text-align: center; padding: 40px;"><div class="loading-spinner"></div><p>Loading classes...</p></div>';
+
+          try {
+            const { data: allClasses, error } = await this.supabaseQuery(() => this.auth.supabase
+              .from('classes')
+              .select('*')
+              .order('name', { ascending: true }));
+
+            if (error) throw error;
+
+            if (allClasses && allClasses.length > 0) {
+              // Batch query teacher info (fixes N+1 timeout issue)
+              const teacherIds = [...new Set(allClasses.map(c => c.teacher_id).filter(Boolean))];
+              if (teacherIds.length > 0) {
+                const { data: teachers } = await this.supabaseQuery(() => this.auth.supabase
+                  .from('user_profiles')
+                  .select('id, first_name, last_name')
+                  .in('id', teacherIds));
+
+                const teacherMap = {};
+                (teachers || []).forEach(t => {
+                  teacherMap[t.id] = t;
+                });
+
+                allClasses.forEach(cls => {
+                  cls.teacher = cls.teacher_id ? teacherMap[cls.teacher_id] : null;
+                });
+              }
+
+              // Batch query enrollment counts (fixes N+1 timeout issue)
+              const classIds = allClasses.map(c => c.id);
+              const { data: allEnrollments } = await this.supabaseQuery(() => this.auth.supabase
+                .from('class_enrollments')
+                .select('class_id')
+                .in('class_id', classIds)
+                .eq('status', 'active'));
+
+              const countMap = {};
+              (allEnrollments || []).forEach(e => {
+                countMap[e.class_id] = (countMap[e.class_id] || 0) + 1;
               });
 
               allClasses.forEach(cls => {
-                cls.teacher = cls.teacher_id ? teacherMap[cls.teacher_id] : null;
+                cls.student_count = countMap[cls.id] || 0;
               });
             }
 
-            // Batch query enrollment counts (fixes N+1 timeout issue)
-            const classIds = allClasses.map(c => c.id);
-            const { data: allEnrollments } = await this.supabaseQuery(() => this.auth.supabase
-              .from('class_enrollments')
-              .select('class_id')
-              .in('class_id', classIds)
-              .eq('status', 'active'));
-
-            const countMap = {};
-            (allEnrollments || []).forEach(e => {
-              countMap[e.class_id] = (countMap[e.class_id] || 0) + 1;
-            });
-
-            allClasses.forEach(cls => {
-              cls.student_count = countMap[cls.id] || 0;
-            });
+            this.adminClassesData = allClasses || [];
+          } catch (error) {
+            console.error('Error loading all classes:', error);
+            section.innerHTML = '<div style="padding: 20px;"><div class="card"><p style="color: var(--danger);">Error loading classes: ' + error.message + '</p></div></div>';
+            return;
           }
+        }
 
-          if (!allClasses || allClasses.length === 0) {
-            section.innerHTML = `
-              <div style="padding: 20px;">
-                <div class="empty-state">
-                  <h3>🏫 No Classes Yet</h3>
-                  <p>Create the first class to get started.</p>
-                </div>
+        const allClasses = this.adminClassesData;
+
+        if (!allClasses || allClasses.length === 0) {
+          section.innerHTML = `
+            <div style="padding: 20px;">
+              <div class="empty-state">
+                <h3>🏫 No Classes Yet</h3>
+                <p>Create the first class to get started.</p>
               </div>
-            `;
-          } else {
-            // Separate active and closed classes
-            const activeClasses = allClasses.filter(c => c.status !== 'closed');
-            const closedClasses = allClasses.filter(c => c.status === 'closed');
+            </div>
+          `;
+          return;
+        }
 
-            section.innerHTML = `
-              <div style="padding: 20px;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-                  <h2>🏫 All Classes (${activeClasses.length} active${closedClasses.length > 0 ? `, ${closedClasses.length} closed` : ''})</h2>
-                  ${closedClasses.length > 0 ? `
-                    <button class="btn btn-secondary" onclick="app.toggleAdminClosedClasses()">
-                      ${this.showAdminClosedClasses ? 'Hide' : 'Show'} Closed Classes
-                    </button>
-                  ` : ''}
-                </div>
-                <div class="grid grid-3">
-                  ${activeClasses.map(cls => `
-                    <div class="class-card" style="cursor: pointer; position: relative;">
-                      <div onclick="app.openClassAsAdmin('${cls.id}')">
-                        <h3>${cls.name}</h3>
-                        <p>${cls.description || 'No description available'}</p>
-                        <div class="class-stats">
-                          <span>📚 ${cls.subject}</span>
-                          <span>🎓 ${cls.grade_level || 'All Grades'}</span>
-                        </div>
-                        <div class="class-stats" style="margin-top: 8px;">
-                          <span>👥 ${cls.student_count}/${cls.max_students || 30}</span>
-                          <span>👨‍🏫 ${cls.teacher?.first_name || 'No'} ${cls.teacher?.last_name || 'Teacher'}</span>
-                        </div>
-                      </div>
-                      <button class="btn btn-secondary small" onclick="event.stopPropagation(); app.showChangeTeacherModal('${cls.id}', '${cls.name.replace(/'/g, "\\'")}', '${cls.teacher_id || ''}')"
-                        style="margin-top: 10px; width: 100%;">
-                        🔄 Change Teacher
-                      </button>
-                    </div>
-                  `).join('')}
-                </div>
-                ${this.showAdminClosedClasses && closedClasses.length > 0 ? `
-                  <h3 style="margin-top: 30px; margin-bottom: 15px; color: var(--muted);">Closed Classes</h3>
-                  <div class="grid grid-3">
-                    ${closedClasses.map(cls => `
-                      <div class="class-card" style="cursor: pointer; opacity: 0.7; border-color: var(--muted); position: relative;">
-                        <span style="background: var(--muted); color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; position: absolute; top: 10px; left: 10px;">CLOSED</span>
-                        <div onclick="app.openClassAsAdmin('${cls.id}')">
-                          <h3 style="margin-top: 20px;">${cls.name}</h3>
-                          <p>${cls.description || 'No description available'}</p>
-                          <div class="class-stats">
-                            <span>📚 ${cls.subject}</span>
-                            <span>🎓 ${cls.grade_level || 'All Grades'}</span>
-                          </div>
-                          <div class="class-stats" style="margin-top: 8px;">
-                            <span>👥 ${cls.student_count}/${cls.max_students || 30}</span>
-                            <span>👨‍🏫 ${cls.teacher?.first_name || 'No'} ${cls.teacher?.last_name || 'Teacher'}</span>
-                          </div>
-                        </div>
-                        <button class="btn btn-secondary small" onclick="event.stopPropagation(); app.showChangeTeacherModal('${cls.id}', '${cls.name.replace(/'/g, "\\'")}', '${cls.teacher_id || ''}')"
-                          style="margin-top: 10px; width: 100%;">
-                          🔄 Change Teacher
-                        </button>
-                      </div>
-                    `).join('')}
-                  </div>
+        // Get unique values for filter dropdowns
+        const teachers = [...new Map(allClasses.filter(c => c.teacher).map(c => [c.teacher_id, c.teacher])).values()];
+        const subjects = [...new Set(allClasses.map(c => c.subject).filter(Boolean))].sort();
+        const gradeLevels = [...new Set(allClasses.map(c => c.grade_level).filter(Boolean))].sort();
+
+        // Apply filters
+        let filteredClasses = allClasses.filter(cls => {
+          // Teacher filter
+          if (this.adminClassFilters.teacher && cls.teacher_id !== this.adminClassFilters.teacher) {
+            return false;
+          }
+          // Subject filter
+          if (this.adminClassFilters.subject && cls.subject !== this.adminClassFilters.subject) {
+            return false;
+          }
+          // Grade level filter
+          if (this.adminClassFilters.gradeLevel && cls.grade_level !== this.adminClassFilters.gradeLevel) {
+            return false;
+          }
+          // Search filter
+          if (this.adminClassFilters.search) {
+            const search = this.adminClassFilters.search.toLowerCase();
+            const matchesName = cls.name?.toLowerCase().includes(search);
+            const matchesDesc = cls.description?.toLowerCase().includes(search);
+            const matchesTeacher = cls.teacher ?
+              `${cls.teacher.first_name} ${cls.teacher.last_name}`.toLowerCase().includes(search) : false;
+            if (!matchesName && !matchesDesc && !matchesTeacher) {
+              return false;
+            }
+          }
+          return true;
+        });
+
+        // Separate active and closed classes
+        const activeClasses = filteredClasses.filter(c => c.status !== 'closed');
+        const closedClasses = filteredClasses.filter(c => c.status === 'closed');
+        const totalActive = allClasses.filter(c => c.status !== 'closed').length;
+        const totalClosed = allClasses.filter(c => c.status === 'closed').length;
+
+        const hasActiveFilters = this.adminClassFilters.teacher || this.adminClassFilters.subject ||
+                                  this.adminClassFilters.gradeLevel || this.adminClassFilters.search;
+
+        section.innerHTML = `
+          <div style="padding: 20px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px;">
+              <h2>🏫 All Classes (${hasActiveFilters ? `${activeClasses.length} of ${totalActive}` : totalActive} active${totalClosed > 0 ? `, ${hasActiveFilters ? `${closedClasses.length} of ${totalClosed}` : totalClosed} closed` : ''})</h2>
+              <div style="display: flex; gap: 10px; align-items: center;">
+                ${totalClosed > 0 ? `
+                  <button class="btn btn-secondary" onclick="app.toggleAdminClosedClasses()">
+                    ${this.showAdminClosedClasses ? 'Hide' : 'Show'} Closed Classes
+                  </button>
                 ` : ''}
               </div>
-            `;
-          }
-        } catch (error) {
-          console.error('Error loading all classes:', error);
-          section.innerHTML = '<div style="padding: 20px;"><div class="card"><p style="color: var(--danger);">Error loading classes: ' + error.message + '</p></div></div>';
-        }
+            </div>
+
+            <!-- Filter Bar -->
+            <div class="card" style="margin-bottom: 20px; padding: 15px;">
+              <div style="display: flex; flex-wrap: wrap; gap: 15px; align-items: flex-end;">
+                <div style="flex: 1; min-width: 200px;">
+                  <label style="display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px;">🔍 Search</label>
+                  <input type="text" id="admin-class-search" placeholder="Search classes..."
+                    value="${this.adminClassFilters.search}"
+                    onkeyup="app.filterAdminClasses()"
+                    style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--card-bg); color: var(--text-color);">
+                </div>
+                <div style="min-width: 180px;">
+                  <label style="display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px;">👨‍🏫 Teacher</label>
+                  <select id="admin-class-teacher-filter" onchange="app.filterAdminClasses()"
+                    style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--card-bg); color: var(--text-color);">
+                    <option value="">All Teachers</option>
+                    ${teachers.sort((a, b) => a.last_name.localeCompare(b.last_name)).map(t => `
+                      <option value="${t.id}" ${this.adminClassFilters.teacher === t.id ? 'selected' : ''}>
+                        ${t.last_name}, ${t.first_name}
+                      </option>
+                    `).join('')}
+                  </select>
+                </div>
+                <div style="min-width: 150px;">
+                  <label style="display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px;">📚 Subject</label>
+                  <select id="admin-class-subject-filter" onchange="app.filterAdminClasses()"
+                    style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--card-bg); color: var(--text-color);">
+                    <option value="">All Subjects</option>
+                    ${subjects.map(s => `
+                      <option value="${s}" ${this.adminClassFilters.subject === s ? 'selected' : ''}>${s}</option>
+                    `).join('')}
+                  </select>
+                </div>
+                <div style="min-width: 130px;">
+                  <label style="display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px;">🎓 Grade</label>
+                  <select id="admin-class-grade-filter" onchange="app.filterAdminClasses()"
+                    style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--card-bg); color: var(--text-color);">
+                    <option value="">All Grades</option>
+                    ${gradeLevels.map(g => `
+                      <option value="${g}" ${this.adminClassFilters.gradeLevel === g ? 'selected' : ''}>${g}</option>
+                    `).join('')}
+                  </select>
+                </div>
+                ${hasActiveFilters ? `
+                  <button class="btn btn-secondary small" onclick="app.clearAdminClassFilters()" style="white-space: nowrap;">
+                    ✕ Clear Filters
+                  </button>
+                ` : ''}
+              </div>
+            </div>
+
+            ${activeClasses.length === 0 && !this.showAdminClosedClasses ? `
+              <div class="card" style="text-align: center; padding: 40px;">
+                <h3 style="color: var(--muted);">No classes match your filters</h3>
+                <p style="color: var(--muted);">Try adjusting your search criteria or <a href="#" onclick="app.clearAdminClassFilters(); return false;" style="color: var(--accent);">clear all filters</a></p>
+              </div>
+            ` : `
+              <div class="grid grid-3">
+                ${activeClasses.map(cls => `
+                  <div class="class-card" style="cursor: pointer; position: relative;">
+                    <div onclick="app.openClassAsAdmin('${cls.id}')">
+                      <h3>${cls.name}</h3>
+                      <p>${cls.description || 'No description available'}</p>
+                      <div class="class-stats">
+                        <span>📚 ${cls.subject}</span>
+                        <span>🎓 ${cls.grade_level || 'All Grades'}</span>
+                      </div>
+                      <div class="class-stats" style="margin-top: 8px;">
+                        <span>👥 ${cls.student_count}/${cls.max_students || 30}</span>
+                        <span>👨‍🏫 ${cls.teacher?.first_name || 'No'} ${cls.teacher?.last_name || 'Teacher'}</span>
+                      </div>
+                    </div>
+                    <button class="btn btn-secondary small" onclick="event.stopPropagation(); app.showChangeTeacherModal('${cls.id}', '${cls.name.replace(/'/g, "\\'")}', '${cls.teacher_id || ''}')"
+                      style="margin-top: 10px; width: 100%;">
+                      🔄 Change Teacher
+                    </button>
+                  </div>
+                `).join('')}
+              </div>
+            `}
+
+            ${this.showAdminClosedClasses && closedClasses.length > 0 ? `
+              <h3 style="margin-top: 30px; margin-bottom: 15px; color: var(--muted);">Closed Classes</h3>
+              <div class="grid grid-3">
+                ${closedClasses.map(cls => `
+                  <div class="class-card" style="cursor: pointer; opacity: 0.7; border-color: var(--muted); position: relative;">
+                    <span style="background: var(--muted); color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; position: absolute; top: 10px; left: 10px;">CLOSED</span>
+                    <div onclick="app.openClassAsAdmin('${cls.id}')">
+                      <h3 style="margin-top: 20px;">${cls.name}</h3>
+                      <p>${cls.description || 'No description available'}</p>
+                      <div class="class-stats">
+                        <span>📚 ${cls.subject}</span>
+                        <span>🎓 ${cls.grade_level || 'All Grades'}</span>
+                      </div>
+                      <div class="class-stats" style="margin-top: 8px;">
+                        <span>👥 ${cls.student_count}/${cls.max_students || 30}</span>
+                        <span>👨‍🏫 ${cls.teacher?.first_name || 'No'} ${cls.teacher?.last_name || 'Teacher'}</span>
+                      </div>
+                    </div>
+                    <button class="btn btn-secondary small" onclick="event.stopPropagation(); app.showChangeTeacherModal('${cls.id}', '${cls.name.replace(/'/g, "\\'")}', '${cls.teacher_id || ''}')"
+                      style="margin-top: 10px; width: 100%;">
+                      🔄 Change Teacher
+                    </button>
+                  </div>
+                `).join('')}
+              </div>
+            ` : ''}
+
+            ${this.showAdminClosedClasses && closedClasses.length === 0 && hasActiveFilters ? `
+              <div style="margin-top: 20px; text-align: center; color: var(--muted);">
+                <p>No closed classes match your filters</p>
+              </div>
+            ` : ''}
+          </div>
+        `;
       }
 
       openClassAsAdmin(classId) {
@@ -21633,7 +21757,30 @@
 
       toggleAdminClosedClasses() {
         this.showAdminClosedClasses = !this.showAdminClosedClasses;
-        this.renderAdminClasses();
+        this.renderAdminClasses(true); // Skip fetch, just re-render with filters
+      }
+
+      filterAdminClasses() {
+        // Update filter state from form inputs
+        this.adminClassFilters = {
+          teacher: document.getElementById('admin-class-teacher-filter')?.value || '',
+          subject: document.getElementById('admin-class-subject-filter')?.value || '',
+          gradeLevel: document.getElementById('admin-class-grade-filter')?.value || '',
+          search: document.getElementById('admin-class-search')?.value || ''
+        };
+
+        // Re-render with filters (skip fetch)
+        this.renderAdminClasses(true);
+      }
+
+      clearAdminClassFilters() {
+        this.adminClassFilters = {
+          teacher: '',
+          subject: '',
+          gradeLevel: '',
+          search: ''
+        };
+        this.renderAdminClasses(true);
       }
 
       async showChangeTeacherModal(classId, className, currentTeacherId) {
@@ -21694,6 +21841,9 @@
 
           this.closeModal('change-teacher');
           this.showNotification('Teacher updated successfully!', 'success');
+
+          // Clear cached data so it refreshes with new teacher info
+          this.adminClassesData = null;
           this.renderAdminClasses();
 
         } catch (error) {
