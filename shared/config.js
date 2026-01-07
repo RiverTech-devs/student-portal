@@ -69,7 +69,13 @@ class PortalAuth {
         const { data: { subscription } } = this.supabase.auth.onAuthStateChange(async (event, session) => {
             console.log('🔐 Auth state changed:', event);
 
-            if (event === 'SIGNED_IN' && session) {
+            if (event === 'PASSWORD_RECOVERY') {
+                // User clicked password reset link - show reset form
+                console.log('🔑 Password recovery mode detected');
+                this.currentUser = session?.user || null;
+                this.notifyAuthChange('PASSWORD_RECOVERY');
+                this.showPasswordResetForm();
+            } else if (event === 'SIGNED_IN' && session) {
                 this.currentUser = session.user;
                 await this.loadUserProfile();
                 this.notifyAuthChange('SIGNED_IN');
@@ -87,6 +93,150 @@ class PortalAuth {
         });
 
         this._authUnsubscribe = () => subscription.unsubscribe();
+    }
+
+    showPasswordResetForm() {
+        // Create modal overlay for password reset
+        const existingModal = document.getElementById('password-reset-modal');
+        if (existingModal) existingModal.remove();
+
+        const modal = document.createElement('div');
+        modal.id = 'password-reset-modal';
+        modal.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.9);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 100000;
+            padding: 20px;
+        `;
+
+        modal.innerHTML = `
+            <div style="
+                background: #151a21;
+                border: 1px solid #2a3140;
+                border-radius: 12px;
+                padding: 30px;
+                max-width: 400px;
+                width: 100%;
+                color: #e6edf3;
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            ">
+                <h2 style="margin: 0 0 10px 0; color: #6aa9ff;">🔐 Reset Your Password</h2>
+                <p style="color: #97a2b0; margin-bottom: 20px;">Enter your new password below.</p>
+
+                <form id="password-reset-form" onsubmit="window.portalAuth.handlePasswordReset(event)">
+                    <div style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: 500;">New Password</label>
+                        <input type="password" id="reset-new-password" required minlength="6"
+                               placeholder="Enter new password (min 6 characters)"
+                               style="width: 100%; padding: 12px; border: 1px solid #2a3140; border-radius: 8px; background: #0f1216; color: #e6edf3; font-size: 14px; box-sizing: border-box;">
+                    </div>
+
+                    <div style="margin-bottom: 20px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: 500;">Confirm Password</label>
+                        <input type="password" id="reset-confirm-password" required minlength="6"
+                               placeholder="Confirm new password"
+                               style="width: 100%; padding: 12px; border: 1px solid #2a3140; border-radius: 8px; background: #0f1216; color: #e6edf3; font-size: 14px; box-sizing: border-box;">
+                    </div>
+
+                    <div id="reset-error" style="color: #ff6a6a; font-size: 14px; margin-bottom: 15px; display: none;"></div>
+
+                    <button type="submit" id="reset-submit-btn" style="
+                        width: 100%;
+                        padding: 12px;
+                        background: linear-gradient(135deg, #6aa9ff 0%, #8bffb0 100%);
+                        border: none;
+                        border-radius: 8px;
+                        color: #0f1216;
+                        font-weight: 600;
+                        font-size: 16px;
+                        cursor: pointer;
+                        transition: opacity 0.2s;
+                    ">
+                        Update Password
+                    </button>
+                </form>
+            </div>
+        `;
+
+        document.body.appendChild(modal);
+    }
+
+    async handlePasswordReset(event) {
+        event.preventDefault();
+
+        const newPassword = document.getElementById('reset-new-password')?.value;
+        const confirmPassword = document.getElementById('reset-confirm-password')?.value;
+        const errorDiv = document.getElementById('reset-error');
+        const submitBtn = document.getElementById('reset-submit-btn');
+
+        // Clear previous errors
+        if (errorDiv) {
+            errorDiv.style.display = 'none';
+            errorDiv.textContent = '';
+        }
+
+        // Validate passwords match
+        if (newPassword !== confirmPassword) {
+            if (errorDiv) {
+                errorDiv.textContent = 'Passwords do not match.';
+                errorDiv.style.display = 'block';
+            }
+            return;
+        }
+
+        // Validate password length
+        if (newPassword.length < 6) {
+            if (errorDiv) {
+                errorDiv.textContent = 'Password must be at least 6 characters.';
+                errorDiv.style.display = 'block';
+            }
+            return;
+        }
+
+        try {
+            if (submitBtn) {
+                submitBtn.disabled = true;
+                submitBtn.textContent = 'Updating...';
+            }
+
+            const { error } = await this.supabase.auth.updateUser({
+                password: newPassword
+            });
+
+            if (error) throw error;
+
+            // Success - remove modal and show notification
+            const modal = document.getElementById('password-reset-modal');
+            if (modal) modal.remove();
+
+            PortalUI.showNotification('Password updated successfully! You can now log in with your new password.', 'success', 5000);
+
+            // Clean up URL hash (remove recovery tokens)
+            window.history.replaceState(null, '', window.location.pathname);
+
+            // Redirect to login after short delay
+            setTimeout(() => {
+                window.location.href = window.location.pathname;
+            }, 2000);
+
+        } catch (error) {
+            console.error('Password reset error:', error);
+            if (errorDiv) {
+                errorDiv.textContent = error.message || 'Failed to update password. Please try again.';
+                errorDiv.style.display = 'block';
+            }
+            if (submitBtn) {
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Update Password';
+            }
+        }
     }
 
     async loadSupabase() {
