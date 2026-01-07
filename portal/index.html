@@ -21871,7 +21871,7 @@
                          <button class="btn btn-secondary small" onclick="app.restoreClass('${cls.id}')">
                            ♻️ Restore
                          </button>
-                         <button class="btn btn-danger small" onclick="app.hardDeleteClass('${cls.id}', '${cls.name.replace(/'/g, "\\'")}')"
+                         <button class="btn btn-danger small" onclick="app.hardDeleteClass('${cls.id}')"
                            style="background: rgba(255, 106, 106, 0.8);">
                            🗑️ Permanently Delete
                          </button>
@@ -21918,29 +21918,52 @@
         }
       }
 
-      async hardDeleteClass(classId, className) {
+      async hardDeleteClass(classId) {
+        console.log('hardDeleteClass called with:', classId);
+
+        // Fetch class name for confirmation dialogs
+        const { data: classData } = await this.auth.supabase
+          .from('classes')
+          .select('name')
+          .eq('id', classId)
+          .single();
+
+        const className = classData?.name || 'Unknown Class';
+        console.log('Class name:', className);
+
         if (!confirm(`⚠️ PERMANENT DELETION ⚠️\n\nAre you sure you want to permanently delete "${className}"?\n\nThis will remove:\n• All assignments\n• All student submissions and grades\n• All enrollments\n• All attendance records\n\nThis action CANNOT be undone!`)) {
+          console.log('First confirmation cancelled');
           return;
         }
 
         // Double confirmation for safety
         if (!confirm(`FINAL CONFIRMATION\n\nType of deletion: PERMANENT\nClass: ${className}\n\nClick OK to permanently delete this class and ALL associated data.`)) {
+          console.log('Second confirmation cancelled');
           return;
         }
+        console.log('Both confirmations passed, starting delete...');
 
         try {
-          // Helper to safely delete from a table (ignores 404 if table doesn't exist)
+          // Helper to safely delete from a table (logs errors but continues)
           const safeDelete = async (table, column, value, useIn = false) => {
             try {
+              let result;
               if (useIn && Array.isArray(value)) {
-                await this.auth.supabase.from(table).delete().in(column, value);
+                result = await this.auth.supabase.from(table).delete().in(column, value);
               } else {
-                await this.auth.supabase.from(table).delete().eq(column, value);
+                result = await this.auth.supabase.from(table).delete().eq(column, value);
+              }
+              if (result.error) {
+                console.log(`Note: Error deleting from ${table}:`, result.error.message);
+              } else {
+                console.log(`Deleted from ${table} successfully`);
               }
             } catch (e) {
-              console.log(`Note: Could not delete from ${table} (may not exist):`, e.message);
+              console.log(`Note: Could not delete from ${table}:`, e.message);
             }
           };
+
+          console.log(`Starting hard delete for class ${classId} (${className})`);
 
           // Delete in order of dependencies (child tables first)
 
@@ -21950,7 +21973,10 @@
           // 2. Delete attendance sessions
           await safeDelete('class_attendance_sessions', 'class_id', classId);
 
-          // 3. Get all assignment IDs for this class
+          // 3. Delete class schedule
+          await safeDelete('class_schedule', 'class_id', classId);
+
+          // 4. Get all assignment IDs for this class
           let assignmentIds = [];
           try {
             const { data: assignments } = await this.auth.supabase
@@ -21958,37 +21984,54 @@
               .select('id')
               .eq('class_id', classId);
             assignmentIds = assignments?.map(a => a.id) || [];
+            console.log(`Found ${assignmentIds.length} assignments to delete`);
           } catch (e) {
             console.log('Note: Could not fetch assignments:', e.message);
           }
 
           if (assignmentIds.length > 0) {
-            // 4. Delete assignment submissions
+            // 5. Delete assignment submissions
             await safeDelete('assignment_submissions', 'assignment_id', assignmentIds, true);
 
-            // 5. Delete assignment_students (selective assignments)
+            // 6. Delete assignment_students (selective assignments)
             await safeDelete('assignment_students', 'assignment_id', assignmentIds, true);
 
-            // 6. Delete assignments
+            // 7. Delete assignments
             await safeDelete('assignments', 'class_id', classId);
           }
 
-          // 7. Delete grade categories
+          // 8. Delete grade categories
           await safeDelete('grade_categories', 'class_id', classId);
 
-          // 8. Delete class enrollments
+          // 9. Delete class enrollments
           await safeDelete('class_enrollments', 'class_id', classId);
 
-          // 9. Delete student notes for this class
+          // 10. Delete student notes for this class
           await safeDelete('student_notes', 'class_id', classId);
 
-          // 10. Finally, delete the class itself
-          const { error } = await this.auth.supabase
+          // 11. Delete homework assignments linked to this class
+          await safeDelete('homework_assignments', 'class_id', classId);
+
+          // 12. Finally, delete the class itself
+          console.log('Attempting to delete class record...');
+          const { error, data } = await this.auth.supabase
             .from('classes')
             .delete()
-            .eq('id', classId);
+            .eq('id', classId)
+            .select();
 
-          if (error) throw error;
+          console.log('Delete class result:', { error, data });
+
+          if (error) {
+            console.error('Failed to delete class:', error);
+            throw error;
+          }
+
+          if (!data || data.length === 0) {
+            console.warn('No class was deleted - may not exist or RLS policy blocking');
+            this.showNotification('Could not delete class - check permissions', 'error');
+            return;
+          }
 
           this.showNotification('Class permanently deleted', 'success');
           this.closeModal('deleted-classes');
