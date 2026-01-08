@@ -459,7 +459,8 @@
     }
 
     /* Large modal for private notes */
-    #modal-private-notes .modal-content {
+    #modal-private-notes .modal-content,
+    #modal-class-notes .modal-content {
       max-width: 1000px;
       width: 90%;
     }
@@ -10665,6 +10666,9 @@
                   <button class="btn btn-primary" onclick="app.showClassAttendance('${classId}')">
                     📋 Class Attendance
                   </button>
+                  <button class="btn btn-secondary" onclick="app.showClassNotes('${classId}')" title="Private class notes only visible to you">
+                    🔒 Class Notes
+                  </button>
                 ` : isParent ? `
                   <button class="btn btn-secondary" onclick="app.viewChildrenGrades('${classId}')">
                     📊 Children's Grades
@@ -11677,6 +11681,229 @@
           // Refresh the modal - close first, then reopen after delay
           this.closeModal('private-notes');
           setTimeout(() => this.showPrivateNotes(classId, studentId, studentName), 100);
+
+        } catch (error) {
+          console.error('Error deleting note:', error);
+          this.showNotification('Error deleting note: ' + error.message, 'error');
+        }
+      }
+
+      // ===== Teacher Class Notes Functions =====
+      // Private notes about the class itself (lesson plans, what happened, etc.)
+
+      async showClassNotes(classId) {
+        try {
+          const classData = this.classes.find(c => c.id === classId);
+          const className = classData?.name || 'Class';
+
+          // Load existing class notes
+          const { data: notes, error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('teacher_class_notes')
+            .select('*')
+            .eq('class_id', classId)
+            .order('note_date', { ascending: false }));
+
+          if (error) throw error;
+
+          const notesHtml = notes && notes.length > 0
+            ? notes.map(note => {
+                const noteDate = new Date(note.note_date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+                const createdDate = new Date(note.created_at).toLocaleDateString();
+                const wasEdited = note.updated_at && note.updated_at !== note.created_at;
+
+                return `
+                  <div class="class-note-item" style="background: var(--card); border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: 8px; padding: 12px; margin-bottom: 10px;">
+                    <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px;">
+                      <div>
+                        <div style="font-weight: 600; color: var(--accent);">${noteDate}</div>
+                        <div style="color: var(--muted); font-size: 11px;">
+                          Added ${createdDate}${wasEdited ? ' (edited)' : ''}
+                        </div>
+                      </div>
+                      <div style="display: flex; gap: 8px;">
+                        <button class="btn btn-secondary small" onclick="app.editClassNote('${note.id}', '${classId}')">
+                          ✏️ Edit
+                        </button>
+                        <button class="btn danger small" onclick="app.deleteClassNote('${note.id}', '${classId}')">
+                          🗑️
+                        </button>
+                      </div>
+                    </div>
+                    <div style="white-space: pre-wrap; line-height: 1.5;">${this.escapeHtml(note.note)}</div>
+                  </div>
+                `;
+              }).join('')
+            : '<p style="color: var(--muted); text-align: center; padding: 20px;">No class notes yet. Add your first note above.</p>';
+
+          const today = new Date().toISOString().split('T')[0];
+
+          const modalContent = `
+            <div>
+              <div style="margin-bottom: 15px;">
+                <h3 style="margin: 0 0 5px 0;">🔒 Class Notes - ${className}</h3>
+                <p style="color: var(--muted); margin: 0; font-size: 13px;">
+                  <em>Private - only visible to you</em>
+                </p>
+              </div>
+
+              <div style="background: rgba(0,0,0,0.2); border-radius: 8px; padding: 12px; margin-bottom: 15px;">
+                <div style="display: flex; gap: 10px; margin-bottom: 10px; align-items: center;">
+                  <label style="font-weight: 600; white-space: nowrap;">Date:</label>
+                  <input type="date" id="class-note-date" value="${today}"
+                    style="padding: 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--card); color: var(--text);">
+                </div>
+                <textarea id="class-note-input" rows="4" placeholder="What happened in class today? What's planned for next time?"
+                  style="width: 100%; padding: 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--card); color: var(--text); resize: vertical; font-family: inherit;"></textarea>
+                <div style="display: flex; justify-content: flex-end; margin-top: 8px;">
+                  <button class="btn btn-primary" onclick="app.addClassNote('${classId}')">
+                    Add Note
+                  </button>
+                </div>
+              </div>
+
+              <div id="class-notes-list" style="max-height: 65vh; overflow-y: auto;">
+                ${notesHtml}
+              </div>
+            </div>
+
+            <div style="display: flex; gap: 10px; margin-top: 15px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal('class-notes')">Close</button>
+            </div>
+          `;
+
+          this.showModal('class-notes', '🔒 Class Notes', modalContent, true);
+
+        } catch (error) {
+          console.error('Error loading class notes:', error);
+          this.showNotification('Error loading class notes: ' + error.message, 'error');
+        }
+      }
+
+      async addClassNote(classId) {
+        const noteInput = document.getElementById('class-note-input');
+        const dateInput = document.getElementById('class-note-date');
+        const noteText = noteInput?.value?.trim();
+        const noteDate = dateInput?.value;
+
+        if (!noteText) {
+          this.showNotification('Please enter a note', 'warning');
+          return;
+        }
+
+        try {
+          const { error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('teacher_class_notes')
+            .insert({
+              class_id: classId,
+              teacher_id: this.userInfo.user.id,
+              note: noteText,
+              note_date: noteDate || new Date().toISOString().split('T')[0]
+            }));
+
+          if (error) throw error;
+
+          this.showNotification('Note added', 'success');
+
+          // Refresh the modal
+          this.closeModal('class-notes');
+          setTimeout(() => this.showClassNotes(classId), 100);
+
+        } catch (error) {
+          console.error('Error adding class note:', error);
+          this.showNotification('Error adding note: ' + error.message, 'error');
+        }
+      }
+
+      async editClassNote(noteId, classId) {
+        try {
+          // Load the note
+          const { data: note, error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('teacher_class_notes')
+            .select('*')
+            .eq('id', noteId)
+            .single());
+
+          if (error) throw error;
+
+          const modalContent = `
+            <div>
+              <h3 style="margin-bottom: 15px;">✏️ Edit Class Note</h3>
+              <div style="display: flex; gap: 10px; margin-bottom: 10px; align-items: center;">
+                <label style="font-weight: 600; white-space: nowrap;">Date:</label>
+                <input type="date" id="edit-class-note-date" value="${note.note_date}"
+                  style="padding: 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--card); color: var(--text);">
+              </div>
+              <textarea id="edit-class-note-input" rows="10"
+                style="width: 100%; padding: 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--card); color: var(--text); resize: vertical; font-family: inherit;">${this.escapeHtml(note.note)}</textarea>
+            </div>
+
+            <div style="display: flex; gap: 10px; margin-top: 15px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.showClassNotes('${classId}')">Cancel</button>
+              <button class="btn btn-primary" onclick="app.saveClassNote('${noteId}', '${classId}')">Save</button>
+            </div>
+          `;
+
+          this.showModal('class-notes', '✏️ Edit Class Note', modalContent, true);
+
+        } catch (error) {
+          console.error('Error loading note for edit:', error);
+          this.showNotification('Error loading note: ' + error.message, 'error');
+        }
+      }
+
+      async saveClassNote(noteId, classId) {
+        const noteInput = document.getElementById('edit-class-note-input');
+        const dateInput = document.getElementById('edit-class-note-date');
+        const noteText = noteInput?.value?.trim();
+        const noteDate = dateInput?.value;
+
+        if (!noteText) {
+          this.showNotification('Please enter a note', 'warning');
+          return;
+        }
+
+        try {
+          const { error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('teacher_class_notes')
+            .update({
+              note: noteText,
+              note_date: noteDate,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', noteId));
+
+          if (error) throw error;
+
+          this.showNotification('Note updated', 'success');
+
+          // Refresh the modal
+          this.closeModal('class-notes');
+          setTimeout(() => this.showClassNotes(classId), 100);
+
+        } catch (error) {
+          console.error('Error saving note:', error);
+          this.showNotification('Error saving note: ' + error.message, 'error');
+        }
+      }
+
+      async deleteClassNote(noteId, classId) {
+        if (!confirm('Delete this note? This cannot be undone.')) {
+          return;
+        }
+
+        try {
+          const { error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('teacher_class_notes')
+            .delete()
+            .eq('id', noteId));
+
+          if (error) throw error;
+
+          this.showNotification('Note deleted', 'success');
+
+          // Refresh the modal
+          this.closeModal('class-notes');
+          setTimeout(() => this.showClassNotes(classId), 100);
 
         } catch (error) {
           console.error('Error deleting note:', error);
