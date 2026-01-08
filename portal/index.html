@@ -11088,9 +11088,12 @@
                       ${student.email} • Grade ${student.grade_level || 'N/A'} • Enrolled: ${enrollDate}
                     </div>
                   </div>
-                  <div style="display: flex; gap: 10px;">
-                    <button class="btn btn-secondary small" onclick="app.addStudentNote('${classId}', '${student.id}', '${student.first_name} ${student.last_name}')">
-                      📝 Add Note
+                  <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                    <button class="btn btn-secondary small" onclick="app.showPrivateNotes('${classId}', '${student.id}', '${student.first_name} ${student.last_name}')" title="Private notes only visible to you">
+                      🔒 My Notes
+                    </button>
+                    <button class="btn btn-secondary small" onclick="app.addStudentNote('${classId}', '${student.id}', '${student.first_name} ${student.last_name}')" title="Add to permanent record">
+                      📝 Record
                     </button>
                     <button class="btn btn-secondary small" onclick="app.messageStudent('${student.id}')">
                       💬 Message
@@ -11466,6 +11469,210 @@
         } catch (error) {
           console.error('Error loading notes:', error);
           this.showNotification('Error loading notes: ' + error.message, 'error');
+        }
+      }
+
+      // ===== Teacher Private Notes Functions =====
+      // These notes are ONLY visible to the creating teacher (not admins, parents, or students)
+
+      async showPrivateNotes(classId, studentId, studentName) {
+        try {
+          const classData = this.classes.find(c => c.id === classId);
+          const className = classData?.name || 'Class';
+
+          // Load existing private notes
+          const { data: notes, error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('teacher_private_notes')
+            .select('*')
+            .eq('class_id', classId)
+            .eq('student_id', studentId)
+            .order('created_at', { ascending: false }));
+
+          if (error) throw error;
+
+          const notesHtml = notes && notes.length > 0
+            ? notes.map(note => {
+                const createdDate = new Date(note.created_at).toLocaleDateString();
+                const createdTime = new Date(note.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                const wasEdited = note.updated_at && note.updated_at !== note.created_at;
+                const editedDate = wasEdited ? new Date(note.updated_at).toLocaleDateString() : '';
+
+                return `
+                  <div class="private-note-item" style="background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 10px;">
+                    <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px;">
+                      <div style="color: var(--muted); font-size: 12px;">
+                        ${createdDate} at ${createdTime}
+                        ${wasEdited ? `<span style="color: var(--warning);"> (edited ${editedDate})</span>` : ''}
+                      </div>
+                      <div style="display: flex; gap: 8px;">
+                        <button class="btn btn-secondary small" onclick="app.editPrivateNote('${note.id}', '${classId}', '${studentId}', '${studentName.replace(/'/g, "\\'")}')">
+                          ✏️ Edit
+                        </button>
+                        <button class="btn danger small" onclick="app.deletePrivateNote('${note.id}', '${classId}', '${studentId}', '${studentName.replace(/'/g, "\\'")}')">
+                          🗑️
+                        </button>
+                      </div>
+                    </div>
+                    <div style="white-space: pre-wrap; line-height: 1.5;">${this.escapeHtml(note.note)}</div>
+                  </div>
+                `;
+              }).join('')
+            : '<p style="color: var(--muted); text-align: center; padding: 20px;">No private notes yet. Add your first note above.</p>';
+
+          const modalContent = `
+            <div>
+              <div style="margin-bottom: 15px;">
+                <h3 style="margin: 0 0 5px 0;">🔒 My Notes - ${studentName}</h3>
+                <p style="color: var(--muted); margin: 0; font-size: 13px;">
+                  ${className} • <em>Private - only visible to you</em>
+                </p>
+              </div>
+
+              <div style="background: rgba(0,0,0,0.2); border-radius: 8px; padding: 12px; margin-bottom: 15px;">
+                <textarea id="private-note-input" rows="3" placeholder="Add a note about this student..."
+                  style="width: 100%; padding: 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--card); color: var(--text); resize: vertical; font-family: inherit;"></textarea>
+                <div style="display: flex; justify-content: flex-end; margin-top: 8px;">
+                  <button class="btn btn-primary" onclick="app.addPrivateNote('${classId}', '${studentId}', '${studentName.replace(/'/g, "\\'")}')">
+                    Add Note
+                  </button>
+                </div>
+              </div>
+
+              <div id="private-notes-list" style="max-height: 50vh; overflow-y: auto;">
+                ${notesHtml}
+              </div>
+            </div>
+
+            <div style="display: flex; gap: 10px; margin-top: 15px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal('private-notes')">Close</button>
+            </div>
+          `;
+
+          this.showModal('private-notes', '🔒 Private Notes', modalContent, true);
+
+        } catch (error) {
+          console.error('Error loading private notes:', error);
+          this.showNotification('Error loading private notes: ' + error.message, 'error');
+        }
+      }
+
+      async addPrivateNote(classId, studentId, studentName) {
+        const noteInput = document.getElementById('private-note-input');
+        const noteText = noteInput?.value?.trim();
+
+        if (!noteText) {
+          this.showNotification('Please enter a note', 'warning');
+          return;
+        }
+
+        try {
+          const { error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('teacher_private_notes')
+            .insert({
+              class_id: classId,
+              student_id: studentId,
+              teacher_id: this.userInfo.user.id,
+              note: noteText
+            }));
+
+          if (error) throw error;
+
+          this.showNotification('Note added', 'success');
+
+          // Refresh the modal
+          this.closeModal('private-notes');
+          this.showPrivateNotes(classId, studentId, studentName);
+
+        } catch (error) {
+          console.error('Error adding private note:', error);
+          this.showNotification('Error adding note: ' + error.message, 'error');
+        }
+      }
+
+      async editPrivateNote(noteId, classId, studentId, studentName) {
+        try {
+          // Load the note
+          const { data: note, error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('teacher_private_notes')
+            .select('*')
+            .eq('id', noteId)
+            .single());
+
+          if (error) throw error;
+
+          const modalContent = `
+            <div>
+              <h3 style="margin-bottom: 15px;">✏️ Edit Note</h3>
+              <textarea id="edit-private-note-input" rows="5"
+                style="width: 100%; padding: 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--card); color: var(--text); resize: vertical; font-family: inherit;">${this.escapeHtml(note.note)}</textarea>
+            </div>
+
+            <div style="display: flex; gap: 10px; margin-top: 15px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.showPrivateNotes('${classId}', '${studentId}', '${studentName.replace(/'/g, "\\'")}')">Cancel</button>
+              <button class="btn btn-primary" onclick="app.savePrivateNote('${noteId}', '${classId}', '${studentId}', '${studentName.replace(/'/g, "\\'")}')">Save</button>
+            </div>
+          `;
+
+          this.showModal('private-notes', '✏️ Edit Note', modalContent, true);
+
+        } catch (error) {
+          console.error('Error loading note for edit:', error);
+          this.showNotification('Error loading note: ' + error.message, 'error');
+        }
+      }
+
+      async savePrivateNote(noteId, classId, studentId, studentName) {
+        const noteInput = document.getElementById('edit-private-note-input');
+        const noteText = noteInput?.value?.trim();
+
+        if (!noteText) {
+          this.showNotification('Please enter a note', 'warning');
+          return;
+        }
+
+        try {
+          const { error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('teacher_private_notes')
+            .update({
+              note: noteText,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', noteId));
+
+          if (error) throw error;
+
+          this.showNotification('Note updated', 'success');
+
+          // Refresh the modal
+          this.showPrivateNotes(classId, studentId, studentName);
+
+        } catch (error) {
+          console.error('Error saving note:', error);
+          this.showNotification('Error saving note: ' + error.message, 'error');
+        }
+      }
+
+      async deletePrivateNote(noteId, classId, studentId, studentName) {
+        if (!confirm('Delete this note? This cannot be undone.')) {
+          return;
+        }
+
+        try {
+          const { error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('teacher_private_notes')
+            .delete()
+            .eq('id', noteId));
+
+          if (error) throw error;
+
+          this.showNotification('Note deleted', 'success');
+
+          // Refresh the modal
+          this.showPrivateNotes(classId, studentId, studentName);
+
+        } catch (error) {
+          console.error('Error deleting note:', error);
+          this.showNotification('Error deleting note: ' + error.message, 'error');
         }
       }
 
