@@ -1953,8 +1953,11 @@
         
         console.log('👤 User authenticated:', this.userInfo.profile.first_name);
         
-        // START SESSION MONITORING <-- ADD THIS
+        // START SESSION MONITORING
         this.setupSessionMonitoring();
+
+        // START GAME MESSAGE LISTENER (for Math Dogo integration)
+        this.setupGameMessageListener();
         
         // Hide loading, show app
         document.getElementById('loading-screen').classList.add('hidden');
@@ -2338,7 +2341,172 @@
           }
         });
       }
-      
+
+      // ==================== GAME MESSAGE HANDLING ====================
+      setupGameMessageListener() {
+        window.addEventListener('message', async (event) => {
+          // Handle messages from Math Dogo and Skill Tree
+          switch (event.data.type) {
+            case 'DOGO_SKILL_PROGRESS':
+              await this.handleDogoSkillProgress(event.data);
+              break;
+            case 'DOGO_SESSION_COMPLETE':
+              await this.handleDogoSessionComplete(event.data);
+              break;
+            case 'DOGO_LESSON_COMPLETE':
+              await this.handleDogoLessonComplete(event.data);
+              break;
+            case 'SKILL_TREE_UPDATE':
+              await this.handleSkillTreeUpdate(event.data);
+              break;
+            case 'DOGO_SESSION_TO_PERSIST':
+              await this.persistDogoSession(event.data);
+              break;
+            case 'SKILL_UNLOCKED':
+              this.handleSkillUnlocked(event.data);
+              break;
+          }
+        });
+      }
+
+      // Handle real-time skill progress updates from Math Dogo
+      async handleDogoSkillProgress(data) {
+        const { skill, domain, tier, correct, total, masteryScore, skillState } = data;
+        console.log(`Portal received Dogo progress: ${skill} - ${masteryScore}%`);
+
+        // Only persist for students
+        if (this.userInfo?.profile?.user_type !== 'student') return;
+
+        try {
+          await this.upsertSkillProgress(skill, 'Math', masteryScore, skillState);
+        } catch (err) {
+          console.error('Failed to save skill progress:', err);
+        }
+      }
+
+      // Handle full session results from Math Dogo
+      async handleDogoSessionComplete(data) {
+        const { mode, skillProgress, gapLog } = data;
+        console.log(`Portal received Dogo session complete: ${skillProgress.length} skills`);
+
+        if (this.userInfo?.profile?.user_type !== 'student') return;
+
+        try {
+          // Batch update all skills from the session
+          for (const sp of skillProgress) {
+            await this.upsertSkillProgress(sp.skill, 'Math', sp.masteryScore, sp.skillState);
+          }
+
+          this.showNotification(`Math practice complete! ${skillProgress.length} skills updated.`, 'success');
+        } catch (err) {
+          console.error('Failed to save session results:', err);
+        }
+      }
+
+      // Handle lesson completion from Math Dogo Learning Center
+      async handleDogoLessonComplete(data) {
+        const { skill, domain, tier } = data;
+        console.log(`Portal received Dogo lesson complete: ${skill}`);
+
+        if (this.userInfo?.profile?.user_type !== 'student') return;
+
+        try {
+          // Lesson completion = 100% mastery
+          await this.upsertSkillProgress(skill, 'Math', 100, 'mastered');
+          this.showNotification(`Lesson complete! ${skill} mastered!`, 'success');
+        } catch (err) {
+          console.error('Failed to save lesson completion:', err);
+        }
+      }
+
+      // Handle updates forwarded from Skill Tree
+      async handleSkillTreeUpdate(data) {
+        const { skill, progress, source } = data;
+        console.log(`Portal received Skill Tree update: ${skill} from ${source}`);
+
+        if (this.userInfo?.profile?.user_type !== 'student') return;
+
+        try {
+          await this.upsertSkillProgress(skill, 'Math', progress.masteryScore, progress.skillState);
+        } catch (err) {
+          console.error('Failed to save skill tree update:', err);
+        }
+      }
+
+      // Persist full Dogo session data
+      async persistDogoSession(data) {
+        // This is called from Skill Tree, session already handled in handleDogoSessionComplete
+        console.log('Session persistence forwarded from Skill Tree');
+      }
+
+      // Handle skill unlocked notification
+      handleSkillUnlocked(data) {
+        const { skill } = data;
+        this.showNotification(`Skill unlocked: ${skill}!`, 'success');
+      }
+
+      // Upsert skill progress to database
+      async upsertSkillProgress(skillName, subject, masteryScore, state) {
+        const userId = this.userInfo?.user?.id;
+        if (!userId) return;
+
+        // Map state names
+        let dbState = state;
+        if (state === 'activated') dbState = 'mastered'; // Map activated to mastered
+
+        const { error } = await this.supabaseQuery(() =>
+          this.auth.supabase
+            .from('skill_progress')
+            .upsert({
+              user_id: userId,
+              subject: subject,
+              skill_name: skillName,
+              state: dbState,
+              mastery_score: masteryScore,
+              practice_count: this.auth.supabase.rpc ? undefined : 1, // Increment handled separately
+              last_practiced: new Date().toISOString(),
+              mastered_at: dbState === 'mastered' ? new Date().toISOString() : null,
+              updated_at: new Date().toISOString()
+            }, {
+              onConflict: 'user_id,subject,skill_name'
+            })
+        );
+
+        if (error) {
+          console.error('Error upserting skill progress:', error);
+          throw error;
+        }
+
+        // Increment practice count separately
+        await this.incrementPracticeCount(userId, subject, skillName);
+      }
+
+      // Increment practice count for a skill
+      async incrementPracticeCount(userId, subject, skillName) {
+        // First get current count
+        const { data, error: fetchError } = await this.supabaseQuery(() =>
+          this.auth.supabase
+            .from('skill_progress')
+            .select('practice_count')
+            .eq('user_id', userId)
+            .eq('subject', subject)
+            .eq('skill_name', skillName)
+            .single()
+        );
+
+        if (fetchError || !data) return;
+
+        // Update with incremented count
+        await this.supabaseQuery(() =>
+          this.auth.supabase
+            .from('skill_progress')
+            .update({ practice_count: (data.practice_count || 0) + 1 })
+            .eq('user_id', userId)
+            .eq('subject', subject)
+            .eq('skill_name', skillName)
+        );
+      }
+
       async checkAndRefreshSession() {
         // First check if connection is alive at all
         const isAlive = await this.checkConnectionHealth();
