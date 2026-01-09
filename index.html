@@ -585,6 +585,16 @@
                     return;
                 }
 
+                // Check for teacher password setup (from invite link)
+                const urlParams = new URLSearchParams(window.location.search);
+                const needsPasswordSetup = urlParams.get('setup_password') === 'true';
+
+                if (needsPasswordSetup && accessToken) {
+                    console.log('👩‍🏫 Teacher password setup detected...');
+                    await this.handleTeacherPasswordSetup(accessToken, hashParams.get('refresh_token'));
+                    return;
+                }
+
                 // Set up skill tree integration
                 this.skillTreeIntegration = new SkillTreeIntegration(this);
                 await this.skillTreeIntegration.initialize();
@@ -1271,6 +1281,138 @@
             
             closeForgotPasswordModal() {
                 this.closeModal();
+            }
+
+            async handleTeacherPasswordSetup(accessToken, refreshToken) {
+                // Set up the session with the tokens from the URL
+                try {
+                    const { data, error } = await this.auth.supabase.auth.setSession({
+                        access_token: accessToken,
+                        refresh_token: refreshToken
+                    });
+
+                    if (error) {
+                        console.error('Session setup error:', error);
+                        window.PortalUI?.showNotification('Invalid or expired invitation link. Please contact an administrator.', 'error');
+                        this.showLoginForm();
+                        return;
+                    }
+
+                    const user = data?.user;
+                    const firstName = user?.user_metadata?.first_name || 'Teacher';
+
+                    // Show password setup modal
+                    this.showTeacherPasswordSetupModal(firstName);
+
+                } catch (err) {
+                    console.error('Teacher password setup error:', err);
+                    window.PortalUI?.showNotification('Error setting up account. Please try again.', 'error');
+                    this.showLoginForm();
+                }
+            }
+
+            showTeacherPasswordSetupModal(firstName) {
+                const modalContent = `
+                    <div style="text-align: center; padding: 20px;">
+                        <h3 style="margin-bottom: 10px;">Welcome, ${firstName}!</h3>
+                        <p style="margin-bottom: 20px; color: var(--muted);">
+                            Your account has been created. Please set a password to complete your registration.
+                        </p>
+
+                        <form id="teacher-password-setup-form">
+                            <div class="form-group" style="text-align: left; margin-bottom: 15px;">
+                                <label for="setup-password">Password</label>
+                                <input type="password" id="setup-password" required minlength="6"
+                                       placeholder="Enter your password (min 6 characters)"
+                                       style="width: 100%; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text);">
+                            </div>
+                            <div class="form-group" style="text-align: left; margin-bottom: 20px;">
+                                <label for="setup-password-confirm">Confirm Password</label>
+                                <input type="password" id="setup-password-confirm" required minlength="6"
+                                       placeholder="Confirm your password"
+                                       style="width: 100%; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text);">
+                            </div>
+
+                            <button type="submit" class="btn btn-primary" id="setup-password-btn" style="width: 100%;">
+                                Set Password & Continue
+                            </button>
+                        </form>
+                    </div>
+                `;
+
+                this.showModal('teacher-password-setup', 'Complete Your Registration', modalContent);
+
+                // Add form handler after modal is rendered
+                setTimeout(() => {
+                    const form = document.getElementById('teacher-password-setup-form');
+                    if (form) {
+                        form.addEventListener('submit', (e) => this.submitTeacherPassword(e));
+                    }
+                }, 100);
+            }
+
+            async submitTeacherPassword(e) {
+                e.preventDefault();
+
+                const password = document.getElementById('setup-password')?.value;
+                const confirmPassword = document.getElementById('setup-password-confirm')?.value;
+                const submitBtn = document.getElementById('setup-password-btn');
+
+                if (!password || !confirmPassword) return;
+
+                if (password !== confirmPassword) {
+                    window.PortalUI?.showNotification('Passwords do not match', 'error');
+                    return;
+                }
+
+                if (password.length < 6) {
+                    window.PortalUI?.showNotification('Password must be at least 6 characters', 'error');
+                    return;
+                }
+
+                if (submitBtn) {
+                    submitBtn.disabled = true;
+                    submitBtn.textContent = 'Setting up...';
+                }
+
+                try {
+                    // Update the user's password
+                    const { error } = await this.auth.supabase.auth.updateUser({
+                        password: password
+                    });
+
+                    if (error) throw error;
+
+                    // Clear the needs_password_setup flag from user metadata
+                    await this.auth.supabase.auth.updateUser({
+                        data: { needs_password_setup: false }
+                    });
+
+                    // Close modal and clean up URL
+                    this.closeModal();
+
+                    // Remove setup_password param and hash from URL
+                    const url = new URL(window.location);
+                    url.searchParams.delete('setup_password');
+                    url.hash = '';
+                    window.history.replaceState({}, '', url);
+
+                    window.PortalUI?.showNotification('Password set successfully! Welcome to the portal.', 'success');
+
+                    // Redirect to the portal
+                    setTimeout(() => {
+                        window.location.href = 'portal/index.html';
+                    }, 1500);
+
+                } catch (err) {
+                    console.error('Password setup error:', err);
+                    window.PortalUI?.showNotification('Error setting password: ' + err.message, 'error');
+
+                    if (submitBtn) {
+                        submitBtn.disabled = false;
+                        submitBtn.textContent = 'Set Password & Continue';
+                    }
+                }
             }
 
             showActivateForm() {
