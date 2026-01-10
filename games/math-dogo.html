@@ -312,6 +312,16 @@
 
         .guided-inline-actions { display: flex; justify-content: center; margin-top: 1.5rem; }
 
+        /* Read Aloud Button Styles */
+        .read-aloud-btn { background: var(--slate-600); border: 1px solid var(--slate-500); color: var(--slate-300); padding: 0.5rem 0.75rem; border-radius: 8px; cursor: pointer; display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; transition: all 0.2s; }
+        .read-aloud-btn:hover { background: var(--slate-500); color: var(--slate-100); }
+        .read-aloud-btn.speaking { background: var(--emerald-600); border-color: var(--emerald-500); color: white; animation: pulse 1.5s infinite; }
+        .read-aloud-btn .speaker-icon { font-size: 1rem; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
+
+        .step-header-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.75rem; }
+        .step-prompt-text { flex: 1; font-size: 1.2rem; color: var(--slate-100); text-align: center; }
+
         @keyframes slideIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
 
         .practice-feedback { padding: 1rem 1.5rem; border-radius: 10px; margin-top: 1rem; display: none; }
@@ -9223,8 +9233,15 @@ function renderGuidedStep() {
         document.getElementById('guided-step-hint').textContent = step.hint || '';
     }
 
-    // Set prompt
-    document.getElementById('guided-step-prompt').innerHTML = `<strong>Step ${stepNum}:</strong> ${step.prompt}`;
+    // Set prompt with read aloud button
+    document.getElementById('guided-step-prompt').innerHTML = `
+        <div class="step-header-row">
+            <div class="step-prompt-text"><strong>Step ${stepNum}:</strong> ${step.prompt}</div>
+            <button class="read-aloud-btn" onclick="readAloud(this)" title="Read aloud">
+                <span class="speaker-icon">🔊</span> Read
+            </button>
+        </div>
+    `;
 
     // Reset input
     document.getElementById('guided-input-area').innerHTML = `
@@ -9460,10 +9477,151 @@ function completeLearning() {
 function endLearning() {
     document.getElementById('learning-screen').classList.remove('active');
     document.getElementById('learning-setup-screen').classList.add('active');
-    
+
+    // Stop any ongoing speech
+    stopSpeaking();
+
     // Reset button
     document.getElementById('learning-continue-btn').onclick = nextLearningPhase;
     document.getElementById('learning-continue-btn').textContent = 'Continue →';
+}
+
+// ========================================
+// TEXT-TO-SPEECH (READ ALOUD) FUNCTIONS
+// ========================================
+
+// Track current speech state
+let currentUtterance = null;
+let currentSpeakingBtn = null;
+
+// Clean text for speech (remove HTML, special chars, etc.)
+function cleanTextForSpeech(text) {
+    // Remove HTML tags
+    let cleaned = text.replace(/<[^>]*>/g, ' ');
+    // Replace common math symbols with spoken equivalents
+    cleaned = cleaned
+        .replace(/×/g, ' times ')
+        .replace(/÷/g, ' divided by ')
+        .replace(/\+/g, ' plus ')
+        .replace(/−|–|-/g, ' minus ')
+        .replace(/=/g, ' equals ')
+        .replace(/≥/g, ' is greater than or equal to ')
+        .replace(/≤/g, ' is less than or equal to ')
+        .replace(/>/g, ' is greater than ')
+        .replace(/</g, ' is less than ')
+        .replace(/≠/g, ' is not equal to ')
+        .replace(/²/g, ' squared ')
+        .replace(/³/g, ' cubed ')
+        .replace(/√/g, ' square root of ')
+        .replace(/π/g, ' pi ')
+        .replace(/°/g, ' degrees ')
+        .replace(/\$/g, ' dollars ')
+        .replace(/%/g, ' percent ')
+        .replace(/\^/g, ' to the power of ')
+        .replace(/\*/g, ' times ')
+        .replace(/\//g, ' divided by ')
+        .replace(/\(x\)/g, ' of x ')
+        .replace(/x²/g, ' x squared ')
+        .replace(/x³/g, ' x cubed ')
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&amp;/g, ' and ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    return cleaned;
+}
+
+// Read text aloud
+function readAloud(buttonElement) {
+    // Check if speech synthesis is supported
+    if (!('speechSynthesis' in window)) {
+        alert('Sorry, your browser does not support text-to-speech.');
+        return;
+    }
+
+    // If already speaking, stop
+    if (speechSynthesis.speaking) {
+        stopSpeaking();
+        return;
+    }
+
+    // Get the current step's text to read
+    const step = state.guidedSteps[state.guidedCurrentStep];
+    const stepNum = state.guidedCurrentStep + 1;
+
+    // Build the text to read
+    let textToRead = `Step ${stepNum}. ${step.prompt}`;
+
+    // Also add the hint if available
+    if (step.hint) {
+        textToRead += `. Hint: ${step.hint}`;
+    }
+
+    // Clean the text
+    textToRead = cleanTextForSpeech(textToRead);
+
+    // Create utterance
+    currentUtterance = new SpeechSynthesisUtterance(textToRead);
+    currentUtterance.rate = 0.9; // Slightly slower for clarity
+    currentUtterance.pitch = 1;
+    currentUtterance.volume = 1;
+
+    // Try to use a good voice (prefer US English)
+    const voices = speechSynthesis.getVoices();
+    const preferredVoice = voices.find(v =>
+        v.lang.startsWith('en') && (v.name.includes('Google') || v.name.includes('Microsoft') || v.name.includes('Samantha'))
+    ) || voices.find(v => v.lang.startsWith('en-US')) || voices.find(v => v.lang.startsWith('en'));
+
+    if (preferredVoice) {
+        currentUtterance.voice = preferredVoice;
+    }
+
+    // Update button state
+    currentSpeakingBtn = buttonElement;
+    buttonElement.classList.add('speaking');
+    buttonElement.innerHTML = '<span class="speaker-icon">🔊</span> Stop';
+
+    // Handle speech end
+    currentUtterance.onend = () => {
+        resetSpeakingButton();
+    };
+
+    currentUtterance.onerror = () => {
+        resetSpeakingButton();
+    };
+
+    // Start speaking
+    speechSynthesis.speak(currentUtterance);
+}
+
+// Stop speaking
+function stopSpeaking() {
+    if (speechSynthesis.speaking) {
+        speechSynthesis.cancel();
+    }
+    resetSpeakingButton();
+}
+
+// Reset button state
+function resetSpeakingButton() {
+    if (currentSpeakingBtn) {
+        currentSpeakingBtn.classList.remove('speaking');
+        currentSpeakingBtn.innerHTML = '<span class="speaker-icon">🔊</span> Read';
+        currentSpeakingBtn = null;
+    }
+    currentUtterance = null;
+}
+
+// Stop speaking when moving to next step
+const originalRenderGuidedStep = renderGuidedStep;
+renderGuidedStep = function() {
+    stopSpeaking();
+    originalRenderGuidedStep();
+};
+
+// Ensure voices are loaded (some browsers load them asynchronously)
+if ('speechSynthesis' in window) {
+    speechSynthesis.getVoices();
+    speechSynthesis.onvoiceschanged = () => speechSynthesis.getVoices();
 }
     </script>
 </body>
