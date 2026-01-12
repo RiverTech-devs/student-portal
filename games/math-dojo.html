@@ -378,7 +378,7 @@
                         <div class="mode-feature"><span class="check">✓</span> Adaptive difficulty</div>
                         <div class="mode-feature"><span class="check">✓</span> Earn your belt rank</div>
                         <div class="mode-feature"><span class="check">✓</span> Weakness analysis</div>
-                        <div class="mode-feature"><span class="check">✓</span> ~25 challenges</div>
+                        <div class="mode-feature"><span class="check">✓</span> ~30 challenges</div>
                     </div>
                 </div>
                 <div class="mode-card learning" onclick="selectMode('learning')">
@@ -14524,9 +14524,38 @@ function generateLesson(tier, skill) {
 function generateQuestion(tier, domain = null) {
     const tierGens = generators[tier];
     if (!tierGens) return null;
-    
-    const domains = Object.keys(tierGens);
-    const selectedDomain = domain && tierGens[domain] ? domain : pick(domains);
+
+    const allDomains = Object.keys(tierGens);
+    let selectedDomain;
+
+    if (domain && tierGens[domain]) {
+        // Specific domain requested
+        selectedDomain = domain;
+    } else if (state.mode === 'placement') {
+        // In placement mode, prioritize untested domains for comprehensive coverage
+        if (!state.testedDomains[tier]) {
+            state.testedDomains[tier] = new Set();
+        }
+
+        // Find domains not yet tested in this tier
+        const untestedDomains = allDomains.filter(d => !state.testedDomains[tier].has(d));
+
+        if (untestedDomains.length > 0) {
+            // Pick from untested domains first
+            selectedDomain = pick(untestedDomains);
+        } else {
+            // All domains tested, reset and pick any (allows retesting for accuracy)
+            state.testedDomains[tier].clear();
+            selectedDomain = pick(allDomains);
+        }
+
+        // Mark this domain as tested
+        state.testedDomains[tier].add(selectedDomain);
+    } else {
+        // Testing center or learning - random selection
+        selectedDomain = pick(allDomains);
+    }
+
     const generator = tierGens[selectedDomain];
     
     const q = generator();
@@ -14560,7 +14589,9 @@ function generateQuestion(tier, domain = null) {
 // ========================================
 let state = { mode: null, currentTier: 5, selectedTiers: [], history: [], tierScores: {}, domainScores: {}, gapLog: [], currentQuestion: null, selectedAnswer: null, startTime: null, timerInterval: null, elapsedTime: 0, consecutiveCorrect: 0, consecutiveWrong: 0, currentStreak: 0, probeMode: false,
     // Learning Center state
-    learningTier: 1, learningSkill: null, learningPhase: 'learn', currentLesson: null, guidedStep: 0, practiceAttempts: 0, practiceCorrect: 0
+    learningTier: 1, learningSkill: null, learningPhase: 'learn', currentLesson: null, guidedStep: 0, practiceAttempts: 0, practiceCorrect: 0,
+    // Domain coverage tracking for placement test
+    testedDomains: {}  // { tier: Set of tested domains }
 };
 
 function initTierGrid() {
@@ -14598,7 +14629,8 @@ function goToModeSelect() {
 
 function resetState() {
     state = { mode: null, currentTier: 5, selectedTiers: [], history: [], tierScores: {}, domainScores: {}, gapLog: [], currentQuestion: null, selectedAnswer: null, startTime: null, timerInterval: null, elapsedTime: 0, consecutiveCorrect: 0, consecutiveWrong: 0, currentStreak: 0, probeMode: false,
-        learningTier: 1, learningSkill: null, learningPhase: 'learn', currentLesson: null, guidedStep: 0, practiceAttempts: 0, practiceCorrect: 0
+        learningTier: 1, learningSkill: null, learningPhase: 'learn', currentLesson: null, guidedStep: 0, practiceAttempts: 0, practiceCorrect: 0,
+        testedDomains: {}  // Reset domain coverage tracking
     };
     document.querySelectorAll('.level-card').forEach(c => c.classList.remove('selected'));
     document.querySelectorAll('.tier-option').forEach(o => o.classList.remove('selected'));
@@ -14662,27 +14694,72 @@ function setupTestUI(isTC) {
 }
 
 function loadQuestion() {
-    if (state.mode === 'placement' && state.history.length >= 25) { endTest(); return; }
-    
+    // Placement test: 30 questions for comprehensive coverage
+    if (state.mode === 'placement' && state.history.length >= 30) { endTest(); return; }
+
     let targetTier = state.currentTier;
-    
-    // Gap probe every 6 questions in placement mode
-    if (state.mode === 'placement' && state.history.length > 0 && state.history.length % 6 === 0) {
-        targetTier = Math.min(state.currentTier + 2, 10);
-        state.probeMode = true;
-    } else {
-        state.probeMode = false;
+    state.probeMode = false;
+
+    if (state.mode === 'placement') {
+        // Comprehensive placement test algorithm:
+        // - Tests starting tier and adjacent tiers
+        // - Probes higher tiers to find ceiling
+        // - Probes lower tiers to find floor
+        // - Ensures domain coverage within each tested tier
+
+        const qNum = state.history.length;
+        const startTier = state.currentTier;
+
+        // Question distribution for 30 questions:
+        // Q0-5: Starting tier (6 questions, different domains)
+        // Q6-9: One tier below starting (4 questions) - find floor
+        // Q10-14: Starting tier again (5 questions, different domains)
+        // Q15-18: One tier above starting (4 questions) - probe ceiling
+        // Q19-23: Starting tier (5 questions)
+        // Q24-26: Two tiers above starting (3 questions) - gap probe
+        // Q27-29: Adaptive based on performance (3 questions)
+
+        if (qNum < 6) {
+            targetTier = startTier;
+        } else if (qNum < 10) {
+            targetTier = Math.max(1, startTier - 1);
+        } else if (qNum < 15) {
+            targetTier = startTier;
+        } else if (qNum < 19) {
+            targetTier = Math.min(10, startTier + 1);
+            state.probeMode = true;
+        } else if (qNum < 24) {
+            targetTier = startTier;
+        } else if (qNum < 27) {
+            targetTier = Math.min(10, startTier + 2);
+            state.probeMode = true;
+        } else {
+            // Adaptive: test tier where accuracy is lowest
+            let lowestAccTier = startTier;
+            let lowestAcc = 100;
+            for (let t = Math.max(1, startTier - 1); t <= Math.min(10, startTier + 2); t++) {
+                const ts = state.tierScores[t];
+                if (ts && ts.total > 0) {
+                    const acc = (ts.correct / ts.total) * 100;
+                    if (acc < lowestAcc) {
+                        lowestAcc = acc;
+                        lowestAccTier = t;
+                    }
+                }
+            }
+            targetTier = lowestAccTier;
+        }
     }
-    
+
     // Cycle through selected tiers in testing center
     if (state.mode === 'testing' && state.selectedTiers.length > 1) {
         const sorted = [...state.selectedTiers].sort((a, b) => a - b);
         targetTier = sorted[state.history.length % sorted.length];
     }
-    
+
     const q = generateQuestion(targetTier);
     if (!q) { endTest(); return; }
-    
+
     state.currentQuestion = q;
     state.selectedAnswer = null;
     renderQuestion();
