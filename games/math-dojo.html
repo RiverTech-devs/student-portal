@@ -378,7 +378,7 @@
                         <div class="mode-feature"><span class="check">✓</span> Adaptive difficulty</div>
                         <div class="mode-feature"><span class="check">✓</span> Earn your belt rank</div>
                         <div class="mode-feature"><span class="check">✓</span> Weakness analysis</div>
-                        <div class="mode-feature"><span class="check">✓</span> ~30 challenges</div>
+                        <div class="mode-feature"><span class="check">✓</span> 20-40 adaptive challenges</div>
                     </div>
                 </div>
                 <div class="mode-card learning" onclick="selectMode('learning')">
@@ -14693,62 +14693,107 @@ function setupTestUI(isTC) {
     document.getElementById('next-btn').className = btnClass;
 }
 
+// Helper function to get tier accuracy
+function getTierAccuracy(tier) {
+    const ts = state.tierScores[tier];
+    if (!ts || ts.total === 0) return null;
+    return (ts.correct / ts.total) * 100;
+}
+
+// Helper function to determine adaptive tier based on recent performance
+function getAdaptiveTier() {
+    // Find the current working tier (where we have good but not perfect accuracy)
+    // Move up if doing well (>80%), move down if struggling (<50%)
+
+    let workingTier = state.currentTier;
+
+    // Check recent history (last 5 questions at current working tier)
+    const recentAtTier = state.history.filter(h => h.tier === workingTier).slice(-5);
+    if (recentAtTier.length >= 3) {
+        const recentCorrect = recentAtTier.filter(h => h.correct).length;
+        const recentAcc = (recentCorrect / recentAtTier.length) * 100;
+
+        if (recentAcc >= 80 && workingTier < 10) {
+            // Doing great, try harder tier
+            workingTier = Math.min(10, workingTier + 1);
+        } else if (recentAcc < 50 && workingTier > 1) {
+            // Struggling, try easier tier
+            workingTier = Math.max(1, workingTier - 1);
+        }
+    }
+
+    return workingTier;
+}
+
 function loadQuestion() {
-    // Placement test: 30 questions for comprehensive coverage
-    if (state.mode === 'placement' && state.history.length >= 30) { endTest(); return; }
+    // Placement test: dynamic length based on convergence (min 20, max 40)
+    const minQuestions = 20;
+    const maxQuestions = 40;
+
+    if (state.mode === 'placement') {
+        // Check if we've converged on a stable tier
+        if (state.history.length >= minQuestions) {
+            const hasConverged = checkPlacementConvergence();
+            if (hasConverged || state.history.length >= maxQuestions) {
+                endTest();
+                return;
+            }
+        }
+    }
 
     let targetTier = state.currentTier;
     state.probeMode = false;
 
     if (state.mode === 'placement') {
-        // Comprehensive placement test algorithm:
-        // - Tests starting tier and adjacent tiers
-        // - Probes higher tiers to find ceiling
-        // - Probes lower tiers to find floor
-        // - Ensures domain coverage within each tested tier
+        // Fully adaptive placement test algorithm:
+        // 1. Start at selected tier, test 3 questions
+        // 2. If >66% correct, move up a tier; if <33% correct, move down
+        // 3. Continue until we find the "edge" tier (50-80% accuracy)
+        // 4. Once edge is found, test domains within that tier and adjacent tiers
+        // 5. Periodically probe 2-3 tiers above/below to ensure we haven't missed anything
 
         const qNum = state.history.length;
-        const startTier = state.currentTier;
 
-        // Question distribution for 30 questions:
-        // Q0-5: Starting tier (6 questions, different domains)
-        // Q6-9: One tier below starting (4 questions) - find floor
-        // Q10-14: Starting tier again (5 questions, different domains)
-        // Q15-18: One tier above starting (4 questions) - probe ceiling
-        // Q19-23: Starting tier (5 questions)
-        // Q24-26: Two tiers above starting (3 questions) - gap probe
-        // Q27-29: Adaptive based on performance (3 questions)
+        // Phase 1 (Q0-2): Initial calibration at starting tier
+        if (qNum < 3) {
+            targetTier = state.currentTier;
+        }
+        // Phase 2 (Q3+): Adaptive tier selection
+        else {
+            // Get current tier's accuracy
+            const currentAcc = getTierAccuracy(state.currentTier);
 
-        if (qNum < 6) {
-            targetTier = startTier;
-        } else if (qNum < 10) {
-            targetTier = Math.max(1, startTier - 1);
-        } else if (qNum < 15) {
-            targetTier = startTier;
-        } else if (qNum < 19) {
-            targetTier = Math.min(10, startTier + 1);
-            state.probeMode = true;
-        } else if (qNum < 24) {
-            targetTier = startTier;
-        } else if (qNum < 27) {
-            targetTier = Math.min(10, startTier + 2);
-            state.probeMode = true;
-        } else {
-            // Adaptive: test tier where accuracy is lowest
-            let lowestAccTier = startTier;
-            let lowestAcc = 100;
-            for (let t = Math.max(1, startTier - 1); t <= Math.min(10, startTier + 2); t++) {
-                const ts = state.tierScores[t];
-                if (ts && ts.total > 0) {
-                    const acc = (ts.correct / ts.total) * 100;
-                    if (acc < lowestAcc) {
-                        lowestAcc = acc;
-                        lowestAccTier = t;
+            // Every 5 questions, do a probe of a distant tier
+            if (qNum % 5 === 0 && qNum > 0) {
+                state.probeMode = true;
+                // Probe higher if doing well, lower if struggling
+                if (currentAcc !== null && currentAcc >= 60) {
+                    // Probe 2-3 tiers above current
+                    const probeUp = Math.min(10, state.currentTier + rand(2, 3));
+                    targetTier = probeUp;
+                } else {
+                    // Probe 2-3 tiers below current
+                    const probeDown = Math.max(1, state.currentTier - rand(2, 3));
+                    targetTier = probeDown;
+                }
+            }
+            // Regular adaptive selection
+            else {
+                targetTier = getAdaptiveTier();
+
+                // Update working tier if we've moved
+                if (targetTier !== state.currentTier) {
+                    const tierAcc = getTierAccuracy(targetTier);
+                    // Only commit to new tier if we have evidence it's appropriate
+                    if (tierAcc === null || (tierAcc >= 30 && tierAcc <= 90)) {
+                        state.currentTier = targetTier;
                     }
                 }
             }
-            targetTier = lowestAccTier;
         }
+
+        // Ensure we're testing within bounds
+        targetTier = Math.max(1, Math.min(10, targetTier));
     }
 
     // Cycle through selected tiers in testing center
@@ -14765,6 +14810,30 @@ function loadQuestion() {
     renderQuestion();
     startTimer();
     updateProgress();
+}
+
+// Check if placement test has converged to a stable tier
+function checkPlacementConvergence() {
+    // Need at least 5 questions at the current tier
+    const atCurrentTier = state.history.filter(h => h.tier === state.currentTier);
+    if (atCurrentTier.length < 5) return false;
+
+    // Check if accuracy is stable (between 40-80% suggests correct placement)
+    const acc = getTierAccuracy(state.currentTier);
+    if (acc === null) return false;
+
+    // Also need to have tested adjacent tiers
+    const tierAbove = state.currentTier < 10 ? getTierAccuracy(state.currentTier + 1) : 100;
+    const tierBelow = state.currentTier > 1 ? getTierAccuracy(state.currentTier - 1) : 0;
+
+    // Converged if: current tier is challenging but doable (40-80%)
+    // AND tier above is harder (<60%) or we're at top
+    // AND tier below is easier (>60%) or we're at bottom
+    const currentInRange = acc >= 40 && acc <= 80;
+    const aboveIsHarder = tierAbove === null || tierAbove < 60 || state.currentTier === 10;
+    const belowIsEasier = tierBelow === null || tierBelow > 60 || state.currentTier === 1;
+
+    return currentInRange && aboveIsHarder && belowIsEasier;
 }
 
 function renderQuestion() {
