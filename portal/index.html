@@ -1440,7 +1440,17 @@
                 <!-- Classes will be loaded here -->
               </div>
             </section>
-  
+
+            <!-- Testing Center Section -->
+            <section id="testing-center-section" class="hidden">
+              <div id="testing-center-container" style="width: 100%; min-height: calc(100vh - 200px);">
+                <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 400px; color: var(--muted);">
+                  <div style="font-size: 48px; margin-bottom: 16px;">📝</div>
+                  <p>Loading Testing Center...</p>
+                </div>
+              </div>
+            </section>
+
             <!-- Messaging Section -->
             <section id="messaging-section" class="hidden">
               <div class="card">
@@ -2377,6 +2387,32 @@
             case 'SKILL_UNLOCKED':
               this.handleSkillUnlocked(event.data);
               break;
+            // Testing Center messages
+            case 'TESTING_CENTER_AUTH_READY':
+              console.log('Testing Center auth acknowledged');
+              break;
+            case 'TESTING_CENTER_REQUEST_CLASSES':
+              await this.handleTestingCenterClassesRequest();
+              break;
+            case 'TESTING_CENTER_REQUEST_STUDENTS':
+              await this.handleTestingCenterStudentsRequest(event.data.payload);
+              break;
+            case 'TEST_ASSIGNMENT_CREATED':
+              await this.handleTestAssignmentCreated(event.data.payload);
+              break;
+            case 'TEST_SUBMISSION_COMPLETE':
+              await this.handleTestSubmissionComplete(event.data.payload);
+              break;
+            case 'TEST_GRADED':
+              await this.handleTestGraded(event.data.payload);
+              break;
+            case 'TESTING_CENTER_REFRESH_AUTH':
+              await this.sendTestingCenterAuth();
+              break;
+            case 'TESTING_CENTER_ERROR':
+              console.error('Testing Center error:', event.data.payload?.error);
+              this.showNotification('Testing Center error: ' + (event.data.payload?.error || 'Unknown error'), 'error');
+              break;
           }
         });
       }
@@ -2517,6 +2553,380 @@
             .eq('subject', subject)
             .eq('skill_name', skillName)
         );
+      }
+
+      // ==================== TESTING CENTER METHODS ====================
+
+      // Load the testing center iframe
+      loadTestingCenter() {
+        const container = document.getElementById('testing-center-container');
+        if (!container) return;
+
+        // Check if already loaded
+        if (container.querySelector('iframe#testing-center-iframe')) {
+          // Already loaded, just resend auth in case it expired
+          this.sendTestingCenterAuth();
+          return;
+        }
+
+        // Show loading state
+        container.innerHTML = `
+          <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 400px; color: var(--muted);">
+            <div style="font-size: 48px; margin-bottom: 16px;">📝</div>
+            <p>Loading Testing Center...</p>
+          </div>
+        `;
+
+        // Create iframe
+        const iframe = document.createElement('iframe');
+        iframe.id = 'testing-center-iframe';
+        iframe.src = '../extensions/testing-center.html';
+        iframe.style.cssText = 'width: 100%; height: calc(100vh - 180px); border: none; border-radius: 12px; background: var(--bg-secondary);';
+
+        // Send auth token once iframe is loaded
+        iframe.onload = () => {
+          console.log('Testing Center iframe loaded, sending auth...');
+          this.sendTestingCenterAuth();
+        };
+
+        iframe.onerror = () => {
+          container.innerHTML = `
+            <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 400px; color: var(--danger);">
+              <div style="font-size: 48px; margin-bottom: 16px;">⚠️</div>
+              <p>Failed to load Testing Center</p>
+              <button class="btn btn-primary" onclick="app.loadTestingCenter()" style="margin-top: 16px;">Retry</button>
+            </div>
+          `;
+        };
+
+        container.innerHTML = '';
+        container.appendChild(iframe);
+      }
+
+      // Send auth credentials to testing center iframe
+      async sendTestingCenterAuth() {
+        const iframe = document.getElementById('testing-center-iframe');
+        if (!iframe || !iframe.contentWindow) {
+          console.warn('Testing center iframe not ready');
+          return;
+        }
+
+        try {
+          const { data: { session } } = await this.auth.supabase.auth.getSession();
+
+          if (!session) {
+            console.error('No active session for testing center');
+            return;
+          }
+
+          iframe.contentWindow.postMessage({
+            type: 'TESTING_CENTER_AUTH',
+            payload: {
+              userId: this.userInfo.user.id,
+              userType: this.userInfo.profile.user_type,
+              accessToken: session.access_token,
+              refreshToken: session.refresh_token,
+              firstName: this.userInfo.profile.first_name,
+              lastName: this.userInfo.profile.last_name,
+              email: this.userInfo.user.email
+            }
+          }, '*');
+
+          console.log('Auth sent to testing center');
+        } catch (error) {
+          console.error('Failed to send auth to testing center:', error);
+        }
+      }
+
+      // Handle request for classes data from testing center
+      async handleTestingCenterClassesRequest() {
+        const iframe = document.getElementById('testing-center-iframe');
+        if (!iframe || !iframe.contentWindow) return;
+
+        try {
+          // Fetch classes for current teacher/admin
+          const { data: classes, error } = await this.supabaseQuery(() =>
+            this.auth.supabase
+              .from('classes')
+              .select(`
+                id,
+                name,
+                subject,
+                grade_level,
+                class_enrollments!inner (
+                  id,
+                  student_id,
+                  user_profiles!class_enrollments_student_id_fkey (
+                    id,
+                    first_name,
+                    last_name,
+                    email
+                  )
+                )
+              `)
+              .eq('teacher_id', this.userInfo.user.id)
+              .eq('class_enrollments.status', 'active')
+          );
+
+          if (error) throw error;
+
+          // Format classes for testing center
+          const formattedClasses = (classes || []).map(c => ({
+            id: c.id,
+            name: c.name,
+            subject: c.subject,
+            grade_level: c.grade_level,
+            students: (c.class_enrollments || []).map(e => ({
+              id: e.user_profiles.id,
+              name: `${e.user_profiles.first_name} ${e.user_profiles.last_name}`,
+              email: e.user_profiles.email
+            }))
+          }));
+
+          iframe.contentWindow.postMessage({
+            type: 'TESTING_CENTER_CLASSES_DATA',
+            payload: { classes: formattedClasses }
+          }, '*');
+        } catch (error) {
+          console.error('Failed to fetch classes for testing center:', error);
+          iframe.contentWindow.postMessage({
+            type: 'TESTING_CENTER_ERROR',
+            payload: { error: 'Failed to load classes' }
+          }, '*');
+        }
+      }
+
+      // Handle request for students in a specific class
+      async handleTestingCenterStudentsRequest(payload) {
+        const iframe = document.getElementById('testing-center-iframe');
+        if (!iframe || !iframe.contentWindow) return;
+
+        const { classId } = payload || {};
+        if (!classId) return;
+
+        try {
+          const { data: enrollments, error } = await this.supabaseQuery(() =>
+            this.auth.supabase
+              .from('class_enrollments')
+              .select(`
+                student_id,
+                user_profiles!class_enrollments_student_id_fkey (
+                  id,
+                  first_name,
+                  last_name,
+                  email
+                )
+              `)
+              .eq('class_id', classId)
+              .eq('status', 'active')
+          );
+
+          if (error) throw error;
+
+          const students = (enrollments || []).map(e => ({
+            id: e.user_profiles.id,
+            name: `${e.user_profiles.first_name} ${e.user_profiles.last_name}`,
+            email: e.user_profiles.email
+          }));
+
+          iframe.contentWindow.postMessage({
+            type: 'TESTING_CENTER_STUDENTS_DATA',
+            payload: { classId, students }
+          }, '*');
+        } catch (error) {
+          console.error('Failed to fetch students for testing center:', error);
+        }
+      }
+
+      // Handle test assignment creation - creates corresponding assignment entry
+      async handleTestAssignmentCreated(payload) {
+        const { testId, testTitle, classId, dueDate, maxPoints, testAssignmentId } = payload || {};
+
+        if (!testId || !classId) {
+          console.error('Invalid test assignment payload');
+          return;
+        }
+
+        try {
+          // Create corresponding assignment in assignments table
+          const { data: assignment, error } = await this.supabaseQuery(() =>
+            this.auth.supabase
+              .from('assignments')
+              .insert({
+                class_id: classId,
+                title: `[Test] ${testTitle}`,
+                description: 'Testing Center exam - grades synced automatically',
+                due_date: dueDate,
+                max_points: maxPoints || 100,
+                is_published: true,
+                assignment_type: 'test',
+                graded_offline: true,
+                created_by: this.userInfo.user.id
+              })
+              .select()
+              .single()
+          );
+
+          if (error) throw error;
+
+          // Update test_assignments with linked_assignment_id
+          if (testAssignmentId && assignment) {
+            await this.supabaseQuery(() =>
+              this.auth.supabase
+                .from('test_assignments')
+                .update({ linked_assignment_id: assignment.id })
+                .eq('id', testAssignmentId)
+            );
+          }
+
+          this.showNotification('Test assigned and added to gradebook', 'success');
+          console.log('Test assignment linked to gradebook:', assignment.id);
+        } catch (error) {
+          console.error('Failed to create assignment for test:', error);
+          this.showNotification('Test assigned but failed to link to gradebook', 'warning');
+        }
+      }
+
+      // Handle test submission completion - creates corresponding submission entry
+      async handleTestSubmissionComplete(payload) {
+        const { testId, submissionId, studentId, score, maxScore, testAssignmentId } = payload || {};
+
+        if (!testId || !studentId) return;
+
+        try {
+          // Get linked assignment_id from test_assignments
+          let linkedAssignmentId = null;
+
+          if (testAssignmentId) {
+            const { data: testAssignment } = await this.supabaseQuery(() =>
+              this.auth.supabase
+                .from('test_assignments')
+                .select('linked_assignment_id')
+                .eq('id', testAssignmentId)
+                .single()
+            );
+            linkedAssignmentId = testAssignment?.linked_assignment_id;
+          }
+
+          if (!linkedAssignmentId) {
+            // Try to find by test_id and class membership
+            const { data: testAssignments } = await this.supabaseQuery(() =>
+              this.auth.supabase
+                .from('test_assignments')
+                .select('linked_assignment_id, class_id')
+                .eq('test_id', testId)
+                .not('linked_assignment_id', 'is', null)
+            );
+
+            if (testAssignments && testAssignments.length > 0) {
+              linkedAssignmentId = testAssignments[0].linked_assignment_id;
+            }
+          }
+
+          if (!linkedAssignmentId) {
+            console.log('No linked assignment found for test submission');
+            return;
+          }
+
+          // Create/update assignment_submission
+          const { data: submission, error } = await this.supabaseQuery(() =>
+            this.auth.supabase
+              .from('assignment_submissions')
+              .upsert({
+                assignment_id: linkedAssignmentId,
+                student_id: studentId,
+                submitted_at: new Date().toISOString(),
+                status: 'submitted'
+              }, {
+                onConflict: 'assignment_id,student_id'
+              })
+              .select()
+              .single()
+          );
+
+          if (error) throw error;
+
+          // Update test_submissions with linked_submission_id
+          if (submissionId && submission) {
+            await this.supabaseQuery(() =>
+              this.auth.supabase
+                .from('test_submissions')
+                .update({ linked_submission_id: submission.id })
+                .eq('id', submissionId)
+            );
+          }
+
+          console.log('Test submission linked to assignment submission:', submission.id);
+        } catch (error) {
+          console.error('Failed to create assignment submission:', error);
+        }
+      }
+
+      // Handle test grading completion - syncs grade to assignment submission
+      async handleTestGraded(payload) {
+        const { submissionId, finalScore, maxScore, linkedSubmissionId } = payload || {};
+
+        if (!submissionId) return;
+
+        try {
+          // Get linked_submission_id if not provided
+          let assignmentSubmissionId = linkedSubmissionId;
+
+          if (!assignmentSubmissionId) {
+            const { data: testSubmission } = await this.supabaseQuery(() =>
+              this.auth.supabase
+                .from('test_submissions')
+                .select('linked_submission_id')
+                .eq('id', submissionId)
+                .single()
+            );
+            assignmentSubmissionId = testSubmission?.linked_submission_id;
+          }
+
+          if (!assignmentSubmissionId) {
+            console.log('No linked assignment submission found');
+            return;
+          }
+
+          // Calculate letter grade
+          const percentScore = maxScore > 0 ? (finalScore / maxScore) * 100 : 0;
+          const letterGrade = this.calculateLetterGrade(percentScore);
+
+          // Update assignment_submission with grade
+          await this.supabaseQuery(() =>
+            this.auth.supabase
+              .from('assignment_submissions')
+              .update({
+                status: 'graded',
+                points_earned: finalScore,
+                grade: letterGrade,
+                graded_at: new Date().toISOString()
+              })
+              .eq('id', assignmentSubmissionId)
+          );
+
+          this.showNotification('Test grade synced to gradebook', 'success');
+          console.log('Test grade synced to assignment submission');
+        } catch (error) {
+          console.error('Failed to sync test grade:', error);
+        }
+      }
+
+      // Helper: Calculate letter grade from percentage
+      calculateLetterGrade(percentage) {
+        if (percentage >= 97) return 'A+';
+        if (percentage >= 93) return 'A';
+        if (percentage >= 90) return 'A-';
+        if (percentage >= 87) return 'B+';
+        if (percentage >= 83) return 'B';
+        if (percentage >= 80) return 'B-';
+        if (percentage >= 77) return 'C+';
+        if (percentage >= 73) return 'C';
+        if (percentage >= 70) return 'C-';
+        if (percentage >= 67) return 'D+';
+        if (percentage >= 63) return 'D';
+        if (percentage >= 60) return 'D-';
+        return 'F';
       }
 
       async checkAndRefreshSession() {
@@ -2928,6 +3338,7 @@
             { section: 'admin-dashboard', label: 'Admin', icon: '🔑' },
             { section: 'home', label: 'Home', icon: '📊' },
             { section: 'classes', label: 'My Classes', icon: '📚' },
+            { section: 'testing-center', label: 'Testing', icon: '📝' },
             { section: 'my-students', label: 'My Students', icon: '👥' },
             { section: 'messaging', label: 'Messages', icon: '💬' },
             { section: 'profile', label: 'Profile', icon: '👤' }
@@ -2936,6 +3347,7 @@
           navItems.push(
             { section: 'home', label: 'Home', icon: '📊' },
             { section: 'classes', label: 'My Classes', icon: '📚' },
+            { section: 'testing-center', label: 'Testing', icon: '📝' },
             { section: 'my-students', label: 'My Students', icon: '👥' },
             { section: 'messaging', label: 'Messages', icon: '💬' },
             { section: 'profile', label: 'Profile', icon: '👤' }
@@ -2944,6 +3356,7 @@
           navItems.push(
             { section: 'home', label: 'Home', icon: '📊' },
             { section: 'classes', label: 'Classes', icon: '📚' },
+            { section: 'testing-center', label: 'Tests', icon: '📝' },
             { section: 'messaging', label: 'Messages', icon: '💬' },
             { section: 'profile', label: 'Profile', icon: '👤' }
           );
@@ -3112,6 +3525,9 @@
             break;
           case 'my-students':
             this.renderMyStudents();
+            break;
+          case 'testing-center':
+            this.loadTestingCenter();
             break;
           default:
             console.warn('Unknown section:', sectionName);
