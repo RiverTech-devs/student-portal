@@ -2740,12 +2740,14 @@
 
       // Handle test assignment creation - creates corresponding assignment entry
       async handleTestAssignmentCreated(payload) {
-        const { testId, testTitle, classId, dueDate, maxPoints, testAssignmentId } = payload || {};
+        const { testId, testTitle, classId, dueDate, maxPoints, testAssignmentId, individualStudentIds } = payload || {};
 
         if (!testId || !classId) {
           console.error('Invalid test assignment payload');
           return;
         }
+
+        const hasIndividualStudents = individualStudentIds && individualStudentIds.length > 0;
 
         try {
           // Create corresponding assignment in assignments table
@@ -2761,13 +2763,31 @@
                 is_published: true,
                 assignment_type: 'test',
                 graded_offline: true,
-                assigned_to_all: true
+                assigned_to_all: !hasIndividualStudents
               })
               .select()
               .single()
           );
 
           if (error) throw error;
+
+          // If individual students selected, create assignment_students records
+          if (hasIndividualStudents && assignment) {
+            const studentRecords = individualStudentIds.map(studentId => ({
+              assignment_id: assignment.id,
+              student_id: studentId
+            }));
+
+            const { error: studentError } = await this.supabaseQuery(() =>
+              this.auth.supabase
+                .from('assignment_students')
+                .insert(studentRecords)
+            );
+
+            if (studentError) {
+              console.error('Failed to assign to individual students:', studentError);
+            }
+          }
 
           // Update test_assignments with linked_assignment_id
           if (testAssignmentId && assignment) {
