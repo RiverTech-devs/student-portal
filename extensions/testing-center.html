@@ -533,20 +533,41 @@
             </div>
             <div class="modal-body">
                 <h3 id="assignTestTitle" style="margin-bottom: 20px; color: var(--accent-secondary);"></h3>
-                
+
                 <div class="form-group">
-                    <label class="form-label">Assign to Classes</label>
-                    <div class="checkbox-group" id="classCheckboxes"></div>
+                    <label class="form-label">Select Class <span style="color: var(--accent-danger);">*</span></label>
+                    <select id="assignClassSelect" class="form-input" onchange="onAssignClassChange()">
+                        <option value="">-- Select a class --</option>
+                    </select>
+                </div>
+
+                <div class="form-group" id="assignStudentsGroup" style="display: none;">
+                    <label class="form-label">Assign to</label>
+                    <div class="checkbox-group">
+                        <label class="checkbox-item" id="assignAllStudentsOption" onclick="toggleAssignAll(this)">
+                            <input type="radio" name="assignScope" value="all" checked>
+                            Entire Class
+                        </label>
+                        <label class="checkbox-item" id="assignSelectStudentsOption" onclick="toggleAssignSelect(this)">
+                            <input type="radio" name="assignScope" value="select">
+                            Select Individual Students
+                        </label>
+                    </div>
+                </div>
+
+                <div class="form-group" id="individualStudentsGroup" style="display: none;">
+                    <label class="form-label">Select Students</label>
+                    <div class="checkbox-group" id="studentCheckboxes"></div>
                 </div>
 
                 <div class="form-group">
-                    <label class="form-label">Assign to Individual Students</label>
-                    <div class="checkbox-group" id="studentCheckboxes"></div>
+                    <label class="form-label">Due Date (Optional)</label>
+                    <input type="datetime-local" id="assignDueDate" class="form-input">
                 </div>
             </div>
             <div class="modal-footer">
                 <button class="btn btn-secondary" onclick="closeModal('assignModal')">Cancel</button>
-                <button class="btn btn-primary" onclick="saveAssignments()">Save & Issue</button>
+                <button class="btn btn-primary" id="assignSaveBtn" onclick="saveAssignments()" disabled>Save & Issue</button>
             </div>
         </div>
     </div>
@@ -1021,7 +1042,7 @@
             }
         }
 
-        async function saveAssignmentsToDatabase(testId, classIds, studentIds, dueDate) {
+        async function saveAssignmentsToDatabase(testId, classId, studentIds, dueDate) {
             if (!supabaseClient || !authReady) return [];
 
             try {
@@ -1032,14 +1053,17 @@
                     .eq('test_id', testId);
 
                 const assignments = [];
+                const test = testsDatabase.find(t => t.id === testId);
+                const maxPoints = test ? test.questions.reduce((sum, q) => sum + (q.maxPoints || 10), 0) : 100;
 
-                // Insert class assignments
-                for (const classId of classIds) {
+                if (studentIds.length === 0) {
+                    // Assign to entire class (student_id = null)
                     const { data, error } = await supabaseClient
                         .from('test_assignments')
                         .insert({
                             test_id: testId,
                             class_id: classId,
+                            student_id: null,
                             assigned_by: currentUser.id,
                             due_date: dueDate,
                             is_active: true
@@ -1050,10 +1074,8 @@
                     if (error) throw error;
                     assignments.push(data);
 
-                    // Notify portal to create assignment entry
-                    const test = testsDatabase.find(t => t.id === testId);
+                    // Notify portal to create assignment entry for grade integration
                     if (isEmbedded && test) {
-                        const maxPoints = test.questions.reduce((sum, q) => sum + (q.maxPoints || 10), 0);
                         window.parent.postMessage({
                             type: 'TEST_ASSIGNMENT_CREATED',
                             payload: {
@@ -1066,24 +1088,42 @@
                             }
                         }, '*');
                     }
-                }
+                } else {
+                    // Assign to specific students within the class
+                    for (const studentId of studentIds) {
+                        const { data, error } = await supabaseClient
+                            .from('test_assignments')
+                            .insert({
+                                test_id: testId,
+                                class_id: classId,
+                                student_id: studentId,
+                                assigned_by: currentUser.id,
+                                due_date: dueDate,
+                                is_active: true
+                            })
+                            .select()
+                            .single();
 
-                // Insert individual student assignments
-                for (const studentId of studentIds) {
-                    const { data, error } = await supabaseClient
-                        .from('test_assignments')
-                        .insert({
-                            test_id: testId,
-                            student_id: studentId,
-                            assigned_by: currentUser.id,
-                            due_date: dueDate,
-                            is_active: true
-                        })
-                        .select()
-                        .single();
+                        if (error) throw error;
+                        assignments.push(data);
+                    }
 
-                    if (error) throw error;
-                    assignments.push(data);
+                    // Notify portal - create one assignment entry for the class
+                    // (individual student tracking is handled via test_assignments)
+                    if (isEmbedded && test) {
+                        window.parent.postMessage({
+                            type: 'TEST_ASSIGNMENT_CREATED',
+                            payload: {
+                                testId: testId,
+                                testTitle: test.title,
+                                classId: classId,
+                                dueDate: dueDate,
+                                maxPoints: maxPoints,
+                                testAssignmentId: assignments[0].id,
+                                individualStudentIds: studentIds
+                            }
+                        }, '*');
+                    }
                 }
 
                 return assignments;
@@ -1553,38 +1593,80 @@
             const test = testsDatabase.find(t => t.id === assigningTestId);
             if (!test) return;
 
-            // Render class checkboxes
-            const classCheckboxes = document.getElementById('classCheckboxes');
+            // Populate class dropdown
+            const classSelect = document.getElementById('assignClassSelect');
             if (classesDatabase.length === 0) {
-                classCheckboxes.innerHTML = '<p style="color: var(--text-muted);">Loading classes...</p>';
+                classSelect.innerHTML = '<option value="">Loading classes...</option>';
             } else {
-                classCheckboxes.innerHTML = classesDatabase.map(c => {
-                    const studentCount = c.students ? c.students.length : 0;
-                    const isChecked = (test.assignedClasses || []).includes(c.id);
-                    return `
-                        <label class="checkbox-item ${isChecked ? 'checked' : ''}" onclick="toggleCheckbox(this)">
-                            <input type="checkbox" value="${c.id}" ${isChecked ? 'checked' : ''}>
-                            ${c.name} (${studentCount} students)
-                        </label>
-                    `;
-                }).join('');
+                classSelect.innerHTML = '<option value="">-- Select a class --</option>' +
+                    classesDatabase.map(c => {
+                        const studentCount = c.students ? c.students.length : 0;
+                        return `<option value="${c.id}">${c.name} (${studentCount} students)</option>`;
+                    }).join('');
             }
 
-            // Render student checkboxes (individual students)
-            const studentCheckboxes = document.getElementById('studentCheckboxes');
-            if (studentsDatabase.length === 0) {
-                studentCheckboxes.innerHTML = '<p style="color: var(--text-muted);">Select a class to see students, or students will be loaded from classes.</p>';
+            // Reset the form state
+            document.getElementById('assignStudentsGroup').style.display = 'none';
+            document.getElementById('individualStudentsGroup').style.display = 'none';
+            document.getElementById('assignSaveBtn').disabled = true;
+            document.getElementById('studentCheckboxes').innerHTML = '';
+            document.getElementById('assignDueDate').value = '';
+
+            // Reset radio buttons
+            const allRadio = document.querySelector('input[name="assignScope"][value="all"]');
+            if (allRadio) allRadio.checked = true;
+        }
+
+        function onAssignClassChange() {
+            const classSelect = document.getElementById('assignClassSelect');
+            const selectedClassId = classSelect.value;
+            const assignStudentsGroup = document.getElementById('assignStudentsGroup');
+            const individualStudentsGroup = document.getElementById('individualStudentsGroup');
+            const saveBtn = document.getElementById('assignSaveBtn');
+
+            if (selectedClassId) {
+                // Show the assign scope options
+                assignStudentsGroup.style.display = 'block';
+                saveBtn.disabled = false;
+
+                // Populate students for this class
+                const selectedClass = classesDatabase.find(c => c.id === selectedClassId);
+                const classStudents = selectedClass?.students || [];
+
+                const studentCheckboxes = document.getElementById('studentCheckboxes');
+                if (classStudents.length === 0) {
+                    studentCheckboxes.innerHTML = '<p style="color: var(--text-muted);">No students in this class.</p>';
+                } else {
+                    studentCheckboxes.innerHTML = classStudents.map(s => {
+                        return `
+                            <label class="checkbox-item" onclick="toggleCheckbox(this)">
+                                <input type="checkbox" value="${s.id}">
+                                ${s.name || s.full_name || 'Unknown'}
+                            </label>
+                        `;
+                    }).join('');
+                }
+
+                // Reset to "Entire Class" mode
+                const allRadio = document.querySelector('input[name="assignScope"][value="all"]');
+                if (allRadio) allRadio.checked = true;
+                individualStudentsGroup.style.display = 'none';
             } else {
-                studentCheckboxes.innerHTML = studentsDatabase.map(s => {
-                    const isChecked = (test.assignedStudents || []).includes(s.id);
-                    return `
-                        <label class="checkbox-item ${isChecked ? 'checked' : ''}" onclick="toggleCheckbox(this)">
-                            <input type="checkbox" value="${s.id}" ${isChecked ? 'checked' : ''}>
-                            ${s.name}
-                        </label>
-                    `;
-                }).join('');
+                // Hide everything if no class selected
+                assignStudentsGroup.style.display = 'none';
+                individualStudentsGroup.style.display = 'none';
+                saveBtn.disabled = true;
             }
+        }
+
+        function toggleAssignAll(label) {
+            document.querySelector('input[name="assignScope"][value="all"]').checked = true;
+            document.getElementById('individualStudentsGroup').style.display = 'none';
+        }
+
+        function toggleAssignSelect(label) {
+            document.querySelector('input[name="assignScope"][value="select"]').checked = true;
+            document.getElementById('individualStudentsGroup').style.display = 'block';
         }
 
         function toggleCheckbox(label) {
@@ -1597,9 +1679,23 @@
             const test = testsDatabase.find(t => t.id === assigningTestId);
             if (!test) return;
 
-            // Get selected classes and students (keep as strings for UUIDs)
-            const selectedClasses = Array.from(document.querySelectorAll('#classCheckboxes input:checked')).map(cb => cb.value);
-            const selectedStudents = Array.from(document.querySelectorAll('#studentCheckboxes input:checked')).map(cb => cb.value);
+            // Get selected class (required)
+            const selectedClassId = document.getElementById('assignClassSelect').value;
+            if (!selectedClassId) {
+                showToast('Please select a class');
+                return;
+            }
+
+            // Check if assigning to entire class or individual students
+            const assignScope = document.querySelector('input[name="assignScope"]:checked')?.value || 'all';
+            let selectedStudents = [];
+            if (assignScope === 'select') {
+                selectedStudents = Array.from(document.querySelectorAll('#studentCheckboxes input:checked')).map(cb => cb.value);
+                if (selectedStudents.length === 0) {
+                    showToast('Please select at least one student');
+                    return;
+                }
+            }
 
             // Get due date if provided
             const dueDateInput = document.getElementById('assignDueDate');
@@ -1608,7 +1704,7 @@
             try {
                 // Save to database if authenticated
                 if (authReady && supabaseClient) {
-                    await saveAssignmentsToDatabase(assigningTestId, selectedClasses, selectedStudents, dueDate);
+                    await saveAssignmentsToDatabase(assigningTestId, selectedClassId, selectedStudents, dueDate);
 
                     // Also update test status to active
                     await supabaseClient
@@ -1618,7 +1714,7 @@
                 }
 
                 // Update local data
-                test.assignedClasses = selectedClasses;
+                test.assignedClasses = [selectedClassId];
                 test.assignedStudents = selectedStudents;
                 test.status = 'active';
 
@@ -1627,7 +1723,7 @@
                 showToast('Test assigned and issued successfully!');
             } catch (error) {
                 console.error('Error saving assignments:', error);
-                showToast('Error assigning test');
+                showToast('Error assigning test: ' + error.message);
             }
         }
 
