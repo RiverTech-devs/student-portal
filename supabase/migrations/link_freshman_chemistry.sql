@@ -12,7 +12,7 @@ DECLARE
     test_max_points INTEGER;
 BEGIN
     -- Calculate max points from questions
-    SELECT COALESCE(SUM(COALESCE(max_points, 10)), 100) INTO test_max_points
+    SELECT COALESCE(SUM(COALESCE(max_points, 1)), 100) INTO test_max_points
     FROM test_questions WHERE test_id = 'd87ca0fe-646b-467f-b0dc-84eee1aded65';
 
     -- Create the assignment

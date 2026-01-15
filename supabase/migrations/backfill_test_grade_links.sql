@@ -27,7 +27,7 @@ BEGIN
         AND tassign.class_id IS NOT NULL
     LOOP
         -- Calculate max points from questions
-        SELECT COALESCE(SUM(COALESCE(max_points, 10)), 100) INTO test_max_points
+        SELECT COALESCE(SUM(COALESCE(max_points, 1)), 100) INTO test_max_points
         FROM test_questions WHERE test_id = rec.test_id;
 
         -- Create the assignment
