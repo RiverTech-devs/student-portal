@@ -100,6 +100,7 @@ BEGIN
 
         IF new_submission_id IS NULL THEN
             -- Create the assignment_submission
+            -- final_score is a percentage, convert to actual points
             INSERT INTO assignment_submissions (
                 assignment_id,
                 student_id,
@@ -112,7 +113,7 @@ BEGIN
                 rec.student_id,
                 rec.submitted_at,
                 CASE WHEN rec.status = 'graded' THEN 'graded' ELSE 'submitted' END,
-                rec.final_score,
+                ROUND((rec.final_score / 100.0) * rec.max_possible_score),
                 rec.graded_at
             )
             RETURNING id INTO new_submission_id;
@@ -121,7 +122,7 @@ BEGIN
             UPDATE assignment_submissions
             SET
                 status = CASE WHEN rec.status = 'graded' THEN 'graded' ELSE status END,
-                points_earned = COALESCE(rec.final_score, points_earned),
+                points_earned = COALESCE(ROUND((rec.final_score / 100.0) * rec.max_possible_score), points_earned),
                 graded_at = COALESCE(rec.graded_at, graded_at)
             WHERE id = new_submission_id;
         END IF;
