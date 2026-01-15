@@ -40,8 +40,7 @@ BEGIN
             is_published,
             assignment_type,
             graded_offline,
-            assigned_to_all,
-            created_by
+            assigned_to_all
         ) VALUES (
             rec.class_id,
             '[Test] ' || rec.title,
@@ -51,8 +50,7 @@ BEGIN
             true,
             'test',
             true,
-            true,
-            rec.owner_id
+            true
         )
         RETURNING id INTO new_assignment_id;
 
