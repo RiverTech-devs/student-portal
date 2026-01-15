@@ -932,7 +932,7 @@
 
         // ==================== SUPABASE SAVE FUNCTIONS ====================
 
-        async function saveTestToDatabase(testData) {
+        async function saveTestToDatabase(testData, hasSubmissions = false, originalQIds = []) {
             if (!supabaseClient || !authReady) {
                 console.warn('Cannot save - auth not ready');
                 return null;
@@ -959,8 +959,65 @@
 
                     if (testError) throw testError;
 
-                    // Delete old questions
-                    await supabaseClient.from('test_questions').delete().eq('test_id', id);
+                    if (hasSubmissions) {
+                        // Update existing questions in place to preserve IDs
+                        for (let idx = 0; idx < questions.length; idx++) {
+                            const q = questions[idx];
+                            const originalId = q.originalId || originalQIds[idx];
+
+                            if (originalId) {
+                                // Update existing question
+                                const { error: updateError } = await supabaseClient
+                                    .from('test_questions')
+                                    .update({
+                                        question_order: idx,
+                                        question_text: q.text,
+                                        options: q.options || null,
+                                        correct_answer_index: q.correctAnswer,
+                                        max_points: q.maxPoints || 1
+                                    })
+                                    .eq('id', originalId);
+
+                                if (updateError) throw updateError;
+                            } else {
+                                // Insert new question (added at end)
+                                const { error: insertError } = await supabaseClient
+                                    .from('test_questions')
+                                    .insert({
+                                        test_id: testId,
+                                        question_order: idx,
+                                        question_type: q.type === 'multiple-choice' ? 'multiple_choice' : 'write_in',
+                                        question_text: q.text,
+                                        options: q.options || null,
+                                        correct_answer_index: q.correctAnswer,
+                                        max_points: q.maxPoints || 1
+                                    });
+
+                                if (insertError) throw insertError;
+                            }
+                        }
+                    } else {
+                        // No submissions - safe to delete and recreate questions
+                        await supabaseClient.from('test_questions').delete().eq('test_id', id);
+
+                        if (questions && questions.length > 0) {
+                            const questionInserts = questions.map((q, idx) => ({
+                                test_id: testId,
+                                question_order: idx,
+                                question_type: q.type === 'multiple-choice' ? 'multiple_choice' : 'write_in',
+                                question_text: q.text,
+                                options: q.options || null,
+                                correct_answer_index: q.correctAnswer,
+                                max_points: q.maxPoints || 1
+                            }));
+
+                            const { error: qError } = await supabaseClient
+                                .from('test_questions')
+                                .insert(questionInserts);
+
+                            if (qError) throw qError;
+                        }
+                    }
                 } else {
                     // Insert new test
                     const { data: test, error: testError } = await supabaseClient
@@ -978,25 +1035,25 @@
 
                     if (testError) throw testError;
                     testId = test.id;
-                }
 
-                // Insert questions
-                if (questions && questions.length > 0) {
-                    const questionInserts = questions.map((q, idx) => ({
-                        test_id: testId,
-                        question_order: idx,
-                        question_type: q.type === 'multiple-choice' ? 'multiple_choice' : 'write_in',
-                        question_text: q.text,
-                        options: q.options || null,
-                        correct_answer_index: q.correctAnswer,
-                        max_points: q.maxPoints || 1
-                    }));
+                    // Insert questions for new test
+                    if (questions && questions.length > 0) {
+                        const questionInserts = questions.map((q, idx) => ({
+                            test_id: testId,
+                            question_order: idx,
+                            question_type: q.type === 'multiple-choice' ? 'multiple_choice' : 'write_in',
+                            question_text: q.text,
+                            options: q.options || null,
+                            correct_answer_index: q.correctAnswer,
+                            max_points: q.maxPoints || 1
+                        }));
 
-                    const { error: qError } = await supabaseClient
-                        .from('test_questions')
-                        .insert(questionInserts);
+                        const { error: qError } = await supabaseClient
+                            .from('test_questions')
+                            .insert(questionInserts);
 
-                    if (qError) throw qError;
+                        if (qError) throw qError;
+                    }
                 }
 
                 return testId;
@@ -1021,6 +1078,28 @@
                 throw error;
             }
         }
+
+        // Check if a test has any submissions
+        async function testHasSubmissions(testId) {
+            if (!supabaseClient || !authReady) return false;
+
+            try {
+                const { count, error } = await supabaseClient
+                    .from('test_submissions')
+                    .select('id', { count: 'exact', head: true })
+                    .eq('test_id', testId);
+
+                if (error) throw error;
+                return count > 0;
+            } catch (error) {
+                console.error('Error checking submissions:', error);
+                return false;
+            }
+        }
+
+        // Track if editing a test with submissions (limits what can be changed)
+        let editingTestHasSubmissions = false;
+        let originalQuestionIds = []; // Store original question IDs for update
 
         async function saveAssignmentsToDatabase(testId, classIds, dueDate) {
             if (!supabaseClient || !authReady) return [];
@@ -1483,6 +1562,8 @@
 
         function openCreateModal() {
             editingTestId = null;
+            editingTestHasSubmissions = false;
+            originalQuestionIds = [];
             document.getElementById('modalTitle').textContent = 'Create New Test';
             document.getElementById('testForm').reset();
             document.getElementById('questionsBuilder').innerHTML = '';
@@ -1490,12 +1571,34 @@
             document.getElementById('testModal').classList.add('active');
         }
 
-        function editTest(testId) {
+        async function editTest(testId) {
             const test = testsDatabase.find(t => t.id === testId);
             if (!test) return;
 
+            // Check if test has submissions
+            editingTestHasSubmissions = await testHasSubmissions(testId);
+            originalQuestionIds = test.questions.map(q => q.id);
+
+            // Show warning if test has submissions
+            if (editingTestHasSubmissions) {
+                const proceed = confirm(
+                    '⚠️ This test has student submissions.\n\n' +
+                    'Editing limitations:\n' +
+                    '• You can modify question text and point values\n' +
+                    '• You can change correct answers for multiple choice\n' +
+                    '• You can add NEW questions at the end\n' +
+                    '• You CANNOT delete or reorder existing questions\n' +
+                    '• You CANNOT change question types\n\n' +
+                    'These restrictions prevent breaking existing student answers.\n\n' +
+                    'Do you want to continue editing?'
+                );
+                if (!proceed) return;
+            }
+
             editingTestId = testId;
-            document.getElementById('modalTitle').textContent = 'Edit Test';
+            document.getElementById('modalTitle').textContent = editingTestHasSubmissions
+                ? 'Edit Test (Limited - Has Submissions)'
+                : 'Edit Test';
             document.getElementById('testTitle').value = test.title;
             document.getElementById('testSubject').value = test.subject;
             document.getElementById('testTime').value = test.timeLimit;
@@ -1503,7 +1606,7 @@
             document.getElementById('testDescription').value = test.description;
 
             document.getElementById('questionsBuilder').innerHTML = '';
-            test.questions.forEach(q => addQuestion(q));
+            test.questions.forEach((q, idx) => addQuestion(q, editingTestHasSubmissions, idx));
 
             document.getElementById('testModal').classList.add('active');
         }
@@ -2200,21 +2303,28 @@
         // ==================== QUESTION BUILDER ====================
         let questionCounter = 0;
 
-        function addQuestion(existingQuestion = null) {
+        function addQuestion(existingQuestion = null, isLocked = false, originalIndex = -1) {
             questionCounter++;
             const qId = questionCounter;
             const container = document.getElementById('questionsBuilder');
 
+            // Store original question ID if editing existing question with submissions
+            const originalQId = existingQuestion?.id || null;
+            const isExistingLocked = isLocked && originalIndex >= 0;
+
             const questionHtml = `
-                <div class="question-item" id="question-${qId}">
+                <div class="question-item" id="question-${qId}" data-original-id="${originalQId || ''}" data-locked="${isExistingLocked}">
                     <div class="question-header">
                         <span class="question-number">Question ${container.children.length + 1}</span>
-                        <button type="button" class="btn btn-danger btn-sm" onclick="removeQuestion(${qId})">Remove</button>
+                        ${isExistingLocked
+                            ? '<span style="color: var(--accent-warning); font-size: 12px;">🔒 Locked (has submissions)</span>'
+                            : `<button type="button" class="btn btn-danger btn-sm" onclick="removeQuestion(${qId})">Remove</button>`
+                        }
                     </div>
                     <div style="display: flex; gap: 12px;">
                         <div class="form-group" style="flex: 1;">
                             <label class="form-label">Question Type</label>
-                            <select class="form-select" id="qType-${qId}" onchange="toggleQuestionType(${qId})">
+                            <select class="form-select" id="qType-${qId}" onchange="toggleQuestionType(${qId})" ${isExistingLocked ? 'disabled' : ''}>
                                 <option value="multiple-choice" ${existingQuestion?.type === 'multiple-choice' ? 'selected' : ''}>Multiple Choice</option>
                                 <option value="write-in" ${existingQuestion?.type === 'write-in' ? 'selected' : ''}>Write-in Answer</option>
                             </select>
@@ -2230,8 +2340,8 @@
                     </div>
                     <div id="mcOptions-${qId}" style="${existingQuestion?.type === 'write-in' ? 'display:none' : ''}">
                         <div class="form-group">
-                            <label class="form-label">Options (click to mark correct answer)</label>
-                            <div id="optionsList-${qId}">${renderOptions(qId, existingQuestion)}</div>
+                            <label class="form-label">Options (click to mark correct answer)${isExistingLocked ? ' - Cannot add/remove options' : ''}</label>
+                            <div id="optionsList-${qId}">${renderOptions(qId, existingQuestion, isExistingLocked)}</div>
                         </div>
                     </div>
                 </div>`;
@@ -2239,7 +2349,7 @@
             container.insertAdjacentHTML('beforeend', questionHtml);
         }
 
-        function renderOptions(qId, existingQuestion) {
+        function renderOptions(qId, existingQuestion, isLocked = false) {
             const options = existingQuestion?.options || ['', ''];
             const correctAnswer = existingQuestion?.correctAnswer ?? -1;
 
@@ -2247,11 +2357,13 @@
                 <div class="option-item ${i === correctAnswer ? 'selected' : ''}" onclick="selectCorrectAnswer(${qId}, ${i})" data-option-index="${i}">
                     <span class="option-marker">${String.fromCharCode(65 + i)}</span>
                     <input type="text" class="form-input" id="opt-${qId}-${i}" value="${opt}" placeholder="Option ${String.fromCharCode(65 + i)}" onclick="event.stopPropagation()" style="flex:1; margin:0;">
-                    ${options.length > 2 ? `<button type="button" class="btn btn-danger btn-sm" onclick="event.stopPropagation(); removeOption(${qId}, ${i})" style="padding: 4px 8px;">✕</button>` : ''}
+                    ${!isLocked && options.length > 2 ? `<button type="button" class="btn btn-danger btn-sm" onclick="event.stopPropagation(); removeOption(${qId}, ${i})" style="padding: 4px 8px;">✕</button>` : ''}
                 </div>
             `).join('');
 
-            html += `<button type="button" class="btn btn-secondary btn-sm" onclick="addOption(${qId})" style="margin-top: 8px;">+ Add Option</button>`;
+            if (!isLocked) {
+                html += `<button type="button" class="btn btn-secondary btn-sm" onclick="addOption(${qId})" style="margin-top: 8px;">+ Add Option</button>`;
+            }
             return html;
         }
 
@@ -2326,6 +2438,7 @@
             if (!title) { alert('Please enter a test title'); return; }
 
             const questions = [];
+            const collectedOriginalIds = [];
             document.querySelectorAll('#questionsBuilder .question-item').forEach((item, index) => {
                 const qId = item.id.replace('question-', '');
                 const type = document.getElementById(`qType-${qId}`).value;
@@ -2333,7 +2446,8 @@
                 if (!text) return;
 
                 const points = parseInt(document.getElementById(`qPoints-${qId}`).value) || 1;
-                const question = { id: index + 1, type, text, maxPoints: points };
+                const originalId = item.getAttribute('data-original-id') || null;
+                const question = { id: index + 1, type, text, maxPoints: points, originalId };
                 if (type === 'multiple-choice') {
                     const optionItems = item.querySelectorAll('.option-item');
                     question.options = Array.from(optionItems).map((_, i) => document.getElementById(`opt-${qId}-${i}`)?.value || '');
@@ -2343,6 +2457,7 @@
                     question.correctAnswer = null;
                 }
                 questions.push(question);
+                collectedOriginalIds.push(originalId);
             });
 
             if (questions.length === 0) { alert('Please add at least one question'); return; }
@@ -2350,10 +2465,11 @@
             try {
                 // Save to database if authenticated
                 if (authReady && supabaseClient) {
-                    const testId = await saveTestToDatabase({
-                        id: editingTestId,
-                        title, subject, timeLimit, status, description, questions
-                    });
+                    const testId = await saveTestToDatabase(
+                        { id: editingTestId, title, subject, timeLimit, status, description, questions },
+                        editingTestHasSubmissions,
+                        collectedOriginalIds
+                    );
 
                     // Reload tests to get fresh data with proper IDs
                     await loadTests();
