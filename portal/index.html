@@ -11691,43 +11691,50 @@
           }
       }
       
-      async manageStudents(classId) {
+      async manageStudents(classId, showWithdrawn = false) {
         try {
           const classData = this.classes.find(c => c.id === classId);
 
-          // Load enrolled students
-          const { data: enrollments, error } = await this.supabaseQuery(() => this.auth.supabase
+          // Load ALL enrolled students (active and archived)
+          const { data: allEnrollments, error } = await this.supabaseQuery(() => this.auth.supabase
             .from('class_enrollments')
             .select('*')
             .eq('class_id', classId)
-            .eq('status', 'active'));
+            .in('status', ['active', 'archived']));
 
           if (error) throw error;
 
-          let studentsHtml = '';
-          if (enrollments && enrollments.length > 0) {
-            const studentIds = enrollments.map(e => e.student_id);
-            
+          const activeEnrollments = allEnrollments?.filter(e => e.status === 'active') || [];
+          const withdrawnEnrollments = allEnrollments?.filter(e => e.status === 'archived') || [];
+
+          // Get student profiles for all enrollments
+          const allStudentIds = allEnrollments?.map(e => e.student_id) || [];
+          let studentMap = {};
+
+          if (allStudentIds.length > 0) {
             const { data: students } = await this.supabaseQuery(() => this.auth.supabase
               .from('user_profiles')
               .select('id, first_name, last_name, email, grade_level')
-              .in('id', studentIds));
+              .in('id', allStudentIds));
 
-            const studentMap = {};
             students?.forEach(s => {
               studentMap[s.id] = s;
             });
+          }
 
-            studentsHtml = enrollments.map(enrollment => {
+          // Build active students HTML
+          let activeStudentsHtml = '';
+          if (activeEnrollments.length > 0) {
+            activeStudentsHtml = activeEnrollments.map(enrollment => {
               const student = studentMap[enrollment.student_id] || {};
               const enrollDate = new Date(enrollment.enrolled_at).toLocaleDateString();
 
               return `
                 <div class="list-item">
                   <div class="list-item-content">
-                    <div class="list-item-title">${student.first_name} ${student.last_name}</div>
+                    <div class="list-item-title">${student.first_name || 'Unknown'} ${student.last_name || ''}</div>
                     <div class="list-item-meta">
-                      ${student.email} • Grade ${student.grade_level || 'N/A'} • Enrolled: ${enrollDate}
+                      ${student.email || ''} • Grade ${student.grade_level || 'N/A'} • Enrolled: ${enrollDate}
                     </div>
                   </div>
                   <div style="display: flex; gap: 8px; flex-wrap: wrap;">
@@ -11741,12 +11748,47 @@
                       💬 Message
                     </button>
                     <button class="btn danger small" onclick="app.removeStudent('${enrollment.id}', '${classId}')">
-                      Remove
+                      Withdraw
                     </button>
                   </div>
                 </div>
               `;
             }).join('');
+          } else {
+            activeStudentsHtml = '<p style="color: var(--muted); text-align: center; padding: 20px;">No students enrolled yet. Share the class code for students to join.</p>';
+          }
+
+          // Build withdrawn students HTML
+          let withdrawnStudentsHtml = '';
+          if (withdrawnEnrollments.length > 0) {
+            withdrawnStudentsHtml = withdrawnEnrollments.map(enrollment => {
+              const student = studentMap[enrollment.student_id] || {};
+              const withdrawDate = enrollment.updated_at ? new Date(enrollment.updated_at).toLocaleDateString() : 'Unknown';
+
+              return `
+                <div class="list-item" style="opacity: 0.7; background: var(--bg);">
+                  <div class="list-item-content">
+                    <div class="list-item-title">
+                      <span style="color: var(--muted);">⊘</span> ${student.first_name || 'Unknown'} ${student.last_name || ''}
+                      <span style="font-size: 0.75rem; background: var(--muted); color: var(--card); padding: 2px 6px; border-radius: 4px; margin-left: 8px;">Withdrawn</span>
+                    </div>
+                    <div class="list-item-meta">
+                      ${student.email || ''} • Withdrawn: ${withdrawDate}
+                    </div>
+                  </div>
+                  <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                    <button class="btn btn-secondary small" onclick="app.viewStudentGrades('${classId}', '${student.id}', '${student.first_name} ${student.last_name}')" title="View historical grades">
+                      📊 Grades
+                    </button>
+                    <button class="btn small" style="background: var(--success); color: white;" onclick="app.reactivateStudent('${enrollment.id}', '${classId}')">
+                      ↩️ Reactivate
+                    </button>
+                  </div>
+                </div>
+              `;
+            }).join('');
+          } else {
+            withdrawnStudentsHtml = '<p style="color: var(--muted); text-align: center; padding: 20px;">No withdrawn students.</p>';
           }
 
           const modalContent = `
@@ -11761,11 +11803,29 @@
                 Class Code: <span style="background: var(--accent); color: black; padding: 2px 6px; border-radius: 4px; font-weight: bold;">
                   ${classData?.class_code}
                 </span>
-                • ${enrollments?.length || 0} / ${classData?.max_students || 30} students enrolled
+                • ${activeEnrollments.length} / ${classData?.max_students || 30} students enrolled
+                ${withdrawnEnrollments.length > 0 ? `• <span style="color: var(--muted);">${withdrawnEnrollments.length} withdrawn</span>` : ''}
               </p>
 
-              <div class="list" style="max-height: 60vh; overflow-y: auto;">
-                ${studentsHtml || '<p style="color: var(--muted); text-align: center; padding: 20px;">No students enrolled yet. Share the class code for students to join.</p>'}
+              <!-- Toggle for withdrawn students -->
+              <div style="margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                  <input type="checkbox" id="show-withdrawn-toggle" ${showWithdrawn ? 'checked' : ''}
+                    onchange="app.manageStudents('${classId}', this.checked)"
+                    style="width: 18px; height: 18px; cursor: pointer;">
+                  <span>Show withdrawn students (${withdrawnEnrollments.length})</span>
+                </label>
+              </div>
+
+              <div class="list" style="max-height: 55vh; overflow-y: auto;">
+                ${activeStudentsHtml}
+
+                ${showWithdrawn ? `
+                  <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid var(--border);">
+                    <h4 style="color: var(--muted); margin-bottom: 10px;">Withdrawn Students</h4>
+                    ${withdrawnStudentsHtml}
+                  </div>
+                ` : ''}
               </div>
             </div>
 
@@ -11791,7 +11851,7 @@
           return;
         }
         
-        if (!confirm('Remove this student from the class?')) {
+        if (!confirm('Withdraw this student from the class? Their grades will be preserved and you can reactivate them later.')) {
           return;
         }
       
@@ -11844,19 +11904,187 @@
               notes: 'Removed by teacher'
             }));
       
-          this.showNotification('Student removed from class', 'success');
-          
+          this.showNotification('Student withdrawn from class', 'success');
+
           // Reload teacher data to update counts
           await this.loadTeacherData();
           this.setupHomeContent();  // Update the home content with new totals
-          
-          // Refresh students list
+
+          // Refresh students list - maintain the current toggle state
+          const showWithdrawn = document.getElementById('show-withdrawn-toggle')?.checked || false;
           this.closeModal('manage-students');
-          setTimeout(() => this.manageStudents(classId), 100);
-      
+          setTimeout(() => this.manageStudents(classId, showWithdrawn), 100);
+
         } catch (error) {
-          console.error('Error removing student:', error);
-          this.showNotification(`Error removing student: ${error.message}`, 'error');
+          console.error('Error withdrawing student:', error);
+          this.showNotification(`Error withdrawing student: ${error.message}`, 'error');
+        }
+      }
+
+      async reactivateStudent(enrollmentId, classId) {
+        if (!enrollmentId) {
+          this.showNotification('Error: Enrollment ID not found', 'error');
+          return;
+        }
+
+        if (!confirm('Reactivate this student? They will be able to see class assignments again.')) {
+          return;
+        }
+
+        try {
+          const isAdmin = this.userInfo.profile?.user_type === 'admin';
+
+          // Verify permissions - admins can manage any class, teachers only their own
+          if (!isAdmin) {
+            const { data: classCheck, error: classError } = await this.supabaseQuery(() => this.auth.supabase
+              .from('classes')
+              .select('id, name')
+              .eq('id', classId)
+              .eq('teacher_id', this.userInfo.user.id)
+              .single());
+
+            if (classError || !classCheck) {
+              throw new Error('You do not have permission to manage this class');
+            }
+          }
+
+          // Update the enrollment status back to 'active'
+          const { data, error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('class_enrollments')
+            .update({
+              status: 'active',
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', enrollmentId)
+            .eq('class_id', classId)
+            .select());
+
+          if (error) {
+            console.error('Reactivate student error:', error);
+            throw error;
+          }
+
+          if (!data || data.length === 0) {
+            throw new Error('No enrollment was updated.');
+          }
+
+          // Log to enrollment history
+          await this.supabaseQuery(() => this.auth.supabase
+            .from('enrollment_history')
+            .insert({
+              enrollment_id: enrollmentId,
+              student_id: data[0].student_id,
+              class_id: classId,
+              action: 'reactivated',
+              performed_by: this.userInfo.user.id,
+              notes: 'Reactivated by teacher'
+            }));
+
+          this.showNotification('Student reactivated successfully', 'success');
+
+          // Reload teacher data to update counts
+          await this.loadTeacherData();
+          this.setupHomeContent();
+
+          // Refresh students list - keep showing withdrawn students
+          this.closeModal('manage-students');
+          setTimeout(() => this.manageStudents(classId, true), 100);
+
+        } catch (error) {
+          console.error('Error reactivating student:', error);
+          this.showNotification(`Error reactivating student: ${error.message}`, 'error');
+        }
+      }
+
+      async viewStudentGrades(classId, studentId, studentName) {
+        try {
+          const classData = this.classes.find(c => c.id === classId);
+
+          // Get the student's grades from assignment_submissions
+          const { data: submissions, error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('assignment_submissions')
+            .select(`
+              id,
+              points_earned,
+              grade,
+              status,
+              submitted_at,
+              graded_at,
+              assignments!inner(
+                id,
+                title,
+                max_points,
+                assignment_type,
+                due_date
+              )
+            `)
+            .eq('student_id', studentId)
+            .eq('assignments.class_id', classId)
+            .order('graded_at', { ascending: false }));
+
+          if (error) throw error;
+
+          // Get enrollment info for class grade
+          const { data: enrollment } = await this.supabaseQuery(() => this.auth.supabase
+            .from('class_enrollments')
+            .select('class_grade, participation_grade')
+            .eq('class_id', classId)
+            .eq('student_id', studentId)
+            .single());
+
+          let gradesHtml = '';
+          if (submissions && submissions.length > 0) {
+            gradesHtml = submissions.map(sub => {
+              const assignment = sub.assignments;
+              const percentage = sub.points_earned !== null && assignment.max_points > 0
+                ? Math.round((sub.points_earned / assignment.max_points) * 100)
+                : null;
+
+              return `
+                <div class="list-item">
+                  <div class="list-item-content">
+                    <div class="list-item-title">${assignment.title}</div>
+                    <div class="list-item-meta">
+                      ${assignment.assignment_type || 'assignment'} • Due: ${new Date(assignment.due_date).toLocaleDateString()}
+                    </div>
+                  </div>
+                  <div style="text-align: right;">
+                    <div style="font-weight: bold;">
+                      ${sub.points_earned !== null ? `${sub.points_earned}/${assignment.max_points}` : 'Not graded'}
+                      ${sub.grade ? ` (${sub.grade})` : ''}
+                    </div>
+                    ${percentage !== null ? `<div style="color: var(--muted); font-size: 0.85rem;">${percentage}%</div>` : ''}
+                  </div>
+                </div>
+              `;
+            }).join('');
+          } else {
+            gradesHtml = '<p style="color: var(--muted); text-align: center; padding: 20px;">No grades recorded for this class.</p>';
+          }
+
+          const modalContent = `
+            <div>
+              <h3 style="margin-bottom: 10px;">📊 Grades for ${studentName}</h3>
+              <p style="color: var(--muted); margin-bottom: 15px;">
+                ${classData?.name || 'Class'} •
+                ${enrollment?.class_grade !== null ? `Overall: ${enrollment.class_grade}%` : 'No overall grade'}
+              </p>
+
+              <div class="list" style="max-height: 60vh; overflow-y: auto;">
+                ${gradesHtml}
+              </div>
+            </div>
+
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal('student-grades')">Close</button>
+            </div>
+          `;
+
+          this.showModal('student-grades', '📊 Student Grades', modalContent, true);
+
+        } catch (error) {
+          console.error('Error loading student grades:', error);
+          this.showNotification('Error loading grades: ' + error.message, 'error');
         }
       }
 
