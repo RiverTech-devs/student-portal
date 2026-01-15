@@ -1674,40 +1674,97 @@
         }
 
         // ==================== SUBMISSIONS & GRADING ====================
-        function viewSubmissions(testId) {
+        async function viewSubmissions(testId) {
             const test = testsDatabase.find(t => t.id === testId);
             document.getElementById('submissionsTestTitle').textContent = test.title;
-
-            const assignedStudents = getAssignedStudents(test);
-            let html = `<table class="submissions-table">
-                <thead><tr><th>Student</th><th>Status</th><th>Auto Score</th><th>Final Score</th><th>Submitted</th><th>Actions</th></tr></thead>
-                <tbody>`;
-
-            assignedStudents.forEach(studentId => {
-                const student = studentsDatabase.find(s => s.id === studentId);
-                const submission = getSubmission(testId, studentId);
-
-                if (submission) {
-                    html += `<tr>
-                        <td>${student?.name || 'Unknown'}</td>
-                        <td><span class="test-status status-${submission.status === 'graded' ? 'graded' : 'pending'}">${submission.status === 'graded' ? 'Graded' : 'Pending Review'}</span></td>
-                        <td>${submission.autoScore}%</td>
-                        <td>${submission.finalScore !== null ? submission.finalScore + '%' : '--'}</td>
-                        <td>${new Date(submission.submittedAt).toLocaleDateString()}</td>
-                        <td><button class="btn btn-primary btn-sm" onclick="openGradeModal('${testId}', '${studentId}')">Grade</button></td>
-                    </tr>`;
-                } else {
-                    html += `<tr>
-                        <td>${student?.name || 'Unknown'}</td>
-                        <td><span class="test-status status-draft">Not Submitted</span></td>
-                        <td>--</td><td>--</td><td>--</td><td>--</td>
-                    </tr>`;
-                }
-            });
-
-            html += '</tbody></table>';
-            document.getElementById('submissionsList').innerHTML = html;
+            document.getElementById('submissionsList').innerHTML = '<p style="text-align: center; padding: 20px;">Loading...</p>';
             document.getElementById('submissionsModal').classList.add('active');
+
+            try {
+                // Load all assigned students directly from database
+                // First get all test_assignments for this test
+                const { data: assignments, error: assignError } = await supabaseClient
+                    .from('test_assignments')
+                    .select('class_id, student_id')
+                    .eq('test_id', testId)
+                    .eq('is_active', true);
+
+                if (assignError) throw assignError;
+
+                // Collect all class IDs and individual student IDs
+                const classIds = [...new Set(assignments.filter(a => a.class_id && !a.student_id).map(a => a.class_id))];
+                const directStudentIds = assignments.filter(a => a.student_id).map(a => a.student_id);
+
+                // Load students from assigned classes
+                let allStudentIds = new Set(directStudentIds);
+
+                if (classIds.length > 0) {
+                    const { data: enrollments, error: enrollError } = await supabaseClient
+                        .from('class_enrollments')
+                        .select('student_id')
+                        .in('class_id', classIds)
+                        .eq('status', 'active');
+
+                    if (!enrollError && enrollments) {
+                        enrollments.forEach(e => allStudentIds.add(e.student_id));
+                    }
+                }
+
+                // Load student profiles
+                const studentIdArray = Array.from(allStudentIds);
+                let studentMap = {};
+
+                if (studentIdArray.length > 0) {
+                    const { data: profiles, error: profileError } = await supabaseClient
+                        .from('user_profiles')
+                        .select('id, first_name, last_name')
+                        .in('id', studentIdArray);
+
+                    if (!profileError && profiles) {
+                        profiles.forEach(p => {
+                            studentMap[p.id] = `${p.first_name} ${p.last_name}`;
+                        });
+                    }
+                }
+
+                // Build the table
+                let html = `<table class="submissions-table">
+                    <thead><tr><th>Student</th><th>Status</th><th>Auto Score</th><th>Final Score</th><th>Submitted</th><th>Actions</th></tr></thead>
+                    <tbody>`;
+
+                studentIdArray.forEach(studentId => {
+                    const studentName = studentMap[studentId] || 'Unknown';
+                    const submission = getSubmission(testId, studentId);
+
+                    if (submission) {
+                        html += `<tr>
+                            <td>${studentName}</td>
+                            <td><span class="test-status status-${submission.status === 'graded' ? 'graded' : 'pending'}">${submission.status === 'graded' ? 'Graded' : 'Pending Review'}</span></td>
+                            <td>${submission.autoScore}%</td>
+                            <td>${submission.finalScore !== null ? submission.finalScore + '%' : '--'}</td>
+                            <td>${new Date(submission.submittedAt).toLocaleDateString()}</td>
+                            <td><button class="btn btn-primary btn-sm" onclick="openGradeModal('${testId}', '${studentId}')">Grade</button></td>
+                        </tr>`;
+                    } else {
+                        html += `<tr>
+                            <td>${studentName}</td>
+                            <td><span class="test-status status-draft">Not Submitted</span></td>
+                            <td>--</td><td>--</td><td>--</td><td>--</td>
+                        </tr>`;
+                    }
+                });
+
+                if (studentIdArray.length === 0) {
+                    html += '<tr><td colspan="6" style="text-align: center;">No students assigned</td></tr>';
+                }
+
+                html += '</tbody></table>';
+                document.getElementById('submissionsList').innerHTML = html;
+
+            } catch (error) {
+                console.error('Error loading submissions:', error);
+                document.getElementById('submissionsList').innerHTML = '<p style="color: var(--accent-danger); text-align: center;">Error loading student data</p>';
+            }
         }
 
         function openGradeModal(testId, studentId) {
