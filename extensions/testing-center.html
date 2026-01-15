@@ -125,6 +125,8 @@
         .btn-danger:hover { background: rgba(239, 68, 68, 0.2); }
         .btn-success { background: linear-gradient(135deg, var(--accent-success), #34d399); color: white; }
         .btn-warning { background: rgba(245, 158, 11, 0.1); color: var(--accent-warning); border: 1px solid rgba(245, 158, 11, 0.2); }
+        .btn-info { background: rgba(59, 130, 246, 0.1); color: #3b82f6; border: 1px solid rgba(59, 130, 246, 0.2); }
+        .btn-info:hover { background: rgba(59, 130, 246, 0.2); }
         .btn-sm { padding: 8px 16px; font-size: 13px; }
 
         .tests-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 20px; }
@@ -543,6 +545,21 @@
                 <h3 id="submissionsTestTitle" style="margin-bottom: 10px; color: var(--accent-secondary);"></h3>
                 <div id="submissionsClassSelector" style="margin-bottom: 20px;"></div>
                 <div id="submissionsList"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Analytics Modal -->
+    <div class="modal-overlay" id="analyticsModal">
+        <div class="modal wide">
+            <div class="modal-header">
+                <h2 class="modal-title">Test Analytics</h2>
+                <button class="modal-close" onclick="closeModal('analyticsModal')">×</button>
+            </div>
+            <div class="modal-body">
+                <h3 id="analyticsTestTitle" style="margin-bottom: 10px; color: var(--accent-secondary);"></h3>
+                <div id="analyticsClassSelector" style="margin-bottom: 20px;"></div>
+                <div id="analyticsContent"></div>
             </div>
         </div>
     </div>
@@ -1374,6 +1391,7 @@
                             <button class="btn btn-secondary btn-sm" onclick="editTest('${test.id}')">Edit</button>
                             <button class="btn btn-secondary btn-sm" onclick="openAssignModal('${test.id}')">Assign</button>
                             ${submissionCount > 0 ? `<button class="btn btn-warning btn-sm" onclick="viewSubmissions('${test.id}')">Grade (${pendingCount})</button>` : ''}
+                            ${submissionCount > 0 ? `<button class="btn btn-info btn-sm" onclick="viewAnalytics('${test.id}')">Analytics</button>` : ''}
                             <button class="btn btn-danger btn-sm" onclick="deleteTest('${test.id}')">Delete</button>
                         </div>
                     </div>
@@ -1921,6 +1939,262 @@
                 console.error('Error saving grades:', error);
                 showToast('Error saving grades');
             }
+        }
+
+        // ==================== ANALYTICS ====================
+        let analyticsTestId = null;
+        let analyticsClassId = null;
+        let analyticsData = { classes: [], submissions: [], test: null };
+
+        async function viewAnalytics(testId) {
+            analyticsTestId = testId;
+            const test = testsDatabase.find(t => t.id === testId);
+            document.getElementById('analyticsTestTitle').textContent = test.title;
+            document.getElementById('analyticsClassSelector').innerHTML = '';
+            document.getElementById('analyticsContent').innerHTML = '<p style="text-align: center; padding: 20px;">Loading analytics...</p>';
+            document.getElementById('analyticsModal').classList.add('active');
+
+            try {
+                // Get all submissions for this test
+                const { data: submissions, error: subError } = await supabaseClient
+                    .from('test_submissions')
+                    .select('*')
+                    .eq('test_id', testId);
+
+                if (subError) throw subError;
+
+                // Get assigned classes
+                const { data: assignments, error: assignError } = await supabaseClient
+                    .from('test_assignments')
+                    .select('class_id')
+                    .eq('test_id', testId)
+                    .eq('is_active', true);
+
+                if (assignError) throw assignError;
+
+                const classIds = [...new Set(assignments.filter(a => a.class_id).map(a => a.class_id))];
+
+                // Get class names
+                let classesData = [];
+                if (classIds.length > 0) {
+                    const { data: classes } = await supabaseClient
+                        .from('classes')
+                        .select('id, name')
+                        .in('id', classIds);
+                    classesData = classes || [];
+                }
+
+                // Get enrollments to map students to classes
+                const studentClassMap = {};
+                for (const classId of classIds) {
+                    const { data: enrollments } = await supabaseClient
+                        .from('class_enrollments')
+                        .select('student_id')
+                        .eq('class_id', classId)
+                        .eq('status', 'active');
+
+                    if (enrollments) {
+                        enrollments.forEach(e => {
+                            studentClassMap[e.student_id] = classId;
+                        });
+                    }
+                }
+
+                // Add class_id to submissions based on enrollment
+                submissions.forEach(s => {
+                    s.class_id = studentClassMap[s.student_id] || null;
+                });
+
+                analyticsData = { classes: classesData, submissions, test };
+
+                // Build class selector
+                if (classesData.length > 1) {
+                    const selectorHtml = `
+                        <label style="font-weight: 500; margin-right: 10px;">Select Class:</label>
+                        <select id="analyticsClassSelect" class="form-input" style="width: auto; display: inline-block;" onchange="renderAnalytics(this.value)">
+                            <option value="all">All Classes (${submissions.length} submissions)</option>
+                            ${classesData.map(c => {
+                                const count = submissions.filter(s => s.class_id === c.id).length;
+                                return `<option value="${c.id}">${c.name} (${count} submissions)</option>`;
+                            }).join('')}
+                        </select>
+                    `;
+                    document.getElementById('analyticsClassSelector').innerHTML = selectorHtml;
+                    analyticsClassId = 'all';
+                } else if (classesData.length === 1) {
+                    document.getElementById('analyticsClassSelector').innerHTML = `<p style="color: var(--text-muted);">Class: <strong>${classesData[0].name}</strong> (${submissions.length} submissions)</p>`;
+                    analyticsClassId = classesData[0].id;
+                }
+
+                renderAnalytics(analyticsClassId || 'all');
+
+            } catch (error) {
+                console.error('Error loading analytics:', error);
+                document.getElementById('analyticsContent').innerHTML = '<p style="color: var(--accent-danger); text-align: center;">Error loading analytics</p>';
+            }
+        }
+
+        function renderAnalytics(classId) {
+            analyticsClassId = classId;
+            const { submissions, test } = analyticsData;
+
+            // Filter submissions by class
+            const filteredSubmissions = classId === 'all'
+                ? submissions
+                : submissions.filter(s => s.class_id === classId);
+
+            if (filteredSubmissions.length === 0) {
+                document.getElementById('analyticsContent').innerHTML = '<p style="text-align: center; color: var(--text-muted);">No submissions yet</p>';
+                return;
+            }
+
+            // Calculate overall stats
+            const scores = filteredSubmissions.map(s => s.final_score ?? s.auto_score ?? 0);
+            const avgScore = Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
+            const highScore = Math.max(...scores);
+            const lowScore = Math.min(...scores);
+
+            // Calculate per-question stats
+            const questionStats = test.questions.map((q, idx) => {
+                let correct = 0, incorrect = 0, skipped = 0;
+
+                filteredSubmissions.forEach(sub => {
+                    const answer = sub.answers?.[q.id];
+                    if (answer === undefined || answer === null || answer === '') {
+                        skipped++;
+                    } else if (q.type === 'multiple-choice') {
+                        if (answer === q.correctAnswer) correct++;
+                        else incorrect++;
+                    } else {
+                        // Write-in - count as answered (can't auto-determine correctness)
+                        correct++; // Count as "answered" for now
+                    }
+                });
+
+                const total = filteredSubmissions.length;
+                const correctPct = Math.round((correct / total) * 100);
+
+                return {
+                    number: idx + 1,
+                    text: q.text,
+                    type: q.type,
+                    correct,
+                    incorrect,
+                    skipped,
+                    correctPct
+                };
+            });
+
+            // Sort by difficulty (lowest correct % first)
+            const hardestQuestions = [...questionStats].sort((a, b) => a.correctPct - b.correctPct);
+
+            // Score distribution
+            const distribution = { '90-100': 0, '80-89': 0, '70-79': 0, '60-69': 0, '50-59': 0, 'Below 50': 0 };
+            scores.forEach(s => {
+                if (s >= 90) distribution['90-100']++;
+                else if (s >= 80) distribution['80-89']++;
+                else if (s >= 70) distribution['70-79']++;
+                else if (s >= 60) distribution['60-69']++;
+                else if (s >= 50) distribution['50-59']++;
+                else distribution['Below 50']++;
+            });
+
+            let html = `
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 16px; margin-bottom: 24px;">
+                    <div style="background: var(--bg-tertiary); padding: 16px; border-radius: 12px; text-align: center;">
+                        <div style="font-size: 28px; font-weight: 700; color: var(--accent-primary);">${avgScore}%</div>
+                        <div style="font-size: 12px; color: var(--text-muted);">Class Average</div>
+                    </div>
+                    <div style="background: var(--bg-tertiary); padding: 16px; border-radius: 12px; text-align: center;">
+                        <div style="font-size: 28px; font-weight: 700; color: var(--accent-success);">${highScore}%</div>
+                        <div style="font-size: 12px; color: var(--text-muted);">Highest Score</div>
+                    </div>
+                    <div style="background: var(--bg-tertiary); padding: 16px; border-radius: 12px; text-align: center;">
+                        <div style="font-size: 28px; font-weight: 700; color: var(--accent-danger);">${lowScore}%</div>
+                        <div style="font-size: 12px; color: var(--text-muted);">Lowest Score</div>
+                    </div>
+                    <div style="background: var(--bg-tertiary); padding: 16px; border-radius: 12px; text-align: center;">
+                        <div style="font-size: 28px; font-weight: 700; color: var(--text-primary);">${filteredSubmissions.length}</div>
+                        <div style="font-size: 12px; color: var(--text-muted);">Submissions</div>
+                    </div>
+                </div>
+
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 24px;">
+                    <div>
+                        <h4 style="margin-bottom: 12px; color: var(--text-secondary);">Score Distribution</h4>
+                        <div style="background: var(--bg-tertiary); padding: 16px; border-radius: 12px;">
+                            ${Object.entries(distribution).map(([range, count]) => {
+                                const pct = Math.round((count / filteredSubmissions.length) * 100);
+                                const color = range === '90-100' ? 'var(--accent-success)' :
+                                              range === '80-89' ? '#34d399' :
+                                              range === '70-79' ? 'var(--accent-warning)' :
+                                              range === '60-69' ? '#f59e0b' :
+                                              range === '50-59' ? '#f97316' : 'var(--accent-danger)';
+                                return `
+                                    <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                                        <span style="width: 70px; font-size: 12px; color: var(--text-muted);">${range}</span>
+                                        <div style="flex: 1; height: 20px; background: var(--bg-secondary); border-radius: 4px; overflow: hidden; margin-right: 8px;">
+                                            <div style="width: ${pct}%; height: 100%; background: ${color}; transition: width 0.3s;"></div>
+                                        </div>
+                                        <span style="width: 40px; font-size: 12px; color: var(--text-secondary);">${count}</span>
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                    </div>
+                    <div>
+                        <h4 style="margin-bottom: 12px; color: var(--text-secondary);">Hardest Questions</h4>
+                        <div style="background: var(--bg-tertiary); padding: 16px; border-radius: 12px; max-height: 200px; overflow-y: auto;">
+                            ${hardestQuestions.slice(0, 5).map(q => `
+                                <div style="display: flex; align-items: center; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--border-color);">
+                                    <span style="width: 30px; font-weight: 600; color: var(--text-primary);">Q${q.number}</span>
+                                    <div style="flex: 1; font-size: 12px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-right: 8px;">${q.text.substring(0, 40)}...</div>
+                                    <span style="font-weight: 600; color: ${q.correctPct < 50 ? 'var(--accent-danger)' : q.correctPct < 70 ? 'var(--accent-warning)' : 'var(--accent-success)'};">${q.correctPct}%</span>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                </div>
+
+                <h4 style="margin-bottom: 12px; color: var(--text-secondary);">Question Breakdown</h4>
+                <div style="background: var(--bg-tertiary); padding: 16px; border-radius: 12px; max-height: 400px; overflow-y: auto;">
+                    <table style="width: 100%; border-collapse: collapse;">
+                        <thead>
+                            <tr style="border-bottom: 2px solid var(--border-color);">
+                                <th style="text-align: left; padding: 8px; font-size: 12px; color: var(--text-muted);">#</th>
+                                <th style="text-align: left; padding: 8px; font-size: 12px; color: var(--text-muted);">Question</th>
+                                <th style="text-align: center; padding: 8px; font-size: 12px; color: var(--text-muted);">Type</th>
+                                <th style="text-align: center; padding: 8px; font-size: 12px; color: var(--text-muted);">Correct</th>
+                                <th style="text-align: center; padding: 8px; font-size: 12px; color: var(--text-muted);">Incorrect</th>
+                                <th style="text-align: center; padding: 8px; font-size: 12px; color: var(--text-muted);">Skipped</th>
+                                <th style="text-align: center; padding: 8px; font-size: 12px; color: var(--text-muted);">Success Rate</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${questionStats.map(q => `
+                                <tr style="border-bottom: 1px solid var(--border-color);">
+                                    <td style="padding: 10px 8px; font-weight: 600;">${q.number}</td>
+                                    <td style="padding: 10px 8px; font-size: 13px; max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${q.text}</td>
+                                    <td style="padding: 10px 8px; text-align: center;"><span class="question-type-badge">${q.type === 'multiple-choice' ? 'MC' : 'Written'}</span></td>
+                                    <td style="padding: 10px 8px; text-align: center; color: var(--accent-success);">${q.correct}</td>
+                                    <td style="padding: 10px 8px; text-align: center; color: var(--accent-danger);">${q.incorrect}</td>
+                                    <td style="padding: 10px 8px; text-align: center; color: var(--text-muted);">${q.skipped}</td>
+                                    <td style="padding: 10px 8px; text-align: center;">
+                                        <div style="display: flex; align-items: center; justify-content: center; gap: 8px;">
+                                            <div style="width: 60px; height: 8px; background: var(--bg-secondary); border-radius: 4px; overflow: hidden;">
+                                                <div style="width: ${q.correctPct}%; height: 100%; background: ${q.correctPct < 50 ? 'var(--accent-danger)' : q.correctPct < 70 ? 'var(--accent-warning)' : 'var(--accent-success)'};"></div>
+                                            </div>
+                                            <span style="font-weight: 600; color: ${q.correctPct < 50 ? 'var(--accent-danger)' : q.correctPct < 70 ? 'var(--accent-warning)' : 'var(--accent-success)'};">${q.correctPct}%</span>
+                                        </div>
+                                    </td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            `;
+
+            document.getElementById('analyticsContent').innerHTML = html;
         }
 
         // ==================== QUESTION BUILDER ====================
