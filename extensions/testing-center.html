@@ -515,29 +515,9 @@
                 <h3 id="assignTestTitle" style="margin-bottom: 20px; color: var(--accent-secondary);"></h3>
 
                 <div class="form-group">
-                    <label class="form-label">Select Class <span style="color: var(--accent-danger);">*</span></label>
-                    <select id="assignClassSelect" class="form-input" onchange="onAssignClassChange()">
-                        <option value="">-- Select a class --</option>
-                    </select>
-                </div>
-
-                <div class="form-group" id="assignStudentsGroup" style="display: none;">
-                    <label class="form-label">Assign to</label>
-                    <div class="checkbox-group">
-                        <label class="checkbox-item" id="assignAllStudentsOption">
-                            <input type="radio" name="assignScope" value="all" checked onchange="onAssignScopeChange()">
-                            Entire Class
-                        </label>
-                        <label class="checkbox-item" id="assignSelectStudentsOption">
-                            <input type="radio" name="assignScope" value="select" onchange="onAssignScopeChange()">
-                            Select Individual Students
-                        </label>
-                    </div>
-                </div>
-
-                <div class="form-group" id="individualStudentsGroup" style="display: none;">
-                    <label class="form-label">Select Students</label>
-                    <div class="checkbox-group" id="studentCheckboxes"></div>
+                    <label class="form-label">Select Classes <span style="color: var(--accent-danger);">*</span></label>
+                    <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 10px;">Select one or more classes to assign this test to</p>
+                    <div class="checkbox-group" id="classCheckboxes"></div>
                 </div>
 
                 <div class="form-group">
@@ -547,7 +527,7 @@
             </div>
             <div class="modal-footer">
                 <button class="btn btn-secondary" onclick="closeModal('assignModal')">Cancel</button>
-                <button class="btn btn-primary" id="assignSaveBtn" onclick="saveAssignments()" disabled>Save & Issue</button>
+                <button class="btn btn-primary" id="assignSaveBtn" onclick="saveAssignments()">Save & Issue</button>
             </div>
         </div>
     </div>
@@ -787,11 +767,12 @@
 
                     if (error) throw error;
 
-                    // Also load test assignments
+                    // Also load test assignments (only active ones)
                     const { data: assignments, error: assignError } = await supabaseClient
                         .from('test_assignments')
                         .select('*')
-                        .in('test_id', (data || []).map(t => t.id));
+                        .in('test_id', (data || []).map(t => t.id))
+                        .eq('is_active', true);
 
                     if (assignError) console.warn('Error loading assignments:', assignError);
 
@@ -822,7 +803,7 @@
                             }))
                     }));
                 } else {
-                    // Students see assigned tests
+                    // Students see assigned tests (only active assignments)
                     const { data, error } = await supabaseClient
                         .from('tests')
                         .select(`
@@ -830,7 +811,8 @@
                             test_questions (*),
                             test_assignments!inner (*)
                         `)
-                        .eq('status', 'active');
+                        .eq('status', 'active')
+                        .eq('test_assignments.is_active', true);
 
                     if (error) throw error;
 
@@ -843,10 +825,10 @@
                         status: t.status,
                         createdAt: t.created_at,
                         assignedClasses: (t.test_assignments || [])
-                            .filter(a => a.class_id)
+                            .filter(a => a.class_id && a.is_active)
                             .map(a => a.class_id),
                         assignedStudents: (t.test_assignments || [])
-                            .filter(a => a.student_id)
+                            .filter(a => a.student_id && a.is_active)
                             .map(a => a.student_id),
                         questions: (t.test_questions || [])
                             .sort((a, b) => a.question_order - b.question_order)
@@ -1022,22 +1004,43 @@
             }
         }
 
-        async function saveAssignmentsToDatabase(testId, classId, studentIds, dueDate) {
+        async function saveAssignmentsToDatabase(testId, classIds, dueDate) {
             if (!supabaseClient || !authReady) return [];
 
             try {
-                // Delete existing assignments for this test
-                await supabaseClient
-                    .from('test_assignments')
-                    .delete()
-                    .eq('test_id', testId);
-
-                const assignments = [];
                 const test = testsDatabase.find(t => t.id === testId);
                 const maxPoints = test ? test.questions.reduce((sum, q) => sum + (q.maxPoints || 10), 0) : 100;
 
-                if (studentIds.length === 0) {
-                    // Assign to entire class (student_id = null)
+                // Get existing assignments for this test
+                const { data: existingAssignments, error: fetchError } = await supabaseClient
+                    .from('test_assignments')
+                    .select('id, class_id, linked_assignment_id')
+                    .eq('test_id', testId)
+                    .eq('is_active', true);
+
+                if (fetchError) throw fetchError;
+
+                const existingClassIds = existingAssignments ? existingAssignments.map(a => a.class_id) : [];
+
+                // Find classes to add (in new list but not existing)
+                const classesToAdd = classIds.filter(id => !existingClassIds.includes(id));
+
+                // Find assignments to remove (in existing but not in new list)
+                const assignmentsToRemove = existingAssignments ?
+                    existingAssignments.filter(a => !classIds.includes(a.class_id)) : [];
+
+                // Deactivate removed assignments (this will trigger cascade to deactivate linked assignments)
+                for (const assignment of assignmentsToRemove) {
+                    await supabaseClient
+                        .from('test_assignments')
+                        .update({ is_active: false })
+                        .eq('id', assignment.id);
+                }
+
+                const newAssignments = [];
+
+                // Create new assignments for added classes
+                for (const classId of classesToAdd) {
                     const { data, error } = await supabaseClient
                         .from('test_assignments')
                         .insert({
@@ -1052,7 +1055,7 @@
                         .single();
 
                     if (error) throw error;
-                    assignments.push(data);
+                    newAssignments.push(data);
 
                     // Notify portal to create assignment entry for grade integration
                     if (isEmbedded && test) {
@@ -1068,45 +1071,20 @@
                             }
                         }, '*');
                     }
-                } else {
-                    // Assign to specific students within the class
-                    for (const studentId of studentIds) {
-                        const { data, error } = await supabaseClient
-                            .from('test_assignments')
-                            .insert({
-                                test_id: testId,
-                                class_id: classId,
-                                student_id: studentId,
-                                assigned_by: currentUser.id,
-                                due_date: dueDate,
-                                is_active: true
-                            })
-                            .select()
-                            .single();
-
-                        if (error) throw error;
-                        assignments.push(data);
-                    }
-
-                    // Notify portal - create one assignment entry for the class
-                    // (individual student tracking is handled via test_assignments)
-                    if (isEmbedded && test) {
-                        window.parent.postMessage({
-                            type: 'TEST_ASSIGNMENT_CREATED',
-                            payload: {
-                                testId: testId,
-                                testTitle: test.title,
-                                classId: classId,
-                                dueDate: dueDate,
-                                maxPoints: maxPoints,
-                                testAssignmentId: assignments[0].id,
-                                individualStudentIds: studentIds
-                            }
-                        }, '*');
-                    }
                 }
 
-                return assignments;
+                // Update due date for existing assignments that remain
+                const assignmentsToKeep = existingAssignments ?
+                    existingAssignments.filter(a => classIds.includes(a.class_id)) : [];
+
+                for (const assignment of assignmentsToKeep) {
+                    await supabaseClient
+                        .from('test_assignments')
+                        .update({ due_date: dueDate })
+                        .eq('id', assignment.id);
+                }
+
+                return newAssignments;
             } catch (error) {
                 console.error('Error saving assignments:', error);
                 throw error;
@@ -1530,80 +1508,27 @@
             const test = testsDatabase.find(t => t.id === assigningTestId);
             if (!test) return;
 
-            // Populate class dropdown
-            const classSelect = document.getElementById('assignClassSelect');
+            // Populate class checkboxes
+            const classCheckboxes = document.getElementById('classCheckboxes');
             if (classesDatabase.length === 0) {
-                classSelect.innerHTML = '<option value="">Loading classes...</option>';
+                classCheckboxes.innerHTML = '<p style="color: var(--text-muted);">Loading classes...</p>';
             } else {
-                classSelect.innerHTML = '<option value="">-- Select a class --</option>' +
-                    classesDatabase.map(c => {
-                        const studentCount = c.students ? c.students.length : 0;
-                        return `<option value="${c.id}">${c.name} (${studentCount} students)</option>`;
-                    }).join('');
+                // Pre-check classes that are already assigned
+                const assignedClassIds = test.assignedClasses || [];
+                classCheckboxes.innerHTML = classesDatabase.map(c => {
+                    const studentCount = c.students ? c.students.length : 0;
+                    const isChecked = assignedClassIds.includes(c.id);
+                    return `
+                        <label class="checkbox-item ${isChecked ? 'checked' : ''}">
+                            <input type="checkbox" value="${c.id}" ${isChecked ? 'checked' : ''} onchange="updateCheckboxStyle(this)">
+                            ${c.name} (${studentCount} students)
+                        </label>
+                    `;
+                }).join('');
             }
 
-            // Reset the form state
-            document.getElementById('assignStudentsGroup').style.display = 'none';
-            document.getElementById('individualStudentsGroup').style.display = 'none';
-            document.getElementById('assignSaveBtn').disabled = true;
-            document.getElementById('studentCheckboxes').innerHTML = '';
+            // Reset due date
             document.getElementById('assignDueDate').value = '';
-
-            // Reset radio buttons
-            const allRadio = document.querySelector('input[name="assignScope"][value="all"]');
-            if (allRadio) allRadio.checked = true;
-        }
-
-        function onAssignClassChange() {
-            const classSelect = document.getElementById('assignClassSelect');
-            const selectedClassId = classSelect.value;
-            const assignStudentsGroup = document.getElementById('assignStudentsGroup');
-            const individualStudentsGroup = document.getElementById('individualStudentsGroup');
-            const saveBtn = document.getElementById('assignSaveBtn');
-
-            if (selectedClassId) {
-                // Show the assign scope options
-                assignStudentsGroup.style.display = 'block';
-                saveBtn.disabled = false;
-
-                // Populate students for this class
-                const selectedClass = classesDatabase.find(c => c.id === selectedClassId);
-                const classStudents = selectedClass?.students || [];
-
-                const studentCheckboxes = document.getElementById('studentCheckboxes');
-                if (classStudents.length === 0) {
-                    studentCheckboxes.innerHTML = '<p style="color: var(--text-muted);">No students in this class.</p>';
-                } else {
-                    studentCheckboxes.innerHTML = classStudents.map(s => {
-                        return `
-                            <label class="checkbox-item">
-                                <input type="checkbox" value="${s.id}" onchange="updateCheckboxStyle(this)">
-                                ${s.name || s.full_name || 'Unknown'}
-                            </label>
-                        `;
-                    }).join('');
-                }
-
-                // Reset to "Entire Class" mode
-                const allRadio = document.querySelector('input[name="assignScope"][value="all"]');
-                if (allRadio) allRadio.checked = true;
-                individualStudentsGroup.style.display = 'none';
-            } else {
-                // Hide everything if no class selected
-                assignStudentsGroup.style.display = 'none';
-                individualStudentsGroup.style.display = 'none';
-                saveBtn.disabled = true;
-            }
-        }
-
-        function onAssignScopeChange() {
-            const scope = document.querySelector('input[name="assignScope"]:checked')?.value;
-            const individualStudentsGroup = document.getElementById('individualStudentsGroup');
-            if (scope === 'select') {
-                individualStudentsGroup.style.display = 'block';
-            } else {
-                individualStudentsGroup.style.display = 'none';
-            }
         }
 
         function updateCheckboxStyle(checkbox) {
@@ -1617,22 +1542,11 @@
             const test = testsDatabase.find(t => t.id === assigningTestId);
             if (!test) return;
 
-            // Get selected class (required)
-            const selectedClassId = document.getElementById('assignClassSelect').value;
-            if (!selectedClassId) {
-                showToast('Please select a class');
+            // Get selected classes (multiple)
+            const selectedClassIds = Array.from(document.querySelectorAll('#classCheckboxes input:checked')).map(cb => cb.value);
+            if (selectedClassIds.length === 0) {
+                showToast('Please select at least one class');
                 return;
-            }
-
-            // Check if assigning to entire class or individual students
-            const assignScope = document.querySelector('input[name="assignScope"]:checked')?.value || 'all';
-            let selectedStudents = [];
-            if (assignScope === 'select') {
-                selectedStudents = Array.from(document.querySelectorAll('#studentCheckboxes input:checked')).map(cb => cb.value);
-                if (selectedStudents.length === 0) {
-                    showToast('Please select at least one student');
-                    return;
-                }
             }
 
             // Get due date - default to end of today if not provided
@@ -1650,7 +1564,7 @@
             try {
                 // Save to database if authenticated
                 if (authReady && supabaseClient) {
-                    await saveAssignmentsToDatabase(assigningTestId, selectedClassId, selectedStudents, dueDate);
+                    await saveAssignmentsToDatabase(assigningTestId, selectedClassIds, dueDate);
 
                     // Also update test status to active
                     await supabaseClient
@@ -1660,13 +1574,13 @@
                 }
 
                 // Update local data
-                test.assignedClasses = [selectedClassId];
-                test.assignedStudents = selectedStudents;
+                test.assignedClasses = selectedClassIds;
+                test.assignedStudents = [];
                 test.status = 'active';
 
                 closeModal('assignModal');
                 renderTests();
-                showToast('Test assigned and issued successfully!');
+                showToast(`Test assigned to ${selectedClassIds.length} class(es) successfully!`);
             } catch (error) {
                 console.error('Error saving assignments:', error);
                 showToast('Error assigning test: ' + error.message);
@@ -1681,6 +1595,41 @@
             document.getElementById('submissionsModal').classList.add('active');
 
             try {
+                // Refresh submissions for this test
+                const { data: freshSubmissions, error: subError } = await supabaseClient
+                    .from('test_submissions')
+                    .select('*, test_question_grades (*)')
+                    .eq('test_id', testId);
+
+                if (!subError && freshSubmissions) {
+                    // Update submissionsDatabase with fresh data
+                    freshSubmissions.forEach(s => {
+                        const key = `${s.test_id}_${s.student_id}`;
+                        const gradedAnswers = {};
+                        (s.test_question_grades || []).forEach(g => {
+                            gradedAnswers[g.question_id] = {
+                                score: g.points_earned,
+                                maxScore: 10,
+                                feedback: g.feedback
+                            };
+                        });
+
+                        submissionsDatabase[key] = {
+                            id: s.id,
+                            testId: s.test_id,
+                            studentId: s.student_id,
+                            answers: s.answers || {},
+                            autoScore: s.auto_score,
+                            finalScore: s.final_score,
+                            gradedAnswers: gradedAnswers,
+                            submittedAt: s.submitted_at,
+                            status: s.status === 'graded' ? 'graded' : 'pending_review',
+                            linkedSubmissionId: s.linked_submission_id,
+                            testAssignmentId: s.test_assignment_id
+                        };
+                    });
+                }
+
                 // Load all assigned students directly from database
                 // First get all test_assignments for this test
                 const { data: assignments, error: assignError } = await supabaseClient
@@ -1708,6 +1657,12 @@
                     if (!enrollError && enrollments) {
                         enrollments.forEach(e => allStudentIds.add(e.student_id));
                     }
+                }
+
+                // ALSO include any students who have already submitted
+                // (handles RLS cases where teacher can't see other class enrollments)
+                if (freshSubmissions) {
+                    freshSubmissions.forEach(s => allStudentIds.add(s.student_id));
                 }
 
                 // Load student profiles
