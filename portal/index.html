@@ -6086,6 +6086,10 @@
                                 onclick="app.showAdminStudentRecordModal('${student.id}')">
                           Edit Records
                         </button>
+                        <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 13px;"
+                                onclick="app.showLinkParentModal('${student.id}', '${student.first_name} ${student.last_name}')">
+                          👪 Parents
+                        </button>
                         ${isPast
                           ? `<button class="btn btn-primary" style="padding: 6px 12px; font-size: 13px;"
                                     onclick="app.reactivateStudent('${student.id}')">
@@ -6227,6 +6231,164 @@
         } catch (error) {
           console.error('Error reactivating student:', error);
           this.showNotification(`Failed to reactivate student: ${error.message}`, 'error');
+        }
+      }
+
+      async showLinkParentModal(studentId, studentName) {
+        try {
+          // Load currently linked parents
+          const { data: linkedParents, error: linksError } = await this.auth.supabase
+            .from('parent_child_links')
+            .select(`
+              parent_id,
+              created_at,
+              parent:user_profiles!parent_child_links_parent_id_fkey(id, first_name, last_name, email)
+            `)
+            .eq('child_id', studentId);
+
+          if (linksError) throw linksError;
+
+          // Load all parent accounts for search
+          const { data: allParents, error: parentsError } = await this.auth.supabase
+            .from('user_profiles')
+            .select('id, first_name, last_name, email')
+            .eq('user_type', 'parent')
+            .order('last_name', { ascending: true });
+
+          if (parentsError) throw parentsError;
+
+          // Build linked parents list
+          let linkedHtml = '';
+          if (linkedParents && linkedParents.length > 0) {
+            linkedHtml = linkedParents.map(link => {
+              const parent = link.parent;
+              const linkedDate = new Date(link.created_at).toLocaleDateString();
+              return `
+                <div class="list-item" style="display: flex; justify-content: space-between; align-items: center; padding: 12px; border-bottom: 1px solid var(--border);">
+                  <div>
+                    <div style="font-weight: 600;">${parent?.first_name || 'Unknown'} ${parent?.last_name || ''}</div>
+                    <div style="font-size: 0.85rem; color: var(--muted);">${parent?.email || ''} • Linked: ${linkedDate}</div>
+                  </div>
+                  <button class="btn danger small" onclick="app.unlinkParent('${studentId}', '${parent?.id}', '${studentName}')">
+                    Unlink
+                  </button>
+                </div>
+              `;
+            }).join('');
+          } else {
+            linkedHtml = '<p style="color: var(--muted); text-align: center; padding: 20px;">No parents linked to this student.</p>';
+          }
+
+          // Filter out already linked parents from the dropdown
+          const linkedParentIds = (linkedParents || []).map(l => l.parent_id);
+          const availableParents = (allParents || []).filter(p => !linkedParentIds.includes(p.id));
+
+          const modalContent = `
+            <div>
+              <h3 style="margin-bottom: 5px;">👪 Parent Links for ${studentName}</h3>
+              <p style="color: var(--muted); margin-bottom: 20px; font-size: 0.9rem;">
+                Manage which parent accounts can view this student's records
+              </p>
+
+              <div style="margin-bottom: 25px;">
+                <h4 style="margin-bottom: 10px; color: var(--text);">Currently Linked Parents</h4>
+                <div style="background: var(--bg); border-radius: 8px; border: 1px solid var(--border);">
+                  ${linkedHtml}
+                </div>
+              </div>
+
+              <div style="border-top: 1px solid var(--border); padding-top: 20px;">
+                <h4 style="margin-bottom: 10px; color: var(--text);">Link New Parent</h4>
+                ${availableParents.length > 0 ? `
+                  <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                    <select id="parent-to-link" style="flex: 1; min-width: 200px; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+                      <option value="">-- Select a parent account --</option>
+                      ${availableParents.map(p =>
+                        `<option value="${p.id}">${p.first_name} ${p.last_name} (${p.email})</option>`
+                      ).join('')}
+                    </select>
+                    <button class="btn btn-primary" onclick="app.linkStudentToParent('${studentId}', '${studentName}')">
+                      Link Parent
+                    </button>
+                  </div>
+                  <p style="color: var(--muted); font-size: 0.85rem; margin-top: 10px;">
+                    Only existing parent accounts are shown. If the parent doesn't have an account yet, they need to register first.
+                  </p>
+                ` : `
+                  <p style="color: var(--muted); text-align: center; padding: 20px;">
+                    No available parent accounts to link. All parents are either already linked or no parent accounts exist.
+                  </p>
+                `}
+              </div>
+            </div>
+
+            <div style="display: flex; gap: 10px; margin-top: 25px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal('link-parent')">Close</button>
+            </div>
+          `;
+
+          this.showModal('link-parent', '👪 Manage Parent Links', modalContent, true);
+
+        } catch (error) {
+          console.error('Error loading parent links:', error);
+          this.showNotification('Error loading parent links: ' + error.message, 'error');
+        }
+      }
+
+      async linkStudentToParent(studentId, studentName) {
+        const parentId = document.getElementById('parent-to-link')?.value;
+
+        if (!parentId) {
+          this.showNotification('Please select a parent to link', 'error');
+          return;
+        }
+
+        try {
+          const { error } = await this.auth.supabase
+            .from('parent_child_links')
+            .insert({
+              parent_id: parentId,
+              child_id: studentId,
+              created_at: new Date().toISOString()
+            });
+
+          if (error) throw error;
+
+          this.showNotification('Parent linked successfully', 'success');
+
+          // Refresh the modal
+          this.closeModal('link-parent');
+          await this.showLinkParentModal(studentId, studentName);
+
+        } catch (error) {
+          console.error('Error linking parent:', error);
+          this.showNotification('Error linking parent: ' + error.message, 'error');
+        }
+      }
+
+      async unlinkParent(studentId, parentId, studentName) {
+        if (!confirm('Are you sure you want to unlink this parent? They will no longer be able to view this student\'s records.')) {
+          return;
+        }
+
+        try {
+          const { error } = await this.auth.supabase
+            .from('parent_child_links')
+            .delete()
+            .eq('parent_id', parentId)
+            .eq('child_id', studentId);
+
+          if (error) throw error;
+
+          this.showNotification('Parent unlinked successfully', 'success');
+
+          // Refresh the modal
+          this.closeModal('link-parent');
+          await this.showLinkParentModal(studentId, studentName);
+
+        } catch (error) {
+          console.error('Error unlinking parent:', error);
+          this.showNotification('Error unlinking parent: ' + error.message, 'error');
         }
       }
 
