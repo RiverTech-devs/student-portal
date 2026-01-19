@@ -605,6 +605,192 @@ class RiutizGame extends EventTarget {
             return { success: true };
         }
 
+        // === PURPLE (P) INTERRUPTION EFFECTS ===
+
+        // Outburst (id 196) / Tirade (id 197) - Deal damage to target pupil
+        if (ability.includes('deal') && ability.includes('damage to target pupil') && !ability.includes('draw')) {
+            const match = ability.match(/deal\s*(\d+)\s*damage/);
+            const damage = match ? parseInt(match[1]) : 2;
+            if (target) {
+                target.currentEndurance -= damage;
+                this.emitEvent('damageDealt', { target, damage });
+                if (target.currentEndurance <= 0) {
+                    this.triggerPupilExhausted(target, playerNum === 1 ? 2 : 1);
+                }
+                return { success: true };
+            }
+            return { needsTarget: true, targetType: 'anyPupil', effect: 'dealDamage', amount: damage };
+        }
+
+        // Emotional Appeal (id 198) - Target pupil gets +2 to die rolls
+        if (ability.includes('target pupil gets') && ability.includes('to die rolls until end of turn') && !ability.includes('-')) {
+            const match = ability.match(/\+(\d+)\s*to die rolls/);
+            const bonus = match ? parseInt(match[1]) : 2;
+            if (target) {
+                target.dieRollBonus = (target.dieRollBonus || 0) + bonus;
+                target.tempBuffs.push({ type: 'dieRollBonus', value: bonus, expiresAt: 'endOfTurn' });
+                this.emitEvent('dieRollBonusApplied', { card: target, bonus });
+                return { success: true };
+            }
+            return { needsTarget: true, targetType: 'anyPupil', effect: 'dieRollBonus', amount: bonus };
+        }
+
+        // Performance Anxiety (id 206) - Target pupil gets -2 to die rolls
+        if (ability.includes('target pupil gets') && ability.includes('-') && ability.includes('to die rolls')) {
+            const match = ability.match(/-(\d+)\s*to die rolls/);
+            const penalty = match ? parseInt(match[1]) : 2;
+            if (target) {
+                target.dieRollBonus = (target.dieRollBonus || 0) - penalty;
+                target.tempBuffs.push({ type: 'dieRollPenalty', value: -penalty, expiresAt: 'endOfTurn' });
+                this.emitEvent('dieRollPenaltyApplied', { card: target, penalty });
+                return { success: true };
+            }
+            return { needsTarget: true, targetType: 'anyPupil', effect: 'dieRollPenalty', amount: penalty };
+        }
+
+        // Dramatic Exit (id 199) - Return target pupil you control to hand. Draw a card
+        if (ability.includes('return target pupil you control') && ability.includes('draw a card')) {
+            if (target) {
+                this.bounceCard(target, playerNum);
+                if (player.deck.length > 0) {
+                    player.hand.push(player.deck.shift());
+                }
+                this.emitEvent('dramaticExit', { card: target, player: playerNum });
+                return { success: true };
+            }
+            return { needsTarget: true, targetType: 'friendlyPupil', effect: 'bounceAndDraw' };
+        }
+
+        // Heated Exchange (id 200) - Deal 2 damage to each pupil
+        if (ability.includes('deal') && ability.includes('damage to each pupil')) {
+            const match = ability.match(/deal\s*(\d+)\s*damage/);
+            const damage = match ? parseInt(match[1]) : 2;
+            player.field.forEach(p => {
+                if (p.type?.includes('Pupil')) {
+                    p.currentEndurance -= damage;
+                }
+            });
+            opponent.field.forEach(p => {
+                if (p.type?.includes('Pupil')) {
+                    p.currentEndurance -= damage;
+                }
+            });
+            this.emitEvent('heatedExchange', { player: playerNum, damage });
+            return { success: true };
+        }
+
+        // Creative Spark (id 201) - Draw a card, discard a card
+        if (ability.includes('draw a card') && ability.includes('discard a card') && !ability.includes('spend:')) {
+            if (player.deck.length > 0) {
+                player.hand.push(player.deck.shift());
+            }
+            this.emitEvent('needDiscard', { player: playerNum, count: 1, reason: 'Creative Spark' });
+            return { success: true, needsDiscard: true };
+        }
+
+        // Wild Gesture (id 202) - Target pupil gets +3/-2 until end of turn
+        if (ability.includes('+3/-2') || (ability.includes('+3') && ability.includes('-2'))) {
+            if (target) {
+                target.dieRollBonus = (target.dieRollBonus || 0) + 3;
+                target.currentEndurance -= 2;
+                target.tempBuffs.push({ type: 'wildGesture', expiresAt: 'endOfTurn' });
+                this.emitEvent('wildGesture', { card: target });
+                return { success: true };
+            }
+            return { needsTarget: true, targetType: 'anyPupil', effect: 'wildGesture' };
+        }
+
+        // Mood Swing (id 203) - Switch target pupil's Endurance with another's
+        if (ability.includes('switch') && ability.includes('endurance')) {
+            // This needs two targets
+            this.emitEvent('needTwoTargets', {
+                player: playerNum,
+                effect: 'switchEndurance'
+            });
+            return { success: true, needsTwoTargets: true };
+        }
+
+        // Passionate Defense (id 204) - Target pupil gets +4 Endurance until end of turn
+        if (ability.includes('target pupil gets') && ability.includes('endurance until end of turn')) {
+            const match = ability.match(/\+(\d+)\s*endurance/);
+            const bonus = match ? parseInt(match[1]) : 4;
+            if (target) {
+                target.currentEndurance += bonus;
+                target.tempBuffs.push({ type: 'enduranceBonus', value: bonus, expiresAt: 'endOfTurn' });
+                this.emitEvent('enduranceBonusApplied', { card: target, bonus });
+                return { success: true };
+            }
+            return { needsTarget: true, targetType: 'anyPupil', effect: 'enduranceBonus', amount: bonus };
+        }
+
+        // Improvisation (id 205) - Flip coin: heads draw 2, tails opponent draws 1
+        if (ability.includes('flip a coin') && ability.includes('heads') && ability.includes('draw 2') && ability.includes('tails')) {
+            const isHeads = Math.random() < 0.5;
+            if (isHeads) {
+                for (let i = 0; i < 2 && player.deck.length > 0; i++) {
+                    player.hand.push(player.deck.shift());
+                }
+                this.emitEvent('improvisationHeads', { player: playerNum });
+            } else {
+                if (opponent.deck.length > 0) {
+                    opponent.hand.push(opponent.deck.shift());
+                }
+                this.emitEvent('improvisationTails', { player: playerNum });
+            }
+            return { success: true };
+        }
+
+        // Standing Ovation (id 207) - Ready all your pupils, they gain Impulsive
+        if (ability.includes('ready all pupils') && ability.includes('impulsive')) {
+            player.field.forEach(card => {
+                if (card.type?.includes('Pupil')) {
+                    card.isSpent = false;
+                    card.hasGettingBearings = false;
+                    card.tempBuffs = card.tempBuffs || [];
+                    card.tempBuffs.push({ type: 'keyword', keyword: 'impulsive', expiresAt: 'endOfTurn' });
+                }
+            });
+            this.emitEvent('standingOvation', { player: playerNum });
+            return { success: true };
+        }
+
+        // Abstract Thought (id 208) - Target pupil gains Non-Sequitur until end of turn
+        if (ability.includes('gains non-sequitur')) {
+            if (target) {
+                target.tempBuffs = target.tempBuffs || [];
+                target.tempBuffs.push({ type: 'keyword', keyword: 'non-sequitur', expiresAt: 'endOfTurn' });
+                this.emitEvent('nonSequiturGranted', { card: target });
+                return { success: true };
+            }
+            return { needsTarget: true, targetType: 'anyPupil', effect: 'grantNonSequitur' };
+        }
+
+        // Catharsis (id 209) - Deal damage equal to damage your pupils took this turn
+        if (ability.includes('deal damage') && ability.includes('equal to') && ability.includes('taken this turn')) {
+            if (target) {
+                const damageTaken = player.damageTakenThisTurn || 0;
+                target.currentEndurance -= damageTaken;
+                this.emitEvent('catharsis', { target, damage: damageTaken });
+                if (target.currentEndurance <= 0) {
+                    this.triggerPupilExhausted(target, playerNum === 1 ? 2 : 1);
+                }
+                return { success: true };
+            }
+            return { needsTarget: true, targetType: 'anyPupil', effect: 'catharsis' };
+        }
+
+        // Explosive Results (id 255) - Send your pupil home, deal its Endurance as damage
+        if (ability.includes('send') && ability.includes('home') && ability.includes('deal damage equal to its endurance')) {
+            // This needs a source (your pupil) and a target
+            this.emitEvent('needTwoTargets', {
+                player: playerNum,
+                effect: 'explosiveResults',
+                sourceType: 'friendlyPupil',
+                targetType: 'anyPupil'
+            });
+            return { success: true, needsTwoTargets: true };
+        }
+
         return { success: true };
     }
 
@@ -748,6 +934,107 @@ class RiutizGame extends EventTarget {
         // Digital Artist (id 241) - Handled in combat (when deals damage, draw)
 
         // Biotech Intern (id 247) - Gets +1/+1 when another pupil exhausted (tracked via triggerPupilExhausted)
+
+        // === PURPLE (P) CARD ETB ABILITIES ===
+
+        // Selfie Girl (id 69) - Target pupil cannot block this turn
+        if (ability.includes('when') && ability.includes('enters') && ability.includes('cannot block this turn')) {
+            this.emitEvent('etbNeedsTarget', {
+                player: playerNum,
+                card: card,
+                effect: 'cantBlock',
+                targetType: 'anyPupil'
+            });
+        }
+
+        // Emo Girl (id 72) - Do 2 damage to target pupil
+        if (ability.includes('when') && ability.includes('enters') && ability.includes('do') && ability.includes('damage to target')) {
+            const match = ability.match(/do\s*(\d+)\s*damage/);
+            const damage = match ? parseInt(match[1]) : 2;
+            this.emitEvent('etbNeedsTarget', {
+                player: playerNum,
+                card: card,
+                effect: 'dealDamage',
+                amount: damage,
+                targetType: 'anyPupil'
+            });
+        }
+
+        // Style Sevant (id 74) - Do 1 exhaust (damage) to all pupils
+        if (ability.includes('when') && ability.includes('enters') && ability.includes('exhaust to all pupils')) {
+            const match = ability.match(/(\d+)\s*exhaust/);
+            const damage = match ? parseInt(match[1]) : 1;
+            // Damage all pupils on both sides
+            player.field.forEach(p => {
+                if (p.type?.includes('Pupil') && p.instanceId !== card.instanceId) {
+                    p.currentEndurance -= damage;
+                }
+            });
+            opponent.field.forEach(p => {
+                if (p.type?.includes('Pupil')) {
+                    p.currentEndurance -= damage;
+                }
+            });
+            this.emitEvent('etbDamageAll', { player: playerNum, card, damage });
+        }
+
+        // Compassionate Principal Alicia (id 91) - Do 5 damage to all other pupils
+        if (ability.includes('when enter') && ability.includes('damage to all other pupils')) {
+            const match = ability.match(/do\s*(\d+)\s*damage/);
+            const damage = match ? parseInt(match[1]) : 5;
+            player.field.forEach(p => {
+                if (p.type?.includes('Pupil') && p.instanceId !== card.instanceId) {
+                    p.currentEndurance -= damage;
+                }
+            });
+            opponent.field.forEach(p => {
+                if (p.type?.includes('Pupil')) {
+                    p.currentEndurance -= damage;
+                }
+            });
+            this.emitEvent('etbDamageAll', { player: playerNum, card, damage });
+        }
+
+        // Mad Scientist (id 242) - Flip coin: heads +3/+3, tails deal 3 damage to it
+        if (ability.includes('volatile') || (ability.includes('flip a coin') && ability.includes('heads') && ability.includes('+3/+3'))) {
+            const isHeads = Math.random() < 0.5;
+            if (isHeads) {
+                card.counters = card.counters || { plusOne: 0 };
+                card.counters.plusOne += 3;
+                card.currentEndurance += 3;
+                this.emitEvent('madScientistHeads', { card, bonus: 3 });
+            } else {
+                card.currentEndurance -= 3;
+                this.emitEvent('madScientistTails', { card, damage: 3 });
+            }
+        }
+
+        // Set Designer (id 245) - Target pupil gets +2 Endurance
+        if (ability.includes('when') && ability.includes('enters') && ability.includes('target pupil gets') && ability.includes('endurance')) {
+            const match = ability.match(/\+(\d+)\s*endurance/);
+            const bonus = match ? parseInt(match[1]) : 2;
+            this.emitEvent('etbNeedsTarget', {
+                player: playerNum,
+                card: card,
+                effect: 'grantEndurance',
+                amount: bonus,
+                targetType: 'anyPupil'
+            });
+        }
+
+        // Inspirational Speaker Paul (id 262) - Each of your pupils gets +2 die rolls until end of turn
+        if (ability.includes('when') && ability.includes('enters') && ability.includes('each of your pupils gets') && ability.includes('die rolls')) {
+            const match = ability.match(/\+(\d+)\s*to die rolls/);
+            const bonus = match ? parseInt(match[1]) : 2;
+            player.field.forEach(p => {
+                if (p.type?.includes('Pupil')) {
+                    p.tempBuffs = p.tempBuffs || [];
+                    p.tempBuffs.push({ type: 'dieRollBonus', value: bonus, expiresAt: 'endOfTurn' });
+                    p.dieRollBonus = (p.dieRollBonus || 0) + bonus;
+                }
+            });
+            this.emitEvent('inspirationalBoost', { player: playerNum, card, bonus });
+        }
     }
 
     /**
@@ -780,6 +1067,31 @@ class RiutizGame extends EventTarget {
                     const availableResources = player.resources.filter(r => !r.spent);
                     if (availableResources.length > 0) {
                         this.emitEvent('geneSequencerTrigger', {
+                            player: playerNum,
+                            card,
+                            exhaustedPupil: exhaustedCard.name,
+                            canPay: true
+                        });
+                    }
+                }
+
+                // The Amphitheater (id 93) - When a pupil is exhausted, its controller draws
+                if (card.type === 'Location' && ability.includes('when a pupil is exhausted') && ability.includes('controller draws')) {
+                    const exhaustedOwner = this.state.players[ownerPlayerNum];
+                    if (exhaustedOwner.deck.length > 0) {
+                        exhaustedOwner.hand.push(exhaustedOwner.deck.shift());
+                        this.emitEvent('amphitheaterDraw', {
+                            player: ownerPlayerNum,
+                            exhaustedCard: exhaustedCard.name
+                        });
+                    }
+                }
+
+                // Traveling Missionary Paul (id 251) - May pay (1) to recover 2 Endurance on another pupil
+                if (ability.includes('whenever a pupil is exhausted') && ability.includes('pay') && ability.includes('recover')) {
+                    const availableResources = player.resources.filter(r => !r.spent);
+                    if (availableResources.length > 0) {
+                        this.emitEvent('paulRecoveryTrigger', {
                             player: playerNum,
                             card,
                             exhaustedPupil: exhaustedCard.name,
@@ -941,6 +1253,7 @@ class RiutizGame extends EventTarget {
      */
     triggerOnInterruption(playerNum, interruptionCard) {
         const player = this.state.players[playerNum];
+        const opponent = this.getOpponent(playerNum);
 
         player.field.forEach(card => {
             if (card.abilitiesDisabled) return;
@@ -961,6 +1274,29 @@ class RiutizGame extends EventTarget {
                     card: card,
                     effect: 'dieRollPenalty',
                     amount: -1
+                });
+            }
+
+            // Dancer (id 68) - When you play an idea card, deal 1 exhaust to target pupil
+            if (ability.includes('when you play an idea') && ability.includes('deal') && ability.includes('exhaust')) {
+                const match = ability.match(/deal\s*(\d+)\s*exhaust/);
+                const damage = match ? parseInt(match[1]) : 1;
+                this.emitEvent('needTargetForDamage', {
+                    player: playerNum,
+                    card: card,
+                    effect: 'dealDamage',
+                    amount: damage,
+                    reason: 'Dancer'
+                });
+            }
+
+            // STEM Initiative Director Mary (id 252) - Target pupil gets +1/+1 until end of turn
+            if (ability.includes('when you play an interruption') && ability.includes('+1/+1')) {
+                this.emitEvent('needTargetForBuff', {
+                    player: playerNum,
+                    card: card,
+                    effect: 'plusOnePlusOne',
+                    amount: 1
                 });
             }
         });
@@ -1067,6 +1403,33 @@ class RiutizGame extends EventTarget {
             if (ability.includes('interruptions and tools cost') && ability.includes('less')) {
                 player.toolCostReduction = (player.toolCostReduction || 0) + 1;
                 player.interruptionCostReduction = (player.interruptionCostReduction || 0) + 1;
+            }
+
+            // === PURPLE (P) AURA EFFECTS ===
+
+            // Popular Kid (id 81) - +1 die roll for each other Popular pupil in play
+            if (ability.includes('+1 to die roll') && ability.includes('for each other popular')) {
+                const popularCount = player.field.filter(c =>
+                    c.instanceId !== sourceCard.instanceId &&
+                    c.subTypes?.toLowerCase().includes('popular')
+                ).length + opponent.field.filter(c =>
+                    c.subTypes?.toLowerCase().includes('popular')
+                ).length;
+                if (popularCount > 0) {
+                    sourceCard.auraDieRollBonus = (sourceCard.auraDieRollBonus || 0) + popularCount;
+                }
+            }
+
+            // Music Room (id 92) - Purple pupils get +1 to die rolls
+            if (sourceCard.type === 'Location' && ability.includes('purple pupils') && ability.includes('+1 to die rolls')) {
+                player.field.forEach(card => {
+                    if (card.type?.includes('Pupil')) {
+                        const cardColor = this.getPrimaryColor(card.cost);
+                        if (cardColor === 'P') {
+                            card.auraDieRollBonus = (card.auraDieRollBonus || 0) + 1;
+                        }
+                    }
+                });
             }
         });
 
@@ -1370,6 +1733,79 @@ class RiutizGame extends EventTarget {
             return { needsTarget: true, targetType: 'anyPupil', effect: 'minusCounter' };
         }
 
+        // === PURPLE (P) SPEND ABILITIES ===
+
+        // The Anarchist (id 76) - Spend: Fights target pupil
+        if (ability.includes('spend:') && ability.includes('fights target')) {
+            if (target && target.type?.includes('Pupil')) {
+                // Both roll dice and deal damage to each other
+                const anarchistRoll = this.rollAttackDice(card);
+                const targetRoll = this.rollDice(target.dice);
+                card.currentEndurance -= targetRoll;
+                target.currentEndurance -= anarchistRoll;
+                this.emitEvent('fightResolved', {
+                    attacker: card,
+                    defender: target,
+                    attackerRoll: anarchistRoll,
+                    defenderRoll: targetRoll
+                });
+                return { success: true };
+            }
+            return { needsTarget: true, targetType: 'anyPupil', effect: 'fight' };
+        }
+
+        // Musician (id 77) - Spend: -1 to opponent die rolls OR +1 to your die rolls
+        if (ability.includes('spend:') && ability.includes('-1 to opponent')) {
+            opponent.field.forEach(p => {
+                if (p.type?.includes('Pupil')) {
+                    p.tempBuffs = p.tempBuffs || [];
+                    p.tempBuffs.push({ type: 'dieRollPenalty', value: -1, expiresAt: 'endOfTurn' });
+                    p.dieRollBonus = (p.dieRollBonus || 0) - 1;
+                }
+            });
+            this.emitEvent('musicianDebuff', { player: playerNum });
+            return { success: true };
+        }
+
+        if (ability.includes('spend:') && ability.includes('+1 to your die rolls')) {
+            player.field.forEach(p => {
+                if (p.type?.includes('Pupil')) {
+                    p.tempBuffs = p.tempBuffs || [];
+                    p.tempBuffs.push({ type: 'dieRollBonus', value: 1, expiresAt: 'endOfTurn' });
+                    p.dieRollBonus = (p.dieRollBonus || 0) + 1;
+                }
+            });
+            this.emitEvent('musicianBuff', { player: playerNum });
+            return { success: true };
+        }
+
+        // Pottery Teacher (id 83) - Spend: Move up to 2 Endurance from one pupil to another
+        if (ability.includes('spend:') && ability.includes('move') && ability.includes('endurance')) {
+            // This needs two targets - source and destination
+            this.emitEvent('needTwoTargets', {
+                player: playerNum,
+                card: card,
+                effect: 'transferEndurance',
+                amount: 2
+            });
+            return { success: true, needsTwoTargets: true };
+        }
+
+        // Illustration (id 194) - Spend: Deal 1 damage to target pupil
+        if (ability.includes('spend:') && ability.includes('deal') && ability.includes('damage to target')) {
+            const match = ability.match(/deal\s*(\d+)\s*damage/);
+            const damage = match ? parseInt(match[1]) : 1;
+            if (target) {
+                target.currentEndurance -= damage;
+                this.emitEvent('illustrationDamage', { target, damage });
+                if (target.currentEndurance <= 0) {
+                    this.triggerPupilExhausted(target, target.instanceId);
+                }
+                return { success: true };
+            }
+            return { needsTarget: true, targetType: 'anyPupil', effect: 'dealDamage', amount: damage };
+        }
+
         return { success: true };
     }
 
@@ -1480,6 +1916,7 @@ class RiutizGame extends EventTarget {
         // === ATTACK TRIGGERS ===
 
         // The Techno (id 124) - When he attacks, other attacking pupils get +1 to die rolls
+        // Singer (id 67) - When Singer attacks, other attacking pupils get +1 to die rolls
         this.state.attackers.forEach(att => {
             const ability = att.ability?.toLowerCase() || '';
             if (ability.includes('when') && ability.includes('attacks') && ability.includes('other attacking') && ability.includes('+1')) {
@@ -1493,7 +1930,21 @@ class RiutizGame extends EventTarget {
                         }
                     }
                 });
-                this.emitEvent('technoBonus', { card: att });
+                this.emitEvent('attackBonus', { card: att, bonus: 1 });
+            }
+        });
+
+        // Arts and Crafts Teacher Alicia (id 90) - When attacks, flip coin: heads = endurance damage
+        this.state.attackers.forEach(att => {
+            const ability = att.ability?.toLowerCase() || '';
+            if (ability.includes('when') && ability.includes('attacks') && ability.includes('flip a coin') && ability.includes('endurance')) {
+                const isHeads = Math.random() < 0.5;
+                if (isHeads) {
+                    att.useEnduranceAsDamage = true;
+                    this.emitEvent('aliciaHeads', { card: att, damage: att.currentEndurance });
+                } else {
+                    this.emitEvent('aliciaTails', { card: att });
+                }
             }
         });
 
@@ -1605,6 +2056,13 @@ class RiutizGame extends EventTarget {
 
             // Calculate attack roll with bonuses
             let roll = this.rollAttackDice(attCard);
+
+            // Arts and Crafts Teacher Alicia - use endurance as damage if coin was heads
+            if (attCard.useEnduranceAsDamage) {
+                roll = attCard.currentEndurance + (attCard.auraEnduranceBonus || 0);
+                delete attCard.useEnduranceAsDamage;
+            }
+
             const blockerId = this.state.blockers[att.instanceId];
 
             if (blockerId) {
@@ -1623,6 +2081,21 @@ class RiutizGame extends EventTarget {
                     // Calculate damage with reductions
                     let damageToBlocker = roll;
                     let damageToAttacker = blockerRoll;
+
+                    // Drama Queen (id 78) - First Strike: deals damage before combat
+                    const hasFirstStrike = attCard.ability?.toLowerCase().includes('damage first') ||
+                        attCard.ability?.toLowerCase().includes('first strike');
+                    if (hasFirstStrike && !attCard.abilitiesDisabled) {
+                        // Apply attacker damage first
+                        blocker.currentEndurance -= damageToBlocker;
+                        logEntry.firstStrike = true;
+                        // If blocker dies from first strike, no damage back
+                        if (blocker.currentEndurance <= 0) {
+                            damageToAttacker = 0;
+                            logEntry.firstStrikeKill = true;
+                        }
+                        damageToBlocker = 0; // Already applied
+                    }
 
                     // Apply damage reduction from auras and abilities
                     const blockerReduction = this.calculateDamageReduction(blocker);
@@ -1694,6 +2167,29 @@ class RiutizGame extends EventTarget {
                             if (attacker.deck.length > 0) {
                                 attacker.hand.push(attacker.deck.shift());
                                 logEntry.drewCard = true;
+                            }
+                        }
+                    }
+
+                    // Latin Professor (id 86) - Rampage: if exhausts defender, damage another or gain points
+                    if (blocker.currentEndurance <= 0 && !attCard.abilitiesDisabled) {
+                        const attAbility = attCard.ability?.toLowerCase() || '';
+                        if (attAbility.includes('rampage') || (attAbility.includes('exhaust') && attAbility.includes('same damage') && attAbility.includes('another'))) {
+                            const rampageDamage = logEntry.finalDamageToBlocker || roll;
+                            // Find another defending pupil to damage
+                            const otherDefenders = defender.field.filter(c =>
+                                c.type?.includes('Pupil') && c.instanceId !== blocker.instanceId && c.currentEndurance > 0
+                            );
+                            if (otherDefenders.length > 0) {
+                                // Apply damage to next defender (in simple implementation, first available)
+                                const nextTarget = otherDefenders[0];
+                                nextTarget.currentEndurance -= rampageDamage;
+                                logEntry.rampage = { target: nextTarget.name, damage: rampageDamage };
+                                this.emitEvent('rampageDamage', { attacker: attCard, target: nextTarget, damage: rampageDamage });
+                            } else {
+                                // No more defenders, gain points
+                                pointsScored += rampageDamage;
+                                logEntry.rampagePoints = rampageDamage;
                             }
                         }
                     }
@@ -1787,6 +2283,7 @@ class RiutizGame extends EventTarget {
         // Handle Jock scoring (die upgrade on point scored)
         if (pointsScored > 0) {
             this.handleJockScoring(attackingPlayer, pointsScored);
+            this.triggerOnPointsScored(attackingPlayer, pointsScored);
         }
 
         // Apply defender point loss (Principal Jordan ability)
@@ -2017,6 +2514,29 @@ class RiutizGame extends EventTarget {
                 card.currentEndurance = card.baseEndurance || card.endurance;
                 this.emitEvent('enduranceRegenerated', { card });
             }
+
+            // Free Spirit (id 79) - During upkeep flip coin: heads gain point, tails lose point
+            if (ability.includes('during upkeep') && ability.includes('flip a coin')) {
+                const isHeads = Math.random() < 0.5;
+                if (isHeads) {
+                    player.points += 1;
+                    this.emitEvent('freeSpiritHeads', { card, player: playerNum });
+                } else {
+                    player.points = Math.max(0, player.points - 1);
+                    this.emitEvent('freeSpiritTails', { card, player: playerNum });
+                }
+            }
+
+            // The Counselor's Office (id 94) - May discard to recover 3 Endurance on target
+            if (card.type === 'Location' && ability.includes('start of your turn') && ability.includes('discard') && ability.includes('recover')) {
+                if (player.hand.length > 0) {
+                    this.emitEvent('counselorsOfficePrompt', {
+                        player: playerNum,
+                        card: card,
+                        canActivate: true
+                    });
+                }
+            }
         });
 
         // Recalculate auras in case anything changed
@@ -2155,6 +2675,33 @@ class RiutizGame extends EventTarget {
             // Jock (id 8) - Die roll goes up when scoring
             if (ability.includes('scores a point') && ability.includes('die roll goes up')) {
                 this.upgradeDie(card);
+            }
+        });
+    }
+
+    /**
+     * Trigger abilities when points are scored
+     */
+    triggerOnPointsScored(playerNum, pointsScored) {
+        const player = this.state.players[playerNum];
+        const opponent = this.getOpponent(playerNum);
+
+        player.field.forEach(card => {
+            if (card.abilitiesDisabled) return;
+            const ability = card.ability?.toLowerCase() || '';
+
+            // Inspirational Speaker Paul (id 262) - Whenever you score, deal 1 damage to target
+            if (ability.includes('whenever you score') && ability.includes('deal') && ability.includes('damage')) {
+                const match = ability.match(/deal\s*(\d+)\s*damage/);
+                const damage = match ? parseInt(match[1]) : 1;
+                // For each point scored, can deal damage
+                for (let i = 0; i < pointsScored; i++) {
+                    this.emitEvent('scoreDamageTrigger', {
+                        player: playerNum,
+                        card: card,
+                        damage: damage
+                    });
+                }
             }
         });
     }
