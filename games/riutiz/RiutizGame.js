@@ -791,6 +791,142 @@ class RiutizGame extends EventTarget {
             return { success: true, needsTwoTargets: true };
         }
 
+        // === GREEN (G) INTERRUPTION EFFECTS ===
+
+        // Dissection (id 210) - Exhaust target pupil with Endurance 3 or less
+        if (ability.includes('exhaust target pupil') && ability.includes('endurance') && ability.includes('or less')) {
+            const match = ability.match(/endurance\s*(\d+)\s*or less/);
+            const threshold = match ? parseInt(match[1]) : 3;
+            if (target) {
+                if (target.currentEndurance <= threshold) {
+                    target.currentEndurance = 0;
+                    this.emitEvent('dissection', { target });
+                    this.triggerPupilExhausted(target, playerNum === 1 ? 2 : 1);
+                    return { success: true };
+                }
+                return { success: false, error: 'Target has too much Endurance' };
+            }
+            return { needsTarget: true, targetType: 'anyPupil', effect: 'dissection', maxEndurance: threshold };
+        }
+
+        // Natural Decay (id 211) - Put -1/-1 counters on all pupils
+        if (ability.includes('-1/-1 counter') && ability.includes('all pupils')) {
+            [player, opponent].forEach(p => {
+                p.field.forEach(card => {
+                    if (card.type?.includes('Pupil')) {
+                        card.counters = card.counters || { plusOne: 0 };
+                        card.counters.minusOne = (card.counters.minusOne || 0) + 1;
+                        card.currentEndurance = Math.max(1, card.currentEndurance - 1);
+                    }
+                });
+            });
+            this.emitEvent('naturalDecay', { player: playerNum });
+            return { success: true };
+        }
+
+        // Mutation (id 212) - Target +2/+2, another gets -1/-1 counter
+        if (ability.includes('+2/+2') && ability.includes('-1/-1 counter') && ability.includes('another')) {
+            this.emitEvent('needTwoTargets', {
+                player: playerNum,
+                effect: 'mutation',
+                firstEffect: 'plusTwoPlusTwo',
+                secondEffect: 'minusOneCounter'
+            });
+            return { success: true, needsTwoTargets: true };
+        }
+
+        // Controlled Experiment (id 213) - Look at top 4, put one in hand, rest on bottom
+        if (ability.includes('look at the top') && ability.includes('put one in hand') && ability.includes('rest on bottom')) {
+            const match = ability.match(/top\s*(\d+)\s*cards/);
+            const count = match ? parseInt(match[1]) : 4;
+            const topCards = player.deck.slice(0, count);
+            this.emitEvent('chooseFromTop', {
+                player: playerNum,
+                topCards: topCards,
+                choose: 1,
+                putRestOnBottom: true
+            });
+            return { success: true, needsChoice: true };
+        }
+
+        // Symbiosis (id 214) - Target pupil gets +1/+1 for each other pupil you control
+        if (ability.includes('+1/+1 for each other pupil')) {
+            if (target) {
+                const otherPupilCount = player.field.filter(c =>
+                    c.type?.includes('Pupil') && c.instanceId !== target.instanceId
+                ).length;
+                target.dieRollBonus = (target.dieRollBonus || 0) + otherPupilCount;
+                target.currentEndurance += otherPupilCount;
+                target.tempBuffs = target.tempBuffs || [];
+                target.tempBuffs.push({ type: 'symbiosis', dieBonus: otherPupilCount, enduranceBonus: otherPupilCount, expiresAt: 'endOfTurn' });
+                this.emitEvent('symbiosis', { card: target, bonus: otherPupilCount });
+                return { success: true };
+            }
+            return { needsTarget: true, targetType: 'friendlyPupil', effect: 'symbiosis' };
+        }
+
+        // Decomposition (id 215) - Exhaust target pupil. Controller gains resources equal to cost
+        if (ability.includes('exhaust target pupil') && ability.includes('gains resources equal to')) {
+            if (target) {
+                const targetOwner = player.field.includes(target) ? player : opponent;
+                const targetOwnerNum = player.field.includes(target) ? playerNum : (playerNum === 1 ? 2 : 1);
+                // Parse cost to get resource count
+                const costMatch = target.cost?.match(/\((\d+)\)/g) || [];
+                const colorMatch = target.cost?.match(/\([A-Za-z]+\)/g) || [];
+                const totalCost = costMatch.length + colorMatch.length;
+
+                target.currentEndurance = 0;
+                this.triggerPupilExhausted(target, targetOwnerNum);
+
+                // Add colorless resources to the target's controller
+                for (let i = 0; i < totalCost; i++) {
+                    targetOwner.resources.push({
+                        color: 'C',
+                        spent: false,
+                        id: `decomp-${Date.now()}-${i}`,
+                        cardName: 'Decomposition'
+                    });
+                }
+                this.emitEvent('decomposition', { target, resources: totalCost });
+                return { success: true };
+            }
+            return { needsTarget: true, targetType: 'anyPupil', effect: 'decomposition' };
+        }
+
+        // Lab Accident (id 216) - Deal 3 damage. If exhausted, draw 2 cards
+        if (ability.includes('deal') && ability.includes('damage') && ability.includes('if') && ability.includes('exhausted') && ability.includes('draw')) {
+            const damageMatch = ability.match(/deal\s*(\d+)\s*damage/);
+            const drawMatch = ability.match(/draw\s*(\d+)\s*cards?/);
+            const damage = damageMatch ? parseInt(damageMatch[1]) : 3;
+            const drawCount = drawMatch ? parseInt(drawMatch[1]) : 2;
+            if (target) {
+                target.currentEndurance -= damage;
+                this.emitEvent('labAccidentDamage', { target, damage });
+                if (target.currentEndurance <= 0) {
+                    this.triggerPupilExhausted(target, playerNum === 1 ? 2 : 1);
+                    for (let i = 0; i < drawCount && player.deck.length > 0; i++) {
+                        player.hand.push(player.deck.shift());
+                    }
+                    this.emitEvent('labAccidentDraw', { player: playerNum, count: drawCount });
+                }
+                return { success: true };
+            }
+            return { needsTarget: true, targetType: 'anyPupil', effect: 'labAccident', damage, drawCount };
+        }
+
+        // Adaptation (id 217) - Target gains Grounded, Closed-Minded, or Relentless
+        if (ability.includes('gains your choice of') && (ability.includes('grounded') || ability.includes('closed-minded') || ability.includes('relentless'))) {
+            if (target) {
+                this.emitEvent('needKeywordChoice', {
+                    player: playerNum,
+                    target: target,
+                    choices: ['grounded', 'closed-minded', 'relentless']
+                });
+                return { success: true, needsKeywordChoice: true };
+            }
+            return { needsTarget: true, targetType: 'anyPupil', effect: 'adaptation' };
+        }
+
         return { success: true };
     }
 
@@ -1035,6 +1171,28 @@ class RiutizGame extends EventTarget {
             });
             this.emitEvent('inspirationalBoost', { player: playerNum, card, bonus });
         }
+
+        // === GREEN (G) CARD ETB ABILITIES ===
+
+        // Discovery Principal Dan (id 63) - Set aside card with 3 timer counters
+        if (ability.includes('enter') && ability.includes('set aside') && ability.includes('timer counters')) {
+            this.emitEvent('discoveryPrincipalTrigger', {
+                player: playerNum,
+                card: card,
+                effect: 'setAsideWithTimers',
+                counters: 3
+            });
+        }
+
+        // Lab Technician (id 244) - Put +1/+1 counter on target pupil
+        if (ability.includes('when') && ability.includes('enters') && ability.includes('+1/+1 counter')) {
+            this.emitEvent('etbNeedsTarget', {
+                player: playerNum,
+                card: card,
+                effect: 'plusOneCounter',
+                targetType: 'anyPupil'
+            });
+        }
     }
 
     /**
@@ -1098,6 +1256,14 @@ class RiutizGame extends EventTarget {
                             canPay: true
                         });
                     }
+                }
+
+                // Biology Teacher (id 58) - Natural Selection: +1 die roll until EOT when pupil exhausted
+                if (ability.includes('natural selection') || (ability.includes('when another pupil is exhausted') && ability.includes('+1 to die rolls'))) {
+                    card.tempBuffs = card.tempBuffs || [];
+                    card.tempBuffs.push({ type: 'dieRollBonus', value: 1, expiresAt: 'endOfTurn' });
+                    card.dieRollBonus = (card.dieRollBonus || 0) + 1;
+                    this.emitEvent('naturalSelection', { card, bonus: 1 });
                 }
             });
         });
@@ -1427,6 +1593,20 @@ class RiutizGame extends EventTarget {
                         const cardColor = this.getPrimaryColor(card.cost);
                         if (cardColor === 'P') {
                             card.auraDieRollBonus = (card.auraDieRollBonus || 0) + 1;
+                        }
+                    }
+                });
+            }
+
+            // === GREEN (G) AURA EFFECTS ===
+
+            // The Lab (id 66) - Green pupils gain roll advantage
+            if (sourceCard.type === 'Location' && ability.includes('green pupils') && ability.includes('roll advantage')) {
+                player.field.forEach(card => {
+                    if (card.type?.includes('Pupil')) {
+                        const cardColor = this.getPrimaryColor(card.cost);
+                        if (cardColor === 'G') {
+                            card.hasAdvantage = true;
                         }
                     }
                 });
@@ -1804,6 +1984,62 @@ class RiutizGame extends EventTarget {
                 return { success: true };
             }
             return { needsTarget: true, targetType: 'anyPupil', effect: 'dealDamage', amount: damage };
+        }
+
+        // === GREEN (G) SPEND ABILITIES ===
+
+        // Botany Enthusiast (id 44) - Spend: Create 1 resource of any color
+        if (ability.includes('spend:') && ability.includes('create') && ability.includes('resource of any color')) {
+            this.emitEvent('needColorChoice', {
+                player: playerNum,
+                card: card,
+                effect: 'createResource'
+            });
+            return { success: true, needsColorChoice: true };
+        }
+
+        // Psychology Enthusiast (id 47) - Spend: Target pupil fights another target pupil
+        if (ability.includes('spend:') && ability.includes('target pupil fights another')) {
+            this.emitEvent('needTwoTargets', {
+                player: playerNum,
+                card: card,
+                effect: 'fight',
+                targetType: 'anyPupil'
+            });
+            return { success: true, needsTwoTargets: true };
+        }
+
+        // Geology Enthusiast (id 51) - Put +1/+1 on self
+        if (ability.includes('+d1/+e1') || (ability.includes('put') && ability.includes('+1') && ability.includes('on') && ability.includes('enthusiast'))) {
+            card.counters = card.counters || { plusOne: 0 };
+            card.counters.plusOne++;
+            card.currentEndurance++;
+            this.emitEvent('counterAdded', { card, counterType: 'plusOne', count: card.counters.plusOne });
+            return { success: true };
+        }
+
+        // Psychology Teacher (id 59) - Spend: Target opponent's pupil cannot attack/block until next turn
+        if (ability.includes('spend:') && ability.includes('cannot attack or block') && ability.includes('until')) {
+            if (target) {
+                target.cannotAttack = true;
+                target.cannotBlock = true;
+                target.tempBuffs = target.tempBuffs || [];
+                target.tempBuffs.push({ type: 'manipulation', expiresAt: 'nextTurn', owner: playerNum });
+                this.emitEvent('manipulationApplied', { card: target, controller: playerNum });
+                return { success: true };
+            }
+            return { needsTarget: true, targetType: 'enemyPupil', effect: 'manipulation' };
+        }
+
+        // Chemistry Enthusiast (id 43) - Send home: Counter target ability
+        if (ability.includes('send') && ability.includes('home') && ability.includes('counter target ability')) {
+            // This is a sacrifice ability
+            this.emitEvent('sacrificeToCounter', {
+                player: playerNum,
+                card: card,
+                effect: 'counterAbility'
+            });
+            return { success: true, needsSacrifice: true };
         }
 
         return { success: true };
@@ -2537,6 +2773,56 @@ class RiutizGame extends EventTarget {
                     });
                 }
             }
+
+            // === GREEN (G) START OF TURN ABILITIES ===
+
+            // Lunch Lady (id 60) - Nurture: Recover 1 Endurance on each pupil you control
+            if (ability.includes('nurture') || (ability.includes('start of your turn') && ability.includes('recover') && ability.includes('each pupil'))) {
+                player.field.forEach(p => {
+                    if (p.type?.includes('Pupil')) {
+                        p.currentEndurance = Math.min(
+                            (p.baseEndurance || p.endurance) + (p.auraEnduranceBonus || 0) + (p.counters?.plusOne || 0),
+                            p.currentEndurance + 1
+                        );
+                    }
+                });
+                this.emitEvent('nurtureHealing', { player: playerNum, card });
+            }
+
+            // Gardening Teacher Dan (id 64) - During upkeep add +1/+1 on each other pupil
+            if (ability.includes('during your upkeep') && ability.includes('+1') && ability.includes('each other pupil')) {
+                player.field.forEach(p => {
+                    if (p.type?.includes('Pupil') && p.instanceId !== card.instanceId) {
+                        p.counters = p.counters || { plusOne: 0 };
+                        p.counters.plusOne++;
+                        p.currentEndurance++;
+                    }
+                });
+                this.emitEvent('gardeningBuff', { player: playerNum, card });
+            }
+
+            // Discovery Principal Dan (id 63) - Remove timer counter, play card if 0
+            if (card.timerCard && card.timerCounters !== undefined) {
+                card.timerCounters--;
+                if (card.timerCounters <= 0) {
+                    this.emitEvent('timerCardReady', {
+                        player: playerNum,
+                        card: card.timerCard
+                    });
+                }
+            }
+
+            // Cafeteria (id 65) - May pay (1) to recover 2 Endurance
+            if (card.type === 'Location' && ability.includes('start of') && ability.includes('pay') && ability.includes('recover') && ability.includes('endurance')) {
+                const availableResources = player.resources.filter(r => !r.spent);
+                if (availableResources.length > 0) {
+                    this.emitEvent('cafeteriaTrigger', {
+                        player: playerNum,
+                        card: card,
+                        canPay: true
+                    });
+                }
+            }
         });
 
         // Recalculate auras in case anything changed
@@ -2554,6 +2840,56 @@ class RiutizGame extends EventTarget {
             const ability = card.ability?.toLowerCase() || '';
 
             // Jock (id 8) - Die roll increases when scoring points (handled in combat)
+
+            // Chirography Enthusiast (id 53) - Regen: Regain all endurance at end of turn
+            if (ability.includes('regen')) {
+                card.currentEndurance = (card.baseEndurance || card.endurance) +
+                    (card.auraEnduranceBonus || 0) + (card.counters?.plusOne || 0);
+                this.emitEvent('regenHealing', { card });
+            }
+        });
+
+        // Clear end of turn temp buffs
+        player.field.forEach(card => {
+            if (card.tempBuffs) {
+                card.tempBuffs = card.tempBuffs.filter(buff => buff.expiresAt !== 'endOfTurn');
+            }
+            // Reset die roll bonus from expired buffs
+            card.dieRollBonus = 0;
+        });
+    }
+
+    /**
+     * Process end of combat (called after combat resolution)
+     */
+    processEndOfCombat(attackingPlayer) {
+        const attacker = this.state.players[attackingPlayer];
+
+        // Chemistry Teacher (id 57) - All your pupils regain 1 endurance at end of combat
+        attacker.field.forEach(card => {
+            if (card.abilitiesDisabled) return;
+            const ability = card.ability?.toLowerCase() || '';
+
+            if (ability.includes('end of combat') && ability.includes('regain') && ability.includes('endurance')) {
+                const match = ability.match(/regain\s*(\d+)\s*endurance/);
+                const amount = match ? parseInt(match[1]) : 1;
+                attacker.field.forEach(p => {
+                    if (p.type?.includes('Pupil')) {
+                        p.currentEndurance = Math.min(
+                            (p.baseEndurance || p.endurance) + (p.auraEnduranceBonus || 0) + (p.counters?.plusOne || 0),
+                            p.currentEndurance + amount
+                        );
+                    }
+                });
+                this.emitEvent('combatHealing', { card, amount });
+            }
+        });
+
+        // Clear end of combat temp buffs
+        attacker.field.forEach(card => {
+            if (card.tempBuffs) {
+                card.tempBuffs = card.tempBuffs.filter(buff => buff.expiresAt !== 'endOfCombat');
+            }
         });
     }
 
