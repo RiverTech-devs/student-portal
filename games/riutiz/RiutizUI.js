@@ -13,6 +13,10 @@ class RiutizUI {
         this.selectedCard = null;
         this.selectedFieldCard = null;
 
+        // Ability targeting state
+        this.pendingAbility = null;  // { card, targetType, effect, ... }
+        this.targetingMode = false;
+
         // Drag and drop state
         this.draggedCard = null;
         this.dragElement = null;
@@ -353,8 +357,20 @@ class RiutizUI {
             const isBlocker = Object.values(state.blockers).includes(card.instanceId);
 
             let targetable = false;
-            if (isYours && state.combatStep === 'declare-attackers' && isYourTurn) {
-                targetable = isPupil && !card.hasGettingBearings && !card.isSpent;
+
+            // Check if this card is a valid target in targeting mode
+            if (this.targetingMode && this.pendingAbility) {
+                const { targetType } = this.pendingAbility;
+                if (targetType === 'friendlyPupil' && isYours && isPupil) targetable = true;
+                if (targetType === 'enemyPupil' && !isYours && isPupil) targetable = true;
+                if (targetType === 'anyPupil' && isPupil) targetable = true;
+                if (targetType === 'friendlyCreature' && isYours) targetable = true;
+                if (targetType === 'anyCreature') targetable = true;
+            }
+            // Normal combat targeting
+            else if (isYours && state.combatStep === 'declare-attackers' && isYourTurn) {
+                const isGrounded = card.ability?.toLowerCase().includes('grounded');
+                targetable = isPupil && !card.hasGettingBearings && (!card.isSpent || card.ability?.toLowerCase().includes('relentless')) && !isGrounded;
             } else if (isYours && state.combatStep === 'declare-blockers' && !isYourTurn) {
                 targetable = isPupil && !card.isSpent;
             } else if (!isYours && state.combatStep === 'declare-blockers' && isYourTurn) {
@@ -409,17 +425,111 @@ class RiutizUI {
     handleArtifactClick(card, isYours) {
         if (!isYours) return;
 
+        // If in targeting mode, this artifact could be a target
+        if (this.targetingMode && this.pendingAbility) {
+            this.handleTargetSelection(card);
+            return;
+        }
+
         const hasSpendAbility = card.ability?.toLowerCase().includes('spend:');
         if (hasSpendAbility && !card.isSpent) {
-            // Activate spend ability
+            // Try to activate spend ability
             const result = this.game.activateAbility(this.localPlayer, card.instanceId);
-            if (result.success) {
+
+            if (result.needsTarget) {
+                // Enter targeting mode
+                this.enterTargetingMode(card, result);
+            } else if (result.success) {
                 this.setMessage(`Activated ${card.name}!`);
+                this.render();
             } else {
                 this.setMessage(result.error || "Can't activate");
+                this.render();
             }
-            this.render();
         }
+    }
+
+    /**
+     * Enter targeting mode for an ability
+     */
+    enterTargetingMode(sourceCard, abilityInfo) {
+        this.targetingMode = true;
+        this.pendingAbility = {
+            sourceCard,
+            ...abilityInfo
+        };
+
+        const targetTypeNames = {
+            'friendlyPupil': 'one of your pupils',
+            'enemyPupil': "an opponent's pupil",
+            'anyPupil': 'any pupil',
+            'friendlyCreature': 'one of your creatures',
+            'anyCreature': 'any creature'
+        };
+
+        const targetName = targetTypeNames[abilityInfo.targetType] || 'a target';
+        this.setMessage(`Select ${targetName} for ${sourceCard.name}`);
+        this.render();
+    }
+
+    /**
+     * Handle target selection when in targeting mode
+     */
+    handleTargetSelection(targetCard) {
+        if (!this.pendingAbility) return;
+
+        const { sourceCard, targetType } = this.pendingAbility;
+        const state = this.game.state;
+        const you = state.players[this.localPlayer];
+        const opp = state.players[this.localPlayer === 1 ? 2 : 1];
+
+        // Validate target based on targetType
+        const isYourCard = you.field.some(c => c.instanceId === targetCard.instanceId);
+        const isOppCard = opp.field.some(c => c.instanceId === targetCard.instanceId);
+        const isPupil = targetCard.type?.includes('Pupil');
+
+        let validTarget = false;
+
+        if (targetType === 'friendlyPupil' && isYourCard && isPupil) validTarget = true;
+        if (targetType === 'enemyPupil' && isOppCard && isPupil) validTarget = true;
+        if (targetType === 'anyPupil' && isPupil) validTarget = true;
+        if (targetType === 'friendlyCreature' && isYourCard) validTarget = true;
+        if (targetType === 'anyCreature') validTarget = true;
+
+        if (!validTarget) {
+            this.setMessage('Invalid target!');
+            return;
+        }
+
+        // Execute the ability with the target
+        const result = this.game.activateAbility(this.localPlayer, sourceCard.instanceId, targetCard);
+
+        if (result.success) {
+            this.setMessage(`${sourceCard.name} targeted ${targetCard.name}!`);
+        } else {
+            this.setMessage(result.error || 'Ability failed');
+        }
+
+        // Exit targeting mode
+        this.exitTargetingMode();
+        this.render();
+    }
+
+    /**
+     * Exit targeting mode
+     */
+    exitTargetingMode() {
+        this.targetingMode = false;
+        this.pendingAbility = null;
+    }
+
+    /**
+     * Cancel current targeting
+     */
+    cancelTargeting() {
+        this.exitTargetingMode();
+        this.setMessage('Targeting cancelled');
+        this.render();
     }
 
     /**
@@ -607,7 +717,7 @@ class RiutizUI {
                 </div>
                 <div class="card-type">${card.type}${card.subTypes ? ' — ' + card.subTypes : ''}</div>
                 <div class="card-art" style="background: linear-gradient(180deg, ${c.hex}20 0%, ${c.bg} 100%); border: 1px solid ${c.hex}40;">${icon}</div>
-                ${isPupil ? `<div class="card-stats"><span class="stat-dice">🎲 ${card.dice}</span><span class="stat-hp">❤️ ${card.currentEndurance ?? card.endurance}</span></div>` : ''}
+                ${isPupil ? `<div class="card-stats"><span class="stat-dice">🎲 ${card.dice}${(card.dieRollBonus || card.cumulativeDieBonus) ? ` +${(card.dieRollBonus || 0) + (card.cumulativeDieBonus || 0)}` : ''}</span><span class="stat-hp">❤️ ${(card.currentEndurance ?? card.endurance) + (card.auraEnduranceBonus || 0) + (card.counters?.plusOne || 0)}${card.auraDamageReduction ? ` 🛡${card.auraDamageReduction}` : ''}</span></div>` : ''}
                 ${card.ability ? `<div class="card-ability">${card.ability}</div>` : ''}
             </div>
             <div class="card-rarity ${card.rarity || 'C'}"></div>
@@ -1087,10 +1197,19 @@ class RiutizUI {
         const state = this.game.state;
         const isYourTurn = state.currentPlayer === this.localPlayer;
 
+        // If in targeting mode, handle target selection
+        if (this.targetingMode && this.pendingAbility) {
+            this.handleTargetSelection(card);
+            return;
+        }
+
         // Combat actions
         if (state.combatStep === 'declare-attackers' && isYours && isYourTurn) {
             if (card.type?.includes('Pupil')) {
-                this.game.toggleAttacker(this.localPlayer, card.instanceId);
+                const result = this.game.toggleAttacker(this.localPlayer, card.instanceId);
+                if (!result.success) {
+                    this.setMessage(result.error);
+                }
                 this.render();
             }
             return;
@@ -1146,6 +1265,14 @@ class RiutizUI {
         const isYourTurn = state.currentPlayer === this.localPlayer;
         const btns = this.elements.actionButtons;
         btns.innerHTML = '';
+
+        // Targeting mode - show cancel button
+        if (this.targetingMode) {
+            btns.appendChild(this.createButton('✕ Cancel', 'btn-danger', () => {
+                this.cancelTargeting();
+            }));
+            return;
+        }
 
         // Field card activation
         if (this.selectedFieldCard && state.phase === 'main' && isYourTurn && !state.combatStep) {
