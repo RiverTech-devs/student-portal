@@ -29,7 +29,10 @@ class RiutizGame extends EventTarget {
             LETHAL: 'lethal',
             STUBBORN: 'stubborn',
             NON_SEQUITUR: 'non-sequitur',
-            OVERWHELM: 'overwhelm'
+            OVERWHELM: 'overwhelm',
+            INTERJECT: 'interject',
+            LOCKDOWN: 'lockdown',
+            CLOSED_MINDED: 'closed-minded'
         };
     }
 
@@ -478,6 +481,130 @@ class RiutizGame extends EventTarget {
             return { needsTarget: !target, targetType: 'friendlyPupil', effect: 'dieRollBonus', amount: bonus };
         }
 
+        // === BLACK (Bk) INTERRUPTION EFFECTS ===
+
+        // System Crash (id 226) - Spend target, doesn't ready next turn
+        if (ability.includes('spend target') && ability.includes("doesn't ready")) {
+            if (target) {
+                target.isSpent = true;
+                target.skipNextReady = true;
+                target.tempBuffs.push({ type: 'skipReady', expiresAt: 'nextTurn' });
+                this.emitEvent('systemCrash', { card: target });
+            }
+            return { needsTarget: !target, targetType: 'anyPupil', effect: 'systemCrash' };
+        }
+
+        // Data Breach (id 227) - Look at hand, they discard your choice
+        if (ability.includes("look at opponent's hand") && ability.includes('discard') && ability.includes('your choice')) {
+            this.emitEvent('dataBreach', {
+                player: playerNum,
+                targetPlayer: playerNum === 1 ? 2 : 1,
+                hand: opponent.hand
+            });
+            return { needsOpponentDiscardChoice: true };
+        }
+
+        // Overclock (id 228) - +3 die rolls, deal 2 damage at end of turn
+        if (ability.includes('+3 to die rolls') || (ability.includes('die rolls') && ability.includes('+3'))) {
+            if (target) {
+                target.dieRollBonus = (target.dieRollBonus || 0) + 3;
+                target.tempBuffs.push({ type: 'dieRollBonus', value: 3, expiresAt: 'endOfTurn' });
+                target.tempBuffs.push({ type: 'endOfTurnDamage', damage: 2, expiresAt: 'endOfTurn' });
+                this.emitEvent('overclock', { card: target, bonus: 3, damage: 2 });
+            }
+            return { needsTarget: !target, targetType: 'anyPupil', effect: 'overclock' };
+        }
+
+        // Debugging (id 229) - Remove all counters
+        if (ability.includes('remove all counters')) {
+            if (target) {
+                target.counters = { plusOne: 0 };
+                this.emitEvent('countersRemoved', { card: target });
+            }
+            return { needsTarget: !target, targetType: 'anyPupilOrTool', effect: 'removeCounters' };
+        }
+
+        // Firmware Update (id 230) - Ready target, gains Relentless
+        if (ability.includes('ready target') && ability.includes('relentless')) {
+            if (target) {
+                target.isSpent = false;
+                target.tempBuffs.push({ type: 'keyword', keyword: 'relentless', expiresAt: 'endOfTurn' });
+                target.tempRelentless = true;
+                this.emitEvent('firmwareUpdate', { card: target });
+            }
+            return { needsTarget: !target, targetType: 'anyPupil', effect: 'firmwareUpdate' };
+        }
+
+        // Network Effect (id 231) - Draw for each Tool
+        if (ability.includes('draw') && ability.includes('for each tool')) {
+            const toolCount = player.field.filter(c => c.type === 'Tool').length;
+            for (let i = 0; i < toolCount && player.deck.length > 0; i++) {
+                player.hand.push(player.deck.shift());
+            }
+            this.emitEvent('networkEffect', { player: playerNum, cardsDrawn: toolCount });
+            return { success: true };
+        }
+
+        // Malware (id 232) - Gain control of target Tool until end of turn
+        if (ability.includes('gain control') && ability.includes('tool')) {
+            if (target && target.type === 'Tool') {
+                // Move tool to player's field temporarily
+                const oppIndex = opponent.field.findIndex(c => c.instanceId === target.instanceId);
+                if (oppIndex !== -1) {
+                    const tool = opponent.field.splice(oppIndex, 1)[0];
+                    tool.tempControlledBy = playerNum;
+                    tool.originalOwner = playerNum === 1 ? 2 : 1;
+                    player.field.push(tool);
+                    this.emitEvent('malware', { tool, newController: playerNum });
+                }
+            }
+            return { needsTarget: !target, targetType: 'enemyTool', effect: 'stealTool' };
+        }
+
+        // Hard Reset (id 233) - Return all Tools to hands
+        if (ability.includes('return all tools') && ability.includes('hands')) {
+            [player, opponent].forEach((p, idx) => {
+                const tools = p.field.filter(c => c.type === 'Tool');
+                tools.forEach(tool => {
+                    p.field = p.field.filter(c => c.instanceId !== tool.instanceId);
+                    p.hand.push(tool);
+                });
+            });
+            this.emitEvent('hardReset', { player: playerNum });
+            return { success: true };
+        }
+
+        // Viral Content (id 254) - Deal 3 damage, draw for each point dealt
+        if (ability.includes('deal') && ability.includes('damage') && ability.includes('draw') && ability.includes('for each')) {
+            const damageMatch = ability.match(/deal\s*(\d+)\s*damage/);
+            const damage = damageMatch ? parseInt(damageMatch[1]) : 3;
+            if (target) {
+                const actualDamage = Math.min(damage, target.currentEndurance);
+                target.currentEndurance -= damage;
+                for (let i = 0; i < actualDamage && player.deck.length > 0; i++) {
+                    player.hand.push(player.deck.shift());
+                }
+                this.emitEvent('viralContent', { target, damage: actualDamage, cardsDrawn: actualDamage });
+
+                // Check if target died
+                if (target.currentEndurance <= 0) {
+                    this.emitEvent('pupilExhausted', { card: target });
+                }
+            }
+            return { needsTarget: !target, targetType: 'anyPupil', effect: 'viralContent', damage };
+        }
+
+        // Laziness (id 190) - Spend all pupils you don't control
+        if (ability.includes('spend all pupils') && ability.includes('do not control')) {
+            opponent.field.forEach(card => {
+                if (card.type?.includes('Pupil')) {
+                    card.isSpent = true;
+                }
+            });
+            this.emitEvent('laziness', { player: playerNum });
+            return { success: true };
+        }
+
         return { success: true };
     }
 
@@ -491,6 +618,7 @@ class RiutizGame extends EventTarget {
     triggerETB(playerNum, card) {
         const ability = card.ability?.toLowerCase() || '';
         const player = this.state.players[playerNum];
+        const opponent = this.getOpponent(playerNum);
 
         // Analytics Enthusiast (id 101) - Look at top 3, put 1 in hand
         if (ability.includes('look at the top') && ability.includes('put one in your hand')) {
@@ -510,7 +638,6 @@ class RiutizGame extends EventTarget {
         if (ability.includes("top") && ability.includes("opponent's deck") && ability.includes('look')) {
             const match = ability.match(/top (\d+)/);
             const count = match ? parseInt(match[1]) : 3;
-            const opponent = this.getOpponent(playerNum);
             const topCards = opponent.deck.slice(0, count);
             this.emitEvent('etbRevealOpponentDeck', {
                 player: playerNum,
@@ -518,6 +645,295 @@ class RiutizGame extends EventTarget {
                 topCards: topCards
             });
         }
+
+        // === BLACK (Bk) CARD ETB ABILITIES ===
+
+        // The Gamer (id 119) - Draw a card when enters
+        if (ability.includes('when') && ability.includes('enters') && ability.includes('draw a card') && !ability.includes('target')) {
+            if (player.deck.length > 0) {
+                player.hand.push(player.deck.shift());
+                this.emitEvent('etbDraw', { player: playerNum, card, count: 1 });
+            }
+        }
+
+        // The Hacker (id 120) - Look at opponent's hand, choose a pupil to discard
+        if (ability.includes("opponent's hand") && ability.includes('choose') && ability.includes('discard')) {
+            const opponentHand = opponent.hand;
+            const pupils = opponentHand.filter(c => c.type?.includes('Pupil'));
+            this.emitEvent('etbChooseDiscard', {
+                player: playerNum,
+                card: card,
+                targetHand: opponentHand,
+                filterPupils: true,
+                validTargets: pupils
+            });
+        }
+
+        // AI Enthusiast (id 126) - Return target pupil to hand (bounce)
+        if (ability.includes('target pupil goes back to hand') || ability.includes('target pupil returns to hand')) {
+            this.emitEvent('etbNeedsTarget', {
+                player: playerNum,
+                card: card,
+                effect: 'bounce',
+                targetType: 'anyPupil'
+            });
+        }
+
+        // The Vlogger (id 127) - Target pupil gains Non-Sequitur
+        if (ability.includes('gains non-sequitur')) {
+            this.emitEvent('etbNeedsTarget', {
+                player: playerNum,
+                card: card,
+                effect: 'grantNonSequitur',
+                targetType: 'anyPupil'
+            });
+        }
+
+        // Film Enthusiast (id 128) - Target becomes Spent and doesn't Ready
+        if (ability.includes('becomes spent') && ability.includes("doesn't ready")) {
+            this.emitEvent('etbNeedsTarget', {
+                player: playerNum,
+                card: card,
+                effect: 'lockdown',
+                targetType: 'anyPupil'
+            });
+        }
+
+        // The QA Tester (id 130) - Endurance = number of Gamers
+        if (ability.includes('endurance starts as the number of gamers')) {
+            const gamerCount = player.field.filter(c =>
+                c.subTypes?.toLowerCase().includes('gamer')
+            ).length + opponent.field.filter(c =>
+                c.subTypes?.toLowerCase().includes('gamer')
+            ).length;
+            card.currentEndurance = Math.max(1, gamerCount);
+            card.baseEndurance = card.currentEndurance;
+            this.emitEvent('dynamicEndurance', { card, endurance: card.currentEndurance });
+        }
+
+        // AI Instructor (id 135) - Create token copy of target pupil
+        if (ability.includes('create') && ability.includes('token copy')) {
+            this.emitEvent('etbNeedsTarget', {
+                player: playerNum,
+                card: card,
+                effect: 'tokenCopy',
+                targetType: 'anyPupil'
+            });
+        }
+
+        // Resource Officer (id 137) - Lockdown: target student can't attack/block
+        if (ability.includes('lockdown') && ability.includes('cannot attack or block')) {
+            this.emitEvent('etbNeedsTarget', {
+                player: playerNum,
+                card: card,
+                effect: 'lockdownStudent',
+                targetType: 'anyStudent',
+                sourceCard: card.instanceId
+            });
+        }
+
+        // Traveling Missionary, Paul (id 251) - Each player draws 2 cards
+        if (ability.includes('each player draws') && ability.includes('cards')) {
+            const match = ability.match(/draws?\s*(\d+)\s*cards?/);
+            const count = match ? parseInt(match[1]) : 2;
+            for (let i = 0; i < count && player.deck.length > 0; i++) {
+                player.hand.push(player.deck.shift());
+            }
+            for (let i = 0; i < count && opponent.deck.length > 0; i++) {
+                opponent.hand.push(opponent.deck.shift());
+            }
+            this.emitEvent('etbBothDraw', { player: playerNum, card, count });
+        }
+
+        // Digital Artist (id 241) - Handled in combat (when deals damage, draw)
+
+        // Biotech Intern (id 247) - Gets +1/+1 when another pupil exhausted (tracked via triggerPupilExhausted)
+    }
+
+    /**
+     * Trigger effects when a pupil is exhausted (destroyed/killed)
+     */
+    triggerPupilExhausted(exhaustedCard, ownerPlayerNum) {
+        // Check both players for "when another pupil is exhausted" triggers
+        [1, 2].forEach(playerNum => {
+            const player = this.state.players[playerNum];
+
+            player.field.forEach(card => {
+                if (card.abilitiesDisabled) return;
+                if (card.instanceId === exhaustedCard.instanceId) return; // Don't trigger on self
+                const ability = card.ability?.toLowerCase() || '';
+
+                // Biotech Intern (id 247) - Gets +1/+1 when another pupil is exhausted
+                if (ability.includes('when another pupil is exhausted') && ability.includes('+1/+1')) {
+                    card.counters = card.counters || { plusOne: 0 };
+                    card.counters.plusOne++;
+                    card.currentEndurance++;
+                    this.emitEvent('biotechInternTrigger', {
+                        card,
+                        exhaustedPupil: exhaustedCard.name,
+                        newCounters: card.counters.plusOne
+                    });
+                }
+
+                // Gene Sequencer (id 261) - May pay (1) to draw when pupil exhausted
+                if (ability.includes('when a pupil is exhausted') && ability.includes('pay') && ability.includes('draw')) {
+                    const availableResources = player.resources.filter(r => !r.spent);
+                    if (availableResources.length > 0) {
+                        this.emitEvent('geneSequencerTrigger', {
+                            player: playerNum,
+                            card,
+                            exhaustedPupil: exhaustedCard.name,
+                            canPay: true
+                        });
+                    }
+                }
+            });
+        });
+    }
+
+    /**
+     * Pay for Gene Sequencer triggered ability
+     */
+    payGeneSequencerTrigger(playerNum) {
+        const player = this.state.players[playerNum];
+        const availableResource = player.resources.find(r => !r.spent);
+
+        if (!availableResource) {
+            return { success: false, error: 'No available resources' };
+        }
+
+        availableResource.spent = true;
+
+        if (player.deck.length > 0) {
+            player.hand.push(player.deck.shift());
+            this.emitEvent('geneSequencerDraw', { player: playerNum });
+        }
+
+        return { success: true };
+    }
+
+    /**
+     * Handle drawing cards with trigger checks (Confusion Matrix)
+     * @param {number} playerNum - Player drawing cards
+     * @param {number} count - Number of cards to draw
+     * @param {boolean} skipTriggers - Whether to skip draw triggers (to prevent infinite loops)
+     */
+    drawCards(playerNum, count, skipTriggers = false) {
+        const player = this.state.players[playerNum];
+        let cardsDrawn = 0;
+
+        for (let i = 0; i < count && player.deck.length > 0; i++) {
+            player.hand.push(player.deck.shift());
+            cardsDrawn++;
+        }
+
+        // Check for Confusion Matrix trigger (opponent's tool)
+        if (!skipTriggers && cardsDrawn > 0) {
+            this.triggerOnOpponentDraw(playerNum, cardsDrawn);
+        }
+
+        return cardsDrawn;
+    }
+
+    /**
+     * Trigger effects when a player draws (Confusion Matrix)
+     */
+    triggerOnOpponentDraw(drawingPlayerNum, cardsDrawn) {
+        const opponentNum = drawingPlayerNum === 1 ? 2 : 1;
+        const opponent = this.state.players[opponentNum];
+
+        opponent.field.forEach(card => {
+            if (card.abilitiesDisabled) return;
+            const ability = card.ability?.toLowerCase() || '';
+
+            // Confusion Matrix - When opponent draws, you draw
+            if (ability.includes('when') && ability.includes('opponent') && ability.includes('draws') && ability.includes('you draw')) {
+                // Draw without triggering (to prevent infinite loop)
+                if (opponent.deck.length > 0) {
+                    opponent.hand.push(opponent.deck.shift());
+                    this.emitEvent('confusionMatrixTrigger', {
+                        player: opponentNum,
+                        card,
+                        triggeredBy: drawingPlayerNum
+                    });
+                }
+            }
+        });
+    }
+
+    /**
+     * Handle bounce effect (return pupil to hand)
+     */
+    bounceCard(targetCard, targetPlayerNum) {
+        const targetPlayer = this.state.players[targetPlayerNum];
+        const cardIndex = targetPlayer.field.findIndex(c => c.instanceId === targetCard.instanceId);
+        if (cardIndex === -1) return { success: false, error: 'Card not on field' };
+
+        const card = targetPlayer.field.splice(cardIndex, 1)[0];
+        // Reset card state
+        card.currentEndurance = card.baseEndurance || card.endurance;
+        card.isSpent = false;
+        card.hasGettingBearings = true;
+        card.counters = { plusOne: 0 };
+        card.tempBuffs = [];
+        card.dieRollBonus = 0;
+
+        targetPlayer.hand.push(card);
+        this.emitEvent('cardBounced', { card, player: targetPlayerNum });
+        return { success: true };
+    }
+
+    /**
+     * Create a token copy of a card
+     */
+    createTokenCopy(sourceCard, ownerPlayerNum) {
+        const player = this.state.players[ownerPlayerNum];
+        const token = {
+            ...sourceCard,
+            instanceId: `token-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            currentEndurance: sourceCard.endurance,
+            baseEndurance: sourceCard.endurance,
+            hasGettingBearings: true,
+            isSpent: false,
+            counters: { plusOne: 0 },
+            tempBuffs: [],
+            dieRollBonus: 0,
+            damageReduction: 0,
+            protection: [],
+            isToken: true
+        };
+        player.field.push(token);
+        this.recalculateAuras(ownerPlayerNum);
+        this.emitEvent('tokenCreated', { player: ownerPlayerNum, token, copiedFrom: sourceCard.name });
+        return { success: true, token };
+    }
+
+    /**
+     * Apply lockdown effect (can't attack or block while source is in play)
+     */
+    applyLockdown(targetCard, sourceCardInstanceId) {
+        targetCard.lockedBy = sourceCardInstanceId;
+        targetCard.cannotAttack = true;
+        targetCard.cannotBlock = true;
+        this.emitEvent('lockdownApplied', { target: targetCard, source: sourceCardInstanceId });
+    }
+
+    /**
+     * Check and remove lockdown when source card leaves
+     */
+    checkLockdownRemoval(removedCardInstanceId) {
+        // Check all players' fields for locked cards
+        [1, 2].forEach(playerNum => {
+            const player = this.state.players[playerNum];
+            player.field.forEach(card => {
+                if (card.lockedBy === removedCardInstanceId) {
+                    card.lockedBy = null;
+                    card.cannotAttack = false;
+                    card.cannotBlock = false;
+                    this.emitEvent('lockdownRemoved', { card });
+                }
+            });
+        });
     }
 
     /**
@@ -622,6 +1038,52 @@ class RiutizGame extends EventTarget {
                 player.field.forEach(card => {
                     if (card.type?.includes('Pupil')) {
                         card.auraEnduranceBonus = (card.auraEnduranceBonus || 0) + bonus;
+                    }
+                });
+            }
+
+            // === BLACK (Bk) AURA EFFECTS ===
+
+            // Backend Principal, Luke (id 139) - -1 to all opponent's attack rolls
+            if (ability.includes('-1 to all opponent') && ability.includes('attack')) {
+                opponent.field.forEach(card => {
+                    if (card.type?.includes('Pupil')) {
+                        card.auraDieRollPenalty = (card.auraDieRollPenalty || 0) - 1;
+                    }
+                });
+            }
+
+            // Robotics Professor (id 134) - Tool cards cost (1) less
+            if (ability.includes('tool cards cost') && ability.includes('less')) {
+                player.toolCostReduction = (player.toolCostReduction || 0) + 1;
+            }
+
+            // Robotics Club Captain (id 249) - Your Tools cost (1) less
+            if (ability.includes('your tools cost') && ability.includes('less')) {
+                player.toolCostReduction = (player.toolCostReduction || 0) + 1;
+            }
+
+            // STEM Initiative Director, Mary (id 252) - Interruptions and Tools cost (1) less
+            if (ability.includes('interruptions and tools cost') && ability.includes('less')) {
+                player.toolCostReduction = (player.toolCostReduction || 0) + 1;
+                player.interruptionCostReduction = (player.interruptionCostReduction || 0) + 1;
+            }
+        });
+
+        // Also reset opponent aura penalties
+        opponent.field.forEach(card => {
+            card.auraDieRollPenalty = 0;
+        });
+
+        // Re-apply opponent debuffs from this player's cards
+        player.field.forEach(sourceCard => {
+            if (sourceCard.abilitiesDisabled) return;
+            const ability = sourceCard.ability?.toLowerCase() || '';
+
+            if (ability.includes('-1 to all opponent') && ability.includes('attack')) {
+                opponent.field.forEach(card => {
+                    if (card.type?.includes('Pupil')) {
+                        card.auraDieRollPenalty = (card.auraDieRollPenalty || 0) - 1;
                     }
                 });
             }
@@ -810,6 +1272,104 @@ class RiutizGame extends EventTarget {
             return { success: true };
         }
 
+        // === BLACK (Bk) SPEND ABILITIES ===
+
+        // Librarian (id 88) - Draw a card, then discard a card
+        if (ability.includes('draw a card') && ability.includes('discard a card') && ability.includes('spend:')) {
+            if (player.deck.length > 0) {
+                player.hand.push(player.deck.shift());
+            }
+            this.emitEvent('needDiscard', {
+                player: playerNum,
+                card: card,
+                count: 1,
+                reason: 'Librarian'
+            });
+            return { success: true, needsDiscard: true };
+        }
+
+        // The Server Fanatic (id 131) - Spend/Ready target pupil (same as Classic Nerd)
+        // Already handled above
+
+        // Electronics Enthusiast (id 125) - Prevent a pupil from entering
+        if (ability.includes('prevent') && ability.includes('from entering')) {
+            player.preventNextEntry = true;
+            this.emitEvent('entryPrevented', { player: playerNum });
+            return { success: true };
+        }
+
+        // Robotics Professor (id 134) - Ready target Tool
+        if (ability.includes('ready target tool')) {
+            if (target && target.type === 'Tool') {
+                target.isSpent = false;
+                this.emitEvent('toolReadied', { card: target });
+                return { success: true };
+            }
+            return { needsTarget: true, targetType: 'friendlyTool', effect: 'readyTool' };
+        }
+
+        // Robotics Club Captain (id 249) - Ready target Tool (same as above)
+
+        // Battery (id 142) - Put charge counter OR remove to gain resource
+        if (ability.includes('charge counter')) {
+            if (ability.includes('put') && ability.includes('on battery')) {
+                card.counters = card.counters || {};
+                card.counters.charge = (card.counters.charge || 0) + 1;
+                this.emitEvent('counterAdded', { card, counterType: 'charge', count: card.counters.charge });
+                return { success: true };
+            }
+            if (ability.includes('remove') && ability.includes('gain resource')) {
+                if (card.counters?.charge > 0) {
+                    card.counters.charge--;
+                    // Need to choose a color
+                    this.emitEvent('needColorChoice', {
+                        player: playerNum,
+                        card: card,
+                        effect: 'gainResource'
+                    });
+                    return { success: true, needsColorChoice: true };
+                }
+                return { success: false, error: 'No charge counters' };
+            }
+        }
+
+        // Journal (id 195) - Look at top 3, put 1 in hand, rest on bottom
+        if (ability.includes('look at the top') && ability.includes('put one in your hand') && ability.includes('rest on bottom')) {
+            const topCards = player.deck.slice(0, 3);
+            this.emitEvent('spendChooseFromTop', {
+                player: playerNum,
+                card: card,
+                topCards: topCards,
+                choose: 1,
+                putRestOnBottom: true
+            });
+            return { success: true, needsChoice: true };
+        }
+
+        // Synthesizer (id 259) - Target +2 die rolls OR draw then discard
+        if (ability.includes('+2 to die rolls')) {
+            if (target) {
+                target.dieRollBonus = (target.dieRollBonus || 0) + 2;
+                target.tempBuffs.push({ type: 'dieRollBonus', value: 2, expiresAt: 'endOfTurn' });
+                this.emitEvent('dieRollBonusApplied', { card: target, bonus: 2 });
+                return { success: true };
+            }
+            return { needsTarget: true, targetType: 'anyPupil', effect: 'dieRollBonus', amount: 2 };
+        }
+
+        // Gene Sequencer (id 261) - Put -1/-1 counter on target
+        if (ability.includes('-1/-1 counter')) {
+            if (target) {
+                target.counters = target.counters || { plusOne: 0 };
+                target.counters.minusOne = (target.counters.minusOne || 0) + 1;
+                // Apply the stat reduction
+                target.currentEndurance = Math.max(1, target.currentEndurance - 1);
+                this.emitEvent('counterAdded', { card: target, counterType: 'minusOne' });
+                return { success: true };
+            }
+            return { needsTarget: true, targetType: 'anyPupil', effect: 'minusCounter' };
+        }
+
         return { success: true };
     }
 
@@ -904,7 +1464,7 @@ class RiutizGame extends EventTarget {
         this.state.attackers.forEach(att => {
             const card = player.field.find(c => c.instanceId === att.instanceId);
             if (card) {
-                const isRelentless = att.ability?.toLowerCase().includes('relentless');
+                const isRelentless = att.ability?.toLowerCase().includes('relentless') || card.tempRelentless;
                 if (!isRelentless) card.isSpent = true;
             }
         });
@@ -916,6 +1476,26 @@ class RiutizGame extends EventTarget {
             this.emitEvent('combatSkipped', {});
             return { success: true, skipped: true };
         }
+
+        // === ATTACK TRIGGERS ===
+
+        // The Techno (id 124) - When he attacks, other attacking pupils get +1 to die rolls
+        this.state.attackers.forEach(att => {
+            const ability = att.ability?.toLowerCase() || '';
+            if (ability.includes('when') && ability.includes('attacks') && ability.includes('other attacking') && ability.includes('+1')) {
+                this.state.attackers.forEach(otherAtt => {
+                    if (otherAtt.instanceId !== att.instanceId) {
+                        const otherCard = player.field.find(c => c.instanceId === otherAtt.instanceId);
+                        if (otherCard) {
+                            otherCard.tempBuffs = otherCard.tempBuffs || [];
+                            otherCard.tempBuffs.push({ type: 'dieRollBonus', value: 1, expiresAt: 'endOfCombat' });
+                            otherCard.dieRollBonus = (otherCard.dieRollBonus || 0) + 1;
+                        }
+                    }
+                });
+                this.emitEvent('technoBonus', { card: att });
+            }
+        });
 
         this.state.combatStep = 'declare-blockers';
         this.emitEvent('attackersDeclared', { attackers: this.state.attackers });
@@ -1126,11 +1706,33 @@ class RiutizGame extends EventTarget {
                         }
                         delete attCard.calculatorBonus;
                     }
+
+                    // Digital Artist (id 241) - Draw when deals damage
+                    if (damageToBlocker > 0 && !attCard.abilitiesDisabled) {
+                        const attAbility = attCard.ability?.toLowerCase() || '';
+                        if (attAbility.includes('when') && attAbility.includes('deals damage') && attAbility.includes('draw')) {
+                            if (attacker.deck.length > 0) {
+                                attacker.hand.push(attacker.deck.shift());
+                                logEntry.digitalArtistDraw = true;
+                            }
+                        }
+                    }
                 }
             } else {
                 // Unblocked - deal points
                 pointsScored += roll;
                 combatLog.push({ attacker: att.name, attackRoll: roll, unblocked: true, points: roll });
+
+                // Digital Artist (id 241) - Draw when deals damage (unblocked damage counts)
+                if (!attCard.abilitiesDisabled) {
+                    const attAbility = attCard.ability?.toLowerCase() || '';
+                    if (attAbility.includes('when') && attAbility.includes('deals damage') && attAbility.includes('draw')) {
+                        if (attacker.deck.length > 0) {
+                            attacker.hand.push(attacker.deck.shift());
+                            combatLog[combatLog.length - 1].digitalArtistDraw = true;
+                        }
+                    }
+                }
 
                 // Unblocked creature abilities - Shop Teacher recovers full HP
                 if (attCard.ability?.toLowerCase().includes('if unblocked') && attCard.ability?.toLowerCase().includes('recover')) {
@@ -1139,12 +1741,18 @@ class RiutizGame extends EventTarget {
             }
         });
 
-        // Remove dead creatures (but not Stubborn ones damaged to 0)
+        // Remove dead creatures and trigger exhaust events
+        const deadAttackerPupils = [];
+        const deadDefenderPupils = [];
+
         attacker.field = attacker.field.filter(c => {
             if (!c.currentEndurance) return true; // Tools, locations
             if (c.currentEndurance <= 0) {
                 // Move to discard
                 attacker.discard.push(c);
+                if (c.type?.includes('Pupil')) {
+                    deadAttackerPupils.push(c);
+                }
                 return false;
             }
             return true;
@@ -1153,9 +1761,20 @@ class RiutizGame extends EventTarget {
             if (!c.currentEndurance) return true;
             if (c.currentEndurance <= 0) {
                 defender.discard.push(c);
+                if (c.type?.includes('Pupil')) {
+                    deadDefenderPupils.push(c);
+                }
                 return false;
             }
             return true;
+        });
+
+        // Trigger exhaust effects for each dead pupil
+        deadAttackerPupils.forEach(deadPupil => {
+            this.triggerPupilExhausted(deadPupil, attackingPlayer);
+        });
+        deadDefenderPupils.forEach(deadPupil => {
+            this.triggerPupilExhausted(deadPupil, defendingPlayer);
         });
 
         // Recalculate auras after creatures die
@@ -1305,19 +1924,48 @@ class RiutizGame extends EventTarget {
         this.clearExpiredEffects(playerNum);
 
         // Draw phase
-        if (player.deck.length > 0) {
-            player.hand.push(player.deck.shift());
-        }
+        let cardsToDraw = 1;
 
-        // Ready phase - untap everything
+        // Cinematography Instructor, Luke (id 140) - Draw extra card
+        player.field.forEach(card => {
+            if (card.abilitiesDisabled) return;
+            const ability = card.ability?.toLowerCase() || '';
+            if (ability.includes('draw an extra card') && ability.includes('when you would draw')) {
+                cardsToDraw++;
+            }
+        });
+
+        // Draw cards (triggers Confusion Matrix for opponent if applicable)
+        this.drawCards(playerNum, cardsToDraw);
+
+        // Ready phase - untap everything (except System Crashed cards)
         player.field.forEach(c => {
-            c.isSpent = false;
+            // Check for System Crash effect - skip ready
+            if (c.skipNextReady) {
+                c.skipNextReady = false;
+                // Keep spent
+            } else {
+                c.isSpent = false;
+            }
             c.hasGettingBearings = false;
             c.usedReroll = false;
+            c.tempRelentless = false;
         });
         player.resources.forEach(r => r.spent = false);
         player.interruptionPlayed = false;
         player.canReroll = false;
+
+        // Return temporarily controlled Tools
+        player.field.forEach(card => {
+            if (card.tempControlledBy && card.originalOwner !== playerNum) {
+                // Return to original owner
+                const originalOwner = this.state.players[card.originalOwner];
+                player.field = player.field.filter(c => c.instanceId !== card.instanceId);
+                delete card.tempControlledBy;
+                delete card.originalOwner;
+                originalOwner.field.push(card);
+            }
+        });
 
         // Start of turn triggers
         this.triggerStartOfTurn(playerNum);
