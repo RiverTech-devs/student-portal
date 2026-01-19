@@ -23593,7 +23593,7 @@
           // 4. Delete grade categories
           await safeDelete('grade_categories', 'class_id', classId);
 
-          // 5. Get enrollment IDs and delete related records
+          // 5. Get enrollment IDs
           const { data: enrollments, error: enrollErr } = await this.auth.supabase
             .from('class_enrollments')
             .select('id')
@@ -23602,13 +23602,31 @@
           const enrollmentIds = enrollments?.map(e => e.id) || [];
           console.log('Enrollment IDs to delete:', enrollmentIds);
 
-          // 6. Delete enrollment history FIRST (by enrollment_id, then by class_id)
-          // This table references both enrollments and classes
+          // 6. Delete ALL enrollment_history that references these enrollments (by enrollment_id)
+          // Query and delete by primary key to ensure deletion
           if (enrollmentIds.length > 0) {
-            await safeDelete('enrollment_history', 'enrollment_id', enrollmentIds, true);
+            const { data: historyByEnrollment } = await this.auth.supabase
+              .from('enrollment_history')
+              .select('id')
+              .in('enrollment_id', enrollmentIds);
+            console.log('Found enrollment_history by enrollment_id:', historyByEnrollment);
+            const historyIds1 = historyByEnrollment?.map(h => h.id) || [];
+            if (historyIds1.length > 0) {
+              await safeDelete('enrollment_history', 'id', historyIds1, true);
+            }
             await safeDelete('quarter_grade_snapshots', 'enrollment_id', enrollmentIds, true);
           }
-          await safeDelete('enrollment_history', 'class_id', classId);
+
+          // Also delete any enrollment_history by class_id (in case some have NULL enrollment_id)
+          const { data: historyByClass } = await this.auth.supabase
+            .from('enrollment_history')
+            .select('id')
+            .eq('class_id', classId);
+          console.log('Found enrollment_history by class_id:', historyByClass);
+          const historyIds2 = historyByClass?.map(h => h.id) || [];
+          if (historyIds2.length > 0) {
+            await safeDelete('enrollment_history', 'id', historyIds2, true);
+          }
 
           // 7. Delete enrollments
           await safeDelete('class_enrollments', 'class_id', classId);
