@@ -222,7 +222,21 @@ class RiutizDeckBuilder {
             return { success: false, error: 'Starter deck not found' };
         }
 
-        this.currentDeck = [...starter.cards];
+        // Use deck_list array if available, otherwise convert cards object to array
+        if (starter.deck_list && Array.isArray(starter.deck_list)) {
+            this.currentDeck = [...starter.deck_list];
+        } else if (starter.cards && typeof starter.cards === 'object') {
+            // Convert {cardId: quantity} to array of card IDs
+            this.currentDeck = [];
+            for (const [cardId, qty] of Object.entries(starter.cards)) {
+                for (let i = 0; i < qty; i++) {
+                    this.currentDeck.push(parseInt(cardId));
+                }
+            }
+        } else {
+            return { success: false, error: 'Invalid starter deck format' };
+        }
+
         this.deckName = starter.name + ' (Copy)';
         this.deckId = null;
 
