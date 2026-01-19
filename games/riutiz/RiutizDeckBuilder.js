@@ -97,7 +97,7 @@ class RiutizDeckBuilder {
 
         // Apply filters
         if (this.filters.color) {
-            cards = cards.filter(card => this.getPrimaryColor(card.cost) === this.filters.color);
+            cards = cards.filter(card => this.hasColor(card.cost, this.filters.color));
         }
 
         if (this.filters.type) {
@@ -595,6 +595,35 @@ class RiutizDeckBuilder {
         const { colors } = this.parseCost(costStr);
         const keys = Object.keys(colors);
         return keys.length > 0 ? keys[0] : 'C';
+    }
+
+    /**
+     * Check if a card has a specific color in its cost
+     * @param {string} costStr - Card cost string like "(O)(G)(2)"
+     * @param {string} color - Color to check for ('O', 'G', 'P', 'B', 'Bk', 'C')
+     * @returns {boolean} True if card has this color
+     */
+    hasColor(costStr, color) {
+        const { colors } = this.parseCost(costStr);
+        const colorKeys = Object.keys(colors);
+
+        // Colorless check - card has no color symbols
+        if (color === 'C') {
+            return colorKeys.length === 0;
+        }
+
+        return colorKeys.includes(color);
+    }
+
+    /**
+     * Get all colors in a card's cost
+     * @param {string} costStr - Card cost string
+     * @returns {string[]} Array of colors, or ['C'] if colorless
+     */
+    getColors(costStr) {
+        const { colors } = this.parseCost(costStr);
+        const keys = Object.keys(colors);
+        return keys.length > 0 ? keys : ['C'];
     }
 
     generateId() {
