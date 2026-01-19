@@ -9,6 +9,7 @@ class RiutizDeckBuilder {
         this.gameId = 'riutiz';
 
         this.mode = 'casual'; // 'casual' or 'ranked'
+        this.deckType = 'casual'; // Explicit deck type for saving
         this.currentDeck = [];
         this.deckName = 'New Deck';
         this.deckId = null;
@@ -198,6 +199,17 @@ class RiutizDeckBuilder {
     }
 
     /**
+     * Full reset for creating a new deck
+     */
+    clear() {
+        this.currentDeck = [];
+        this.deckName = 'New Deck';
+        this.deckId = null;
+        this.deckType = 'casual';
+        this.mode = 'casual';
+    }
+
+    /**
      * Load a saved deck for editing
      */
     loadDeck(deckId) {
@@ -300,7 +312,7 @@ class RiutizDeckBuilder {
             cards: [...this.currentDeck],
             card_count: this.currentDeck.length,
             primary_color: this.getDeckPrimaryColor(),
-            deck_type: this.mode, // 'casual' or 'ranked'
+            deck_type: this.deckType || this.mode, // 'casual' or 'ranked'
             is_valid: true,
             created_at: Date.now(),
             updated_at: Date.now()
