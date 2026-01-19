@@ -97,6 +97,7 @@ class MatchmakingManager {
         const userId = this.firebase.supabaseUserId;
         const myStats = await this.arcade.getStats(this.gameId);
         const myRating = myStats.ranked_rating || 1000;
+        const queueStartTime = Date.now();
 
         return new Promise((resolve, reject) => {
             let resolved = false;
@@ -109,18 +110,41 @@ class MatchmakingManager {
                     const snapshot = await queueRef.once('value');
                     const queue = snapshot.val() || {};
 
-                    // Find other players in the same mode
+                    // Calculate wait time for matchmaking range expansion
+                    const waitTime = Math.floor((Date.now() - queueStartTime) / 1000);
+                    const ratingRange = window.ratingManager
+                        ? window.ratingManager.getMatchmakingRange(myRating, waitTime)
+                        : { minRating: myRating - 200, maxRating: myRating + 200 };
+
+                    // Find other players in the same mode within rating range
                     const candidates = Object.entries(queue)
-                        .filter(([id, data]) =>
-                            id !== userId &&
-                            data.mode === mode
-                        )
+                        .filter(([id, data]) => {
+                            if (id === userId) return false;
+                            if (data.mode !== mode) return false;
+
+                            // For ranked, filter by rating range
+                            if (mode === 'ranked') {
+                                const theirRating = data.rating || 1000;
+                                return theirRating >= ratingRange.minRating &&
+                                       theirRating <= ratingRange.maxRating;
+                            }
+                            return true;
+                        })
                         .map(([id, data]) => ({
                             id,
                             ...data,
-                            ratingDiff: Math.abs((data.rating || 1000) - myRating)
+                            ratingDiff: Math.abs((data.rating || 1000) - myRating),
+                            matchQuality: window.ratingManager
+                                ? window.ratingManager.getMatchQuality(myRating, data.rating || 1000)
+                                : 100 - Math.abs((data.rating || 1000) - myRating) / 10
                         }))
-                        .sort((a, b) => a.ratingDiff - b.ratingDiff);
+                        // Sort by match quality (highest first), then by rating difference
+                        .sort((a, b) => {
+                            if (b.matchQuality !== a.matchQuality) {
+                                return b.matchQuality - a.matchQuality;
+                            }
+                            return a.ratingDiff - b.ratingDiff;
+                        });
 
                     if (candidates.length > 0) {
                         // Found a match! Create the game
@@ -137,7 +161,11 @@ class MatchmakingManager {
                             resolved = true;
                             clearInterval(checkInterval);
 
-                            const matchId = await this._createMatch(userId, opponent.id, mode, myData.deck_id, opponent.deck_id);
+                            const matchId = await this._createMatch(
+                                userId, opponent.id, mode,
+                                myData.deck_id, opponent.deck_id,
+                                myRating, opponent.rating || 1000
+                            );
 
                             // Clean up queue entries
                             await queueRef.child(userId).remove();
@@ -187,7 +215,7 @@ class MatchmakingManager {
     /**
      * Create a new match
      */
-    async _createMatch(player1Id, player2Id, mode, deck1Id, deck2Id) {
+    async _createMatch(player1Id, player2Id, mode, deck1Id, deck2Id, player1Rating = 1000, player2Rating = 1000) {
         const matchId = this.firebase.generateId();
         const matchRef = this.firebase.ref(`arcade/matches/${this.gameId}/${matchId}`);
 
@@ -208,6 +236,7 @@ class MatchmakingManager {
                     supabase_user_id: player1Id,
                     display_name: this.arcade.player?.display_name || 'Player 1',
                     deck_id: deck1Id,
+                    rating: player1Rating,
                     connected: true,
                     last_action: this.firebase.serverTimestamp,
                     points: 0
@@ -216,6 +245,7 @@ class MatchmakingManager {
                     supabase_user_id: player2Id,
                     display_name: 'Opponent',
                     deck_id: deck2Id,
+                    rating: player2Rating,
                     connected: false,
                     last_action: null,
                     points: 0
@@ -273,7 +303,7 @@ class MatchmakingManager {
                     user_id: userId,
                     display_name: this.arcade.player?.display_name || 'Host',
                     ready: false,
-                    deck_id: null,
+                    deck_id: options.deckId || null,
                     is_host: true,
                     joined_at: this.firebase.serverTimestamp
                 }
@@ -295,11 +325,57 @@ class MatchmakingManager {
     }
 
     /**
+     * Get lobby info without joining (peek at mode, player count, etc.)
+     * @param {string} lobbyIdOrCode - Lobby ID or join code
+     * @returns {Promise<Object|null>} Lobby info or null if not found
+     */
+    async getLobbyInfo(lobbyIdOrCode) {
+        try {
+            let lobby;
+
+            // Check if it's a join code (6 characters) or full ID
+            if (lobbyIdOrCode.length <= 8) {
+                // Search by join code
+                const lobbiesRef = this.firebase.ref(`arcade/matchmaking/${this.gameId}/lobbies`);
+                const snapshot = await lobbiesRef.orderByChild('join_code').equalTo(lobbyIdOrCode.toUpperCase()).once('value');
+
+                if (!snapshot.exists()) return null;
+
+                const lobbies = snapshot.val();
+                const lobbyId = Object.keys(lobbies)[0];
+                lobby = lobbies[lobbyId];
+            } else {
+                // Full lobby ID
+                const lobbyRef = this.firebase.ref(`arcade/matchmaking/${this.gameId}/lobbies/${lobbyIdOrCode}`);
+                const snapshot = await lobbyRef.once('value');
+
+                if (!snapshot.exists()) return null;
+
+                lobby = snapshot.val();
+            }
+
+            return {
+                id: lobby.id,
+                mode: lobby.mode,
+                host_name: lobby.host_name,
+                player_count: Object.keys(lobby.players || {}).length,
+                max_players: lobby.max_players,
+                status: lobby.status
+            };
+        } catch (error) {
+            console.error('Error getting lobby info:', error);
+            return null;
+        }
+    }
+
+    /**
      * Join a lobby by ID or code
      * @param {string} lobbyIdOrCode - Lobby ID or join code
+     * @param {Object} options - Join options
+     * @param {string} options.deckId - Selected deck ID
      * @returns {Promise<Object>} Lobby data
      */
-    async joinLobby(lobbyIdOrCode) {
+    async joinLobby(lobbyIdOrCode, options = {}) {
         const userId = this.firebase.supabaseUserId;
         if (!userId) {
             throw new Error('Not authenticated');
@@ -350,7 +426,7 @@ class MatchmakingManager {
             user_id: userId,
             display_name: this.arcade.player?.display_name || 'Player',
             ready: false,
-            deck_id: null,
+            deck_id: options.deckId || null,
             is_host: false,
             joined_at: this.firebase.serverTimestamp
         });

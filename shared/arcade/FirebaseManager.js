@@ -311,14 +311,17 @@ class FirebaseManager {
     }
 
     /**
-     * Get display name for current user
+     * Get display name for current user (uses username field for game display)
      * @returns {string}
      */
     get displayName() {
         if (this.supabaseUserProfile) {
-            return this.supabaseUserProfile.first_name ||
-                   this.supabaseUserProfile.email?.split('@')[0] ||
-                   'Player';
+            // Use username field (specifically for game displays, not real names)
+            if (this.supabaseUserProfile.username) {
+                return this.supabaseUserProfile.username;
+            }
+            // Fall back to email prefix if no username set
+            return this.supabaseUserProfile.email?.split('@')[0] || 'Player';
         }
         return 'Player';
     }

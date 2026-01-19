@@ -66,11 +66,21 @@ class ArcadeManager {
 
             if (snapshot.exists()) {
                 const player = snapshot.val();
-                // Update last seen
-                await playerRef.update({
+                // Update last seen and sync display name from Supabase
+                const currentDisplayName = this.firebase.displayName;
+                const updateData = {
                     last_seen: this.firebase.serverTimestamp,
                     status: 'online'
-                });
+                };
+
+                // Sync display name (username) if it changed in Supabase
+                if (currentDisplayName && currentDisplayName !== player.display_name) {
+                    updateData.display_name = currentDisplayName;
+                    player.display_name = currentDisplayName;
+                    console.log('Synced username from Supabase:', currentDisplayName);
+                }
+
+                await playerRef.update(updateData);
                 console.log('Loaded existing player profile');
                 return player;
             }
@@ -80,6 +90,8 @@ class ArcadeManager {
                 supabase_user_id: userId,
                 display_name: this.firebase.displayName,
                 avatar_id: 'default',
+                title_id: 'none',
+                frame_id: 'none',
                 created_at: this.firebase.serverTimestamp,
                 last_seen: this.firebase.serverTimestamp,
                 status: 'online',
@@ -107,6 +119,8 @@ class ArcadeManager {
             supabase_user_id: 'local_' + Date.now(),
             display_name: this.firebase?.displayName || 'Player',
             avatar_id: 'default',
+            title_id: 'none',
+            frame_id: 'none',
             created_at: Date.now(),
             last_seen: Date.now(),
             status: 'offline',
@@ -159,6 +173,137 @@ class ArcadeManager {
             current_match: matchId,
             status: matchId ? 'in_game' : 'online'
         });
+    }
+
+    // ==========================================
+    // Profile Customization
+    // ==========================================
+
+    /**
+     * Set player's avatar
+     * @param {string} avatarId - Avatar ID
+     */
+    async setAvatar(avatarId) {
+        await this.updatePlayer({ avatar_id: avatarId });
+    }
+
+    /**
+     * Set player's title
+     * @param {string} titleId - Title ID
+     */
+    async setTitle(titleId) {
+        await this.updatePlayer({ title_id: titleId });
+    }
+
+    /**
+     * Set player's avatar frame
+     * @param {string} frameId - Frame ID
+     */
+    async setFrame(frameId) {
+        await this.updatePlayer({ frame_id: frameId });
+    }
+
+    /**
+     * Get player's formatted display name with title
+     */
+    getFormattedDisplayName() {
+        if (!this.player) return 'Player';
+
+        if (window.profileCustomization && this.player.title_id) {
+            return window.profileCustomization.formatDisplayName(
+                this.player.display_name,
+                this.player.title_id
+            );
+        }
+        return this.player.display_name;
+    }
+
+    /**
+     * Get player's avatar HTML
+     * @param {string} size - CSS size value
+     */
+    getAvatarHTML(size = '2.5rem') {
+        if (!this.player) return '';
+
+        if (window.profileCustomization) {
+            return window.profileCustomization.renderAvatar(
+                this.player.avatar_id || 'default',
+                this.player.frame_id || 'none',
+                size
+            );
+        }
+        return `<div class="player-avatar-display" style="width:${size};height:${size};border-radius:50%;background:#27272a;display:flex;align-items:center;justify-content:center;">😊</div>`;
+    }
+
+    /**
+     * Get aggregated stats for profile customization unlocks
+     * Combines stats from all games plus global stats
+     */
+    async getAggregatedStats() {
+        const globalStats = {
+            total_games: this.player?.total_games_played || 0,
+            friends_count: 0
+        };
+
+        // Try to get RIUTIZ stats
+        try {
+            const riutizStats = await this.getStats('riutiz');
+            Object.assign(globalStats, {
+                wins: riutizStats.wins || 0,
+                losses: riutizStats.losses || 0,
+                best_streak: riutizStats.best_streak || 0,
+                current_streak: riutizStats.current_streak || 0,
+                ranked_rating: riutizStats.ranked_rating || 1000,
+                peak_rating: riutizStats.peak_rating || 1000,
+                ranked_games: riutizStats.ranked_games || 0,
+                color_wins: riutizStats.color_wins || {},
+                perfect_wins: riutizStats.perfect_wins || 0,
+                comebacks: riutizStats.comebacks || 0,
+                ai_wins: riutizStats.ai_wins || 0,
+                spells_played: riutizStats.spells_played || 0
+            });
+        } catch (e) {
+            console.warn('Could not load riutiz stats:', e);
+        }
+
+        // Try to get friends count
+        try {
+            if (window.friendsManager) {
+                const friends = await window.friendsManager.getFriends();
+                globalStats.friends_count = friends.length;
+            }
+        } catch (e) {
+            console.warn('Could not load friends count:', e);
+        }
+
+        // Try to get decks count
+        try {
+            const decks = await this.getDecks('riutiz');
+            globalStats.decks_created = Object.keys(decks).length;
+        } catch (e) {
+            console.warn('Could not load decks count:', e);
+        }
+
+        // Try to get collection size
+        try {
+            const collection = await this.getCollection('riutiz');
+            globalStats.cards_owned = Object.keys(collection.cards || {}).length;
+        } catch (e) {
+            console.warn('Could not load collection size:', e);
+        }
+
+        return globalStats;
+    }
+
+    /**
+     * Check for new unlocks after a game and show notification
+     * @param {Object} oldStats - Stats before game
+     * @param {Object} newStats - Stats after game
+     */
+    checkForNewUnlocks(oldStats, newStats) {
+        if (!window.profileCustomization) return { avatars: [], titles: [], frames: [] };
+
+        return window.profileCustomization.getNewUnlocks(oldStats, newStats);
     }
 
     /**
@@ -337,7 +482,7 @@ class ArcadeManager {
     /**
      * Record a game result
      * @param {string} gameId - Game identifier
-     * @param {Object} result - { won: boolean, opponent: string, score: number }
+     * @param {Object} result - { won: boolean, opponentRating: number, ranked: boolean }
      */
     async recordGameResult(gameId, result) {
         const stats = await this.getStats(gameId);
@@ -352,15 +497,38 @@ class ArcadeManager {
         }
 
         stats.total_games = (stats.total_games || 0) + 1;
+        stats.ranked_games = (stats.ranked_games || 0) + (result.ranked ? 1 : 0);
         stats.last_played = Date.now();
 
-        // Simple rating calculation (ELO-like)
+        // ELO rating calculation for ranked matches
         if (result.ranked) {
-            const k = 32;
+            const myRating = stats.ranked_rating || 1000;
             const opponentRating = result.opponentRating || 1000;
-            const expected = 1 / (1 + Math.pow(10, (opponentRating - (stats.ranked_rating || 1000)) / 400));
-            const actual = result.won ? 1 : 0;
-            stats.ranked_rating = Math.round((stats.ranked_rating || 1000) + k * (actual - expected));
+            const gamesPlayed = stats.ranked_games || 0;
+
+            let ratingResult;
+            if (window.ratingManager) {
+                // Use proper ELO calculator
+                ratingResult = window.ratingManager.calculateNewRating(
+                    myRating,
+                    opponentRating,
+                    result.won,
+                    gamesPlayed
+                );
+                stats.ranked_rating = ratingResult.newRating;
+                stats.last_rating_change = ratingResult.change;
+            } else {
+                // Fallback ELO calculation
+                const k = gamesPlayed < 10 ? 40 : 24;
+                const expected = 1 / (1 + Math.pow(10, (opponentRating - myRating) / 400));
+                const actual = result.won ? 1 : 0;
+                const change = Math.round(k * (actual - expected));
+                stats.ranked_rating = Math.max(100, myRating + change);
+                stats.last_rating_change = change;
+            }
+
+            // Track peak rating
+            stats.peak_rating = Math.max(stats.peak_rating || 1000, stats.ranked_rating);
         }
 
         await this.updateStats(gameId, stats);
@@ -374,9 +542,12 @@ class ArcadeManager {
             wins: 0,
             losses: 0,
             total_games: 0,
+            ranked_games: 0,
             current_streak: 0,
             best_streak: 0,
             ranked_rating: 1000,
+            peak_rating: 1000,
+            last_rating_change: 0,
             last_played: null
         };
     }

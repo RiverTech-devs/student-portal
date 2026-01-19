@@ -224,10 +224,16 @@ class RiutizGame extends EventTarget {
         const card = player.hand[cardIndex];
 
         if (asResource) {
-            // Play as resource
+            // Play as resource - store full card data for preview
             const color = this.getPrimaryColor(card.cost) || 'C';
             player.hand.splice(cardIndex, 1);
-            player.resources.push({ color, spent: false, id: card.instanceId, cardName: card.name });
+            player.resources.push({
+                color,
+                spent: false,
+                id: card.instanceId,
+                cardName: card.name,
+                card: card  // Store full card for preview
+            });
 
             this.emitEvent('cardPlayedAsResource', { player: playerNum, card, color });
             return { success: true, action: 'resource', color };
@@ -296,6 +302,11 @@ class RiutizGame extends EventTarget {
 
         if (card.isSpent) {
             return { success: false, error: 'Card is already spent' };
+        }
+
+        // Pupils with Getting Bearings can't use spend abilities (summoning sickness)
+        if (card.hasGettingBearings && card.type?.includes('Pupil')) {
+            return { success: false, error: 'Has Getting Bearings - wait a turn' };
         }
 
         const hasSpend = card.ability?.toLowerCase().includes('spend:');

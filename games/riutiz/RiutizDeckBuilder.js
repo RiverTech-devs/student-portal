@@ -286,6 +286,7 @@ class RiutizDeckBuilder {
             cards: [...this.currentDeck],
             card_count: this.currentDeck.length,
             primary_color: this.getDeckPrimaryColor(),
+            deck_type: this.mode, // 'casual' or 'ranked'
             is_valid: true,
             created_at: Date.now(),
             updated_at: Date.now()
@@ -302,6 +303,70 @@ class RiutizDeckBuilder {
         }
 
         return { success: true, deckId: deck.id };
+    }
+
+    /**
+     * Get all saved decks
+     */
+    getSavedDecks() {
+        return Object.values(this.savedDecks);
+    }
+
+    /**
+     * Get decks valid for a specific game mode
+     * @param {string} gameMode - 'casual' or 'ranked'
+     */
+    getDecksForMode(gameMode) {
+        const decks = this.getSavedDecks();
+
+        if (gameMode === 'casual') {
+            // All valid decks work for casual
+            return decks.filter(deck => deck.is_valid && deck.card_count >= this.minDeckSize);
+        }
+
+        // For ranked, deck must use only owned cards
+        return decks.filter(deck => {
+            if (!deck.is_valid || deck.card_count < this.minDeckSize) return false;
+            return this.isDeckValidForRanked(deck);
+        });
+    }
+
+    /**
+     * Check if a deck is valid for ranked play (all cards owned)
+     */
+    isDeckValidForRanked(deck) {
+        const cardCounts = {};
+        deck.cards.forEach(id => {
+            cardCounts[id] = (cardCounts[id] || 0) + 1;
+        });
+
+        for (const [cardId, count] of Object.entries(cardCounts)) {
+            const owned = this.collection.getQuantity(parseInt(cardId));
+            if (count > owned) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Get validation details for a deck in ranked mode
+     */
+    getRankedValidationErrors(deck) {
+        const errors = [];
+        const cardCounts = {};
+        deck.cards.forEach(id => {
+            cardCounts[id] = (cardCounts[id] || 0) + 1;
+        });
+
+        for (const [cardId, count] of Object.entries(cardCounts)) {
+            const owned = this.collection.getQuantity(parseInt(cardId));
+            if (count > owned) {
+                const card = this.cardData.find(c => c.id === parseInt(cardId));
+                errors.push(`Need ${count}x ${card?.name || 'Unknown'} but only own ${owned}`);
+            }
+        }
+        return errors;
     }
 
     /**
