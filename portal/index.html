@@ -23541,62 +23541,72 @@
         }
 
         try {
-          // Helper to safely delete from a table (ignores errors from non-existent tables)
+          // Helper to safely delete from a table (logs but doesn't throw on errors)
           const safeDelete = async (table, column, value, useIn = false) => {
-            try {
-              if (useIn && Array.isArray(value)) {
-                await this.auth.supabase.from(table).delete().in(column, value);
-              } else {
-                await this.auth.supabase.from(table).delete().eq(column, value);
-              }
-            } catch (e) {
-              // Ignore errors - table may not exist
+            let result;
+            if (useIn && Array.isArray(value) && value.length > 0) {
+              result = await this.auth.supabase.from(table).delete().in(column, value);
+            } else if (!useIn) {
+              result = await this.auth.supabase.from(table).delete().eq(column, value);
+            }
+            if (result?.error) {
+              console.log(`Note: Could not delete from ${table}:`, result.error.message);
             }
           };
 
-          // Delete in order of dependencies (child tables first)
+          // 1. Delete attendance records
           await safeDelete('class_attendance', 'class_id', classId);
           await safeDelete('class_attendance_sessions', 'class_id', classId);
           await safeDelete('class_schedule', 'class_id', classId);
 
-          // Get all assignment IDs for this class
-          let assignmentIds = [];
-          try {
-            const { data: assignments } = await this.auth.supabase
-              .from('assignments')
-              .select('id')
-              .eq('class_id', classId);
-            assignmentIds = assignments?.map(a => a.id) || [];
-          } catch (e) { /* ignore */ }
+          // 2. Get discussion IDs and delete replies first
+          const { data: discussions } = await this.auth.supabase
+            .from('class_discussions')
+            .select('id')
+            .eq('class_id', classId);
+          const discussionIds = discussions?.map(d => d.id) || [];
+          if (discussionIds.length > 0) {
+            await safeDelete('discussion_replies', 'discussion_id', discussionIds, true);
+          }
+          await safeDelete('class_discussions', 'class_id', classId);
 
+          // 3. Get assignment IDs and delete submissions first
+          const { data: assignments } = await this.auth.supabase
+            .from('assignments')
+            .select('id')
+            .eq('class_id', classId);
+          const assignmentIds = assignments?.map(a => a.id) || [];
           if (assignmentIds.length > 0) {
             await safeDelete('assignment_submissions', 'assignment_id', assignmentIds, true);
             await safeDelete('assignment_students', 'assignment_id', assignmentIds, true);
-            await safeDelete('assignments', 'class_id', classId);
           }
+          await safeDelete('assignments', 'class_id', classId);
 
+          // 4. Delete grade categories
           await safeDelete('grade_categories', 'class_id', classId);
 
-          // Get enrollment IDs before deleting enrollments (for quarter_grade_snapshots)
-          let enrollmentIds = [];
-          try {
-            const { data: enrollments } = await this.auth.supabase
-              .from('class_enrollments')
-              .select('id')
-              .eq('class_id', classId);
-            enrollmentIds = enrollments?.map(e => e.id) || [];
-          } catch (e) { /* ignore */ }
-
+          // 5. Get enrollment IDs and delete related records
+          const { data: enrollments } = await this.auth.supabase
+            .from('class_enrollments')
+            .select('id')
+            .eq('class_id', classId);
+          const enrollmentIds = enrollments?.map(e => e.id) || [];
           if (enrollmentIds.length > 0) {
             await safeDelete('quarter_grade_snapshots', 'enrollment_id', enrollmentIds, true);
           }
 
+          // 6. Delete enrollment history BEFORE enrollments (it references both class and enrollment)
           await safeDelete('enrollment_history', 'class_id', classId);
+          if (enrollmentIds.length > 0) {
+            await safeDelete('enrollment_history', 'enrollment_id', enrollmentIds, true);
+          }
+
+          // 7. Delete enrollments
           await safeDelete('class_enrollments', 'class_id', classId);
+
+          // 8. Delete other class-related records
           await safeDelete('student_notes', 'class_id', classId);
           await safeDelete('homework_assignments', 'class_id', classId);
-          await safeDelete('class_discussions', 'class_id', classId);
-          await safeDelete('discussion_replies', 'class_id', classId);
 
           // Finally, delete the class itself
           const { error, data } = await this.auth.supabase
