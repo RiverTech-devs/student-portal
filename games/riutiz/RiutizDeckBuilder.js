@@ -600,7 +600,7 @@ class RiutizDeckBuilder {
     /**
      * Check if a card has a specific color in its cost
      * @param {string} costStr - Card cost string like "(O)(G)(2)"
-     * @param {string} color - Color to check for ('O', 'G', 'P', 'B', 'Bk', 'C')
+     * @param {string} color - Color to check for ('O', 'G', 'P', 'B', 'Bk', 'C', 'M' for multicolor)
      * @returns {boolean} True if card has this color
      */
     hasColor(costStr, color) {
@@ -610,6 +610,11 @@ class RiutizDeckBuilder {
         // Colorless check - card has no color symbols
         if (color === 'C') {
             return colorKeys.length === 0;
+        }
+
+        // Multicolor check - card has 2+ different colors
+        if (color === 'M') {
+            return colorKeys.length >= 2;
         }
 
         return colorKeys.includes(color);
