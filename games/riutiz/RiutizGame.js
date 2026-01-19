@@ -340,6 +340,9 @@ class RiutizGame extends EventTarget {
             // Trigger ETB abilities
             this.triggerETB(playerNum, newCard);
 
+            // Trigger "when another pupil enters" abilities
+            this.triggerPupilEntered(playerNum, newCard);
+
             // Recalculate aura effects
             this.recalculateAuras(playerNum);
         } else if (card.type === 'Interruption') {
@@ -1082,6 +1085,134 @@ class RiutizGame extends EventTarget {
             return { success: true, needsChoice: true };
         }
 
+        // === COLORLESS (C) INTERRUPTION EFFECTS ===
+
+        // Shield - Target pupil gains 2 shield counters
+        if (ability.includes('target pupil gains') && ability.includes('shield counter') && !ability.includes('pick')) {
+            const match = ability.match(/(\d+)\s*shield counter/);
+            const shields = match ? parseInt(match[1]) : 2;
+            if (target) {
+                target.counters = target.counters || { plusOne: 0 };
+                target.counters.shield = (target.counters.shield || 0) + shields;
+                this.emitEvent('shieldsAdded', { card: target, shields });
+                return { success: true };
+            }
+            return { needsTarget: true, targetType: 'anyPupil', effect: 'addShields', amount: shields };
+        }
+
+        // Tire Out / Weary - Target pupil gets -Dx until end of turn
+        if (ability.includes('target pupil gets') && ability.includes('-d') && ability.includes('until end of turn')) {
+            const match = ability.match(/-d(\d+)/i) || ability.match(/-(\d+)d/i);
+            const penalty = match ? parseInt(match[1]) : 2;
+            if (target) {
+                target.dieRollBonus = (target.dieRollBonus || 0) - penalty;
+                target.tempBuffs = target.tempBuffs || [];
+                target.tempBuffs.push({ type: 'dieRollPenalty', value: -penalty, expiresAt: 'endOfTurn' });
+                this.emitEvent('dieRollPenalty', { card: target, penalty });
+                return { success: true };
+            }
+            return { needsTarget: true, targetType: 'anyPupil', effect: 'dieRollPenalty', amount: penalty };
+        }
+
+        // Bunker Down - Target pupil gets 5 shields
+        if (ability.includes('target pupil gets') && ability.includes('shields') && !ability.includes('counter')) {
+            const match = ability.match(/(\d+)\s*shields/);
+            const shields = match ? parseInt(match[1]) : 5;
+            if (target) {
+                target.counters = target.counters || { plusOne: 0 };
+                target.counters.shield = (target.counters.shield || 0) + shields;
+                this.emitEvent('shieldsAdded', { card: target, shields });
+                return { success: true };
+            }
+            return { needsTarget: true, targetType: 'anyPupil', effect: 'addShields', amount: shields };
+        }
+
+        // Refute - Refute target attack (cancel it, attacker remains spent)
+        if (ability.includes('refute target attack') && !ability.includes('flash point')) {
+            this.emitEvent('refuteAttack', { player: playerNum });
+            return { success: true, effect: 'cancelAttack' };
+        }
+
+        // Recover - Target pupil regains 5 Endurance (already covered by Fix, but adding specific match)
+        if (ability.includes('regains') && ability.includes('endurance') && !ability.includes('spent')) {
+            const match = ability.match(/regains?\s*(\d+)\s*endurance/i);
+            const amount = match ? parseInt(match[1]) : 5;
+            if (target) {
+                const maxEnd = (target.baseEndurance || target.endurance) + (target.auraEnduranceBonus || 0) + (target.counters?.plusOne || 0);
+                target.currentEndurance = Math.min(maxEnd, (target.currentEndurance || target.endurance) + amount);
+                this.emitEvent('enduranceRegained', { card: target, amount });
+                return { success: true };
+            }
+            return { needsTarget: true, targetType: 'anyPupil', effect: 'regainEndurance', amount };
+        }
+
+        // Pass Through - Target pupil cannot be blocked until end of turn (already covered by Permeability)
+
+        // Reroll - Reroll any die roll
+        if (ability.includes('reroll any die roll') || ability === 'reroll any die roll.') {
+            this.emitEvent('rerollAvailable', { player: playerNum });
+            player.hasReroll = true;
+            return { success: true };
+        }
+
+        // End of Day - End the combat phase
+        if (ability.includes('end the combat phase')) {
+            if (this.state.phase === 'combat') {
+                this.state.phase = 'end';
+                this.state.combatStep = null;
+                this.state.attackers = [];
+                this.state.blockers = {};
+                this.emitEvent('combatEnded', { reason: 'endOfDay' });
+            }
+            return { success: true };
+        }
+
+        // Knowledge is Power - Each player draws a card
+        if (ability.includes('each player draws a card')) {
+            if (player.deck.length > 0) {
+                player.hand.push(player.deck.shift());
+            }
+            if (opponent.deck.length > 0) {
+                opponent.hand.push(opponent.deck.shift());
+            }
+            this.emitEvent('bothPlayersDraw', {});
+            return { success: true };
+        }
+
+        // Bounce Back - Return target pupil to its owner's hand
+        if (ability.includes('return target pupil') && ability.includes('owner\'s hand')) {
+            if (target) {
+                const targetOwner = player.field.includes(target) ? playerNum : (playerNum === 1 ? 2 : 1);
+                this.bounceCard(target, targetOwner);
+                return { success: true };
+            }
+            return { needsTarget: true, targetType: 'anyPupil', effect: 'bounce' };
+        }
+
+        // Study Session - Draw 2 cards
+        if (ability.includes('draw 2 cards') && !ability.includes('spend')) {
+            for (let i = 0; i < 2; i++) {
+                if (player.deck.length > 0) {
+                    player.hand.push(player.deck.shift());
+                }
+            }
+            this.emitEvent('cardsDrawn', { player: playerNum, count: 2 });
+            return { success: true };
+        }
+
+        // Rally - All your pupils get +1 to die rolls until end of turn
+        if (ability.includes('all your pupils get +1 to die rolls until end of turn')) {
+            player.field.forEach(card => {
+                if (card.type?.includes('Pupil')) {
+                    card.dieRollBonus = (card.dieRollBonus || 0) + 1;
+                    card.tempBuffs = card.tempBuffs || [];
+                    card.tempBuffs.push({ type: 'dieRollBonus', value: 1, expiresAt: 'endOfTurn' });
+                }
+            });
+            this.emitEvent('rallyApplied', { player: playerNum });
+            return { success: true };
+        }
+
         return { success: true };
     }
 
@@ -1396,6 +1527,59 @@ class RiutizGame extends EventTarget {
                 count: count
             });
         }
+
+        // === COLORLESS (C) CARD ETB ABILITIES ===
+
+        // Adoptive Parent - When enters, target pupil you control gets +2 Endurance
+        if (ability.includes('when') && ability.includes('enters') && ability.includes('target pupil you control') && ability.includes('+2 endurance')) {
+            this.emitEvent('etbNeedsTarget', {
+                player: playerNum,
+                card: card,
+                effect: 'grantEndurance',
+                amount: 2,
+                targetType: 'friendlyPupil'
+            });
+        }
+
+        // Shy kid - When enters, all opponent's attack die rolls get -1 until end of turn
+        if (ability.includes('when') && ability.includes('enters') && ability.includes('opponent\'s attack die rolls get -1')) {
+            opponent.field.forEach(c => {
+                if (c.type?.includes('Pupil')) {
+                    c.tempBuffs = c.tempBuffs || [];
+                    c.tempBuffs.push({
+                        type: 'dieRollPenalty',
+                        amount: -1,
+                        expires: 'endOfTurn'
+                    });
+                }
+            });
+            this.emitEvent('shyKidETB', {
+                player: playerNum,
+                card: card
+            });
+        }
+
+        // Tinkerer - When enters, search deck for a Tool
+        if (ability.includes('when') && ability.includes('enters') && ability.includes('search') && ability.includes('tool')) {
+            this.emitEvent('tinkererSearch', {
+                player: playerNum,
+                card: card,
+                searchType: 'Tool'
+            });
+        }
+
+        // Influencer - When enters, target opponent's pupil cannot block this turn
+        if (ability.includes('when') && ability.includes('enters') && ability.includes('target opponent\'s pupil cannot block')) {
+            this.emitEvent('etbNeedsTarget', {
+                player: playerNum,
+                card: card,
+                effect: 'cannotBlock',
+                targetType: 'opponentPupil'
+            });
+        }
+
+        // Run-away Parent - Impulsive and When exhausted draw a card (Impulsive handled by keyword)
+        // Exhausted trigger is handled in triggerPupilExhausted
     }
 
     /**
@@ -1468,7 +1652,70 @@ class RiutizGame extends EventTarget {
                     card.dieRollBonus = (card.dieRollBonus || 0) + 1;
                     this.emitEvent('naturalSelection', { card, bonus: 1 });
                 }
+
+                // === COLORLESS (C) EXHAUSTED TRIGGERS ===
+
+                // Observant Parent - When another pupil you control is exhausted, you may draw a card
+                if (ability.includes('when another pupil you control is exhausted') && ability.includes('draw a card')) {
+                    if (playerNum === ownerPlayerNum) { // Only trigger for owner's puppils
+                        this.emitEvent('observantParentTrigger', {
+                            player: playerNum,
+                            card,
+                            exhaustedPupil: exhaustedCard.name
+                        });
+                    }
+                }
             });
+        });
+
+        // Check if the exhausted card itself has a self-exhaust trigger
+        const exhaustedAbility = exhaustedCard.ability?.toLowerCase() || '';
+
+        // Run-away Parent - When Run-away Parent is exhausted, draw a card
+        if (exhaustedAbility.includes('when') && exhaustedAbility.includes('is exhausted') && exhaustedAbility.includes('draw a card') && !exhaustedAbility.includes('another')) {
+            const owner = this.state.players[ownerPlayerNum];
+            if (owner.deck.length > 0) {
+                owner.hand.push(owner.deck.shift());
+                this.emitEvent('runawayParentDraw', {
+                    player: ownerPlayerNum,
+                    card: exhaustedCard
+                });
+            }
+        }
+    }
+
+    /**
+     * Trigger effects when a pupil enters the battlefield
+     */
+    triggerPupilEntered(playerNum, enteredCard) {
+        const player = this.state.players[playerNum];
+
+        // Check for "when another pupil enters" triggers
+        player.field.forEach(card => {
+            if (card.abilitiesDisabled) return;
+            if (card.instanceId === enteredCard.instanceId) return; // Don't trigger on self
+            const ability = card.ability?.toLowerCase() || '';
+
+            // Bugati - When another pupil enters under your control, gets +1/+1 until end of turn
+            if (ability.includes('when another pupil enters') && ability.includes('+1/+1 until end of turn')) {
+                card.tempBuffs = card.tempBuffs || [];
+                card.tempBuffs.push({
+                    type: 'dieRollBonus',
+                    value: 1,
+                    expiresAt: 'endOfTurn'
+                });
+                card.tempBuffs.push({
+                    type: 'enduranceBonus',
+                    value: 1,
+                    expiresAt: 'endOfTurn'
+                });
+                card.dieRollBonus = (card.dieRollBonus || 0) + 1;
+                card.currentEndurance = (card.currentEndurance || card.endurance) + 1;
+                this.emitEvent('bugatiTrigger', {
+                    card,
+                    enteredPupil: enteredCard.name
+                });
+            }
         });
     }
 
@@ -1871,6 +2118,68 @@ class RiutizGame extends EventTarget {
                     }
                 });
             }
+
+            // === COLORLESS (C) AURA EFFECTS ===
+
+            // Authoritative Parent - Your pupils get +1 to die rolls while in play
+            if (ability.includes('your pupils get +1 to die rolls') && ability.includes('in play')) {
+                player.field.forEach(card => {
+                    if (card.type?.includes('Pupil')) {
+                        card.auraDieRollBonus = (card.auraDieRollBonus || 0) + 1;
+                    }
+                });
+            }
+
+            // Authoritarian Parent - Opponent's pupils get -1 to die rolls while in play
+            if (ability.includes('opponent\'s pupils get -1 to die rolls') && ability.includes('in play')) {
+                opponent.field.forEach(card => {
+                    if (card.type?.includes('Pupil')) {
+                        card.auraDieRollPenalty = (card.auraDieRollPenalty || 0) - 1;
+                    }
+                });
+            }
+
+            // Encouraging Parent - Your pupils may attack the turn they enter (grants Impulsive)
+            if (ability.includes('your pupils may attack the turn they enter')) {
+                player.field.forEach(card => {
+                    if (card.type?.includes('Pupil')) {
+                        card.hasImpulsive = true;
+                    }
+                });
+            }
+
+            // Janitor (id 17) - Your pupils get +1 to die rolls
+            if (ability.includes('your pupils get +1 to die rolls') && !ability.includes('in play') && !ability.includes('until')) {
+                player.field.forEach(card => {
+                    if (card.type?.includes('Pupil')) {
+                        card.auraDieRollBonus = (card.auraDieRollBonus || 0) + 1;
+                    }
+                });
+            }
+
+            // Pocket Watch (Tool) - Your Interruptions cost (1) less to play
+            if (sourceCard.type === 'Tool' && ability.includes('your interruptions cost') && ability.includes('less')) {
+                player.interruptionCostReduction = (player.interruptionCostReduction || 0) + 1;
+            }
+
+            // Atlas (Class Pet) - Comfort: Pupils cannot have Endurance reduced below 1 by opponent effects
+            if (ability.includes('comfort') && ability.includes('cannot have their endurance reduced below 1')) {
+                player.hasComfortAura = true;
+            }
+
+            // Detached Parent - Cannot block, cannot be blocked (handled in combat)
+            if (ability.includes('cannot block') && ability.includes('cannot be blocked')) {
+                sourceCard.cannotBlock = true;
+                sourceCard.cannotBeBlocked = true;
+            }
+
+            // Lolly - Die rolls get +1 for each damage taken
+            if (ability.includes('die rolls get +1 for each damage') && ability.includes('taken')) {
+                const damageTaken = (sourceCard.endurance || 0) - (sourceCard.currentEndurance || sourceCard.endurance || 0);
+                if (damageTaken > 0) {
+                    sourceCard.auraDieRollBonus = (sourceCard.auraDieRollBonus || 0) + damageTaken;
+                }
+            }
         });
 
         // Also reset opponent aura penalties
@@ -1884,6 +2193,15 @@ class RiutizGame extends EventTarget {
             const ability = sourceCard.ability?.toLowerCase() || '';
 
             if (ability.includes('-1 to all opponent') && ability.includes('attack')) {
+                opponent.field.forEach(card => {
+                    if (card.type?.includes('Pupil')) {
+                        card.auraDieRollPenalty = (card.auraDieRollPenalty || 0) - 1;
+                    }
+                });
+            }
+
+            // Re-apply Authoritarian Parent penalty
+            if (ability.includes('opponent\'s pupils get -1 to die rolls') && ability.includes('in play')) {
                 opponent.field.forEach(card => {
                     if (card.type?.includes('Pupil')) {
                         card.auraDieRollPenalty = (card.auraDieRollPenalty || 0) - 1;
@@ -2300,6 +2618,208 @@ class RiutizGame extends EventTarget {
                 effect: 'counterAbility'
             });
             return { success: true, needsSacrifice: true };
+        }
+
+        // === COLORLESS (C) SPEND ABILITIES ===
+
+        // Raven (Class Pet) - Spend: Target pupil recovers 1 Endurance
+        if (ability.includes('spend:') && ability.includes('target pupil recovers') && ability.includes('endurance')) {
+            const match = ability.match(/recovers?\s*(\d+)\s*endurance/);
+            const amount = match ? parseInt(match[1]) : 1;
+            if (target) {
+                target.currentEndurance = Math.min(target.endurance, (target.currentEndurance || target.endurance) + amount);
+                this.emitEvent('enduranceRecovered', { card: target, amount });
+                return { success: true };
+            }
+            return { needsTarget: true, targetType: 'anyPupil', effect: 'recover' };
+        }
+
+        // Remy (Class Pet) - Spend: Add one colorless resource until end of turn
+        if (ability.includes('spend:') && ability.includes('add one colorless resource')) {
+            player.tempResources = player.tempResources || [];
+            player.tempResources.push({ color: 'C', expiresAt: 'endOfTurn' });
+            this.emitEvent('tempResourceAdded', { player: playerNum, color: 'C' });
+            return { success: true };
+        }
+
+        // Princess (Class Pet) - Spend: Add a cute counter. Spend, remove cute counter: Score 1 point.
+        if (ability.includes('add a cute counter')) {
+            card.counters = card.counters || { cute: 0 };
+            card.counters.cute = (card.counters.cute || 0) + 1;
+            this.emitEvent('counterAdded', { card, counterType: 'cute', count: card.counters.cute });
+            return { success: true };
+        }
+        if (ability.includes('remove cute counter') && ability.includes('score')) {
+            if (card.counters?.cute > 0) {
+                card.counters.cute--;
+                player.points++;
+                this.emitEvent('pointScored', { player: playerNum, card, source: 'Princess' });
+                this.checkWinCondition();
+                return { success: true };
+            }
+            return { success: false, error: 'No cute counters to remove' };
+        }
+
+        // Whiskers (Class Pet) - Spend: Target pupil you control attacks first this turn
+        if (ability.includes('spend:') && ability.includes('attacks first this turn')) {
+            if (target) {
+                target.hasFirstStrike = true;
+                target.tempBuffs = target.tempBuffs || [];
+                target.tempBuffs.push({ type: 'firstStrike', expiresAt: 'endOfTurn' });
+                this.emitEvent('firstStrikeGranted', { card: target });
+                return { success: true };
+            }
+            return { needsTarget: true, targetType: 'friendlyPupil', effect: 'firstStrike' };
+        }
+
+        // Rex (Class Pet) - Spend, pay (1): Rex recovers 2 Endurance
+        if (ability.includes('spend, pay') && ability.includes('recovers') && ability.includes('endurance')) {
+            const costMatch = ability.match(/pay\s*\((\d+)\)/);
+            const cost = costMatch ? parseInt(costMatch[1]) : 1;
+            const amountMatch = ability.match(/recovers?\s*(\d+)\s*endurance/);
+            const amount = amountMatch ? parseInt(amountMatch[1]) : 2;
+
+            const availableResources = player.resources.filter(r => !r.spent);
+            if (availableResources.length >= cost) {
+                for (let i = 0; i < cost; i++) {
+                    availableResources[i].spent = true;
+                }
+                card.currentEndurance = Math.min(card.endurance, (card.currentEndurance || card.endurance) + amount);
+                this.emitEvent('selfRecovery', { card, amount });
+                return { success: true };
+            }
+            return { success: false, error: `Need ${cost} resources to activate` };
+        }
+
+        // Gold Coin (Tool) - Spend: Send Gold Coin home. Gain a resource of any color.
+        if (ability.includes('spend:') && ability.includes('send') && ability.includes('home') && ability.includes('gain a resource of any color')) {
+            this.emitEvent('needColorChoice', {
+                player: playerNum,
+                card: card,
+                effect: 'goldCoin'
+            });
+            return { success: true, needsColorChoice: true, sendHome: true };
+        }
+
+        // Bell (Tool) - Spend: Target pupil gets +1 to die rolls until end of turn
+        if (ability.includes('spend:') && ability.includes('target pupil gets +1 to die rolls')) {
+            if (target) {
+                target.dieRollBonus = (target.dieRollBonus || 0) + 1;
+                target.tempBuffs = target.tempBuffs || [];
+                target.tempBuffs.push({ type: 'dieRollBonus', value: 1, expiresAt: 'endOfTurn' });
+                this.emitEvent('dieRollBonusGranted', { card: target, amount: 1 });
+                return { success: true };
+            }
+            return { needsTarget: true, targetType: 'anyPupil', effect: 'dieRollBonus' };
+        }
+
+        // Ribbon (Tool) - Spend: Target pupil gets +1 to die rolls. If that pupil scores, draw a card.
+        if (ability.includes('spend:') && ability.includes('+1 to die rolls') && ability.includes('if that pupil scores, draw')) {
+            if (target) {
+                target.dieRollBonus = (target.dieRollBonus || 0) + 1;
+                target.tempBuffs = target.tempBuffs || [];
+                target.tempBuffs.push({ type: 'dieRollBonus', value: 1, expiresAt: 'endOfTurn' });
+                target.ribbonBonusActive = true;
+                this.emitEvent('ribbonApplied', { card: target });
+                return { success: true };
+            }
+            return { needsTarget: true, targetType: 'anyPupil', effect: 'ribbonBonus' };
+        }
+
+        // Pencil (Tool) - Spend: Target pupil gets +2/-1 until end of turn
+        if (ability.includes('spend:') && ability.includes('+2/-1')) {
+            if (target) {
+                target.dieRollBonus = (target.dieRollBonus || 0) + 2;
+                target.currentEndurance = Math.max(0, (target.currentEndurance || target.endurance) - 1);
+                target.tempBuffs = target.tempBuffs || [];
+                target.tempBuffs.push({ type: 'dieRollBonus', value: 2, expiresAt: 'endOfTurn' });
+                this.emitEvent('pencilApplied', { card: target });
+                if (target.currentEndurance <= 0) {
+                    this.exhaustPupil(target, playerNum);
+                }
+                return { success: true };
+            }
+            return { needsTarget: true, targetType: 'anyPupil', effect: 'pencil' };
+        }
+
+        // Pen (Tool) - Spend, send Pen home: Draw 2 cards
+        if (ability.includes('spend') && ability.includes('send') && ability.includes('home') && ability.includes('draw 2 cards')) {
+            // Remove Pen from field
+            const idx = player.field.findIndex(c => c.instanceId === card.instanceId);
+            if (idx !== -1) {
+                player.field.splice(idx, 1);
+                player.discard.push(card);
+            }
+            // Draw 2 cards
+            for (let i = 0; i < 2; i++) {
+                if (player.deck.length > 0) {
+                    player.hand.push(player.deck.shift());
+                }
+            }
+            this.emitEvent('penActivated', { player: playerNum });
+            return { success: true };
+        }
+
+        // Multicolor Marker (Tool) - Spend: Change target resource to produce any color
+        if (ability.includes('spend:') && ability.includes('change target resource') && ability.includes('any color')) {
+            this.emitEvent('markerNeedsResourceAndColor', {
+                player: playerNum,
+                card: card
+            });
+            return { success: true, needsResourceAndColor: true };
+        }
+
+        // Recruiter - Spend: Send Home, then Search for a basic pupil and put it into play spent
+        if (ability.includes('spend:') && ability.includes('send home') && ability.includes('search for a basic pupil')) {
+            // Remove Recruiter from field
+            const idx = player.field.findIndex(c => c.instanceId === card.instanceId);
+            if (idx !== -1) {
+                player.field.splice(idx, 1);
+                player.discard.push(card);
+            }
+            this.emitEvent('recruiterSearch', {
+                player: playerNum,
+                card: card,
+                searchType: 'basicPupil'
+            });
+            return { success: true, needsSearch: true };
+        }
+
+        // Obie (Class Pet) - Send Obie home: Opponent cannot play any cards this turn
+        if (ability.includes('send') && ability.includes('home') && ability.includes('opponent cannot play any cards')) {
+            // Remove Obie from field (sacrifice)
+            const idx = player.field.findIndex(c => c.instanceId === card.instanceId);
+            if (idx !== -1) {
+                player.field.splice(idx, 1);
+                player.discard.push(card);
+            }
+            // Lock opponent from playing cards this turn
+            opponent.cannotPlayCards = true;
+            opponent.lockExpiresAt = 'endOfTurn';
+            this.emitEvent('obieLock', { player: playerNum });
+            return { success: true };
+        }
+
+        // Scare-E-Crow (Class Pet) - Pay (3): Flip a coin. Heads: target opponent skips their next turn.
+        if (ability.includes('pay') && ability.includes('flip a coin') && ability.includes('skip')) {
+            const costMatch = ability.match(/pay\s*\((\d+)\)/);
+            const cost = costMatch ? parseInt(costMatch[1]) : 3;
+            const availableResources = player.resources.filter(r => !r.spent);
+            if (availableResources.length >= cost) {
+                for (let i = 0; i < cost; i++) {
+                    availableResources[i].spent = true;
+                }
+                // Flip a coin (50/50)
+                const heads = Math.random() < 0.5;
+                if (heads) {
+                    opponent.skipNextTurn = true;
+                    this.emitEvent('scarecrowSuccess', { player: playerNum, heads: true });
+                } else {
+                    this.emitEvent('scarecrowFail', { player: playerNum, heads: false });
+                }
+                return { success: true, coinFlip: heads };
+            }
+            return { success: false, error: `Need ${cost} resources to activate` };
         }
 
         return { success: true };
@@ -2794,6 +3314,21 @@ class RiutizGame extends EventTarget {
         // Recalculate auras after creatures die
         this.recalculateAuras(attackingPlayer);
         this.recalculateAuras(defendingPlayer);
+
+        // Gerbil damage prevention - Prevent 1 damage each time opponent would score a point
+        if (pointsScored > 0) {
+            defender.field.forEach(card => {
+                if (card.abilitiesDisabled) return;
+                const ability = card.ability?.toLowerCase() || '';
+                if (ability.includes('prevent') && ability.includes('damage') && ability.includes('opponent') && ability.includes('score')) {
+                    const match = ability.match(/prevent\s*(\d+)\s*damage/);
+                    const preventAmount = match ? parseInt(match[1]) : 1;
+                    const actualPrevention = Math.min(pointsScored, preventAmount);
+                    pointsScored -= actualPrevention;
+                    this.emitEvent('gerbilPrevention', { card, prevented: actualPrevention });
+                }
+            });
+        }
 
         // Award points
         attacker.points += pointsScored;
@@ -3320,6 +3855,27 @@ class RiutizGame extends EventTarget {
                         damage: damage
                     });
                 }
+            }
+
+            // Goldie (Class Pet) - When you score 1 or more points, recover 1 Endurance on target pupil
+            if (ability.includes('when you score') && ability.includes('recover') && ability.includes('endurance on target')) {
+                const match = ability.match(/recover\s*(\d+)\s*endurance/);
+                const amount = match ? parseInt(match[1]) : 1;
+                this.emitEvent('goldieRecoveryTrigger', {
+                    player: playerNum,
+                    card: card,
+                    amount: amount,
+                    pointsScored: pointsScored
+                });
+            }
+
+            // Ribbon effect - If pupil with ribbon bonus scores, draw a card
+            if (card.ribbonBonusActive && this.state.attackers?.some(a => a.instanceId === card.instanceId)) {
+                if (player.deck.length > 0) {
+                    player.hand.push(player.deck.shift());
+                    this.emitEvent('ribbonDraw', { player: playerNum, card });
+                }
+                card.ribbonBonusActive = false;
             }
         });
     }
