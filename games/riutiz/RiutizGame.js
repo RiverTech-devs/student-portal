@@ -927,6 +927,161 @@ class RiutizGame extends EventTarget {
             return { needsTarget: true, targetType: 'anyPupil', effect: 'adaptation' };
         }
 
+        // === ORANGE (O) INTERRUPTION EFFECTS ===
+
+        // Welding (id 22) - Target pupil gets another target pupil's die value
+        if (ability.includes('target pupil gets') && ability.includes('other target') && ability.includes('die value')) {
+            this.emitEvent('needTwoTargets', {
+                player: playerNum,
+                effect: 'copyDieValue',
+                targetType: 'anyPupil'
+            });
+            return { success: true, needsTwoTargets: true };
+        }
+
+        // Anneal (id 23) - Target pupil gains shield counters
+        if (ability.includes('gains') && ability.includes('shield counter')) {
+            const match = ability.match(/(\d+)\s*shield counter/);
+            const shields = match ? parseInt(match[1]) : 2;
+            if (target) {
+                target.counters = target.counters || { plusOne: 0 };
+                target.counters.shield = (target.counters.shield || 0) + shields;
+                this.emitEvent('shieldsAdded', { card: target, shields });
+                return { success: true };
+            }
+            return { needsTarget: true, targetType: 'anyPupil', effect: 'addShields', amount: shields };
+        }
+
+        // Oil Spill (id 24) - +1/+1 on Mechanics OR -1/-1 on Non-Mechanics
+        if (ability.includes('mechanics') && (ability.includes('+d1/+e1') || ability.includes('+1/+1')) && ability.includes('-1/-1')) {
+            this.emitEvent('needChoiceOilSpill', {
+                player: playerNum,
+                choices: ['buffMechanics', 'debuffNonMechanics']
+            });
+            return { success: true, needsChoice: true };
+        }
+
+        // Break Down (id 25) - Remove target Tool from play
+        if (ability.includes('remove target tool') || (ability.includes('remove') && ability.includes('tool') && ability.includes('from play'))) {
+            if (target && target.type === 'Tool') {
+                const targetOwner = player.field.includes(target) ? player : opponent;
+                targetOwner.field = targetOwner.field.filter(c => c.instanceId !== target.instanceId);
+                targetOwner.discard.push(target);
+                this.emitEvent('toolDestroyed', { tool: target });
+                return { success: true };
+            }
+            return { needsTarget: true, targetType: 'anyTool', effect: 'destroyTool' };
+        }
+
+        // Cement (id 26) - Target pupil's attack is lethal until end of turn
+        if (ability.includes('attack is lethal') || (ability.includes('lethal until end of turn') && !ability.includes('rebuttal'))) {
+            if (target) {
+                target.tempBuffs = target.tempBuffs || [];
+                target.tempBuffs.push({ type: 'keyword', keyword: 'lethal', expiresAt: 'endOfTurn' });
+                target.tempLethal = true;
+                this.emitEvent('lethalGranted', { card: target });
+                return { success: true };
+            }
+            return { needsTarget: true, targetType: 'anyPupil', effect: 'grantLethal' };
+        }
+
+        // Frame (id 27) - Send target pupil of cost 2 or less home
+        if (ability.includes('send') && ability.includes('home') && ability.includes('cost') && ability.includes('or less')) {
+            const match = ability.match(/cost.*?(\d+)\s*or less/);
+            const maxCost = match ? parseInt(match[1]) : 2;
+            if (target) {
+                // Check cost
+                const costMatch = target.cost?.match(/\((\d+)\)/);
+                const numericCost = costMatch ? parseInt(costMatch[1]) : 0;
+                const colorCost = (target.cost?.match(/\([A-Za-z]+\)/g) || []).length;
+                const totalCost = numericCost + colorCost;
+                if (totalCost <= maxCost) {
+                    this.bounceCard(target, player.field.includes(target) ? playerNum : (playerNum === 1 ? 2 : 1));
+                    return { success: true };
+                }
+                return { success: false, error: 'Target cost too high' };
+            }
+            return { needsTarget: true, targetType: 'anyPupil', effect: 'bounceIfCheap', maxCost };
+        }
+
+        // Cross Trains (id 30) - Put +1/+1 on target pupil
+        if ((ability.includes('+d1/+e1') || ability.includes('+1/+1')) && ability.includes('on target pupil') && !ability.includes('-1/-1')) {
+            if (target) {
+                target.counters = target.counters || { plusOne: 0 };
+                target.counters.plusOne++;
+                target.currentEndurance++;
+                this.emitEvent('counterAdded', { card: target, counterType: 'plusOne' });
+                return { success: true };
+            }
+            return { needsTarget: true, targetType: 'anyPupil', effect: 'plusOneCounter' };
+        }
+
+        // Fabricate (id 32) - +2 die roll until EOT, then perpetually -1
+        if (ability.includes('+d2') && ability.includes('perpetually') && ability.includes('-d1')) {
+            if (target) {
+                target.dieRollBonus = (target.dieRollBonus || 0) + 2;
+                target.tempBuffs = target.tempBuffs || [];
+                target.tempBuffs.push({ type: 'dieRollBonus', value: 2, expiresAt: 'endOfTurn' });
+                target.perpetualDieRollPenalty = (target.perpetualDieRollPenalty || 0) - 1;
+                this.emitEvent('fabricate', { card: target });
+                return { success: true };
+            }
+            return { needsTarget: true, targetType: 'anyPupil', effect: 'fabricate' };
+        }
+
+        // Flash Point (id 33) - Refute target attack (cancel it)
+        if (ability.includes('refute target attack') || ability.includes('cancel') && ability.includes('attack')) {
+            this.emitEvent('refuteAttack', { player: playerNum });
+            return { success: true, effect: 'cancelAttack' };
+        }
+
+        // Fix (id 34) - Target pupil regains Endurance
+        if (ability.includes('target pupil') && ability.includes('regains') && ability.includes('endurance')) {
+            const match = ability.match(/regains?\s*(\d+)\s*endurance/);
+            const amount = match ? parseInt(match[1]) : 5;
+            if (target) {
+                target.currentEndurance = Math.min(
+                    (target.baseEndurance || target.endurance) + (target.auraEnduranceBonus || 0) + (target.counters?.plusOne || 0),
+                    target.currentEndurance + amount
+                );
+                this.emitEvent('enduranceRegained', { card: target, amount });
+                return { success: true };
+            }
+            return { needsTarget: true, targetType: 'anyPupil', effect: 'regainEndurance', amount };
+        }
+
+        // Permeability (id 35) - Target cannot be blocked until end of turn
+        if (ability.includes('cannot be blocked until end of turn')) {
+            if (target) {
+                target.tempBuffs = target.tempBuffs || [];
+                target.tempBuffs.push({ type: 'unblockable', expiresAt: 'endOfTurn' });
+                target.isUnblockable = true;
+                this.emitEvent('unblockableGranted', { card: target });
+                return { success: true };
+            }
+            return { needsTarget: true, targetType: 'anyPupil', effect: 'grantUnblockable' };
+        }
+
+        // Fasten (id 37) - Spend target, remains spent until its next turn
+        if (ability.includes('spend') && ability.includes('remains spent')) {
+            if (target) {
+                target.isSpent = true;
+                target.lockedSpent = true;
+                this.emitEvent('fastenApplied', { card: target });
+                return { success: true };
+            }
+            return { needsTarget: true, targetType: 'anyPupil', effect: 'fasten' };
+        }
+
+        // Build Up (id 38) - +1 die rolls OR 2 shield counters
+        if (ability.includes('pick 1') && ability.includes('+1 to die rolls') && ability.includes('shield')) {
+            this.emitEvent('needChoiceBuildUp', {
+                player: playerNum,
+                choices: ['dieRollBonus', 'shields']
+            });
+            return { success: true, needsChoice: true };
+        }
+
         return { success: true };
     }
 
@@ -1191,6 +1346,54 @@ class RiutizGame extends EventTarget {
                 card: card,
                 effect: 'plusOneCounter',
                 targetType: 'anyPupil'
+            });
+        }
+
+        // === ORANGE (O) CARD ETB ABILITIES ===
+
+        // Grease Monkey (id 5) - Add a resource of your choice to your hand
+        if (ability.includes('add a resource') && ability.includes('your choice') && ability.includes('hand')) {
+            this.emitEvent('needColorChoice', {
+                player: playerNum,
+                card: card,
+                effect: 'addResourceToHand'
+            });
+        }
+
+        // The Fixer (id 10) - Target pupil restores up to 3 HP
+        if (ability.includes('target pupil') && ability.includes('restores') && ability.includes('hp')) {
+            const match = ability.match(/restores?\s*(?:up to\s*)?(\d+)\s*hp/);
+            const amount = match ? parseInt(match[1]) : 3;
+            this.emitEvent('etbNeedsTarget', {
+                player: playerNum,
+                card: card,
+                effect: 'restoreHP',
+                amount: amount,
+                targetType: 'anyPupil'
+            });
+        }
+
+        // Janitor (id 17) - Search for pupil with attack die lower than 1d6
+        if (ability.includes('search') && ability.includes('deck') && ability.includes('lower than')) {
+            this.emitEvent('janitorSearch', {
+                player: playerNum,
+                card: card,
+                maxDie: 'd4'
+            });
+        }
+
+        // Projects Constructor Mary (id 19) - When a Pupil enters they get +2 HP
+        // This is handled as an aura in recalculateAuras
+
+        // Slick Principal Mary (id 20) - Create 2 resources of your choice
+        if (ability.includes('create') && ability.includes('resources of your choice')) {
+            const match = ability.match(/create\s*(\d+)\s*resources?/);
+            const count = match ? parseInt(match[1]) : 2;
+            this.emitEvent('needMultipleColorChoice', {
+                player: playerNum,
+                card: card,
+                effect: 'createResources',
+                count: count
             });
         }
     }
@@ -1607,6 +1810,63 @@ class RiutizGame extends EventTarget {
                         const cardColor = this.getPrimaryColor(card.cost);
                         if (cardColor === 'G') {
                             card.hasAdvantage = true;
+                        }
+                    }
+                });
+            }
+
+            // === ORANGE (O) LOCATION AURA EFFECTS ===
+
+            // Parking Lot (id 39) - All pupils have Impulsive
+            if (sourceCard.type === 'Location' && ability.includes('all pupils have impulsive')) {
+                player.field.forEach(card => {
+                    if (card.type?.includes('Pupil')) {
+                        card.hasImpulsive = true;
+                    }
+                });
+                opponent.field.forEach(card => {
+                    if (card.type?.includes('Pupil')) {
+                        card.hasImpulsive = true;
+                    }
+                });
+            }
+
+            // The Workshop (id 40) - Tool cards cost (1) less to play
+            if (sourceCard.type === 'Location' && ability.includes('tool cards cost') && ability.includes('less')) {
+                player.toolCostReduction = (player.toolCostReduction || 0) + 1;
+            }
+
+            // Field (id 41) - All attack die rolls get +1
+            if (sourceCard.type === 'Location' && ability.includes('all attack die rolls get +1')) {
+                player.field.forEach(card => {
+                    if (card.type?.includes('Pupil')) {
+                        card.auraDieRollBonus = (card.auraDieRollBonus || 0) + 1;
+                    }
+                });
+                opponent.field.forEach(card => {
+                    if (card.type?.includes('Pupil')) {
+                        card.auraDieRollBonus = (card.auraDieRollBonus || 0) + 1;
+                    }
+                });
+            }
+
+            // Gym/Weights Room (id 42) - Pupils with Endurance 6+ get +1 to die rolls
+            if (sourceCard.type === 'Location' && ability.includes('endurance 6 or more') && ability.includes('+1 to die rolls')) {
+                player.field.forEach(card => {
+                    if (card.type?.includes('Pupil')) {
+                        const effectiveEndurance = (card.currentEndurance || card.endurance || 0) +
+                            (card.auraEnduranceBonus || 0) + (card.counters?.plusOne || 0);
+                        if (effectiveEndurance >= 6) {
+                            card.auraDieRollBonus = (card.auraDieRollBonus || 0) + 1;
+                        }
+                    }
+                });
+                opponent.field.forEach(card => {
+                    if (card.type?.includes('Pupil')) {
+                        const effectiveEndurance = (card.currentEndurance || card.endurance || 0) +
+                            (card.auraEnduranceBonus || 0) + (card.counters?.plusOne || 0);
+                        if (effectiveEndurance >= 6) {
+                            card.auraDieRollBonus = (card.auraDieRollBonus || 0) + 1;
                         }
                     }
                 });
@@ -2181,6 +2441,28 @@ class RiutizGame extends EventTarget {
                 } else {
                     this.emitEvent('aliciaTails', { card: att });
                 }
+            }
+        });
+
+        // === ORANGE (O) ATTACK TRIGGERS ===
+
+        // The Journeyman (id 12) - Apprenticeship: When attacks, may put +1/+1 counter on another pupil
+        this.state.attackers.forEach(att => {
+            const ability = att.ability?.toLowerCase() || '';
+            if (ability.includes('apprenticeship') || (ability.includes('when') && ability.includes('attacks') && ability.includes('+1/+1 counter on another'))) {
+                this.emitEvent('apprenticeshipTrigger', {
+                    player: playerNum,
+                    card: att,
+                    effect: 'plusOneCounter'
+                });
+            }
+        });
+
+        // The Tool (id 11) / Must be blocked - Mark attackers that must be blocked
+        this.state.attackers.forEach(att => {
+            const ability = att.ability?.toLowerCase() || '';
+            if (ability.includes('must be') && (ability.includes('blocked') || ability.includes('defended'))) {
+                att.mustBeBlocked = true;
             }
         });
 
