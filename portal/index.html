@@ -1858,17 +1858,70 @@
                 class_id: s.class_enrollments.class_id,
                 class_grade: s.class_grade
               }));
-            } else if (quarter.is_current) {
-              // Fallback for current quarter if no snapshots exist yet - use enrollments
+            } else {
+              // No snapshots - calculate from assignment submissions within quarter date range
+              // First get student's enrollments
               const { data: enrollments } = await this.supabaseQuery(() =>
                 this.auth.supabase
                   .from('class_enrollments')
-                  .select('class_id, class_grade')
+                  .select('id, class_id')
                   .eq('student_id', studentId)
                   .eq('status', 'active'));
 
-              if (enrollments) {
-                gradeData = enrollments;
+              if (enrollments && enrollments.length > 0) {
+                const classIds = enrollments.map(e => e.class_id);
+
+                // Get assignments within this quarter's date range
+                const { data: assignments } = await this.supabaseQuery(() =>
+                  this.auth.supabase
+                    .from('assignments')
+                    .select('id, class_id, max_points')
+                    .in('class_id', classIds)
+                    .gte('due_date', quarter.start_date)
+                    .lte('due_date', quarter.end_date)
+                    .eq('is_published', true));
+
+                if (assignments && assignments.length > 0) {
+                  const assignmentIds = assignments.map(a => a.id);
+
+                  // Get student's submissions for these assignments
+                  const { data: submissions } = await this.supabaseQuery(() =>
+                    this.auth.supabase
+                      .from('assignment_submissions')
+                      .select('assignment_id, points_earned, status')
+                      .eq('student_id', studentId)
+                      .in('assignment_id', assignmentIds));
+
+                  // Calculate average grade per class
+                  const classGrades = {};
+                  for (const classId of classIds) {
+                    const classAssignments = assignments.filter(a => a.class_id === classId);
+                    if (classAssignments.length === 0) continue;
+
+                    let totalPoints = 0;
+                    let earnedPoints = 0;
+                    let hasGrades = false;
+
+                    for (const assignment of classAssignments) {
+                      const submission = submissions?.find(s => s.assignment_id === assignment.id);
+                      if (submission && submission.points_earned !== null && submission.status !== 'excused') {
+                        earnedPoints += submission.points_earned;
+                        totalPoints += assignment.max_points;
+                        hasGrades = true;
+                      }
+                    }
+
+                    if (hasGrades && totalPoints > 0) {
+                      classGrades[classId] = (earnedPoints / totalPoints) * 100;
+                    }
+                  }
+
+                  // Convert to gradeData format
+                  gradeData = Object.entries(classGrades).map(([classId, grade]) => ({
+                    class_id: classId,
+                    class_grade: grade
+                  }));
+                }
               }
             }
 
