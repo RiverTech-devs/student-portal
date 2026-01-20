@@ -247,7 +247,7 @@ class PortalAuth {
             }
 
             const script = document.createElement('script');
-            script.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2';
+            script.src = '/student-portal/shared/supabase.min.js';
             script.onload = () => {
                 console.log('📦 Supabase loaded');
                 resolve();
