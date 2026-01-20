@@ -130,6 +130,34 @@
       font-size: 14px;
     }
 
+    /* Gradebook styles */
+    .gradebook-input:focus {
+      outline: none;
+      border-color: var(--accent) !important;
+      box-shadow: 0 0 0 2px rgba(106, 169, 255, 0.3);
+    }
+
+    .gradebook-input::-webkit-inner-spin-button,
+    .gradebook-input::-webkit-outer-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
+
+    .gradebook-input[type=number] {
+      -moz-appearance: textfield;
+    }
+
+    .gradebook-table th {
+      position: sticky;
+      top: 0;
+      background: var(--card-bg);
+      z-index: 5;
+    }
+
+    .gradebook-table th.gradebook-sticky {
+      z-index: 25 !important;
+    }
+
     /* Notification animations */
     @keyframes slideIn {
       from { transform: translateX(100%); opacity: 0; }
@@ -11457,6 +11485,9 @@
                   </button>
                   <button class="btn btn-primary" onclick="teacherGrades.showGradeManagementModal('${classId}')">
                     📊 Manage Grades
+                  </button>
+                  <button class="btn btn-primary" onclick="gradebook.showGradebook('${classId}')">
+                    📋 Gradebook
                   </button>
                   <button class="btn btn-primary" onclick="app.showClassAttendance('${classId}')">
                     📋 Class Attendance
@@ -28273,9 +28304,648 @@
           this.showGradeManagementModal(this.currentClassId);
         }
     } // ==================== END TEACHER GRADE MANAGEMENT ====================
-    
+
+    // ==================== GRADEBOOK VIEW ====================
+    class GradebookView {
+      constructor() {
+        this.currentClassId = null;
+        this.currentQuarterId = null;
+        this.currentQuarter = null;
+        this.allQuarters = [];
+        this.classData = null;
+        this.enrollments = [];
+        this.assignments = [];
+        this.submissions = {}; // Map: `${studentId}-${assignmentId}` -> submission
+        this.studentGrades = {}; // Map: studentId -> { suggested_grade, trend_grade, recent_avg, grade_distribution, recent_assignment_ids }
+        this.pendingChanges = {}; // Map: `${studentId}-${assignmentId}` -> { points_earned }
+      }
+
+      async showGradebook(classId, selectedQuarterId = null) {
+        console.log('Opening gradebook for class:', classId);
+
+        // Reset state
+        this.currentClassId = classId;
+        this.pendingChanges = {};
+        this.submissions = {};
+        this.studentGrades = {};
+
+        // Show loading modal
+        const modalHtml = `
+          <div id="gradebook-modal" class="modal" style="display: block;">
+            <div class="modal-content" style="max-width: 95vw; width: 95vw; max-height: 90vh; display: flex; flex-direction: column;">
+              <div class="modal-header" style="flex-shrink: 0;">
+                <h2 id="gradebook-title">Loading Gradebook...</h2>
+                <button class="modal-close" onclick="gradebook.closeGradebook()">&times;</button>
+              </div>
+              <div id="gradebook-controls" style="padding: 10px 20px; border-bottom: 1px solid var(--border-color); flex-shrink: 0;"></div>
+              <div id="gradebook-content" style="padding: 20px; overflow: auto; flex: 1;">
+                <div style="text-align: center; padding: 40px;">
+                  <div class="loading-spinner"></div>
+                  <p style="margin-top: 15px; color: var(--muted-color);">Loading gradebook...</p>
+                </div>
+              </div>
+              <div id="gradebook-footer" style="padding: 15px 20px; border-top: 1px solid var(--border-color); display: flex; gap: 10px; justify-content: flex-end; flex-shrink: 0;">
+                <span id="gradebook-changes-indicator" style="margin-right: auto; color: var(--muted-color);"></span>
+                <button class="btn btn-primary" onclick="gradebook.saveGradebook()">Save Changes</button>
+                <button class="btn btn-secondary" onclick="gradebook.closeGradebook()">Close</button>
+              </div>
+            </div>
+          </div>
+        `;
+
+        // Remove existing modal if present
+        const existingModal = document.getElementById('gradebook-modal');
+        if (existingModal) existingModal.remove();
+
+        // Add modal to page
+        document.body.insertAdjacentHTML('beforeend', modalHtml);
+
+        try {
+          // Load quarters
+          const { data: quarters, error: quartersError } = await window.app.auth.supabase
+            .from('quarters')
+            .select('*')
+            .eq('is_archived', false)
+            .order('start_date', { ascending: false });
+
+          if (quartersError || !quarters || quarters.length === 0) {
+            document.getElementById('gradebook-content').innerHTML = `
+              <div style="text-align: center; padding: 40px; color: var(--danger);">
+                <h3>No Active Quarters</h3>
+                <p>Please create a quarter first.</p>
+              </div>
+            `;
+            return;
+          }
+
+          this.allQuarters = quarters;
+
+          // Select quarter
+          let quarter;
+          if (selectedQuarterId) {
+            quarter = quarters.find(q => q.id === selectedQuarterId);
+          }
+          if (!quarter) {
+            quarter = quarters.find(q => q.is_current) || quarters[0];
+          }
+          this.currentQuarterId = quarter.id;
+          this.currentQuarter = quarter;
+
+          // Load class info
+          const { data: classData } = await window.app.auth.supabase
+            .from('classes')
+            .select('name, subject, grading_weight')
+            .eq('id', classId)
+            .single();
+
+          this.classData = classData;
+
+          // Update title
+          document.getElementById('gradebook-title').textContent = `${classData?.name || 'Class'} - Gradebook`;
+
+          // Build quarter selector
+          const quarterOptions = this.allQuarters.map(q =>
+            `<option value="${q.id}" ${q.id === quarter.id ? 'selected' : ''}>
+              ${q.name} (${q.school_year})${q.is_current ? ' - Current' : ''}
+            </option>`
+          ).join('');
+
+          document.getElementById('gradebook-controls').innerHTML = `
+            <div style="display: flex; align-items: center; gap: 20px; flex-wrap: wrap;">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <label style="font-weight: 500;">Quarter:</label>
+                <select id="gradebook-quarter-selector" onchange="gradebook.switchQuarter(this.value)"
+                  style="padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--card-bg); color: var(--text-color);">
+                  ${quarterOptions}
+                </select>
+              </div>
+              <div style="color: var(--muted-color); font-size: 13px;">
+                <strong>Legend:</strong>
+                <span style="display: inline-block; width: 12px; height: 12px; background: rgba(106, 169, 255, 0.12); border: 1px solid rgba(106, 169, 255, 0.3); margin: 0 4px; vertical-align: middle;"></span> Graded (trend)
+                <span style="display: inline-block; width: 12px; height: 12px; background: rgba(106, 169, 255, 0.35); border: 1px solid rgba(106, 169, 255, 0.5); margin: 0 4px 0 12px; vertical-align: middle;"></span> Recent 5 (40% weight)
+              </div>
+            </div>
+          `;
+
+          // Load enrollments
+          const { data: enrollments, error: enrollError } = await window.app.auth.supabase
+            .from('class_enrollments')
+            .select('*')
+            .eq('class_id', classId)
+            .eq('status', 'active');
+
+          if (enrollError) throw enrollError;
+
+          if (!enrollments || enrollments.length === 0) {
+            document.getElementById('gradebook-content').innerHTML = `
+              <div style="text-align: center; padding: 40px; color: var(--muted-color);">
+                <h3>No Students Enrolled</h3>
+                <p>This class has no enrolled students.</p>
+              </div>
+            `;
+            return;
+          }
+
+          // Load student profiles
+          const studentIds = enrollments.map(e => e.student_id);
+          const { data: students } = await window.app.auth.supabase
+            .from('user_profiles')
+            .select('id, first_name, last_name, email')
+            .in('id', studentIds);
+
+          const studentMap = {};
+          students?.forEach(s => { studentMap[s.id] = s; });
+
+          enrollments.forEach(e => {
+            e.student = studentMap[e.student_id] || { first_name: 'Unknown', last_name: 'User', email: 'N/A' };
+          });
+
+          // Sort by last name
+          enrollments.sort((a, b) => {
+            const nameA = a.student.last_name?.toLowerCase() || '';
+            const nameB = b.student.last_name?.toLowerCase() || '';
+            return nameA.localeCompare(nameB);
+          });
+
+          this.enrollments = enrollments;
+
+          // Load assignments for this quarter
+          const { data: assignments } = await window.app.auth.supabase
+            .from('assignments')
+            .select('*')
+            .eq('class_id', classId)
+            .eq('is_published', true)
+            .gte('due_date', quarter.start_date)
+            .lte('due_date', quarter.end_date)
+            .order('due_date', { ascending: true });
+
+          this.assignments = assignments || [];
+
+          if (this.assignments.length === 0) {
+            document.getElementById('gradebook-content').innerHTML = `
+              <div style="text-align: center; padding: 40px; color: var(--muted-color);">
+                <h3>No Assignments</h3>
+                <p>No published assignments found for this quarter.</p>
+              </div>
+            `;
+            return;
+          }
+
+          // Load all submissions for these students and assignments
+          const assignmentIds = this.assignments.map(a => a.id);
+          const { data: allSubmissions } = await window.app.auth.supabase
+            .from('assignment_submissions')
+            .select('*')
+            .in('student_id', studentIds)
+            .in('assignment_id', assignmentIds);
+
+          // Build submission map
+          this.submissions = {};
+          allSubmissions?.forEach(sub => {
+            this.submissions[`${sub.student_id}-${sub.assignment_id}`] = sub;
+          });
+
+          // Calculate academic grades for each student
+          for (const enrollment of this.enrollments) {
+            try {
+              const { data: suggestionData } = await window.app.auth.supabase.rpc('calculate_suggested_grade', {
+                p_enrollment_id: enrollment.id,
+                p_quarter_id: quarter.id
+              });
+
+              if (suggestionData && suggestionData[0]) {
+                const data = suggestionData[0];
+
+                // Get the recent 5 assignment IDs for this student
+                const studentSubs = allSubmissions?.filter(s =>
+                  s.student_id === enrollment.student_id &&
+                  s.points_earned != null
+                ) || [];
+
+                // Sort by assignment due date (need to match with assignments)
+                const sortedSubs = studentSubs
+                  .map(s => {
+                    const assignment = this.assignments.find(a => a.id === s.assignment_id);
+                    return { ...s, due_date: assignment?.due_date };
+                  })
+                  .filter(s => s.due_date)
+                  .sort((a, b) => new Date(b.due_date) - new Date(a.due_date));
+
+                const recent5Ids = sortedSubs.slice(0, 5).map(s => s.assignment_id);
+
+                this.studentGrades[enrollment.student_id] = {
+                  suggested_grade: data.suggested_grade,
+                  trend_grade: data.trend_grade,
+                  recent_avg: data.recent_avg,
+                  grade_distribution: data.grade_distribution,
+                  assignment_count: data.assignment_count,
+                  recent_assignment_ids: recent5Ids
+                };
+              }
+            } catch (err) {
+              console.warn('Grade calc failed for', enrollment.id, err.message);
+              this.studentGrades[enrollment.student_id] = {
+                suggested_grade: null,
+                trend_grade: null,
+                recent_avg: null,
+                grade_distribution: {},
+                assignment_count: 0,
+                recent_assignment_ids: []
+              };
+            }
+          }
+
+          this.renderGradebook();
+
+        } catch (error) {
+          console.error('Error loading gradebook:', error);
+          document.getElementById('gradebook-content').innerHTML = `
+            <div style="text-align: center; padding: 40px; color: var(--danger);">
+              <h3>Error Loading Gradebook</h3>
+              <p>${error.message}</p>
+            </div>
+          `;
+        }
+      }
+
+      switchQuarter(quarterId) {
+        this.showGradebook(this.currentClassId, quarterId);
+      }
+
+      renderGradebook() {
+        const content = document.getElementById('gradebook-content');
+
+        let html = `
+          <div class="gradebook-container" style="overflow: auto; max-height: calc(90vh - 200px);">
+            <table class="gradebook-table" style="border-collapse: separate; border-spacing: 0; min-width: 100%;">
+              <thead>
+                <tr style="background: rgba(0,0,0,0.3);">
+                  <th class="gradebook-sticky" style="position: sticky; left: 0; z-index: 20; background: var(--card-bg); padding: 10px; text-align: left; min-width: 180px; border-right: 2px solid var(--border-color);">
+                    Student
+                  </th>
+        `;
+
+        // Assignment column headers
+        this.assignments.forEach(assignment => {
+          const dueDate = new Date(assignment.due_date).toLocaleDateString();
+          const typeIcon = {
+            'homework': '📝',
+            'test': '📋',
+            'project': '🎯',
+            'quiz': '❓',
+            'info': 'ℹ️',
+            'none': '📄'
+          }[assignment.assignment_type] || '📄';
+
+          html += `
+            <th style="padding: 8px; text-align: center; min-width: 80px; max-width: 120px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
+                title="${assignment.title}\nDue: ${dueDate}\nMax: ${assignment.max_points} pts">
+              <div style="font-size: 11px; color: var(--muted-color);">${typeIcon}</div>
+              <div style="font-size: 12px; max-width: 100px; overflow: hidden; text-overflow: ellipsis;">${assignment.title}</div>
+              <div style="font-size: 10px; color: var(--muted-color);">(${assignment.max_points})</div>
+            </th>
+          `;
+        });
+
+        // Academic grade column
+        html += `
+            <th style="padding: 10px; text-align: center; min-width: 100px; background: rgba(106, 169, 255, 0.1); border-left: 2px solid var(--border-color);">
+              <div style="font-size: 12px;">Academic</div>
+              <div style="font-size: 10px; color: var(--muted-color);">Grade</div>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+        `;
+
+        // Student rows
+        this.enrollments.forEach(enrollment => {
+          const student = enrollment.student;
+          const gradeData = this.studentGrades[enrollment.student_id] || {};
+
+          html += `
+            <tr data-student-id="${enrollment.student_id}" style="border-bottom: 1px solid var(--border-color);">
+              <td class="gradebook-sticky" style="position: sticky; left: 0; z-index: 10; background: var(--card-bg); padding: 10px; border-right: 2px solid var(--border-color);">
+                <strong style="font-size: 13px;">${student.last_name}, ${student.first_name}</strong>
+              </td>
+          `;
+
+          // Grade cells for each assignment
+          this.assignments.forEach(assignment => {
+            const key = `${enrollment.student_id}-${assignment.id}`;
+            const submission = this.submissions[key];
+            const hasSubmission = submission && submission.id;
+            const pointsEarned = submission?.points_earned;
+            const isGraded = pointsEarned != null;
+            const isExcused = submission?.status === 'excused';
+
+            // Determine highlight class
+            let highlightStyle = '';
+            if (isGraded && !isExcused) {
+              const recentIds = gradeData.recent_assignment_ids || [];
+              if (recentIds.includes(assignment.id)) {
+                highlightStyle = 'background: rgba(106, 169, 255, 0.35);'; // Recent 5 - darker
+              } else {
+                highlightStyle = 'background: rgba(106, 169, 255, 0.12);'; // Older - lighter
+              }
+            }
+
+            html += `
+              <td style="padding: 4px; text-align: center; ${highlightStyle}" data-key="${key}">
+                <div style="display: flex; align-items: center; justify-content: center; gap: 4px;">
+            `;
+
+            if (isExcused) {
+              html += `<span style="color: var(--muted-color); font-size: 11px;">EX</span>`;
+            } else {
+              // Editable input
+              html += `
+                <input type="number"
+                       class="gradebook-input"
+                       data-student-id="${enrollment.student_id}"
+                       data-assignment-id="${assignment.id}"
+                       data-max-points="${assignment.max_points}"
+                       value="${isGraded ? pointsEarned : ''}"
+                       placeholder="—"
+                       min="0"
+                       max="${assignment.max_points}"
+                       step="0.5"
+                       onchange="gradebook.handleCellEdit('${enrollment.student_id}', '${assignment.id}', this.value, this)"
+                       onkeydown="gradebook.handleCellKeydown(event, this)"
+                       style="width: 50px; padding: 4px; text-align: center; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg); color: var(--text-color); font-size: 13px;">
+              `;
+            }
+
+            // Submission link if exists
+            if (hasSubmission && submission.content) {
+              html += `
+                <a href="#" onclick="app.viewStudentSubmission('${submission.id}', '${assignment.id}'); return false;"
+                   style="color: var(--accent); font-size: 11px; text-decoration: none;" title="View submission">→</a>
+              `;
+            }
+
+            html += `
+                </div>
+              </td>
+            `;
+          });
+
+          // Academic grade cell
+          const suggestedGrade = gradeData.suggested_grade;
+          const letterGrade = suggestedGrade != null ? this.percentageToLetterGrade(suggestedGrade) : '—';
+          const gradeDisplay = suggestedGrade != null ? `${suggestedGrade.toFixed(1)}` : '—';
+
+          html += `
+            <td style="padding: 10px; text-align: center; background: rgba(106, 169, 255, 0.1); border-left: 2px solid var(--border-color);">
+              <div class="academic-cell"
+                   onclick="gradebook.showGradeBreakdown('${enrollment.student_id}')"
+                   style="cursor: pointer; display: inline-block; padding: 6px 10px; background: rgba(106, 169, 255, 0.2); border-radius: 6px;"
+                   title="Click for breakdown">
+                <span style="font-weight: 700; color: var(--accent);">${letterGrade}</span>
+                <span style="font-size: 11px; color: var(--muted-color); margin-left: 4px;">(${gradeDisplay})</span>
+                <span style="font-size: 10px; margin-left: 2px;">ⓘ</span>
+              </div>
+            </td>
+          </tr>
+          `;
+        });
+
+        html += `
+            </tbody>
+          </table>
+        </div>
+        `;
+
+        content.innerHTML = html;
+        this.updateChangesIndicator();
+      }
+
+      percentageToLetterGrade(percentage) {
+        if (percentage == null) return '—';
+        if (percentage >= 97) return 'A+';
+        if (percentage >= 93) return 'A';
+        if (percentage >= 90) return 'A-';
+        if (percentage >= 87) return 'B+';
+        if (percentage >= 83) return 'B';
+        if (percentage >= 80) return 'B-';
+        if (percentage >= 77) return 'C+';
+        if (percentage >= 73) return 'C';
+        if (percentage >= 70) return 'C-';
+        if (percentage >= 67) return 'D+';
+        if (percentage >= 63) return 'D';
+        if (percentage >= 60) return 'D-';
+        return 'F';
+      }
+
+      handleCellEdit(studentId, assignmentId, value, inputElement) {
+        const key = `${studentId}-${assignmentId}`;
+        const numValue = value === '' ? null : parseFloat(value);
+
+        // Check if value actually changed from original
+        const original = this.submissions[key]?.points_earned;
+        const originalValue = original != null ? original : null;
+
+        if (numValue === originalValue) {
+          // No change - remove from pending
+          delete this.pendingChanges[key];
+          inputElement.style.borderColor = 'var(--border-color)';
+          inputElement.style.borderWidth = '1px';
+        } else {
+          // Track change
+          this.pendingChanges[key] = {
+            studentId,
+            assignmentId,
+            points_earned: numValue
+          };
+          inputElement.style.borderColor = 'var(--warning)';
+          inputElement.style.borderWidth = '2px';
+        }
+
+        this.updateChangesIndicator();
+      }
+
+      handleCellKeydown(event, inputElement) {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          inputElement.blur();
+        }
+      }
+
+      updateChangesIndicator() {
+        const indicator = document.getElementById('gradebook-changes-indicator');
+        const count = Object.keys(this.pendingChanges).length;
+        if (count > 0) {
+          indicator.innerHTML = `<span style="color: var(--warning);">⚠️ ${count} unsaved change${count > 1 ? 's' : ''}</span>`;
+        } else {
+          indicator.textContent = '';
+        }
+      }
+
+      showGradeBreakdown(studentId) {
+        const gradeData = this.studentGrades[studentId] || {};
+        const enrollment = this.enrollments.find(e => e.student_id === studentId);
+        const studentName = enrollment ? `${enrollment.student.first_name} ${enrollment.student.last_name}` : 'Student';
+
+        const suggested = gradeData.suggested_grade?.toFixed(1) || 'N/A';
+        const trend = gradeData.trend_grade?.toFixed(1) || 'N/A';
+        const recent = gradeData.recent_avg?.toFixed(1) || 'N/A';
+        const count = gradeData.assignment_count || 0;
+        const dist = gradeData.grade_distribution || {};
+
+        // Build distribution bars
+        let distHtml = '';
+        const grades = ['A', 'B', 'C', 'D', 'F'];
+        const maxCount = Math.max(...grades.map(g => dist[g] || 0), 1);
+
+        grades.forEach(g => {
+          const c = dist[g] || 0;
+          const width = (c / maxCount) * 100;
+          const color = { A: '#8bffb0', B: '#6aa9ff', C: '#ffd36a', D: '#ffb347', F: '#ff6a6a' }[g];
+          distHtml += `
+            <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
+              <span style="width: 20px; font-weight: 600;">${g}</span>
+              <div style="flex: 1; height: 16px; background: rgba(255,255,255,0.1); border-radius: 4px; overflow: hidden;">
+                <div style="width: ${width}%; height: 100%; background: ${color};"></div>
+              </div>
+              <span style="width: 24px; text-align: right; font-size: 12px;">${c}</span>
+            </div>
+          `;
+        });
+
+        const popoverHtml = `
+          <div id="grade-breakdown-popover" style="position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+               background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 12px; padding: 20px;
+               z-index: 1000; min-width: 300px; box-shadow: 0 10px 40px rgba(0,0,0,0.5);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+              <h3 style="margin: 0; color: var(--accent);">${studentName}</h3>
+              <button onclick="gradebook.closeGradeBreakdown()" style="background: none; border: none; color: var(--muted-color); font-size: 20px; cursor: pointer;">&times;</button>
+            </div>
+
+            <div style="background: rgba(106, 169, 255, 0.1); padding: 12px; border-radius: 8px; margin-bottom: 15px;">
+              <div style="font-size: 24px; font-weight: 700; color: var(--accent);">
+                ${this.percentageToLetterGrade(gradeData.suggested_grade)}
+                <span style="font-size: 16px; color: var(--muted-color);">(${suggested}%)</span>
+              </div>
+              <div style="font-size: 11px; color: var(--muted-color);">Academic Grade</div>
+            </div>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 15px;">
+              <div style="background: rgba(0,0,0,0.2); padding: 10px; border-radius: 6px;">
+                <div style="font-size: 18px; font-weight: 600; color: var(--text-color);">${trend}%</div>
+                <div style="font-size: 11px; color: var(--muted-color);">Trend (60%)</div>
+              </div>
+              <div style="background: rgba(0,0,0,0.2); padding: 10px; border-radius: 6px;">
+                <div style="font-size: 18px; font-weight: 600; color: var(--text-color);">${recent}%</div>
+                <div style="font-size: 11px; color: var(--muted-color);">Recent 5 (40%)</div>
+              </div>
+            </div>
+
+            <div style="margin-bottom: 10px;">
+              <div style="font-size: 12px; color: var(--muted-color); margin-bottom: 8px;">Grade Distribution (${count} assignments)</div>
+              ${distHtml}
+            </div>
+          </div>
+          <div id="grade-breakdown-overlay" onclick="gradebook.closeGradeBreakdown()"
+               style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 999;"></div>
+        `;
+
+        // Remove existing if present
+        this.closeGradeBreakdown();
+        document.body.insertAdjacentHTML('beforeend', popoverHtml);
+      }
+
+      closeGradeBreakdown() {
+        const popover = document.getElementById('grade-breakdown-popover');
+        const overlay = document.getElementById('grade-breakdown-overlay');
+        if (popover) popover.remove();
+        if (overlay) overlay.remove();
+      }
+
+      async saveGradebook() {
+        const changeCount = Object.keys(this.pendingChanges).length;
+
+        if (changeCount === 0) {
+          window.app.showNotification('No changes to save', 'info');
+          return;
+        }
+
+        try {
+          window.app.showNotification(`Saving ${changeCount} grade${changeCount > 1 ? 's' : ''}...`, 'info');
+
+          for (const [key, change] of Object.entries(this.pendingChanges)) {
+            const existingSubmission = this.submissions[key];
+
+            if (change.points_earned === null && !existingSubmission) {
+              // No grade and no existing submission - skip
+              continue;
+            }
+
+            if (change.points_earned === null && existingSubmission) {
+              // Clear the grade but keep submission
+              await window.app.auth.supabase
+                .from('assignment_submissions')
+                .update({
+                  points_earned: null,
+                  status: existingSubmission.content ? 'submitted' : 'graded',
+                  grade: null
+                })
+                .eq('id', existingSubmission.id);
+            } else {
+              // Upsert the submission with grade
+              const submissionData = {
+                assignment_id: change.assignmentId,
+                student_id: change.studentId,
+                points_earned: change.points_earned,
+                status: 'graded',
+                graded_at: new Date().toISOString()
+              };
+
+              // Preserve submitted_at if exists
+              if (existingSubmission?.submitted_at) {
+                submissionData.submitted_at = existingSubmission.submitted_at;
+              } else {
+                submissionData.submitted_at = new Date().toISOString();
+              }
+
+              await window.app.auth.supabase
+                .from('assignment_submissions')
+                .upsert(submissionData, { onConflict: 'assignment_id,student_id' });
+            }
+          }
+
+          window.app.showNotification('Grades saved successfully!', 'success');
+
+          // Clear pending and reload
+          this.pendingChanges = {};
+          await this.showGradebook(this.currentClassId, this.currentQuarterId);
+
+        } catch (error) {
+          console.error('Error saving gradebook:', error);
+          window.app.showNotification('Error saving grades: ' + error.message, 'error');
+        }
+      }
+
+      closeGradebook() {
+        const changeCount = Object.keys(this.pendingChanges).length;
+
+        if (changeCount > 0) {
+          if (!confirm(`You have ${changeCount} unsaved change${changeCount > 1 ? 's' : ''}. Close anyway?`)) {
+            return;
+          }
+        }
+
+        const modal = document.getElementById('gradebook-modal');
+        if (modal) modal.remove();
+        this.closeGradeBreakdown();
+      }
+    }
+    // ==================== END GRADEBOOK VIEW ====================
+
     // Initialize teacher grade management
     window.teacherGrades = new TeacherGradeManagement();
+
+    // Initialize gradebook
+    window.gradebook = new GradebookView();
     
     // Initialize the app
     // Wait for auth to be FULLY ready
