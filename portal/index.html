@@ -28741,6 +28741,8 @@
         const key = `${studentId}-${assignmentId}`;
         const numValue = value === '' ? null : parseFloat(value);
 
+        console.log('Cell edit:', { studentId, assignmentId, value, numValue, key });
+
         // Check if value actually changed from original
         const original = this.submissions[key]?.points_earned;
         const originalValue = original != null ? original : null;
@@ -28759,6 +28761,7 @@
           };
           inputElement.style.borderColor = 'var(--warning)';
           inputElement.style.borderWidth = '2px';
+          console.log('Pending changes:', this.pendingChanges);
         }
 
         this.updateChangesIndicator();
@@ -28872,52 +28875,82 @@
         try {
           window.app.showNotification(`Saving ${changeCount} grade${changeCount > 1 ? 's' : ''}...`, 'info');
 
+          let savedCount = 0;
+          const errors = [];
+
+          console.log('Saving pending changes:', this.pendingChanges);
+
           for (const [key, change] of Object.entries(this.pendingChanges)) {
             const existingSubmission = this.submissions[key];
+            console.log('Processing change:', { key, change, existingSubmission });
 
             if (change.points_earned === null && !existingSubmission) {
               // No grade and no existing submission - skip
+              console.log('Skipping - no grade and no existing submission');
               continue;
             }
 
-            if (change.points_earned === null && existingSubmission) {
-              // Clear the grade but keep submission
-              await window.app.auth.supabase
-                .from('assignment_submissions')
-                .update({
-                  points_earned: null,
-                  status: existingSubmission.content ? 'submitted' : 'graded',
-                  grade: null
-                })
-                .eq('id', existingSubmission.id);
-            } else {
-              // Upsert the submission with grade
-              const submissionData = {
-                assignment_id: change.assignmentId,
-                student_id: change.studentId,
-                points_earned: change.points_earned,
-                status: 'graded',
-                graded_at: new Date().toISOString()
-              };
+            try {
+              if (change.points_earned === null && existingSubmission) {
+                // Clear the grade but keep submission
+                console.log('Clearing grade for existing submission');
+                const { error } = await window.app.auth.supabase
+                  .from('assignment_submissions')
+                  .update({
+                    points_earned: null,
+                    status: existingSubmission.content ? 'submitted' : 'graded',
+                    grade: null
+                  })
+                  .eq('id', existingSubmission.id);
 
-              // Preserve submitted_at if exists
-              if (existingSubmission?.submitted_at) {
-                submissionData.submitted_at = existingSubmission.submitted_at;
+                if (error) throw error;
               } else {
-                submissionData.submitted_at = new Date().toISOString();
-              }
+                // Upsert the submission with grade
+                const submissionData = {
+                  assignment_id: change.assignmentId,
+                  student_id: change.studentId,
+                  points_earned: change.points_earned,
+                  status: 'graded',
+                  graded_at: new Date().toISOString()
+                };
 
-              await window.app.auth.supabase
-                .from('assignment_submissions')
-                .upsert(submissionData, { onConflict: 'assignment_id,student_id' });
+                // Preserve submitted_at if exists
+                if (existingSubmission?.submitted_at) {
+                  submissionData.submitted_at = existingSubmission.submitted_at;
+                } else {
+                  submissionData.submitted_at = new Date().toISOString();
+                }
+
+                console.log('Upserting submission:', submissionData);
+                const { data, error } = await window.app.auth.supabase
+                  .from('assignment_submissions')
+                  .upsert(submissionData, { onConflict: 'assignment_id,student_id' })
+                  .select();
+
+                console.log('Upsert result:', { data, error });
+                if (error) throw error;
+              }
+              savedCount++;
+              console.log('Saved successfully, count:', savedCount);
+            } catch (err) {
+              console.error('Error saving grade for', key, err);
+              errors.push(key);
             }
           }
 
-          window.app.showNotification('Grades saved successfully!', 'success');
+          if (errors.length > 0) {
+            window.app.showNotification(`Saved ${savedCount} grades, ${errors.length} failed`, 'warning');
+          } else {
+            window.app.showNotification('Grades saved successfully!', 'success');
+          }
 
-          // Clear pending and reload
+          // Clear pending changes that were saved successfully
           this.pendingChanges = {};
-          await this.showGradebook(this.currentClassId, this.currentQuarterId);
+
+          // Reload the gradebook
+          const classId = this.currentClassId;
+          const quarterId = this.currentQuarterId;
+          await this.showGradebook(classId, quarterId);
 
         } catch (error) {
           console.error('Error saving gradebook:', error);
