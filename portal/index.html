@@ -7335,6 +7335,7 @@
                 <th style="padding: 12px; text-align: center; width: 120px;">Final Grade</th>
                 <th style="padding: 12px; text-align: center; width: 100px;">Status</th>
                 <th style="padding: 12px; text-align: center; width: 80px;">Save</th>
+                <th style="padding: 12px; text-align: center; width: 80px;">Delete</th>
               </tr>
             </thead>
             <tbody>
@@ -7379,6 +7380,10 @@
               <td style="padding: 12px; text-align: center;">
                 <button class="btn btn-primary" style="padding: 6px 12px; font-size: 12px;"
                         onclick="app.saveAdminGradeRow('${enrollment.id}', '${quarterId}')">Save</button>
+              </td>
+              <td style="padding: 12px; text-align: center;">
+                <button class="btn" style="padding: 6px 12px; font-size: 12px; background: var(--danger); color: white;"
+                        onclick="app.permanentlyDeleteEnrollment('${enrollment.id}', '${classInfo?.name || 'this class'}')">🗑️</button>
               </td>
             </tr>
           `;
@@ -7509,6 +7514,88 @@
           this.showNotification(`Saved ${savedCount} grade(s)`, 'success');
         } else {
           this.showNotification('No grades to save', 'info');
+        }
+      }
+
+      async permanentlyDeleteEnrollment(enrollmentId, className) {
+        // Double confirmation for permanent delete
+        if (!confirm(`⚠️ PERMANENTLY DELETE enrollment from "${className}"?\n\nThis will delete:\n• The enrollment record\n• All grade snapshots for all quarters\n• All assignment submissions\n\nThis action CANNOT be undone!`)) {
+          return;
+        }
+
+        if (!confirm(`Are you absolutely sure? Type "DELETE" in the next prompt to confirm.`)) {
+          return;
+        }
+
+        const confirmation = prompt('Type DELETE to permanently remove this enrollment:');
+        if (confirmation !== 'DELETE') {
+          this.showNotification('Deletion cancelled', 'info');
+          return;
+        }
+
+        try {
+          this.showNotification('Deleting enrollment data...', 'info');
+
+          // Get the enrollment details first
+          const { data: enrollment, error: fetchError } = await this.auth.supabase
+            .from('class_enrollments')
+            .select('id, student_id, class_id')
+            .eq('id', enrollmentId)
+            .single();
+
+          if (fetchError || !enrollment) {
+            throw new Error('Enrollment not found');
+          }
+
+          // Get all assignment IDs for this class
+          const { data: assignments } = await this.auth.supabase
+            .from('assignments')
+            .select('id')
+            .eq('class_id', enrollment.class_id);
+
+          const assignmentIds = assignments?.map(a => a.id) || [];
+
+          // 1. Delete assignment submissions for this student in this class
+          if (assignmentIds.length > 0) {
+            const { error: subError } = await this.auth.supabase
+              .from('assignment_submissions')
+              .delete()
+              .eq('student_id', enrollment.student_id)
+              .in('assignment_id', assignmentIds);
+
+            if (subError) {
+              console.error('Error deleting submissions:', subError);
+            }
+          }
+
+          // 2. Delete all quarter_grade_snapshots for this enrollment
+          const { error: snapError } = await this.auth.supabase
+            .from('quarter_grade_snapshots')
+            .delete()
+            .eq('enrollment_id', enrollmentId);
+
+          if (snapError) {
+            console.error('Error deleting grade snapshots:', snapError);
+          }
+
+          // 3. Delete the enrollment record itself
+          const { error: enrollError } = await this.auth.supabase
+            .from('class_enrollments')
+            .delete()
+            .eq('id', enrollmentId);
+
+          if (enrollError) {
+            throw enrollError;
+          }
+
+          this.showNotification('Enrollment permanently deleted', 'success');
+
+          // Refresh the grades tab
+          this.loadAdminGradesTab();
+
+        } catch (error) {
+          console.error('Error permanently deleting enrollment:', error);
+          this.showNotification('Error: ' + error.message, 'error');
         }
       }
 
