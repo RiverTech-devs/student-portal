@@ -1680,6 +1680,8 @@
         this.sessionCheckInterval = null;
         this.notifications = [];
         this.notificationSubscription = null;
+        this.showClosedClasses = false;  // Teacher: toggle closed classes
+        this.showWithdrawnClasses = false;  // Student: toggle withdrawn enrollments
 
         // Quarter weights for GPA calculation
         this.quarterWeights = {
@@ -3808,10 +3810,11 @@
 
         this.classes = classes || [];
 
-        // Attach enrollment IDs to classes for student unenrollment
+        // Attach enrollment info to classes for student filtering and unenrollment
         this.classes.forEach(cls => {
           const enrollment = enrollments.find(e => e.class_id === cls.id);
           cls.enrollment_id = enrollment ? enrollment.id : null;
+          cls.enrollment_status = enrollment ? enrollment.status : null;
         });
 
         // Load assignments for these classes with selective assignment support
@@ -11353,10 +11356,22 @@
             </div>
           `;
         } else if (userType === 'student') {
+          // Filter student classes by enrollment status (active vs archived/withdrawn)
+          const activeEnrollments = this.classes.filter(c => c.enrollment_status === 'active');
+          const withdrawnEnrollments = this.classes.filter(c => c.enrollment_status === 'archived');
+          const hasWithdrawn = withdrawnEnrollments.length > 0;
+
           classesActions.innerHTML = `
-            <button class="btn btn-primary" onclick="app.enrollInClass()">
-              ➕ Join Class
-            </button>
+            <div style="display: flex; gap: 10px; align-items: center;">
+              <button class="btn btn-primary" onclick="app.enrollInClass()">
+                ➕ Join Class
+              </button>
+              ${hasWithdrawn ? `
+                <button class="btn btn-secondary" onclick="app.toggleWithdrawnClasses()" id="toggle-withdrawn-btn">
+                  ${this.showWithdrawnClasses ? 'Show Current' : 'Show Withdrawn'} (${withdrawnEnrollments.length})
+                </button>
+              ` : ''}
+            </div>
           `;
         } else if (userType === 'parent') {
           // Parents have read-only view, no action buttons
@@ -11391,8 +11406,53 @@
               ${classesToShow.map(cls => this.renderClassCard(cls)).join('')}
             </div>
           `;
+        } else if (userType === 'student') {
+          // Student view - filter by enrollment status (active vs withdrawn/archived)
+          const activeEnrollments = this.classes.filter(c => c.enrollment_status === 'active');
+          const withdrawnEnrollments = this.classes.filter(c => c.enrollment_status === 'archived');
+
+          let html = '';
+
+          if (this.showWithdrawnClasses) {
+            // Showing withdrawn classes
+            if (withdrawnEnrollments.length > 0) {
+              html += `
+                <div style="margin-bottom: 15px; color: var(--muted);">
+                  <span>Viewing withdrawn classes - click a class to view your past grades</span>
+                </div>
+                <div class="grid grid-3">
+                  ${withdrawnEnrollments.map(cls => this.renderClassCard(cls, true)).join('')}
+                </div>
+              `;
+            } else {
+              html += `
+                <div class="empty-state">
+                  <h3>📚 No Withdrawn Classes</h3>
+                  <p>You haven't withdrawn from any classes.</p>
+                </div>
+              `;
+            }
+          } else {
+            // Showing current/active classes (default)
+            if (activeEnrollments.length > 0) {
+              html += `
+                <div class="grid grid-3">
+                  ${activeEnrollments.map(cls => this.renderClassCard(cls)).join('')}
+                </div>
+              `;
+            } else {
+              html += `
+                <div class="empty-state">
+                  <h3>📚 No Active Classes</h3>
+                  <p>You're not currently enrolled in any classes.</p>
+                </div>
+              `;
+            }
+          }
+
+          classesContent.innerHTML = html;
         } else {
-          // Student/parent view - show active classes, with closed classes in a separate collapsed section
+          // Parent view - show active classes, with closed classes in a separate section
           let html = '';
 
           if (activeClasses.length > 0) {
@@ -11405,12 +11465,12 @@
             html += `
               <div class="empty-state">
                 <h3>📚 No Active Classes</h3>
-                <p>You have no active classes at this time.</p>
+                <p>Your children are not enrolled in any active classes.</p>
               </div>
             `;
           }
 
-          // Show closed classes section for students/parents to access past grades
+          // Show closed classes section for parents to access past grades
           if (closedClasses.length > 0) {
             html += `
               <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid var(--border);">
@@ -11434,7 +11494,12 @@
         this.renderClasses();
       }
 
-      renderClassCard(cls) {
+      toggleWithdrawnClasses() {
+        this.showWithdrawnClasses = !this.showWithdrawnClasses;
+        this.renderClasses();
+      }
+
+      renderClassCard(cls, isWithdrawn = false) {
         const userType = this.userInfo.profile.user_type;
         const isTeacher = userType === 'teacher' || userType === 'admin';
         const isStudent = userType === 'student';
@@ -11452,15 +11517,21 @@
           }
         }
 
+        // Determine badge - withdrawn enrollment takes priority for students
+        const showWithdrawnBadge = isStudent && isWithdrawn;
+        const showClosedBadge = isClosed && !showWithdrawnBadge;
+        const dimCard = isClosed || showWithdrawnBadge;
+
         return `
-          <div class="class-card" onclick="app.openClass('${cls.id}')" style="cursor: pointer; ${isClosed ? 'opacity: 0.7; border-color: var(--muted);' : ''}">
+          <div class="class-card" onclick="app.openClass('${cls.id}')" style="cursor: pointer; ${dimCard ? 'opacity: 0.7; border-color: var(--muted);' : ''}">
             ${isTeacher ? `
               <div class="class-actions">
                 <button onclick="event.stopPropagation(); app.editClass('${cls.id}')">✏️</button>
                 <button onclick="event.stopPropagation(); app.deleteClass('${cls.id}')" style="background: rgba(255, 106, 106, 0.3);">🗑️</button>
               </div>
             ` : ''}
-            ${isClosed ? `<span style="background: var(--muted); color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; position: absolute; top: 10px; left: 10px;">CLOSED</span>` : ''}
+            ${showWithdrawnBadge ? `<span style="background: #e67e22; color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; position: absolute; top: 10px; left: 10px;">WITHDRAWN</span>` : ''}
+            ${showClosedBadge ? `<span style="background: var(--muted); color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; position: absolute; top: 10px; left: 10px;">CLOSED</span>` : ''}
             <h3>${cls.name}</h3>
             <p>${cls.description || 'No description available'}</p>
             <div class="class-stats">
