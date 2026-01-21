@@ -6553,6 +6553,7 @@
             <button class="btn btn-secondary" id="tab-emergency" onclick="app.switchStudentRecordTab('emergency')">Emergency Contacts</button>
             <button class="btn btn-secondary" id="tab-medical" onclick="app.switchStudentRecordTab('medical')">Medical Info</button>
             <button class="btn btn-secondary" id="tab-waivers" onclick="app.switchStudentRecordTab('waivers')">Waivers</button>
+            <button class="btn btn-secondary" id="tab-grades" onclick="app.switchStudentRecordTab('grades'); app.loadAdminGradesTab();">📊 Grades</button>
           </div>
 
           <!-- Contact Info Tab -->
@@ -6743,6 +6744,20 @@
                 <button type="submit" class="btn btn-primary">Save Waivers</button>
               </div>
             </form>
+          </div>
+
+          <!-- Grades Tab (Admin Override) -->
+          <div id="tab-content-grades" style="display: none;">
+            <h3 style="margin: 0 0 15px 0; color: var(--accent);">📊 Grade History (Admin Override)</h3>
+            <p style="color: var(--muted); font-size: 13px; margin-bottom: 15px;">
+              Set academic, participation, and final grades for past quarters. These are marked as "Admin Override" in the system.
+            </p>
+            <div id="admin-grades-content">
+              <div style="text-align: center; padding: 40px;">
+                <div class="loading-spinner"></div>
+                <p style="margin-top: 15px; color: var(--muted);">Loading grade data...</p>
+              </div>
+            </div>
           </div>
         `;
       }
@@ -7183,6 +7198,317 @@
         } catch (error) {
           console.error('Error saving waivers:', error);
           this.showNotification('Error: ' + error.message, 'error');
+        }
+      }
+
+      // ==================== ADMIN GRADE OVERRIDE ====================
+
+      async loadAdminGradesTab() {
+        const studentId = this._currentAdminStudentId;
+        if (!studentId) return;
+
+        const content = document.getElementById('admin-grades-content');
+        if (!content) return;
+
+        content.innerHTML = `
+          <div style="text-align: center; padding: 40px;">
+            <div class="loading-spinner"></div>
+            <p style="margin-top: 15px; color: var(--muted);">Loading grade data...</p>
+          </div>
+        `;
+
+        try {
+          // Get all non-archived quarters
+          const { data: quarters, error: qError } = await this.auth.supabase
+            .from('quarters')
+            .select('*')
+            .eq('is_archived', false)
+            .order('start_date', { ascending: true });
+
+          if (qError) throw qError;
+
+          // Filter to past quarters only (start_date < now)
+          const now = new Date();
+          const pastQuarters = quarters?.filter(q => new Date(q.start_date) < now) || [];
+
+          if (pastQuarters.length === 0) {
+            content.innerHTML = `
+              <div style="text-align: center; padding: 30px; background: var(--bg); border-radius: 8px;">
+                <p style="color: var(--muted);">No past non-archived quarters available for grade entry.</p>
+              </div>
+            `;
+            return;
+          }
+
+          // Get student's enrollments
+          const { data: enrollments, error: eError } = await this.auth.supabase
+            .from('class_enrollments')
+            .select('id, class_id, classes(id, name, subject)')
+            .eq('student_id', studentId);
+
+          if (eError) throw eError;
+
+          if (!enrollments || enrollments.length === 0) {
+            content.innerHTML = `
+              <div style="text-align: center; padding: 30px; background: var(--bg); border-radius: 8px;">
+                <p style="color: var(--muted);">This student is not enrolled in any classes.</p>
+              </div>
+            `;
+            return;
+          }
+
+          // Get existing snapshots for these enrollments and quarters
+          const enrollmentIds = enrollments.map(e => e.id);
+          const quarterIds = pastQuarters.map(q => q.id);
+
+          const { data: snapshots } = await this.auth.supabase
+            .from('quarter_grade_snapshots')
+            .select('*')
+            .in('enrollment_id', enrollmentIds)
+            .in('quarter_id', quarterIds);
+
+          // Build snapshot map
+          const snapshotMap = {};
+          snapshots?.forEach(s => {
+            snapshotMap[`${s.enrollment_id}-${s.quarter_id}`] = s;
+          });
+
+          // Build quarter selector
+          const quarterOptions = pastQuarters.map(q =>
+            `<option value="${q.id}">${q.name} (${q.school_year})${q.is_current ? ' - Current' : ''}</option>`
+          ).join('');
+
+          // Build the UI
+          content.innerHTML = `
+            <div style="margin-bottom: 20px;">
+              <label style="display: block; margin-bottom: 8px; font-weight: 500;">Select Quarter:</label>
+              <select id="admin-grade-quarter" onchange="app.renderAdminGradeTable()"
+                      style="padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); min-width: 250px;">
+                ${quarterOptions}
+              </select>
+            </div>
+
+            <div id="admin-grade-table-container"></div>
+
+            <div style="margin-top: 20px; padding: 15px; background: rgba(106, 169, 255, 0.1); border-radius: 8px; border-left: 4px solid var(--accent);">
+              <strong>Note:</strong> These grades will be marked as "Admin Override" in the system for audit purposes.
+            </div>
+          `;
+
+          // Store data for rendering
+          this._adminGradeData = {
+            studentId,
+            enrollments,
+            pastQuarters,
+            snapshotMap
+          };
+
+          // Render table for first quarter
+          this.renderAdminGradeTable();
+
+        } catch (error) {
+          console.error('Error loading admin grades:', error);
+          content.innerHTML = `
+            <div style="text-align: center; padding: 30px; color: var(--danger);">
+              Error loading grades: ${error.message}
+            </div>
+          `;
+        }
+      }
+
+      renderAdminGradeTable() {
+        const container = document.getElementById('admin-grade-table-container');
+        if (!container || !this._adminGradeData) return;
+
+        const quarterId = document.getElementById('admin-grade-quarter')?.value;
+        if (!quarterId) return;
+
+        const { enrollments, snapshotMap } = this._adminGradeData;
+
+        let html = `
+          <table style="width: 100%; border-collapse: collapse;">
+            <thead>
+              <tr style="background: rgba(0,0,0,0.3);">
+                <th style="padding: 12px; text-align: left;">Class</th>
+                <th style="padding: 12px; text-align: center; width: 120px;">Academic</th>
+                <th style="padding: 12px; text-align: center; width: 120px;">Participation</th>
+                <th style="padding: 12px; text-align: center; width: 120px;">Final Grade</th>
+                <th style="padding: 12px; text-align: center; width: 100px;">Status</th>
+                <th style="padding: 12px; text-align: center; width: 80px;">Save</th>
+              </tr>
+            </thead>
+            <tbody>
+        `;
+
+        enrollments.forEach(enrollment => {
+          const classInfo = enrollment.classes;
+          const key = `${enrollment.id}-${quarterId}`;
+          const snapshot = snapshotMap[key];
+
+          const academicGrade = snapshot?.academic_grade ?? '';
+          const participationGrade = snapshot?.participation_grade ?? '';
+          const classGrade = snapshot?.class_grade ?? '';
+          const isAdminOverride = snapshot?.teacher_notes?.includes('[Admin Override]');
+
+          html += `
+            <tr style="border-bottom: 1px solid var(--border);" data-enrollment-id="${enrollment.id}" data-quarter-id="${quarterId}">
+              <td style="padding: 12px;">
+                <strong>${classInfo?.name || 'Unknown Class'}</strong>
+                <br><small style="color: var(--muted);">${classInfo?.subject || ''}</small>
+              </td>
+              <td style="padding: 12px; text-align: center;">
+                <input type="number" class="admin-grade-input" data-field="academic"
+                       value="${academicGrade}" placeholder="0-100" min="0" max="100" step="0.1"
+                       style="width: 80px; padding: 8px; text-align: center; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text);">
+              </td>
+              <td style="padding: 12px; text-align: center;">
+                <input type="number" class="admin-grade-input" data-field="participation"
+                       value="${participationGrade}" placeholder="0-100" min="0" max="100" step="0.1"
+                       style="width: 80px; padding: 8px; text-align: center; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text);">
+              </td>
+              <td style="padding: 12px; text-align: center;">
+                <input type="number" class="admin-grade-input" data-field="final"
+                       value="${classGrade}" placeholder="0-100" min="0" max="100" step="0.1"
+                       style="width: 80px; padding: 8px; text-align: center; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text);">
+              </td>
+              <td style="padding: 12px; text-align: center;">
+                ${isAdminOverride ?
+                  '<span style="background: rgba(106, 169, 255, 0.2); color: var(--accent); padding: 4px 8px; border-radius: 4px; font-size: 11px;">Admin Override</span>' :
+                  (snapshot ? '<span style="color: var(--muted); font-size: 11px;">Has Data</span>' : '<span style="color: var(--muted); font-size: 11px;">No Data</span>')}
+              </td>
+              <td style="padding: 12px; text-align: center;">
+                <button class="btn btn-primary" style="padding: 6px 12px; font-size: 12px;"
+                        onclick="app.saveAdminGradeRow('${enrollment.id}', '${quarterId}')">Save</button>
+              </td>
+            </tr>
+          `;
+        });
+
+        html += `
+            </tbody>
+          </table>
+          <div style="margin-top: 15px; display: flex; justify-content: flex-end;">
+            <button class="btn btn-primary" onclick="app.saveAllAdminGrades()">Save All Grades</button>
+          </div>
+        `;
+
+        container.innerHTML = html;
+      }
+
+      async saveAdminGradeRow(enrollmentId, quarterId) {
+        const row = document.querySelector(`tr[data-enrollment-id="${enrollmentId}"][data-quarter-id="${quarterId}"]`);
+        if (!row) return;
+
+        const academicInput = row.querySelector('[data-field="academic"]');
+        const participationInput = row.querySelector('[data-field="participation"]');
+        const finalInput = row.querySelector('[data-field="final"]');
+
+        const academicGrade = academicInput?.value ? parseFloat(academicInput.value) : null;
+        const participationGrade = participationInput?.value ? parseFloat(participationInput.value) : null;
+        const classGrade = finalInput?.value ? parseFloat(finalInput.value) : null;
+
+        // At least one grade must be provided
+        if (academicGrade === null && participationGrade === null && classGrade === null) {
+          this.showNotification('Please enter at least one grade', 'error');
+          return;
+        }
+
+        try {
+          const adminName = `${this.userInfo.profile.first_name} ${this.userInfo.profile.last_name}`;
+          const timestamp = new Date().toISOString().split('T')[0];
+          const notePrefix = `[Admin Override by ${adminName} on ${timestamp}]`;
+
+          // Check if snapshot exists
+          const { data: existing } = await this.auth.supabase
+            .from('quarter_grade_snapshots')
+            .select('id, teacher_notes')
+            .eq('enrollment_id', enrollmentId)
+            .eq('quarter_id', quarterId)
+            .single();
+
+          const updateData = {
+            enrollment_id: enrollmentId,
+            quarter_id: quarterId,
+            academic_grade: academicGrade,
+            participation_grade: participationGrade,
+            class_grade: classGrade,
+            class_grade_override: true,
+            teacher_notes: notePrefix,
+            updated_at: new Date().toISOString()
+          };
+
+          let error;
+          if (existing) {
+            // Preserve existing notes, append admin override note
+            const existingNotes = existing.teacher_notes || '';
+            if (!existingNotes.includes('[Admin Override')) {
+              updateData.teacher_notes = existingNotes ? `${existingNotes}\n${notePrefix}` : notePrefix;
+            } else {
+              updateData.teacher_notes = existingNotes.replace(/\[Admin Override.*?\]/g, notePrefix);
+            }
+
+            const result = await this.auth.supabase
+              .from('quarter_grade_snapshots')
+              .update(updateData)
+              .eq('id', existing.id);
+            error = result.error;
+          } else {
+            const result = await this.auth.supabase
+              .from('quarter_grade_snapshots')
+              .insert(updateData);
+            error = result.error;
+          }
+
+          if (error) throw error;
+
+          // Update snapshot map
+          const key = `${enrollmentId}-${quarterId}`;
+          this._adminGradeData.snapshotMap[key] = updateData;
+
+          // Visual feedback
+          row.style.background = 'rgba(139, 255, 176, 0.1)';
+          setTimeout(() => { row.style.background = ''; }, 1000);
+
+          this.showNotification('Grade saved', 'success');
+
+        } catch (error) {
+          console.error('Error saving admin grade:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+        }
+      }
+
+      async saveAllAdminGrades() {
+        const quarterId = document.getElementById('admin-grade-quarter')?.value;
+        if (!quarterId || !this._adminGradeData) return;
+
+        const rows = document.querySelectorAll(`tr[data-quarter-id="${quarterId}"]`);
+        let savedCount = 0;
+        let errorCount = 0;
+
+        for (const row of rows) {
+          const enrollmentId = row.dataset.enrollmentId;
+
+          const academicInput = row.querySelector('[data-field="academic"]');
+          const participationInput = row.querySelector('[data-field="participation"]');
+          const finalInput = row.querySelector('[data-field="final"]');
+
+          const hasValues = academicInput?.value || participationInput?.value || finalInput?.value;
+          if (!hasValues) continue;
+
+          try {
+            await this.saveAdminGradeRow(enrollmentId, quarterId);
+            savedCount++;
+          } catch (e) {
+            errorCount++;
+          }
+        }
+
+        if (errorCount > 0) {
+          this.showNotification(`Saved ${savedCount}, ${errorCount} failed`, 'warning');
+        } else if (savedCount > 0) {
+          this.showNotification(`Saved ${savedCount} grade(s)`, 'success');
+        } else {
+          this.showNotification('No grades to save', 'info');
         }
       }
 
