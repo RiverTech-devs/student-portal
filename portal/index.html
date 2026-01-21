@@ -12509,16 +12509,133 @@
       async removeStudent(enrollmentId, classId) {
         // Debug logging
         console.log('Removing student - Enrollment ID:', enrollmentId, 'Class ID:', classId);
-        
+
         if (!enrollmentId) {
           this.showNotification('Error: Enrollment ID not found', 'error');
           return;
         }
-        
-        if (!confirm('Withdraw this student from the class? Their grades will be preserved and you can reactivate them later.')) {
+
+        // Show removal options dialog
+        this.showRemovalOptionsDialog(enrollmentId, classId);
+      }
+
+      showRemovalOptionsDialog(enrollmentId, classId) {
+        const overlay = document.createElement('div');
+        overlay.id = 'removal-options-overlay';
+        overlay.style.cssText = 'position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); z-index: 10001; display: flex; align-items: center; justify-content: center; padding: 20px;';
+
+        overlay.innerHTML = `
+          <div style="background: var(--card); border-radius: 12px; max-width: 450px; width: 100%; padding: 25px;">
+            <h3 style="margin: 0 0 15px 0; color: var(--text);">Remove Student from Class</h3>
+            <p style="color: var(--muted); margin-bottom: 20px;">How would you like to handle this student's records?</p>
+
+            <div style="display: flex; flex-direction: column; gap: 12px;">
+              <button onclick="app.executeRemoveStudent('${enrollmentId}', '${classId}', 'keep')"
+                      style="padding: 15px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; cursor: pointer; text-align: left;">
+                <strong style="color: var(--accent);">📁 Keep Records (Withdraw)</strong>
+                <p style="margin: 5px 0 0 0; font-size: 13px; color: var(--muted);">
+                  Student is removed from active roster but grades and submissions are preserved. Can be reactivated later.
+                </p>
+              </button>
+
+              <button onclick="app.executeRemoveStudent('${enrollmentId}', '${classId}', 'delete')"
+                      style="padding: 15px; background: rgba(255, 106, 106, 0.1); border: 1px solid var(--danger); border-radius: 8px; cursor: pointer; text-align: left;">
+                <strong style="color: var(--danger);">🗑️ Delete Permanently</strong>
+                <p style="margin: 5px 0 0 0; font-size: 13px; color: var(--muted);">
+                  Completely remove enrollment and ALL associated data (grades, submissions). Cannot be undone.
+                </p>
+              </button>
+            </div>
+
+            <div style="margin-top: 20px; display: flex; justify-content: flex-end;">
+              <button onclick="document.getElementById('removal-options-overlay').remove()"
+                      class="btn btn-secondary">Cancel</button>
+            </div>
+          </div>
+        `;
+
+        document.body.appendChild(overlay);
+      }
+
+      async executeRemoveStudent(enrollmentId, classId, action) {
+        // Close the dialog
+        document.getElementById('removal-options-overlay')?.remove();
+
+        if (action === 'delete') {
+          // Permanent delete - requires extra confirmation
+          if (!confirm('⚠️ PERMANENTLY DELETE this enrollment?\n\nThis will delete:\n• The enrollment record\n• All grade snapshots\n• All assignment submissions\n\nThis CANNOT be undone!')) {
+            return;
+          }
+
+          const confirmation = prompt('Type DELETE to confirm permanent removal:');
+          if (confirmation !== 'DELETE') {
+            this.showNotification('Deletion cancelled', 'info');
+            return;
+          }
+
+          try {
+            // Get enrollment details
+            const { data: enrollment } = await this.auth.supabase
+              .from('class_enrollments')
+              .select('id, student_id, class_id')
+              .eq('id', enrollmentId)
+              .single();
+
+            if (!enrollment) {
+              throw new Error('Enrollment not found');
+            }
+
+            // Get assignments for this class
+            const { data: assignments } = await this.auth.supabase
+              .from('assignments')
+              .select('id')
+              .eq('class_id', classId);
+
+            const assignmentIds = assignments?.map(a => a.id) || [];
+
+            // Delete submissions
+            if (assignmentIds.length > 0) {
+              await this.auth.supabase
+                .from('assignment_submissions')
+                .delete()
+                .eq('student_id', enrollment.student_id)
+                .in('assignment_id', assignmentIds);
+            }
+
+            // Delete grade snapshots
+            await this.auth.supabase
+              .from('quarter_grade_snapshots')
+              .delete()
+              .eq('enrollment_id', enrollmentId);
+
+            // Delete enrollment history
+            await this.auth.supabase
+              .from('enrollment_history')
+              .delete()
+              .eq('enrollment_id', enrollmentId);
+
+            // Delete enrollment
+            await this.auth.supabase
+              .from('class_enrollments')
+              .delete()
+              .eq('id', enrollmentId);
+
+            this.showNotification('Enrollment permanently deleted', 'success');
+
+            // Refresh
+            await this.loadTeacherData();
+            this.setupHomeContent();
+            this.closeModal('manage-students');
+            setTimeout(() => this.manageStudents(classId), 100);
+
+          } catch (error) {
+            console.error('Error permanently deleting:', error);
+            this.showNotification('Error: ' + error.message, 'error');
+          }
           return;
         }
-      
+
+        // Keep records (archive) - original behavior
         try {
           const isAdmin = this.userInfo.profile?.user_type === 'admin';
 
