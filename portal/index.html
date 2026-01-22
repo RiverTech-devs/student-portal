@@ -22119,6 +22119,12 @@
                 <button class="btn btn-primary" onclick="app.generateGradeReport()">
                   Generate Report
                 </button>
+                <div>
+                  <label style="display: block; margin-bottom: 5px; font-weight: bold;">Report Card Quarter</label>
+                  <select id="report-card-quarter" class="form-control" style="width: 100%; padding: 8px;">
+                    <option value="current">Up to Current Quarter</option>
+                  </select>
+                </div>
                 <button id="report-card-btn" class="btn btn-secondary" onclick="app.generateReportCardFromFilter()" disabled title="Select a specific student to generate report card">
                   📄 Report Card
                 </button>
@@ -22157,6 +22163,20 @@
               option.value = quarter.id;
               option.textContent = quarter.name + (quarter.is_current ? ' (Current)' : '');
               quarterSelect.appendChild(option);
+            });
+          }
+
+          // Also populate report card quarter dropdown (sorted chronologically for Q1, Q2, Q3, Q4 order)
+          const reportCardQuarterSelect = document.getElementById('report-card-quarter');
+          if (reportCardQuarterSelect && quarters) {
+            reportCardQuarterSelect.innerHTML = '<option value="current">Up to Current Quarter</option>';
+            // Sort by start_date ascending for report card (Q1 first)
+            const sortedQuarters = [...quarters].sort((a, b) => new Date(a.start_date) - new Date(b.start_date));
+            sortedQuarters.forEach(quarter => {
+              const option = document.createElement('option');
+              option.value = quarter.id;
+              option.textContent = `Up to ${quarter.name}` + (quarter.is_current ? ' (Current)' : '');
+              reportCardQuarterSelect.appendChild(option);
             });
           }
 
@@ -22544,10 +22564,12 @@
           this.showNotification('Please select a specific student to generate a report card', 'error');
           return;
         }
-        this.generateReportCard(studentSelect.value);
+        const quarterSelect = document.getElementById('report-card-quarter');
+        const upToQuarterId = quarterSelect?.value === 'current' ? null : quarterSelect?.value;
+        this.generateReportCard(studentSelect.value, upToQuarterId);
       }
 
-      async generateReportCard(studentId) {
+      async generateReportCard(studentId, upToQuarterId = null) {
         this.showNotification('Generating report card...', 'info');
 
         try {
@@ -22566,6 +22588,19 @@
             .select('*')
             .eq('is_current', true)
             .single();
+
+          // If a specific "up to" quarter is selected, load it
+          let targetQuarter = currentQuarter;
+          if (upToQuarterId) {
+            const { data: selectedQuarter } = await this.auth.supabase
+              .from('quarters')
+              .select('*')
+              .eq('id', upToQuarterId)
+              .single();
+            if (selectedQuarter) {
+              targetQuarter = selectedQuarter;
+            }
+          }
 
           // Load school settings
           const { data: settings } = await this.auth.supabase
@@ -22617,17 +22652,17 @@
 
           // Build a map of quarter_id to quarter number
           const quarterNumMap = {};
-          const currentQuarterNum = this.getQuarterNumber(currentQuarter);
+          const targetQuarterNum = this.getQuarterNumber(targetQuarter);
           for (const q of (quarters || [])) {
             const qNum = this.getQuarterNumber(q);
             if (qNum) quarterNumMap[q.id] = qNum;
           }
 
-          // Determine which quarters to include (only past and current, not future)
+          // Determine which quarters to include (all quarters from Q1 up to target quarter)
           const activeQuarters = [];
           for (const q of (quarters || [])) {
             const qNum = quarterNumMap[q.id];
-            if (qNum && qNum <= currentQuarterNum) {
+            if (qNum && qNum <= targetQuarterNum) {
               activeQuarters.push(`Q${qNum}`);
             }
           }
@@ -22664,7 +22699,7 @@
             // Load past quarter grades from snapshots
             for (const q of (quarters || [])) {
               const qNum = quarterNumMap[q.id];
-              if (!qNum || qNum > currentQuarterNum) continue;  // Skip future quarters
+              if (!qNum || qNum > targetQuarterNum) continue;  // Skip quarters beyond target
 
               const snapshotKey = `${enrollment.id}_${q.id}`;
               const snapshot = snapshotMap[snapshotKey];
@@ -22679,7 +22714,9 @@
             }
 
             // Current quarter grade from enrollment (overwrite snapshot if exists)
-            if (currentQuarterNum && enrollment.class_grade !== null) {
+            // Only include if current quarter is within the target range
+            const currentQuarterNum = this.getQuarterNumber(currentQuarter);
+            if (currentQuarterNum && currentQuarterNum <= targetQuarterNum && enrollment.class_grade !== null) {
               const letter = this.percentageToLetter(enrollment.class_grade);
               quarterGrades[`Q${currentQuarterNum}`] = {
                 skill: this.percentageToLetter(enrollment.academic_grade),
@@ -22742,12 +22779,12 @@
               grade_level: student.grade_level
             },
             currentSchoolYear: currentSchoolYear,
-            currentQuarter: currentQuarter,
+            currentQuarter: targetQuarter, // The quarter shown on the report card (may be selected end quarter)
             currentGPA: gpaData?.cumulativeGPA,
             gpaHistory: {}, // TODO: Load historical GPA from archived years
             approxCredits: `${(enrollments || []).reduce((sum, e) => sum + (e.classes?.credits || 1), 0)} earned`,
             subjectGroups: sortedGroups,
-            activeQuarters: activeQuarters, // Only includes quarters up to current (excludes future)
+            activeQuarters: activeQuarters, // Only includes quarters from Q1 up to target quarter
             config: {
               schoolFoundingYear: 2021 // River Tech started 2021-2022, so 2025-2026 = Y5
             }
