@@ -2870,7 +2870,7 @@
                     Select a card to remove from your deck
                 </p>
                 <p style="text-align: center; font-size: 16px; color: #f39c12; margin-bottom: 20px;">
-                    Cost: <span id="removal-cost">75</span> Gold
+                    Cost: <span id="removal-cost">60</span> Gold
                 </p>
                 <div class="removal-cards" id="removal-cards"></div>
                 <div style="text-align: center; margin-top: 30px;">
@@ -2987,7 +2987,49 @@
             
             // ===== GROUPING CARDS =====
             groupOpen: { name: "(", type: "grouping", group: "open", rarity: "common", description: "Open Parenthesis: Start a group", skillRequired: "parentheses" },
-            groupClose: { name: ")", type: "grouping", group: "close", rarity: "common", description: "Close Parenthesis: End a group", skillRequired: "parentheses" }
+            groupClose: { name: ")", type: "grouping", group: "close", rarity: "common", description: "Close Parenthesis: End a group", skillRequired: "parentheses" },
+
+            // ===== SPECIAL CARDS (Generate Temp Cards) =====
+            echo: {
+                name: "Echo",
+                type: "number",
+                value: 0,
+                rarity: "uncommon",
+                description: "Number: 0. When played, generates a temp copy of the last number in your equation.",
+                special: "echo"
+            },
+            split: {
+                name: "Split",
+                type: "number",
+                value: 10,
+                rarity: "uncommon",
+                description: "Number: 10. When played, generates two temp 5s in your hand.",
+                special: "split"
+            },
+            comboStarter: {
+                name: "Combo+",
+                type: "number",
+                value: 1,
+                rarity: "rare",
+                description: "Number: 1. When played, generates a temp + and temp 2 in your hand.",
+                special: "comboStarter"
+            },
+            wildCard: {
+                name: "Wild",
+                type: "number",
+                value: 0,
+                rarity: "rare",
+                description: "Number: 0. When played, generates a temp random number (1-9) in your hand.",
+                special: "wildCard"
+            },
+            doubleOp: {
+                name: "Twin Op",
+                type: "operator",
+                operator: "+",
+                rarity: "rare",
+                description: "Add: When played, generates a temp × in your hand.",
+                special: "doubleOp"
+            }
         };
 
         const ENEMY_DATABASE = {
@@ -3621,7 +3663,7 @@
             numberLineCharm: {
                 name: "Number Line Charm",
                 icon: "📏",
-                description: "First attack each battle +3 damage",
+                description: "First attack each combat deals +3 damage",
                 tier: "common",
                 effect: "firstAttackBonus"
             },
@@ -3635,7 +3677,7 @@
             goldenCompass: {
                 name: "Golden Compass",
                 icon: "🧭",
-                description: "Gain 3 gold after each combat",
+                description: "Gain 5 gold after each combat",
                 tier: "common",
                 effect: "goldPerCombat"
             },
@@ -3686,7 +3728,7 @@
             balancedEquation: {
                 name: "Balanced Equation",
                 icon: "⚖️",
-                description: "Gain 2 Block whenever you play an Attack",
+                description: "Gain 2 Block whenever you deal damage",
                 tier: "uncommon",
                 effect: "attackBlock"
             },
@@ -3702,16 +3744,16 @@
             recursiveRing: {
                 name: "Recursive Ring",
                 icon: "💍",
-                description: "First card each turn costs 0",
+                description: "First equation each turn deals +25% damage",
                 tier: "rare",
-                effect: "freeFirstCard"
+                effect: "firstEquationBonus"
             },
 
             // ===== BOSS RELICS (Tier 4) - POWERFUL WITH DRAWBACKS =====
             theoremThrone: {
                 name: "Theorem Throne",
                 icon: "🪑",
-                description: "All attacks deal double damage. Take 50% more damage.",
+                description: "Deal double damage. Take 50% more damage.",
                 tier: "boss",
                 effect: "theoremThrone",
                 drawback: true
@@ -3866,14 +3908,16 @@
                         const cardId = game.deck[idx];
                         const baseCard = CARD_DATABASE[cardId];
                         if (baseCard) {
-                            const upgradedId = cardId + '+';
-                            // Create upgraded number card with +2 value
+                            // Number cards upgrade to next value (e.g., 2 becomes 3)
+                            const newValue = baseCard.value + 1;
+                            const upgradedId = 'num' + newValue;
+                            // Use existing card if available, otherwise create upgraded version
                             if (!CARD_DATABASE[upgradedId]) {
                                 CARD_DATABASE[upgradedId] = {
                                     ...baseCard,
-                                    name: baseCard.name + '+',
-                                    value: baseCard.value + 2,
-                                    description: `Number: ${baseCard.value + 2}`,
+                                    name: String(newValue),
+                                    value: newValue,
+                                    description: `Number: ${newValue}`,
                                     upgraded: true
                                 };
                             }
@@ -5270,6 +5314,10 @@
                 this.attacksPlayedThisTurn = 0;
                 this.turnCount = 0;
                 this.hasPlayedCardThisTurn = false;
+                this.firstAttackDone = false;       // For Number Line Charm
+                this.eraserUsedThisCombat = false;  // For Eraser of Mistakes
+                this.firstEquationThisTurn = true;  // For Recursive Ring
+                this.isAnimating = false;           // For animation locking
                 this.currentMode = 'attack';
                 this.currentEquation = [];
                 this.equationDisplay = '';
@@ -5356,7 +5404,9 @@
                 
                 // End turn button
                 document.getElementById('end-turn-btn').onclick = () => {
-                    this.endTurn();
+                    if (!this.isAnimating) {
+                        this.endTurn();
+                    }
                 };
                 
                 // Initialize target dropdown
@@ -5566,6 +5616,69 @@
                 this.renderHand();
             }
 
+            // Add a temporary card to hand
+            // tempType: 'turn' = removed at end of turn, 'combat' = removed at end of combat
+            addTempCardToHand(baseCardId, tempType = 'turn') {
+                // Generate a unique temp card ID
+                const tempId = `temp_${baseCardId}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+                // Create the temp card in CARD_DATABASE
+                const baseCard = CARD_DATABASE[baseCardId];
+                if (!baseCard) {
+                    console.error(`Cannot create temp card: base card ${baseCardId} not found`);
+                    return null;
+                }
+
+                CARD_DATABASE[tempId] = {
+                    ...baseCard,
+                    name: baseCard.name + ' ✧',  // Visual indicator it's temporary
+                    tempCard: true,
+                    tempType: tempType,  // 'turn' or 'combat'
+                    baseCardId: baseCardId
+                };
+
+                // Add to hand
+                this.hand.push(tempId);
+                this.renderHand();
+
+                console.log(`Added temp card ${tempId} (${tempType}) to hand`);
+                return tempId;
+            }
+
+            // Remove all temporary cards of a given type
+            cleanupTempCards(tempType) {
+                // Remove from hand
+                this.hand = this.hand.filter(cardId => {
+                    const card = CARD_DATABASE[cardId];
+                    if (card && card.tempCard && card.tempType === tempType) {
+                        // Clean up from CARD_DATABASE
+                        delete CARD_DATABASE[cardId];
+                        return false;
+                    }
+                    return true;
+                });
+
+                // Remove from equation (if any left there)
+                this.currentEquation = this.currentEquation.filter(cardId => {
+                    const card = CARD_DATABASE[cardId];
+                    if (card && card.tempCard && card.tempType === tempType) {
+                        delete CARD_DATABASE[cardId];
+                        return false;
+                    }
+                    return true;
+                });
+
+                // Remove from discard pile
+                this.discardPile = this.discardPile.filter(cardId => {
+                    const card = CARD_DATABASE[cardId];
+                    if (card && card.tempCard && card.tempType === tempType) {
+                        delete CARD_DATABASE[cardId];
+                        return false;
+                    }
+                    return true;
+                });
+            }
+
             renderCombat() {
                 console.log('=== RENDER COMBAT CALLED ===');
                 console.log('Enemies to render:', this.enemies.length);
@@ -5699,11 +5812,20 @@
 
                     const cardEl = document.createElement('div');
                     cardEl.className = `card ${card.type}`;
-                    
+
+                    // Add visual indicator for temporary cards
+                    if (card.tempCard) {
+                        cardEl.style.boxShadow = '0 0 15px rgba(26, 188, 156, 0.6)';
+                        cardEl.style.border = '2px dashed #1abc9c';
+                    }
+
+                    const tempIndicator = card.tempCard ? `<div style="font-size: 10px; color: #1abc9c; margin-top: 5px;">✧ Temporary</div>` : '';
+
                     cardEl.innerHTML = `
                         <div class="card-name">${card.name}</div>
                         <div class="card-type">${card.type}</div>
                         <div class="card-description">${card.description}</div>
+                        ${tempIndicator}
                     `;
             
                     // Use both click and touchend for better mobile support
@@ -5865,9 +5987,37 @@
                 
                 // Add to equation
                 this.currentEquation.push(cardId);
-                
+
                 // Remove from hand (but don't discard yet - that happens on evaluation)
                 this.hand.splice(handIndex, 1);
+
+                // Special: Upgraded open parenthesis generates a temp close parenthesis
+                if (card.type === 'grouping' && card.group === 'open' && card.upgraded) {
+                    this.addTempCardToHand('groupClose', 'turn');
+                    this.showFloatingText('✧ ) Generated!', '#1abc9c');
+                }
+
+                // Handle special card effects
+                if (card.special) {
+                    this.handleSpecialCardEffect(card, cardId);
+                }
+
+                // Handle upgraded operator/function special effects
+                if (card.upgraded) {
+                    if (card.type === 'operator' && card.operator === '×') {
+                        // Upgraded multiply generates a temp +
+                        this.addTempCardToHand('opAdd', 'turn');
+                        this.showFloatingText('✧ + Generated!', '#e67e22');
+                    } else if (card.type === 'function' && card.func === 'square') {
+                        // Upgraded square generates a temp sqrt
+                        this.addTempCardToHand('funcSqrt', 'turn');
+                        this.showFloatingText('✧ √ Generated!', '#9b59b6');
+                    } else if (card.type === 'function' && card.func === 'sqrt') {
+                        // Upgraded sqrt generates a temp square
+                        this.addTempCardToHand('funcSquare', 'turn');
+                        this.showFloatingText('✧ x² Generated!', '#9b59b6');
+                    }
+                }
             
                 // Visual feedback - success
                 const feedback = document.createElement('div');
@@ -5895,7 +6045,119 @@
                 this.renderHand();
                 this.updateUI();
             }
-            
+
+            handleSpecialCardEffect(card, cardId) {
+                switch (card.special) {
+                    case 'echo':
+                        // Find the last number in the equation (before this card)
+                        {
+                            const lastNumberId = [...this.currentEquation].reverse().find(id => {
+                                const c = CARD_DATABASE[id];
+                                return c && c.type === 'number' && id !== cardId;
+                            });
+                            if (lastNumberId) {
+                                const lastNum = CARD_DATABASE[lastNumberId];
+                                const numId = `num${lastNum.value}`;
+                                if (CARD_DATABASE[numId]) {
+                                    this.addTempCardToHand(numId, 'turn');
+                                    this.showFloatingText(`✧ ${lastNum.value} Echoed!`, '#3498db');
+                                }
+                            }
+                        }
+                        break;
+
+                    case 'echoPlus':
+                        // Upgraded: Generate TWO temp copies of the last number
+                        {
+                            const lastNumberId = [...this.currentEquation].reverse().find(id => {
+                                const c = CARD_DATABASE[id];
+                                return c && c.type === 'number' && id !== cardId;
+                            });
+                            if (lastNumberId) {
+                                const lastNum = CARD_DATABASE[lastNumberId];
+                                const numId = `num${lastNum.value}`;
+                                if (CARD_DATABASE[numId]) {
+                                    this.addTempCardToHand(numId, 'turn');
+                                    this.addTempCardToHand(numId, 'turn');
+                                    this.showFloatingText(`✧✧ ${lastNum.value} × 2 Echoed!`, '#3498db');
+                                }
+                            }
+                        }
+                        break;
+
+                    case 'split':
+                        // Generate two temp 5s
+                        this.addTempCardToHand('num5', 'turn');
+                        this.addTempCardToHand('num5', 'turn');
+                        this.showFloatingText('✧ 5 + 5 Split!', '#3498db');
+                        break;
+
+                    case 'splitPlus':
+                        // Upgraded: Generate two temp 6s
+                        this.addTempCardToHand('num6', 'turn');
+                        this.addTempCardToHand('num6', 'turn');
+                        this.showFloatingText('✧✧ 6 + 6 Split!', '#3498db');
+                        break;
+
+                    case 'comboStarter':
+                        // Generate a temp + and temp 2
+                        this.addTempCardToHand('opAdd', 'turn');
+                        this.addTempCardToHand('num2', 'turn');
+                        this.showFloatingText('✧ + 2 Combo!', '#f39c12');
+                        break;
+
+                    case 'comboStarterPlus':
+                        // Upgraded: Generate temp +, temp ×, and temp 3
+                        this.addTempCardToHand('opAdd', 'turn');
+                        this.addTempCardToHand('opMultiply', 'turn');
+                        this.addTempCardToHand('num3', 'turn');
+                        this.showFloatingText('✧✧ + × 3 Mega Combo!', '#f39c12');
+                        break;
+
+                    case 'wildCard':
+                        // Generate a random temp number 1-9
+                        {
+                            const randomNum = 1 + this.rng.nextInt(0, 9);
+                            const wildNumId = `num${randomNum}`;
+                            if (CARD_DATABASE[wildNumId]) {
+                                this.addTempCardToHand(wildNumId, 'turn');
+                                this.showFloatingText(`✧ Wild ${randomNum}!`, '#e74c3c');
+                            }
+                        }
+                        break;
+
+                    case 'wildCardPlus':
+                        // Upgraded: Generate TWO random temp numbers 1-9
+                        {
+                            const randomNum1 = 1 + this.rng.nextInt(0, 9);
+                            const randomNum2 = 1 + this.rng.nextInt(0, 9);
+                            const wildNumId1 = `num${randomNum1}`;
+                            const wildNumId2 = `num${randomNum2}`;
+                            if (CARD_DATABASE[wildNumId1]) {
+                                this.addTempCardToHand(wildNumId1, 'turn');
+                            }
+                            if (CARD_DATABASE[wildNumId2]) {
+                                this.addTempCardToHand(wildNumId2, 'turn');
+                            }
+                            this.showFloatingText(`✧✧ Wild ${randomNum1} & ${randomNum2}!`, '#e74c3c');
+                        }
+                        break;
+
+                    case 'doubleOp':
+                        // Generate a temp multiply
+                        this.addTempCardToHand('opMultiply', 'turn');
+                        this.showFloatingText('✧ × Generated!', '#e67e22');
+                        break;
+
+                    case 'doubleOpPlus':
+                        // Upgraded: Generate temp × AND temp ÷
+                        this.addTempCardToHand('opMultiply', 'turn');
+                        this.addTempCardToHand('opDivide', 'turn');
+                        this.showFloatingText('✧✧ × ÷ Generated!', '#e67e22');
+                        break;
+                }
+            }
+
             isEquationComplete() {
                 if (this.currentEquation.length === 0) return false;
 
@@ -5921,11 +6183,15 @@
                 return openCount === 0;
             }
             
-            autoEvaluateEquation() {
+            async autoEvaluateEquation() {
+                if (this.isAnimating) return;
                 if (this.currentEquation.length === 0) {
                     alert('⚠️ No equation to evaluate!');
                     return;
                 }
+
+                this.isAnimating = true;
+                this.updateEvaluateButtonState();
             
                 // Store the equation for processing FIRST (before any modifications)
                 const equationToEvaluate = [...this.currentEquation];
@@ -5947,6 +6213,8 @@
                         this.currentEquation = [];
                         this.updateEquationDisplay();
                         this.renderHand();
+                        this.isAnimating = false;
+                        this.updateEvaluateButtonState();
                         return;
                     }
                     
@@ -5981,40 +6249,87 @@
             
                     // Apply result based on mode
                     if (this.currentMode === 'attack') {
+                        let attackDamage = finalResult;
+
+                        // Show base damage first
+                        this.showFloatingText(`Base: ${finalResult}`, '#3498db');
+                        await this.wait(400);
+
+                        // Number Line Charm - first attack each combat +3 damage
+                        if (this.hasRelic('numberLineCharm') && !this.firstAttackDone) {
+                            attackDamage += 3;
+                            this.firstAttackDone = true;
+                            this.showFloatingText('Number Line Charm: +3!', '#f1c40f');
+                            await this.wait(400);
+                        }
+
+                        // Times Table Totem - +20% damage if multiplication in equation
+                        const hasMultiply = equationToEvaluate.some(cardId => {
+                            const card = CARD_DATABASE[cardId];
+                            return card && card.type === 'operator' && card.operator === '×';
+                        });
+                        if (this.hasRelic('timesTableTotem') && hasMultiply) {
+                            const bonus = Math.floor(attackDamage * 0.2);
+                            attackDamage = Math.floor(attackDamage * 1.2);
+                            this.showFloatingText(`Times Table Totem: +${bonus}!`, '#f1c40f');
+                            await this.wait(400);
+                        }
+
+                        // Recursive Ring - first equation each turn +25% damage
+                        if (this.hasRelic('recursiveRing') && this.firstEquationThisTurn) {
+                            const bonus = Math.floor(attackDamage * 0.25);
+                            attackDamage = Math.floor(attackDamage * 1.25);
+                            this.showFloatingText(`Recursive Ring: +${bonus}!`, '#f1c40f');
+                            await this.wait(400);
+                        }
+
+                        // Theorem Throne - double damage (boss relic)
+                        if (this.hasRelic('theoremThrone')) {
+                            attackDamage = attackDamage * 2;
+                            this.showFloatingText('Theorem Throne: x2!', '#e74c3c');
+                            await this.wait(400);
+                        }
+
+                        // Mark first equation as done
+                        this.firstEquationThisTurn = false;
+
                         if (hasDivision) {
-                            // AoE damage - hit all enemies
-                            this.enemies.forEach((enemy, index) => {
-                                this.dealDamageToEnemy(enemy, finalResult, index);
-                            });
-                            
-                            this.flashScreen('red');
-                            this.shakeScreen();
-                            
-                            // Show feedback
-                            this.showEvaluationFeedback(`${finalResult} AoE Damage!`, operatorCount);
+                            // AoE damage - hit all enemies one by one
+                            this.showEvaluationFeedback(`${attackDamage} AoE Damage!`, operatorCount);
+                            await this.wait(300);
+
+                            for (let i = 0; i < this.enemies.length; i++) {
+                                const enemy = this.enemies[i];
+                                if (enemy && enemy.hp > 0) {
+                                    await this.dealDamageToEnemyAnimated(enemy, attackDamage, i);
+                                    await this.wait(300);
+                                }
+                            }
                         } else {
                             // Single target damage
                             const targetEnemy = this.enemies[this.selectedTarget];
                             if (targetEnemy) {
-                                this.dealDamageToEnemy(targetEnemy, finalResult, this.selectedTarget);
-                                this.flashScreen('red');
-                                this.shakeScreen();
-                                
-                                this.showEvaluationFeedback(`${finalResult} Damage!`, operatorCount);
+                                this.showEvaluationFeedback(`${attackDamage} Damage!`, operatorCount);
+                                await this.wait(300);
+                                await this.dealDamageToEnemyAnimated(targetEnemy, attackDamage, this.selectedTarget);
                             }
                         }
-                        
+
                         // Check for enemy deaths
                         this.enemies = this.enemies.filter(enemy => enemy.hp > 0);
                         if (this.enemies.length === 0) {
+                            this.isAnimating = false;
+                            this.updateEvaluateButtonState();
                             this.winCombat();
                             return;
                         }
-                        
+
                         // Update target dropdown if enemies died
                         this.updateTargetDropdown();
-                        
+
                     } else if (this.currentMode === 'defend') {
+                        this.showFloatingText(`+${finalResult} Block!`, '#3498db');
+                        await this.wait(300);
                         this.gainBlock(finalResult);
                         this.showEvaluationFeedback(`${finalResult} Block!`, operatorCount);
                         
@@ -6033,10 +6348,13 @@
                         this.updateEquationDisplay();
                         this.renderHand();
                     }, 1000);
-                    
+
                     this.renderCombat();
                     this.updateUI();
-                    
+
+                    this.isAnimating = false;
+                    this.updateEvaluateButtonState();
+
                 } catch (error) {
                     console.error('Equation evaluation error:', error);
                     alert('Error evaluating equation: ' + error.message);
@@ -6047,6 +6365,8 @@
                     this.currentEquation = [];
                     this.updateEquationDisplay();
                     this.renderHand();
+                    this.isAnimating = false;
+                    this.updateEvaluateButtonState();
                 }
             }
             
@@ -6085,7 +6405,49 @@
                     if (feedback.parentNode) feedback.remove();
                 }, 1000);
             }
-            
+
+            showFloatingText(message, color = '#2ecc71') {
+                const feedback = document.createElement('div');
+                feedback.className = 'floating-text-feedback';
+                feedback.style.cssText = `
+                    position: fixed;
+                    top: 40%;
+                    left: 50%;
+                    transform: translate(-50%, -50%);
+                    background: rgba(0, 0, 0, 0.8);
+                    border: 2px solid ${color};
+                    border-radius: 10px;
+                    padding: 15px 30px;
+                    font-size: 24px;
+                    font-weight: bold;
+                    color: ${color};
+                    z-index: 10000;
+                    pointer-events: none;
+                    animation: feedback-float 1.5s ease-out forwards;
+                `;
+                feedback.textContent = message;
+                document.body.appendChild(feedback);
+
+                setTimeout(() => {
+                    if (feedback.parentNode) feedback.remove();
+                }, 1500);
+            }
+
+            updateEvaluateButtonState() {
+                const btn = document.getElementById('evaluate-equation-btn');
+                if (btn) {
+                    if (this.isAnimating) {
+                        btn.disabled = true;
+                        btn.style.opacity = '0.5';
+                        btn.style.cursor = 'not-allowed';
+                    } else {
+                        btn.disabled = false;
+                        btn.style.opacity = '1';
+                        btn.style.cursor = 'pointer';
+                    }
+                }
+            }
+
             canPlayCard(card) {
                 if (!card) return false; // Invalid card
 
@@ -6456,19 +6818,29 @@
 
             dealDamageToEnemy(enemy, amount, targetIndex) {
                 let finalDamage = amount;
-                
+
+                // Ensure enemy has block property initialized
+                if (enemy.block === undefined || enemy.block === null || isNaN(enemy.block)) {
+                    enemy.block = 0;
+                }
+
                 // Apply exponent shield if active
                 if (enemy.hasExponentShield && enemy.exponentShield === 0) {
                     // damage^0 = 1, so all damage becomes 1
                     finalDamage = 1;
                     console.log(`Exponent shield active! ${amount} damage reduced to 1`);
                 }
-                
-                const damageBlocked = Math.min(finalDamage, enemy.block);
-                const damageToHealth = Math.max(0, finalDamage - enemy.block);
-                
-                enemy.block = Math.max(0, enemy.block - finalDamage);
+
+                // Calculate damage blocked by enemy's block
+                const enemyBlock = enemy.block || 0;
+                const damageBlocked = Math.min(finalDamage, enemyBlock);
+                const damageToHealth = Math.max(0, finalDamage - enemyBlock);
+
+                // Reduce enemy's block and HP
+                enemy.block = Math.max(0, enemyBlock - finalDamage);
                 enemy.hp = Math.max(0, enemy.hp - damageToHealth);
+
+                console.log(`Attack: ${finalDamage} damage, Enemy block: ${enemyBlock} -> ${enemy.block}, Blocked: ${damageBlocked}, HP damage: ${damageToHealth}`);
                 
                 // Get the enemy element
                 const enemyElements = document.querySelectorAll('.enemy');
@@ -6526,8 +6898,173 @@
                 }
                 
                 console.log(`Dealt ${damageToHealth} damage to ${enemy.name} (${damageBlocked} blocked). ${enemy.hp}/${enemy.maxHp} HP remaining`);
-                
+
                 this.renderCombat();
+            }
+
+            async dealDamageToEnemyAnimated(enemy, amount, targetIndex) {
+                let finalDamage = amount;
+
+                // Ensure enemy has block property initialized
+                if (enemy.block === undefined || enemy.block === null || isNaN(enemy.block)) {
+                    enemy.block = 0;
+                }
+
+                // Apply exponent shield if active
+                if (enemy.hasExponentShield && enemy.exponentShield === 0) {
+                    finalDamage = 1;
+                    this.showFloatingText(`Exponent Shield: ${amount} → 1!`, '#f39c12');
+                    await this.wait(300);
+                }
+
+                // Calculate damage blocked by enemy's block
+                const enemyBlock = enemy.block || 0;
+                const damageBlocked = Math.min(finalDamage, enemyBlock);
+                const damageToHealth = Math.max(0, finalDamage - enemyBlock);
+
+                // Show block absorption feedback if enemy has block
+                if (damageBlocked > 0) {
+                    this.showEnemyBlockFeedback(targetIndex, damageBlocked);
+                    await this.wait(300);
+                }
+
+                // Reduce enemy's block and HP
+                enemy.block = Math.max(0, enemyBlock - finalDamage);
+                enemy.hp = Math.max(0, enemy.hp - damageToHealth);
+
+                // Show damage number on enemy
+                this.showEnemyDamageNumber(targetIndex, damageToHealth, damageBlocked);
+
+                // Apply visual shake/flash effects
+                const enemyElements = document.querySelectorAll('.enemy');
+                const enemyEl = enemyElements[targetIndex];
+
+                if (enemyEl) {
+                    enemyEl.classList.add('damage-flash');
+                    enemyEl.style.animation = 'enemy-shake 0.3s ease-in-out';
+
+                    setTimeout(() => {
+                        enemyEl.classList.remove('damage-flash');
+                        enemyEl.style.animation = '';
+                    }, 300);
+                }
+
+                this.flashScreen('red');
+                this.shakeScreen();
+
+                console.log(`[Animated] Dealt ${damageToHealth} damage to ${enemy.name} (${damageBlocked} blocked). ${enemy.hp}/${enemy.maxHp} HP remaining`);
+
+                this.renderCombat();
+
+                // Wait for animations to complete
+                await this.wait(400);
+            }
+
+            showEnemyBlockFeedback(targetIndex, blockedAmount) {
+                const enemyElements = document.querySelectorAll('.enemy');
+                const enemyEl = enemyElements[targetIndex];
+
+                if (enemyEl) {
+                    const blockText = document.createElement('div');
+                    blockText.style.cssText = `
+                        position: absolute;
+                        top: 30%;
+                        left: 50%;
+                        transform: translate(-50%, -50%);
+                        font-size: 20px;
+                        font-weight: bold;
+                        color: #3498db;
+                        text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+                        pointer-events: none;
+                        z-index: 100;
+                        animation: damage-float 0.8s ease-out forwards;
+                    `;
+                    blockText.textContent = `Shield -${blockedAmount}`;
+                    enemyEl.style.position = 'relative';
+                    enemyEl.appendChild(blockText);
+
+                    setTimeout(() => blockText.remove(), 800);
+                }
+            }
+
+            showEnemyDamageNumber(targetIndex, damage, blocked) {
+                const enemyElements = document.querySelectorAll('.enemy');
+                const enemyEl = enemyElements[targetIndex];
+
+                if (enemyEl) {
+                    const damageNum = document.createElement('div');
+                    damageNum.style.cssText = `
+                        position: absolute;
+                        top: 50%;
+                        left: 50%;
+                        transform: translate(-50%, -50%);
+                        font-size: 32px;
+                        font-weight: bold;
+                        color: ${damage > 0 ? '#e74c3c' : '#95a5a6'};
+                        text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+                        pointer-events: none;
+                        z-index: 100;
+                        animation: damage-float 0.8s ease-out forwards;
+                    `;
+
+                    if (damage > 0) {
+                        damageNum.textContent = `-${damage}`;
+                    } else if (blocked > 0) {
+                        damageNum.textContent = 'BLOCKED';
+                        damageNum.style.fontSize = '24px';
+                        damageNum.style.color = '#3498db';
+                    }
+
+                    enemyEl.style.position = 'relative';
+                    enemyEl.appendChild(damageNum);
+
+                    setTimeout(() => damageNum.remove(), 800);
+                }
+            }
+
+            showPlayerDamageNumber(damage) {
+                const playerArea = document.querySelector('.player-info') || document.getElementById('player-hp');
+                if (playerArea) {
+                    const damageNum = document.createElement('div');
+                    damageNum.style.cssText = `
+                        position: fixed;
+                        bottom: 20%;
+                        left: 50%;
+                        transform: translateX(-50%);
+                        font-size: 36px;
+                        font-weight: bold;
+                        color: #e74c3c;
+                        text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+                        pointer-events: none;
+                        z-index: 10000;
+                        animation: damage-float 1s ease-out forwards;
+                    `;
+                    damageNum.textContent = `-${damage}`;
+                    document.body.appendChild(damageNum);
+
+                    setTimeout(() => damageNum.remove(), 1000);
+                }
+            }
+
+            showPlayerBlockFeedback(blocked) {
+                const blockText = document.createElement('div');
+                blockText.style.cssText = `
+                    position: fixed;
+                    bottom: 20%;
+                    left: 50%;
+                    transform: translateX(-50%);
+                    font-size: 28px;
+                    font-weight: bold;
+                    color: #3498db;
+                    text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+                    pointer-events: none;
+                    z-index: 10000;
+                    animation: damage-float 1s ease-out forwards;
+                `;
+                blockText.textContent = `Blocked ${blocked}!`;
+                document.body.appendChild(blockText);
+
+                setTimeout(() => blockText.remove(), 1000);
             }
 
             gainBlock(amount) {
@@ -6588,24 +7125,36 @@
             }
 
             async endTurn() {
+                // Clean up turn-temporary cards first (they don't go to discard)
+                this.cleanupTempCards('turn');
+
                 // Discard any cards still in the equation builder (user didn't evaluate)
                 if (this.currentEquation.length > 0) {
                     console.log('Discarding unevaluated equation cards:', this.currentEquation);
                     this.currentEquation.forEach(cardId => {
-                        this.discardPile.push(cardId);
+                        // Don't discard temp cards (they were already cleaned up)
+                        const card = CARD_DATABASE[cardId];
+                        if (!card?.tempCard) {
+                            this.discardPile.push(cardId);
+                        }
                     });
                     this.currentEquation = [];
                     this.updateEquationDisplay();
                 }
-                
+
                 // Apply Pain curse damage for each Pain in hand
                 const painCount = this.hand.filter(cardId => cardId === 'pain').length;
                 if (painCount > 0) {
                     this.takeDamage(painCount * 2);
                 }
-                
-                // Discard hand
-                this.discardPile.push(...this.hand);
+
+                // Discard hand (excluding temp cards which were already removed)
+                this.hand.forEach(cardId => {
+                    const card = CARD_DATABASE[cardId];
+                    if (!card?.tempCard) {
+                        this.discardPile.push(cardId);
+                    }
+                });
                 this.hand = [];
             
                 // Enemy turn - now async
@@ -6628,6 +7177,7 @@
                 this.turnCount++;
                 this.attacksPlayedThisTurn = 0;
                 this.hasPlayedCardThisTurn = false;
+                this.firstEquationThisTurn = true;  // Reset for Recursive Ring
             
                 // Decay debuffs
                 Object.keys(this.player.debuffs).forEach(debuffType => {
@@ -6644,7 +7194,33 @@
                 if (this.hasRelic('axiomAmulet')) {
                     this.player.block += 10;
                 }
-            
+
+                // Dimension Dice boss relic - random buff or debuff at turn start
+                if (this.hasRelic('dimensionDice')) {
+                    const isPositive = this.rng.next() > 0.5;
+                    if (isPositive) {
+                        // Random buff
+                        const buffs = [
+                            { type: 'numericBonus', value: 3, name: '+3 Numeric Bonus' },
+                            { type: 'damageMultiplier', value: 0.25, name: '+25% Damage' },
+                            { type: 'block', value: 5, name: '+5 Block' }
+                        ];
+                        const buff = this.rng.choice(buffs);
+                        if (buff.type === 'block') {
+                            this.player.block += buff.value;
+                        } else {
+                            this.addModifier(buff.type, buff.value);
+                        }
+                        this.showFloatingText(`🎲 ${buff.name}!`, '#2ecc71');
+                    } else {
+                        // Random debuff
+                        const debuffs = ['confused', 'slowed', 'exposed'];
+                        const debuff = this.rng.choice(debuffs);
+                        this.applyDebuff(debuff, 1);
+                        this.showFloatingText(`🎲 ${debuff}!`, '#e74c3c');
+                    }
+                }
+
                 // Decay turn-based modifiers
                 for (let key in this.modifiers) {
                     if (this.modifiers[key] > 0 && key !== 'remainderBoost') {
@@ -6731,28 +7307,40 @@
                         if (this.player.debuffs.exposed > 0) {
                             damage = Math.floor(damage * 1.5);
                         }
-            
+
+                        // Theorem Throne boss relic - take 50% more damage
+                        if (this.hasRelic('theoremThrone')) {
+                            damage = Math.floor(damage * 1.5);
+                        }
+
+                        // Ensure player block is valid
+                        const playerBlock = this.player.block || 0;
+
                         // Calculate damage blocked vs actual damage taken
-                        const damageBlocked = Math.min(damage, this.player.block);
-                        const damageToHealth = Math.max(0, damage - this.player.block);
-                        
-                        this.player.block = Math.max(0, this.player.block - damage);
+                        const damageBlocked = Math.min(damage, playerBlock);
+                        const damageToHealth = Math.max(0, damage - playerBlock);
+
+                        this.player.block = Math.max(0, playerBlock - damage);
                         this.player.hp = Math.max(0, this.player.hp - damageToHealth);
-            
-                        console.log(`Enemy ${enemy.name} dealt ${damage} damage (${damageBlocked} blocked, ${damageToHealth} to HP). Player HP: ${this.player.hp}`);
-            
+
+                        console.log(`Enemy ${enemy.name} dealt ${damage} damage (Block: ${playerBlock}, Blocked: ${damageBlocked}, HP damage: ${damageToHealth}). Player HP: ${this.player.hp}`);
+
                         // Visual feedback based on damage type
                         if (damageToHealth > 0) {
+                            this.showPlayerDamageNumber(damageToHealth);
                             this.flashScreen('red');
                             this.shakeScreen();
                         } else if (damageBlocked > 0) {
+                            this.showPlayerBlockFeedback(damageBlocked);
                             this.flashScreen('gray');
                         }
-                        
+
                         this.updateUI();
-            
+
                         // Apply debuff if attack has debuff attached
                         if (intent.debuff) {
+                            this.showFloatingText(`${intent.debuff}: +${intent.debuffStacks}!`, '#e74c3c');
+                            await this.wait(400);
                             this.applyDebuff(intent.debuff, intent.debuffStacks);
                             this.renderPlayerDebuffs();
                         }
@@ -6761,6 +7349,8 @@
                     } else if (intent.intent === 'buff') {
                         enemy.buffs.push({ type: 'strength', value: intent.value });
                     } else if (intent.intent === 'debuff') {
+                        this.showFloatingText(`${intent.debuffType}: +${intent.value}!`, '#e74c3c');
+                        await this.wait(400);
                         this.applyDebuff(intent.debuffType, intent.value);
                         this.renderPlayerDebuffs();
                     } else if (intent.intent === 'split') {
@@ -6844,29 +7434,42 @@
                         if (this.player.debuffs.exposed > 0) {
                             damage = Math.floor(damage * 1.5);
                         }
-            
-                        const damageBlocked = Math.min(damage, this.player.block);
-                        const damageToHealth = Math.max(0, damage - this.player.block);
-                        
-                        this.player.block = Math.max(0, this.player.block - damage);
+
+                        // Theorem Throne boss relic - take 50% more damage
+                        if (this.hasRelic('theoremThrone')) {
+                            damage = Math.floor(damage * 1.5);
+                        }
+
+                        // Safety check for undefined/null block
+                        const playerBlock = this.player.block || 0;
+                        const damageBlocked = Math.min(damage, playerBlock);
+                        const damageToHealth = Math.max(0, damage - playerBlock);
+
+                        this.player.block = Math.max(0, playerBlock - damage);
                         this.player.hp = Math.max(0, this.player.hp - damageToHealth);
-            
-                        console.log(`Enemy ${enemy.name} used special attack for ${damage} damage (${damageBlocked} blocked, ${damageToHealth} to HP). Player HP: ${this.player.hp}`);
-            
+
+                        console.log(`Enemy ${enemy.name} used special attack for ${damage} damage (${damageBlocked} blocked, ${damageToHealth} to HP). Player block: ${playerBlock} -> ${this.player.block}. Player HP: ${this.player.hp}`);
+
                         if (damageToHealth > 0) {
+                            this.showPlayerDamageNumber(damageToHealth);
                             this.flashScreen('red');
                             this.shakeScreen();
                         } else if (damageBlocked > 0) {
+                            this.showPlayerBlockFeedback(damageBlocked);
                             this.flashScreen('gray');
                         }
-                        
+
                         this.updateUI();
-            
+
                         if (intent.debuff) {
+                            this.showFloatingText(`${intent.debuff}: +${intent.debuffStacks}!`, '#e74c3c');
+                            await this.wait(400);
                             this.applyDebuff(intent.debuff, intent.debuffStacks);
                             this.renderPlayerDebuffs();
                         }
                         if (intent.additionalDebuff) {
+                            this.showFloatingText(`${intent.additionalDebuff}: +${intent.additionalStacks}!`, '#e74c3c');
+                            await this.wait(400);
                             this.applyDebuff(intent.additionalDebuff, intent.additionalStacks);
                             this.renderPlayerDebuffs();
                         }
@@ -7015,17 +7618,24 @@
             }
 
             applyDebuff(debuffType, stacks) {
+                // Eraser of Mistakes relic - negate first debuff each combat
+                if (this.hasRelic('eraserOfMistakes') && !this.eraserUsedThisCombat) {
+                    this.eraserUsedThisCombat = true;
+                    this.showFloatingText('🧹 Debuff Erased!', '#2ecc71');
+                    return; // Don't apply the debuff
+                }
+
                 if (!this.player.debuffs[debuffType]) {
                     this.player.debuffs[debuffType] = 0;
                 }
-                
+
                 let finalStacks = stacks;
-                
+
                 // Focus Lens relic reduces debuff duration by 1 (minimum 1)
                 if (this.hasRelic('focusLens')) {
                     finalStacks = Math.max(1, stacks - 1);
                 }
-                
+
                 this.player.debuffs[debuffType] += finalStacks;
                 
                 // Re-render debuffs if in combat
@@ -7094,6 +7704,10 @@
             }
 
             winCombat() {
+                // Clean up all temporary cards (both turn and combat temp)
+                this.cleanupTempCards('turn');
+                this.cleanupTempCards('combat');
+
                 // Track combat wins for skill progress reporting
                 this.combatsWon++;
 
@@ -7106,17 +7720,27 @@
                 
                 this.hideAllViews();
                 
-                // Gain gold with seeded random
-                let goldGained = 10 + this.rng.nextInt(0, 20);
-                
+                // Gain gold with seeded random (base: 20-40)
+                let goldGained = 20 + this.rng.nextInt(0, 20);
+
+                // Bonus gold for elite fights
+                if (wasElite) {
+                    goldGained += 20;
+                }
+
+                // Bonus gold for boss fights
+                if (wasBoss) {
+                    goldGained += 30;
+                }
+
                 // Lucky Dice relic - 50% more gold
                 if (this.hasRelic('luckyDice')) {
                     goldGained = Math.floor(goldGained * 1.5);
                 }
-                
-                // Golden Compass relic - +3 gold per combat
+
+                // Golden Compass relic - +5 gold per combat
                 if (this.hasRelic('goldenCompass')) {
-                    goldGained += 3;
+                    goldGained += 5;
                 }
                 
                 this.gainGold(goldGained);
@@ -7392,7 +8016,7 @@
                 for (let i = 0; i < 5; i++) {
                     const cardId = this.rng.choice(availableCards);
                     const card = CARD_DATABASE[cardId];
-                    const price = card.rarity === 'common' ? 50 : card.rarity === 'uncommon' ? 75 : 100;
+                    const price = card.rarity === 'common' ? 40 : card.rarity === 'uncommon' ? 60 : 85;
 
                     const itemEl = document.createElement('div');
                     itemEl.className = 'shop-item';
@@ -7419,7 +8043,7 @@
                 // Add curse removal option (cheaper, only removes curses)
                 const curseCount = this.deck.filter(id => CARD_DATABASE[id].type === 'curse').length;
                 if (curseCount > 0) {
-                    const curseRemovalPrice = 50;
+                    const curseRemovalPrice = 40;
                     const curseRemovalEl = document.createElement('div');
                     curseRemovalEl.className = 'shop-item';
                     curseRemovalEl.style.borderColor = '#9b59b6';
@@ -7440,7 +8064,7 @@
                 }
 
                 // Add card removal option
-                const removalPrice = 75;
+                const removalPrice = 60;
                 const removalEl = document.createElement('div');
                 removalEl.className = 'shop-item';
                 removalEl.style.borderColor = '#e74c3c';
@@ -7520,11 +8144,27 @@
                 `;
                 subtitle.textContent = 'Select a card to upgrade (improves its effects)';
                 
-                // Count upgradeable cards (exclude curses and already upgraded cards)
+                // Count upgradeable cards
+                // - Exclude curses
+                // - Regular numbers can always be upgraded (they become new numbers)
+                // - Special cards and operators/functions/grouping can only be upgraded once
                 const cardCounts = {};
                 this.deck.forEach(cardId => {
                     const card = CARD_DATABASE[cardId];
-                    if (card.type !== 'curse' && !cardId.includes('+')) {
+                    if (card.type === 'curse') return; // Skip curses
+
+                    // Check if this card can be upgraded
+                    let canUpgrade = true;
+
+                    if (card.type === 'number' && !card.special) {
+                        // Regular numbers can always be upgraded (they increment)
+                        canUpgrade = true;
+                    } else if (card.upgraded) {
+                        // Special cards, operators, functions, grouping can only upgrade once
+                        canUpgrade = false;
+                    }
+
+                    if (canUpgrade) {
                         cardCounts[cardId] = (cardCounts[cardId] || 0) + 1;
                     }
                 });
@@ -7611,18 +8251,39 @@
             upgradeCard(cardId, modal) {
                 const card = CARD_DATABASE[cardId];
                 const index = this.deck.indexOf(cardId);
-                
+
                 if (index > -1) {
-                    // Create upgraded version with ACTUAL improved effect
-                    const upgradedId = cardId + '+';
-                    
-                    // Create upgraded card with improved effect function
-                    CARD_DATABASE[upgradedId] = this.createUpgradedCard(card, cardId);
-                    
+                    let upgradedId;
+                    let alertMessage;
+
+                    // Regular numbers get a new ID based on their new value
+                    if (card.type === 'number' && !card.special) {
+                        const newValue = card.value + 1;
+                        upgradedId = `num${newValue}`;
+
+                        // Check if this number card already exists in the database
+                        if (!CARD_DATABASE[upgradedId]) {
+                            // Create new number card
+                            CARD_DATABASE[upgradedId] = {
+                                name: String(newValue),
+                                type: 'number',
+                                value: newValue,
+                                rarity: newValue >= 20 ? 'rare' : newValue >= 10 ? 'uncommon' : 'common',
+                                description: `Number: ${newValue}`
+                            };
+                        }
+                        alertMessage = `Upgraded "${card.name}" to "${newValue}"!\n\n${this.getUpgradeDetails(card)}`;
+                    } else {
+                        // Special cards, operators, functions, grouping get + suffix
+                        upgradedId = cardId + '+';
+                        CARD_DATABASE[upgradedId] = this.createUpgradedCard(card, cardId);
+                        alertMessage = `Upgraded "${card.name}" to "${card.name}+"!\n\n${this.getUpgradeDetails(card)}`;
+                    }
+
                     // Replace in deck
                     this.deck[index] = upgradedId;
-                    
-                    alert(`Upgraded "${card.name}" to "${card.name}+"!\n\n${this.getUpgradeDetails(card)}`);
+
+                    alert(alertMessage);
                     
                     document.body.removeChild(modal);
                     this.proceedAfterReward();
@@ -7638,19 +8299,67 @@
 
                 // Improve based on math card type
                 if (baseCard.type === 'number') {
-                    // Number cards: increase to next number (no + suffix)
-                    upgraded.value = baseCard.value + 1;
-                    upgraded.name = String(upgraded.value);
-                    upgraded.description = `Number: ${upgraded.value}`;
+                    // Check if it's a special card
+                    if (baseCard.special) {
+                        // Special cards keep their name with + suffix and get enhanced effects
+                        upgraded.value = baseCard.value + 2; // Bigger value boost for special cards
+                        switch (baseCard.special) {
+                            case 'echo':
+                                upgraded.description = `Number: ${upgraded.value}. Echo now generates TWO temp copies!`;
+                                upgraded.special = 'echoPlus'; // Enhanced version
+                                break;
+                            case 'split':
+                                upgraded.description = `Number: ${upgraded.value}. Split now generates two temp 6s!`;
+                                upgraded.special = 'splitPlus';
+                                break;
+                            case 'comboStarter':
+                                upgraded.description = `Number: ${upgraded.value}. Generates temp +, temp ×, and temp 3!`;
+                                upgraded.special = 'comboStarterPlus';
+                                break;
+                            case 'wildCard':
+                                upgraded.description = `Number: ${upgraded.value}. Wild now generates TWO random numbers!`;
+                                upgraded.special = 'wildCardPlus';
+                                break;
+                            default:
+                                upgraded.description = baseCard.description + ' (Enhanced)';
+                        }
+                    } else {
+                        // Regular number cards: increase to next number (no + suffix)
+                        upgraded.value = baseCard.value + 1;
+                        upgraded.name = String(upgraded.value);
+                        upgraded.description = `Number: ${upgraded.value}`;
+                    }
                 } else if (baseCard.type === 'operator') {
-                    // Operator cards: +10% combo bonus when used
-                    upgraded.description = baseCard.description + ' (+10% combo bonus)';
+                    // Check if it's a special operator
+                    if (baseCard.special === 'doubleOp') {
+                        upgraded.description = 'Add: Generates temp × AND temp ÷ when played!';
+                        upgraded.special = 'doubleOpPlus';
+                    } else if (baseCard.operator === '×') {
+                        // Multiply generates a temp +
+                        upgraded.description = baseCard.description + ' (Generates free + this turn)';
+                    } else {
+                        // Other operators: +10% combo bonus
+                        upgraded.description = baseCard.description + ' (+10% combo bonus)';
+                    }
                 } else if (baseCard.type === 'function') {
-                    // Function cards: +10% combo bonus when used
-                    upgraded.description = baseCard.description + ' (+10% combo bonus)';
+                    if (baseCard.func === 'square') {
+                        // Square generates a temp sqrt
+                        upgraded.description = baseCard.description + ' (Generates free √ this turn)';
+                    } else if (baseCard.func === 'sqrt') {
+                        // Sqrt generates a temp square
+                        upgraded.description = baseCard.description + ' (Generates free x² this turn)';
+                    } else {
+                        // Other functions: +10% combo bonus
+                        upgraded.description = baseCard.description + ' (+10% combo bonus)';
+                    }
                 } else if (baseCard.type === 'grouping') {
-                    // Grouping cards: +5% combo bonus when used
-                    upgraded.description = baseCard.description + ' (+5% combo bonus)';
+                    if (baseCard.group === 'open') {
+                        // Open parenthesis: generates a free close parenthesis when played
+                        upgraded.description = baseCard.description + ' (Generates free ) this turn)';
+                    } else {
+                        // Close parenthesis: +5% combo bonus when used
+                        upgraded.description = baseCard.description + ' (+5% combo bonus)';
+                    }
                 }
                 // upgraded flag is already set to true in the base object
                 
@@ -7659,12 +8368,41 @@
             
             getUpgradeDetails(card) {
                 if (card.type === 'number') {
+                    // Check for special cards
+                    if (card.special) {
+                        switch (card.special) {
+                            case 'echo':
+                                return 'Now generates TWO temp copies of the last number!';
+                            case 'split':
+                                return 'Now splits into two 6s instead of 5s!';
+                            case 'comboStarter':
+                                return 'Now generates +, ×, AND 3 for mega combos!';
+                            case 'wildCard':
+                                return 'Now generates TWO random numbers!';
+                            default:
+                                return 'Effect enhanced!';
+                        }
+                    }
                     return `Upgraded to ${card.value + 1}!`;
                 } else if (card.type === 'operator') {
+                    if (card.special === 'doubleOp') {
+                        return 'Now generates × AND ÷ when played!';
+                    }
+                    if (card.operator === '×') {
+                        return 'Generates a free + when played!';
+                    }
                     return '+10% combo bonus when used!';
                 } else if (card.type === 'function') {
+                    if (card.func === 'square') {
+                        return 'Generates a free √ when played!';
+                    } else if (card.func === 'sqrt') {
+                        return 'Generates a free x² when played!';
+                    }
                     return '+10% combo bonus when used!';
                 } else if (card.type === 'grouping') {
+                    if (card.group === 'open') {
+                        return 'Generates a free ) when played!';
+                    }
                     return '+5% combo bonus when used!';
                 }
                 return 'Card improved!';
@@ -8236,8 +8974,14 @@
             }
 
             victory() {
+                this.hideAllViews();
+
                 document.getElementById('victory-seed-value').textContent = this.seedString;
-                document.getElementById('victory-screen').classList.add('active');
+                const victoryScreen = document.getElementById('victory-screen');
+                if (victoryScreen) {
+                    victoryScreen.style.display = 'flex';
+                    victoryScreen.classList.add('active');
+                }
 
                 // Report progress - victory is high score
                 this.reportSkillProgress(true);
