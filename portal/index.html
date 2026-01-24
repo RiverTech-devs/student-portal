@@ -8757,7 +8757,7 @@
       }
 
       // Send attendance alert notifications to teachers and admins when a student is late or leaves early
-      // Only sends once per student/date combination
+      // Only sends once per student/date/recipient combination
       async sendAttendanceAlertNotifications(attendanceRecords, attendanceType = 'daily') {
         try {
           // Filter for late or left_early statuses
@@ -8798,9 +8798,29 @@
 
           if (recipientIds.size === 0) return;
 
-          // Check for existing notifications to avoid duplicates
-          // Use metadata to track: studentId + date + status
-          const today = alertRecords[0]?.date || new Date().toISOString().split('T')[0];
+          // Build list of all notification keys we need to check
+          const notificationKeys = alertRecords.map(record =>
+            `attendance_${attendanceType}_${record.student_id}_${record.date}_${record.status}`
+          );
+
+          // Batch check for existing notifications to avoid duplicates
+          // Check per-recipient to handle race conditions properly
+          const { data: existingNotifications } = await this.auth.supabase
+            .from('notifications')
+            .select('user_id, metadata')
+            .eq('type', 'attendance_alert')
+            .in('user_id', Array.from(recipientIds));
+
+          // Build a set of existing notification keys per user
+          const existingKeysByUser = new Map();
+          (existingNotifications || []).forEach(n => {
+            if (n.metadata?.notificationKey) {
+              if (!existingKeysByUser.has(n.user_id)) {
+                existingKeysByUser.set(n.user_id, new Set());
+              }
+              existingKeysByUser.get(n.user_id).add(n.metadata.notificationKey);
+            }
+          });
 
           for (const record of alertRecords) {
             const student = studentMap.get(record.student_id);
@@ -8811,28 +8831,22 @@
                                record.status === 'left_early' ? 'left early' :
                                'arrived late and left early';
 
-            // Create unique key for this notification
-            const notificationKey = `${record.student_id}_${record.date}_${record.status}`;
-
-            // Check if notification already sent for this student/date/status combination
-            const { data: existingNotification } = await this.auth.supabase
-              .from('notifications')
-              .select('id')
-              .eq('type', 'attendance_alert')
-              .contains('metadata', { notificationKey: notificationKey })
-              .limit(1);
-
-            if (existingNotification && existingNotification.length > 0) {
-              // Already sent notification for this student/date/status
-              continue;
-            }
+            // Create unique key for this notification (includes attendanceType to differentiate daily vs class)
+            const notificationKey = `attendance_${attendanceType}_${record.student_id}_${record.date}_${record.status}`;
 
             const typeLabel = attendanceType === 'class' ? 'Class' : 'Daily';
             const title = `Attendance Alert: ${studentName}`;
             const message = `${studentName} ${statusText} on ${record.date} (${typeLabel} Attendance)`;
 
-            // Send notification to all recipients
+            // Send notification to each recipient, checking per-recipient for duplicates
             for (const recipientId of recipientIds) {
+              // Check if this specific recipient already has this notification
+              const userExistingKeys = existingKeysByUser.get(recipientId);
+              if (userExistingKeys && userExistingKeys.has(notificationKey)) {
+                // Already sent to this recipient
+                continue;
+              }
+
               await this.createNotificationFor(
                 recipientId,
                 'attendance_alert',
@@ -8847,6 +8861,12 @@
                   notificationKey: notificationKey
                 }
               );
+
+              // Add to tracking to prevent duplicates within this batch
+              if (!existingKeysByUser.has(recipientId)) {
+                existingKeysByUser.set(recipientId, new Set());
+              }
+              existingKeysByUser.get(recipientId).add(notificationKey);
             }
           }
         } catch (error) {
