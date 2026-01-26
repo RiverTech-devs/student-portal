@@ -190,6 +190,29 @@
             50% { opacity: 0.7; }
         }
 
+        /* Highlighting animation for cross-tab navigation */
+        @keyframes highlight-pulse {
+            0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 215, 0, 0.7); }
+            50% { transform: scale(1.1); box-shadow: 0 0 30px 15px rgba(255, 215, 0, 0.4); }
+            100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 215, 0, 0); }
+        }
+
+        .skill-node.highlighting {
+            animation: highlight-pulse 0.5s ease-in-out 4;
+            z-index: 1000 !important;
+        }
+
+        /* Toast notification animations */
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+
+        @keyframes slideOut {
+            from { transform: translateX(0); opacity: 1; }
+            to { transform: translateX(100%); opacity: 0; }
+        }
+
         .skill-node.needs_review::before {
             content: '!';
             position: absolute;
@@ -581,6 +604,79 @@
             right: -5px;
             font-size: 12px;
         }
+
+        /* Mobile-specific styles */
+        @media (max-width: 768px) {
+            .zoom-controls {
+                right: 10px;
+                bottom: 10px;
+                padding: 6px;
+                gap: 6px;
+            }
+
+            .zoom-btn {
+                width: 48px;
+                height: 48px;
+                font-size: 20px;
+            }
+
+            .viewport-header {
+                font-size: 16px;
+                padding: 8px 15px;
+            }
+
+            .skill-node {
+                width: 44px;
+                height: 44px;
+                font-size: 7px;
+            }
+
+            .controls {
+                flex-wrap: wrap;
+                gap: 5px;
+            }
+
+            .controls button {
+                padding: 8px 12px;
+                font-size: 12px;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .zoom-controls {
+                right: 8px;
+                bottom: 8px;
+            }
+
+            .zoom-btn {
+                width: 52px;
+                height: 52px;
+                font-size: 22px;
+            }
+
+            .skill-node {
+                width: 40px;
+                height: 40px;
+                font-size: 6px;
+            }
+
+            .viewport-header {
+                font-size: 14px;
+                padding: 6px 12px;
+            }
+        }
+
+        /* Improve touch feedback */
+        @media (hover: none) and (pointer: coarse) {
+            .zoom-btn:active {
+                background: rgba(212,175,55,0.5);
+                transform: scale(0.95);
+            }
+
+            .skill-node:active {
+                transform: scale(1.1);
+            }
+        }
     </style>
 </head>
 <body>
@@ -671,6 +767,13 @@
                 this.startY = 0;
                 this.dragStartX = 0;
                 this.dragStartY = 0;
+
+                // Pinch-to-zoom state
+                this.isPinching = false;
+                this.initialPinchDistance = 0;
+                this.initialPinchScale = 1;
+                this.pinchCenterX = 0;
+                this.pinchCenterY = 0;
                 
                 // Mobile detection
                 this.isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || 
@@ -690,25 +793,333 @@
                 // Get subject from URL parameter
                 const params = new URLSearchParams(window.location.search);
                 this.currentSubject = params.get('subject') || 'Art';
-                
+
                 // Update header
                 const header = document.getElementById('viewportHeader');
                 if (header) {
                     const emoji = this.getSubjectEmoji(this.currentSubject);
                     header.textContent = `${emoji} ${this.currentSubject} Skill Tree`;
                 }
-                
+
                 // Set up message listeners
                 window.addEventListener('message', (event) => this.handleMessage(event));
-                
+
+                // Set up localStorage listeners for cross-tab communication with Dojo
+                window.addEventListener('storage', (event) => this.handleStorageEvent(event));
+
                 // Request initial data from parent
                 this.requestSkillData();
-                
+
                 // Set up UI after short delay
                 setTimeout(() => {
                     this.setupUI();
                     this.setupOverrideModal();
                 }, 100);
+            }
+
+            // === CROSS-TAB COMMUNICATION (localStorage) ===
+            handleStorageEvent(event) {
+                // Handle Dojo session complete
+                if (event.key === 'dojo_session_complete' && event.newValue) {
+                    try {
+                        const data = JSON.parse(event.newValue);
+                        this.handleDojoSessionFromStorage(data);
+                    } catch (e) {
+                        console.warn('Failed to parse dojo session data:', e);
+                    }
+                }
+
+                // Handle Dojo lesson complete
+                if (event.key === 'dojo_lesson_complete' && event.newValue) {
+                    try {
+                        const data = JSON.parse(event.newValue);
+                        this.handleDojoLessonFromStorage(data);
+                    } catch (e) {
+                        console.warn('Failed to parse dojo lesson data:', e);
+                    }
+                }
+
+                // Handle Belt Test complete - bulk skill tree update
+                if (event.key === 'belt_test_complete' && event.newValue) {
+                    try {
+                        const data = JSON.parse(event.newValue);
+                        this.handleBeltTestFromStorage(data);
+                    } catch (e) {
+                        console.warn('Failed to parse belt test data:', e);
+                    }
+                }
+
+                // Handle Dojo highlight request
+                if (event.key === 'dojo_highlight_request' && event.newValue) {
+                    try {
+                        const data = JSON.parse(event.newValue);
+                        if (data.subject === this.currentSubject) {
+                            this.highlightSkill(data.skill);
+                        }
+                    } catch (e) {
+                        console.warn('Failed to parse highlight request:', e);
+                    }
+                }
+            }
+
+            // Handle belt test results - bulk update many skills at once
+            handleBeltTestFromStorage(data) {
+                if (this.currentSubject !== 'Math') return;
+
+                console.log('Received Belt Test results from storage:', data.results);
+                const { results } = data;
+
+                // Apply mastered skills
+                for (const skill of results.mastered || []) {
+                    if (this.SKILL_TREE[skill.skill]) {
+                        this.SKILL_TREE[skill.skill].state = 'mastered';
+                        this.SKILL_TREE[skill.skill].mastery_score = 100;
+                        this.SKILL_TREE[skill.skill].last_practiced = new Date().toISOString();
+                        this.SKILL_TREE[skill.skill].mastered_at = new Date().toISOString();
+                    }
+                }
+
+                // Apply activated skills
+                for (const skill of results.activated || []) {
+                    if (this.SKILL_TREE[skill.skill]) {
+                        const current = this.SKILL_TREE[skill.skill];
+                        if (current.state !== 'mastered') {
+                            current.state = 'activated';
+                            current.mastery_score = Math.max(current.mastery_score || 0, skill.accuracy);
+                            current.last_practiced = new Date().toISOString();
+                        }
+                    }
+                }
+
+                // Apply in-progress skills
+                for (const skill of results.inProgress || []) {
+                    if (this.SKILL_TREE[skill.skill]) {
+                        const current = this.SKILL_TREE[skill.skill];
+                        if (current.state === 'locked' || current.state === 'available') {
+                            current.state = 'in_progress';
+                            current.mastery_score = Math.max(current.mastery_score || 0, skill.accuracy);
+                            current.last_practiced = new Date().toISOString();
+                        }
+                    }
+                }
+
+                // Apply inferred prerequisites
+                for (const skill of results.inferred || []) {
+                    if (this.SKILL_TREE[skill.skill]) {
+                        const current = this.SKILL_TREE[skill.skill];
+                        if (skill.newState === 'mastered' && current.state !== 'mastered') {
+                            current.state = 'mastered';
+                            current.mastery_score = 100;
+                            current.last_practiced = new Date().toISOString();
+                            current.mastered_at = new Date().toISOString();
+                        } else if (skill.newState === 'activated' && current.state !== 'mastered' && current.state !== 'activated') {
+                            current.state = 'activated';
+                            current.mastery_score = Math.max(current.mastery_score || 0, 70);
+                            current.last_practiced = new Date().toISOString();
+                        }
+                    }
+                }
+
+                // Update available skills based on new masteries
+                this.updateAvailableSkills();
+
+                // Redraw tree
+                this.draw();
+                this.saveProgressToStorage();
+
+                // Show notification
+                const totalMastered = (results.mastered?.length || 0) + (results.inferred?.filter(s => s.newState === 'mastered')?.length || 0);
+                if (totalMastered > 0) {
+                    this.showNotification(`Belt Test: ${totalMastered} skills mastered!`);
+                }
+            }
+
+            // Handle session results from Dojo via localStorage
+            handleDojoSessionFromStorage(data) {
+                if (this.currentSubject !== 'Math') return;
+
+                console.log('Received Dojo session from storage:', data.skillResults?.length, 'skills');
+
+                // Process each skill result with centralized mastery calculation
+                data.skillResults?.forEach(result => {
+                    const newMastery = this.calculateMasteryFromSession(result);
+                    this.updateSkillFromSession(result.skill, newMastery, result);
+                });
+
+                this.draw();
+                this.saveProgressToStorage();
+            }
+
+            // Handle lesson completion from Dojo via localStorage
+            handleDojoLessonFromStorage(data) {
+                if (this.currentSubject !== 'Math') return;
+
+                console.log('Received Dojo lesson complete from storage:', data.skill);
+
+                if (this.SKILL_TREE[data.skill]) {
+                    this.SKILL_TREE[data.skill].state = 'mastered';
+                    this.SKILL_TREE[data.skill].mastery_score = 100;
+                    this.SKILL_TREE[data.skill].last_practiced = new Date().toISOString();
+                    this.SKILL_TREE[data.skill].mastered_at = new Date().toISOString();
+                    this.triggerSkillUnlock(data.skill);
+                    this.draw();
+                    this.saveProgressToStorage();
+                }
+            }
+
+            // Highlight a skill (visual feedback for cross-tab navigation)
+            highlightSkill(skillName) {
+                const node = document.querySelector(`[data-skill="${skillName}"]`);
+                if (node) {
+                    // Scroll to skill
+                    this.centerOnSkill(skillName);
+
+                    // Add highlight animation
+                    node.classList.add('highlighting');
+                    setTimeout(() => node.classList.remove('highlighting'), 2000);
+                }
+            }
+
+            // Center viewport on a skill
+            centerOnSkill(skillName) {
+                const skill = this.SKILL_TREE[skillName];
+                if (!skill || !this.viewport) return;
+
+                const viewportRect = this.viewport.getBoundingClientRect();
+                const centerX = viewportRect.width / 2;
+                const centerY = viewportRect.height / 2;
+
+                this.currentX = centerX - (skill.x * this.currentScale);
+                this.currentY = centerY - (skill.y * this.currentScale);
+
+                this.updateTransform();
+            }
+
+            // === CENTRALIZED MASTERY CALCULATION ===
+            calculateMasteryFromSession(result) {
+                const { correct, total, avgTime, accuracy } = result;
+                const skill = this.SKILL_TREE[result.skill];
+                const currentMastery = skill?.mastery_score || 0;
+
+                // Base mastery from accuracy
+                let sessionMastery = accuracy;
+
+                // Bonus for speed (if avgTime < 10 seconds, add up to 10 points)
+                if (avgTime && avgTime < 10000) {
+                    sessionMastery += Math.round((10000 - avgTime) / 1000);
+                }
+
+                // Bonus for volume (more questions = more reliable score)
+                if (total >= 5) {
+                    sessionMastery += 5;
+                }
+
+                // Cap at 100
+                sessionMastery = Math.min(100, sessionMastery);
+
+                // Blend with existing mastery (weighted average)
+                // New sessions have more weight if they're better
+                if (sessionMastery > currentMastery) {
+                    return Math.round((currentMastery * 0.3) + (sessionMastery * 0.7));
+                } else {
+                    // If worse, still update but with less impact
+                    return Math.round((currentMastery * 0.7) + (sessionMastery * 0.3));
+                }
+            }
+
+            // Update skill data from session
+            updateSkillFromSession(skillName, newMastery, result) {
+                if (!this.SKILL_TREE[skillName]) return;
+
+                const skill = this.SKILL_TREE[skillName];
+                const oldState = skill.state;
+
+                skill.mastery_score = newMastery;
+                skill.last_practiced = new Date().toISOString();
+                skill.practice_count = (skill.practice_count || 0) + 1;
+
+                // Update state based on new mastery
+                if (newMastery >= 80 && result.total >= 3) {
+                    if (skill.state !== 'mastered') {
+                        skill.state = 'mastered';
+                        skill.mastered_at = new Date().toISOString();
+                        this.triggerSkillUnlock(skillName);
+                    }
+                } else if (newMastery >= 60) {
+                    if (skill.state === 'locked' || skill.state === 'available') {
+                        skill.state = 'activated';
+                    }
+                } else if (skill.state === 'locked' || skill.state === 'available') {
+                    skill.state = 'in_progress';
+                }
+
+                this.updateNodeVisuals(skillName);
+            }
+
+            // Save progress to localStorage for Dojo to read
+            saveProgressToStorage() {
+                try {
+                    const progress = {};
+                    Object.keys(this.SKILL_TREE).forEach(skillName => {
+                        const skill = this.SKILL_TREE[skillName];
+                        progress[skillName] = {
+                            state: skill.state,
+                            mastery_score: skill.mastery_score || 0,
+                            last_practiced: skill.last_practiced,
+                            practice_count: skill.practice_count || 0,
+                            decay_rate: skill.decay_rate || 14
+                        };
+                    });
+
+                    localStorage.setItem('math_skill_states', JSON.stringify({
+                        skills: progress,
+                        lastSync: Date.now()
+                    }));
+                } catch (e) {
+                    console.warn('Failed to save progress to storage:', e);
+                }
+            }
+
+            // Send practice request to Dojo (for "Practice in Dojo" button)
+            requestPracticeInDojo(skillName) {
+                localStorage.setItem('tree_practice_request', JSON.stringify({
+                    skill: skillName,
+                    subject: this.currentSubject,
+                    timestamp: Date.now()
+                }));
+
+                // Show feedback
+                this.showNotification(`Opening "${skillName}" in Math Dojo...`);
+            }
+
+            // Show notification toast
+            showNotification(message) {
+                let container = document.getElementById('tree-notification-container');
+                if (!container) {
+                    container = document.createElement('div');
+                    container.id = 'tree-notification-container';
+                    container.style.cssText = 'position: fixed; top: 20px; right: 20px; z-index: 10000;';
+                    document.body.appendChild(container);
+                }
+
+                const toast = document.createElement('div');
+                toast.style.cssText = `
+                    background: rgba(30, 41, 59, 0.95);
+                    border: 1px solid #ffd700;
+                    color: #f1f5f9;
+                    padding: 1rem 1.5rem;
+                    border-radius: 8px;
+                    margin-bottom: 10px;
+                    animation: slideIn 0.3s ease;
+                    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+                `;
+                toast.textContent = message;
+                container.appendChild(toast);
+
+                setTimeout(() => {
+                    toast.style.animation = 'slideOut 0.3s ease';
+                    setTimeout(() => toast.remove(), 300);
+                }, 3000);
             }
 
             getSubjectEmoji(subject) {
@@ -1104,147 +1515,299 @@
                 // Adapted from the math skill tree data
                 // Enhanced with K-12 comprehensive skills for game integration
                 this.SKILL_TREE = {
-                    // Basic Arithmetic (K-1)
-                    "Counting and Number Recognition": { x: 1213, y: 2837, type: "root", constellation: "Basic Arithmetic", state: "activated" },
-                    "Place Value Understanding": { x: 1258, y: 2705, constellation: "Basic Arithmetic", state: "activated" },
-                    "Comparing Numbers": { x: 1350, y: 2780, constellation: "Basic Arithmetic", state: "available" },
-                    "Number Lines": { x: 1100, y: 2820, constellation: "Basic Arithmetic", state: "available" },
-                    "Even and Odd": { x: 1000, y: 2760, constellation: "Basic Arithmetic", state: "available" },
-                    "Ordering Numbers": { x: 1420, y: 2850, constellation: "Basic Arithmetic", state: "available" },
-                    "Time Telling": { x: 1450, y: 2700, constellation: "Basic Arithmetic", state: "available" },
-                    "Money and Coins": { x: 1500, y: 2600, constellation: "Basic Arithmetic", state: "available" },
-                    "Patterns and Sequences": { x: 1550, y: 2500, constellation: "Basic Arithmetic", state: "available" },
-                    "Skip Counting": { x: 1080, y: 2700, constellation: "Basic Arithmetic", state: "available" },
-                    "Basic Addition": { x: 1399, y: 2526, constellation: "Basic Arithmetic", state: "activated" },
-                    "Basic Subtraction": { x: 1109, y: 2512, constellation: "Basic Arithmetic", state: "activated" },
+                    // ═══════════════════════════════════════════════════════════════
+                    // BASIC ARITHMETIC - "The Foundation Star" (Sprawling base pattern)
+                    // Central hub with rays extending outward like a starburst
+                    // ═══════════════════════════════════════════════════════════════
+                    "Counting and Number Recognition": { x: 1000, y: 2800, type: "root", constellation: "Basic Arithmetic", state: "activated" },
+                    // Left ray - Number concepts
+                    "Number Lines": { x: 850, y: 2720, constellation: "Basic Arithmetic", state: "available" },
+                    "Even and Odd": { x: 720, y: 2650, constellation: "Basic Arithmetic", state: "available" },
+                    "Skip Counting": { x: 780, y: 2780, constellation: "Basic Arithmetic", state: "available" },
+                    "Picture Graphs": { x: 650, y: 2720, constellation: "Basic Arithmetic", state: "available" },
+                    // Upper ray - Place value branch
+                    "Teen Numbers": { x: 920, y: 2680, constellation: "Basic Arithmetic", state: "available" },
+                    "Place Value Understanding": { x: 1000, y: 2600, constellation: "Basic Arithmetic", state: "activated" },
+                    "Number Bonds": { x: 880, y: 2520, constellation: "Basic Arithmetic", state: "available" },
+                    // Right ray - Comparison & ordering
+                    "Comparing Numbers": { x: 1150, y: 2720, constellation: "Basic Arithmetic", state: "available" },
+                    "Ordering Numbers": { x: 1280, y: 2650, constellation: "Basic Arithmetic", state: "available" },
+                    "Comparing Lengths": { x: 1350, y: 2720, constellation: "Basic Arithmetic", state: "available" },
+                    "Positional Words": { x: 1450, y: 2650, constellation: "Basic Arithmetic", state: "available" },
+                    "Classifying Objects": { x: 1520, y: 2580, constellation: "Basic Arithmetic", state: "available" },
+                    // Upper right ray - Time & money
+                    "Time Telling": { x: 1200, y: 2580, constellation: "Basic Arithmetic", state: "available" },
+                    "Money and Coins": { x: 1300, y: 2500, constellation: "Basic Arithmetic", state: "available" },
+                    "Patterns and Sequences": { x: 1380, y: 2420, constellation: "Basic Arithmetic", state: "available" },
+                    // Operations branch (flows upward)
+                    "Basic Addition": { x: 1100, y: 2480, constellation: "Basic Arithmetic", state: "activated" },
+                    "Basic Subtraction": { x: 900, y: 2480, constellation: "Basic Arithmetic", state: "activated" },
+                    // Shapes branch (far right)
+                    "3D Shapes": { x: 1550, y: 2700, constellation: "Basic Arithmetic", state: "available" },
+                    "Partitioning Shapes": { x: 1620, y: 2620, constellation: "Basic Arithmetic", state: "available" },
+                    "Composing Shapes": { x: 1680, y: 2540, constellation: "Basic Arithmetic", state: "available" },
 
-                    // Intermediate Arithmetic (2-4)
-                    "Multiplication": { x: 1198, y: 2377, constellation: "Intermediate Arithmetic", state: "activated" },
-                    "Division": { x: 1446, y: 2251, constellation: "Intermediate Arithmetic", state: "activated" },
-                    "Multi-Digit Addition": { x: 1350, y: 2450, constellation: "Intermediate Arithmetic", state: "available" },
-                    "Multi-Digit Subtraction": { x: 1050, y: 2430, constellation: "Intermediate Arithmetic", state: "available" },
-                    "Long Division": { x: 1520, y: 2180, constellation: "Intermediate Arithmetic", state: "available" },
-                    "Basic Fractions": { x: 1078, y: 2106, constellation: "Intermediate Arithmetic", state: "activated" },
-                    "Equivalent Fractions": { x: 950, y: 2200, constellation: "Intermediate Arithmetic", state: "available" },
-                    "Mixed Numbers": { x: 900, y: 2100, constellation: "Intermediate Arithmetic", state: "available" },
-                    "Rounding and Estimation": { x: 1300, y: 2350, constellation: "Intermediate Arithmetic", state: "available" },
-                    "Estimation": { x: 1380, y: 2280, constellation: "Intermediate Arithmetic", state: "available" },
-                    "Basic Measurement": { x: 1550, y: 2300, constellation: "Intermediate Arithmetic", state: "available" },
-                    "Unit Conversion": { x: 1600, y: 2150, constellation: "Intermediate Arithmetic", state: "available" },
-                    "Perimeter": { x: 1650, y: 2050, constellation: "Intermediate Arithmetic", state: "available" },
-                    "Arrays and Area Models": { x: 1250, y: 2280, constellation: "Intermediate Arithmetic", state: "available" },
+                    // ═══════════════════════════════════════════════════════════════
+                    // INTERMEDIATE ARITHMETIC - "The Bridge" (Hourglass shape)
+                    // Converges from addition/subtraction, expands to operations
+                    // ═══════════════════════════════════════════════════════════════
+                    "Multi-Digit Addition": { x: 1050, y: 2350, constellation: "Intermediate Arithmetic", state: "available" },
+                    "Multi-Digit Subtraction": { x: 950, y: 2350, constellation: "Intermediate Arithmetic", state: "available" },
+                    "Multiplication Properties": { x: 880, y: 2280, constellation: "Intermediate Arithmetic", state: "available" },
+                    "Multiplication": { x: 1000, y: 2220, constellation: "Intermediate Arithmetic", state: "activated" },
+                    "Arrays and Area Models": { x: 1120, y: 2280, constellation: "Intermediate Arithmetic", state: "available" },
+                    "Division": { x: 1000, y: 2120, constellation: "Intermediate Arithmetic", state: "activated" },
+                    "Long Division": { x: 1100, y: 2050, constellation: "Intermediate Arithmetic", state: "available" },
+                    // Left branch - Fractions cluster
+                    "Basic Fractions": { x: 800, y: 2100, constellation: "Intermediate Arithmetic", state: "activated" },
+                    "Equivalent Fractions": { x: 700, y: 2030, constellation: "Intermediate Arithmetic", state: "available" },
+                    "Simplifying Fractions": { x: 620, y: 1960, constellation: "Intermediate Arithmetic", state: "available" },
+                    "Mixed Numbers": { x: 780, y: 1980, constellation: "Intermediate Arithmetic", state: "available" },
+                    "Fraction Operations": { x: 700, y: 1900, constellation: "Intermediate Arithmetic", state: "available" },
+                    "Fraction Word Problems": { x: 620, y: 1840, constellation: "Intermediate Arithmetic", state: "available" },
+                    // Center - Estimation
+                    "Rounding and Estimation": { x: 900, y: 2180, constellation: "Intermediate Arithmetic", state: "available" },
+                    "Estimation": { x: 880, y: 2100, constellation: "Intermediate Arithmetic", state: "available" },
+                    "Word Problems": { x: 1100, y: 2180, constellation: "Intermediate Arithmetic", state: "available" },
+                    // Right branch - Measurement & geometry prep
+                    "Basic Measurement": { x: 1200, y: 2100, constellation: "Intermediate Arithmetic", state: "available" },
+                    "Unit Conversion": { x: 1280, y: 2030, constellation: "Intermediate Arithmetic", state: "available" },
+                    "Mass and Capacity": { x: 1350, y: 2100, constellation: "Intermediate Arithmetic", state: "available" },
+                    "Elapsed Time": { x: 1300, y: 2180, constellation: "Intermediate Arithmetic", state: "available" },
+                    "Perimeter": { x: 1380, y: 1960, constellation: "Intermediate Arithmetic", state: "available" },
+                    "Area": { x: 1450, y: 1890, constellation: "Intermediate Arithmetic", state: "available" },
+                    // Far right - Number properties
+                    "Factors and Multiples": { x: 1180, y: 1980, constellation: "Intermediate Arithmetic", state: "available" },
+                    "Prime and Composite": { x: 1260, y: 1910, constellation: "Intermediate Arithmetic", state: "available" },
+                    // Data branch (left side)
+                    "Bar Graphs": { x: 520, y: 2000, constellation: "Intermediate Arithmetic", state: "available" },
+                    "Line Plots": { x: 450, y: 1930, constellation: "Intermediate Arithmetic", state: "available" },
+                    // Geometry prep (far right)
+                    "Line Symmetry": { x: 1520, y: 1960, constellation: "Intermediate Arithmetic", state: "available" },
+                    "Types of Angles": { x: 1580, y: 1890, constellation: "Intermediate Arithmetic", state: "available" },
+                    "Types of Lines": { x: 1640, y: 1820, constellation: "Intermediate Arithmetic", state: "available" },
 
-                    // Advanced Arithmetic (5-7)
-                    "Mean Median Mode": { x: 350, y: 1600, constellation: "Advanced Arithmetic", state: "available" },
-                    "Data Collection": { x: 400, y: 1700, constellation: "Advanced Arithmetic", state: "available" },
-                    "Negatives": { x: 617, y: 1920, constellation: "Advanced Arithmetic", state: "activated" },
-                    "Advanced Fractions": { x: 524, y: 1730, constellation: "Advanced Arithmetic", state: "activated" },
-                    "Basic Geometry Concepts": { x: 1629, y: 1717, constellation: "Advanced Arithmetic", state: "activated" },
-                    "Decimals": { x: 949, y: 1774, constellation: "Advanced Arithmetic", state: "activated" },
-                    "Percentages": { x: 1099, y: 1702, constellation: "Advanced Arithmetic", state: "activated" },
-                    "Proportions": { x: 1250, y: 1550, constellation: "Advanced Arithmetic", state: "available" },
-                    "Absolute Value": { x: 700, y: 1850, constellation: "Advanced Arithmetic", state: "available" },
-                    "Scientific Notation": { x: 800, y: 1650, constellation: "Advanced Arithmetic", state: "available" },
-                    "Square Roots": { x: 550, y: 1600, constellation: "Advanced Arithmetic", state: "available" },
+                    // ═══════════════════════════════════════════════════════════════
+                    // ADVANCED ARITHMETIC - "The Spiral" (Curved arrangement)
+                    // Flows in a gentle spiral pattern, left-center placement
+                    // ═══════════════════════════════════════════════════════════════
+                    "Advanced Fractions": { x: 650, y: 1760, constellation: "Advanced Arithmetic", state: "activated" },
+                    "GCF and LCM": { x: 580, y: 1700, constellation: "Advanced Arithmetic", state: "available" },
+                    "Decimals": { x: 750, y: 1680, constellation: "Advanced Arithmetic", state: "activated" },
+                    "Powers of 10": { x: 680, y: 1620, constellation: "Advanced Arithmetic", state: "available" },
+                    "Scientific Notation": { x: 600, y: 1560, constellation: "Advanced Arithmetic", state: "available" },
+                    "Percentages": { x: 850, y: 1600, constellation: "Advanced Arithmetic", state: "activated" },
+                    "Proportions": { x: 950, y: 1540, constellation: "Advanced Arithmetic", state: "available" },
+                    // Negative numbers branch
+                    "Negatives": { x: 500, y: 1780, constellation: "Advanced Arithmetic", state: "activated" },
+                    "Absolute Value": { x: 420, y: 1720, constellation: "Advanced Arithmetic", state: "available" },
+                    "Square Roots": { x: 480, y: 1640, constellation: "Advanced Arithmetic", state: "available" },
+                    // Data & Statistics branch
+                    "Data Collection": { x: 350, y: 1700, constellation: "Advanced Arithmetic", state: "available" },
+                    "Mean Median Mode": { x: 280, y: 1620, constellation: "Advanced Arithmetic", state: "available" },
+                    "Simple Probability": { x: 220, y: 1540, constellation: "Advanced Arithmetic", state: "available" },
+                    "Comparing Distributions": { x: 160, y: 1460, constellation: "Advanced Arithmetic", state: "available" },
+                    // Geometry concepts (bridge to geometry)
+                    "Nets of 3D Shapes": { x: 1620, y: 1680, constellation: "Advanced Arithmetic", state: "available" },
+                    // Algebra prep
+                    "Expressions with Variables": { x: 780, y: 1520, constellation: "Advanced Arithmetic", state: "available" },
+                    "One-Step Equations": { x: 700, y: 1460, constellation: "Advanced Arithmetic", state: "available" },
+                    "Coordinate Plane": { x: 380, y: 1540, constellation: "Advanced Arithmetic", state: "available" },
 
-                    // Pre-Algebra (7-8)
-                    "Order of Operations": { x: 700, y: 1500, constellation: "Pre-Algebra", state: "available" },
-                    "Basic Algebraic Expressions": { x: 961, y: 1458, constellation: "Pre-Algebra", state: "activated" },
-                    "Ratio and Proportion": { x: 1179, y: 1432, constellation: "Pre-Algebra", state: "activated" },
-                    "Basic Graphing": { x: 448, y: 1405, constellation: "Pre-Algebra", state: "activated" },
-                    "Solving Simple Equations": { x: 767, y: 1386, constellation: "Pre-Algebra", state: "activated" },
-                    "Surface Area": { x: 1400, y: 1350, constellation: "Pre-Algebra", state: "available" },
-                    "Two-Way Tables": { x: 300, y: 1500, constellation: "Pre-Algebra", state: "available" },
-                    "Scatter Plots": { x: 350, y: 1350, constellation: "Pre-Algebra", state: "available" },
-                    "Box Plots": { x: 250, y: 1400, constellation: "Pre-Algebra", state: "available" },
-                    "Probability Basics": { x: 200, y: 1300, constellation: "Pre-Algebra", state: "available" },
+                    // ═══════════════════════════════════════════════════════════════
+                    // PRE-ALGEBRA - "The Gateway" (Arc shape bridging arithmetic to algebra)
+                    // ═══════════════════════════════════════════════════════════════
+                    "Order of Operations": { x: 600, y: 1380, constellation: "Pre-Algebra", state: "available" },
+                    "Exponents": { x: 520, y: 1320, constellation: "Pre-Algebra", state: "available" },
+                    "Basic Algebraic Expressions": { x: 700, y: 1320, constellation: "Pre-Algebra", state: "activated" },
+                    "Solving Simple Equations": { x: 800, y: 1260, constellation: "Pre-Algebra", state: "activated" },
+                    "Ratio and Proportion": { x: 950, y: 1400, constellation: "Pre-Algebra", state: "activated" },
+                    // Roots branch
+                    "Irrational Numbers": { x: 440, y: 1260, constellation: "Pre-Algebra", state: "available" },
+                    "Cube Roots": { x: 360, y: 1200, constellation: "Pre-Algebra", state: "available" },
+                    // Data/Graphing branch (left)
+                    "Basic Graphing": { x: 300, y: 1380, constellation: "Pre-Algebra", state: "activated" },
+                    "Two-Way Tables": { x: 220, y: 1320, constellation: "Pre-Algebra", state: "available" },
+                    "Scatter Plots": { x: 280, y: 1260, constellation: "Pre-Algebra", state: "available" },
+                    "Box Plots": { x: 200, y: 1200, constellation: "Pre-Algebra", state: "available" },
+                    "Probability Basics": { x: 140, y: 1280, constellation: "Pre-Algebra", state: "available" },
+                    "Compound Probability": { x: 80, y: 1220, constellation: "Pre-Algebra", state: "available" },
+                    "Sampling Methods": { x: 60, y: 1160, constellation: "Pre-Algebra", state: "available" },
+                    // Geometry bridge (right side)
+                    "Surface Area": { x: 1350, y: 1300, constellation: "Pre-Algebra", state: "available" },
+                    "Volume of Cylinders Cones Spheres": { x: 1420, y: 1230, constellation: "Pre-Algebra", state: "available" },
+                    "Similar Figures": { x: 1480, y: 1160, constellation: "Pre-Algebra", state: "available" },
+                    "Parallel Lines and Transversals": { x: 1550, y: 1090, constellation: "Pre-Algebra", state: "available" },
 
-                    // Geometry
-                    "Angles and Lines": { x: 1745, y: 1175, constellation: "Geometry", state: "activated" },
-                    "Transformations": { x: 1600, y: 1400, constellation: "Geometry", state: "activated" },
-                    "Triangles and Pythagorean Theorem": { x: 1875, y: 927, constellation: "Geometry", state: "activated" },
-                    "Area and Perimeter": { x: 1500, y: 1100, constellation: "Geometry", state: "activated" },
-                    "Circles": { x: 1851, y: 777, constellation: "Geometry", state: "activated" },
-                    "Volume": { x: 1500, y: 950, constellation: "Geometry", state: "activated" },
-                    "Similarity": { x: 1700, y: 1050, constellation: "Geometry", state: "available" },
-                    "Congruence": { x: 1750, y: 1000, constellation: "Geometry", state: "available" },
-                    "Proofs": { x: 1650, y: 900, constellation: "Geometry", state: "available" },
-                    "Law of Sines": { x: 1950, y: 850, constellation: "Geometry", state: "available" },
-                    "Law of Cosines": { x: 2000, y: 900, constellation: "Geometry", state: "available" },
-                    "Coordinate Geometry": { x: 1550, y: 850, constellation: "Geometry", state: "available" },
+                    // ═══════════════════════════════════════════════════════════════
+                    // GEOMETRY - "The Pentagon" (Pentagon-like arrangement on right)
+                    // Forms a distinct geometric shape fitting the subject
+                    // ═══════════════════════════════════════════════════════════════
+                    "Basic Geometry Concepts": { x: 1650, y: 1150, constellation: "Geometry", state: "activated" },
+                    "Angles and Lines": { x: 1720, y: 1080, constellation: "Geometry", state: "activated" },
+                    "Transformations": { x: 1580, y: 1020, constellation: "Geometry", state: "activated" },
+                    "Dilations": { x: 1500, y: 960, constellation: "Geometry", state: "available" },
+                    // Triangle cluster (upper right)
+                    "Triangles and Pythagorean Theorem": { x: 1800, y: 950, constellation: "Geometry", state: "activated" },
+                    "Triangle Inequality": { x: 1880, y: 880, constellation: "Geometry", state: "available" },
+                    "Triangle Centers": { x: 1950, y: 820, constellation: "Geometry", state: "available" },
+                    "Midsegments": { x: 1870, y: 760, constellation: "Geometry", state: "available" },
+                    // Angle tools cluster
+                    "Angle Bisectors": { x: 1780, y: 1010, constellation: "Geometry", state: "available" },
+                    "Perpendicular Bisectors": { x: 1850, y: 1020, constellation: "Geometry", state: "available" },
+                    // Area/Perimeter branch
+                    "Area and Perimeter": { x: 1650, y: 960, constellation: "Geometry", state: "activated" },
+                    "Volume": { x: 1580, y: 890, constellation: "Geometry", state: "activated" },
+                    // Similarity/Congruence chain
+                    "Similarity": { x: 1700, y: 880, constellation: "Geometry", state: "available" },
+                    "Congruence": { x: 1760, y: 820, constellation: "Geometry", state: "available" },
+                    "Proofs": { x: 1700, y: 760, constellation: "Geometry", state: "available" },
+                    // Circle cluster (top right)
+                    "Circles": { x: 1920, y: 720, constellation: "Geometry", state: "activated" },
+                    "Inscribed Angles": { x: 1980, y: 660, constellation: "Geometry", state: "available" },
+                    "Arc Length": { x: 2040, y: 600, constellation: "Geometry", state: "available" },
+                    "Sector Area": { x: 2000, y: 540, constellation: "Geometry", state: "available" },
+                    "Tangent Lines": { x: 1940, y: 580, constellation: "Geometry", state: "available" },
+                    // Trig prep
+                    "Law of Sines": { x: 1860, y: 650, constellation: "Geometry", state: "available" },
+                    "Law of Cosines": { x: 1800, y: 700, constellation: "Geometry", state: "available" },
+                    "Coordinate Geometry": { x: 1640, y: 700, constellation: "Geometry", state: "available" },
 
-                    // Algebra 1
-                    "Polynomials": { x: 509, y: 1186, constellation: "Algebra 1", state: "activated" },
-                    "Linear Equations": { x: 849, y: 1272, constellation: "Algebra 1", state: "activated" },
-                    "Inequalities": { x: 821, y: 1084, constellation: "Algebra 1", state: "activated" },
-                    "Factoring": { x: 679, y: 1048, constellation: "Algebra 1", state: "activated" },
-                    "Basic Functions": { x: 1054, y: 1146, constellation: "Algebra 1", state: "activated" },
-                    "Quadratic Equations": { x: 490, y: 961, constellation: "Algebra 1", state: "activated" },
-                    "Radicals": { x: 400, y: 1100, constellation: "Algebra 1", state: "available" },
-                    "Exponential Functions": { x: 600, y: 900, constellation: "Algebra 1", state: "available" },
-                    "Arithmetic Sequences": { x: 1150, y: 1050, constellation: "Algebra 1", state: "available" },
-                    "Geometric Sequences": { x: 1200, y: 1000, constellation: "Algebra 1", state: "available" },
-                    "Compound Interest": { x: 1250, y: 1100, constellation: "Algebra 1", state: "available" },
-                    "Domain and Range": { x: 950, y: 1050, constellation: "Algebra 1", state: "available" },
+                    // ═══════════════════════════════════════════════════════════════
+                    // ALGEBRA 1 - "The River" (Flowing S-curve in center)
+                    // ═══════════════════════════════════════════════════════════════
+                    "Polynomials": { x: 600, y: 1180, constellation: "Algebra 1", state: "activated" },
+                    "Factoring": { x: 520, y: 1120, constellation: "Algebra 1", state: "activated" },
+                    "Radicals": { x: 440, y: 1060, constellation: "Algebra 1", state: "available" },
+                    "Quadratic Equations": { x: 520, y: 1000, constellation: "Algebra 1", state: "activated" },
+                    // Linear equations branch
+                    "Linear Equations": { x: 750, y: 1180, constellation: "Algebra 1", state: "activated" },
+                    "Multi-Step Equations": { x: 680, y: 1120, constellation: "Algebra 1", state: "available" },
+                    "Literal Equations": { x: 760, y: 1060, constellation: "Algebra 1", state: "available" },
+                    "Absolute Value Equations": { x: 600, y: 940, constellation: "Algebra 1", state: "available" },
+                    // Inequalities branch
+                    "Inequalities": { x: 850, y: 1100, constellation: "Algebra 1", state: "activated" },
+                    "Graphing Linear Inequalities": { x: 920, y: 1040, constellation: "Algebra 1", state: "available" },
+                    // Systems cluster
+                    "Systems by Graphing": { x: 850, y: 980, constellation: "Algebra 1", state: "available" },
+                    "Systems by Substitution": { x: 780, y: 920, constellation: "Algebra 1", state: "available" },
+                    "Systems by Elimination": { x: 850, y: 860, constellation: "Algebra 1", state: "available" },
+                    // Functions branch (right side)
+                    "Basic Functions": { x: 1000, y: 1120, constellation: "Algebra 1", state: "activated" },
+                    "Domain and Range": { x: 1080, y: 1060, constellation: "Algebra 1", state: "available" },
+                    "Exponential Functions": { x: 1150, y: 1000, constellation: "Algebra 1", state: "available" },
+                    "Compound Interest": { x: 1220, y: 940, constellation: "Algebra 1", state: "available" },
+                    // Sequences
+                    "Arithmetic Sequences": { x: 1100, y: 920, constellation: "Algebra 1", state: "available" },
+                    "Geometric Sequences": { x: 1180, y: 860, constellation: "Algebra 1", state: "available" },
+                    // Data connection
+                    "Correlation and Trend Lines": { x: 350, y: 1100, constellation: "Algebra 1", state: "available" },
 
-                    // Algebra 2
-                    "Complex Numbers": { x: 643, y: 767, constellation: "Algebra 2", state: "activated" },
-                    "Advanced Polynomials": { x: 754, y: 778, constellation: "Algebra 2", state: "activated" },
-                    "Exponential and Logarithmic Functions": { x: 956, y: 857, constellation: "Algebra 2", state: "activated" },
-                    "Rational Functions": { x: 1061, y: 964, constellation: "Algebra 2", state: "activated" },
-                    "Sequence and Series": { x: 1204, y: 910, constellation: "Algebra 2", state: "activated" },
-                    "Completing the Square": { x: 550, y: 850, constellation: "Algebra 2", state: "available" },
-                    "Piecewise Functions": { x: 850, y: 750, constellation: "Algebra 2", state: "available" },
-                    "Asymptotes": { x: 950, y: 700, constellation: "Algebra 2", state: "available" },
-                    "Permutations": { x: 400, y: 700, constellation: "Algebra 2", state: "available" },
-                    "Combinations": { x: 450, y: 650, constellation: "Algebra 2", state: "available" },
-                    "Expected Value": { x: 350, y: 600, constellation: "Algebra 2", state: "available" },
+                    // ═══════════════════════════════════════════════════════════════
+                    // ALGEBRA 2 - "The Crown" (Arc above Algebra 1)
+                    // ═══════════════════════════════════════════════════════════════
+                    "Complex Numbers": { x: 480, y: 880, constellation: "Algebra 2", state: "activated" },
+                    "Completing the Square": { x: 400, y: 820, constellation: "Algebra 2", state: "available" },
+                    "Advanced Polynomials": { x: 560, y: 760, constellation: "Algebra 2", state: "activated" },
+                    "Synthetic Division": { x: 480, y: 700, constellation: "Algebra 2", state: "available" },
+                    // Functions cluster (center)
+                    "Exponential and Logarithmic Functions": { x: 700, y: 800, constellation: "Algebra 2", state: "activated" },
+                    "Piecewise Functions": { x: 780, y: 740, constellation: "Algebra 2", state: "available" },
+                    "Rational Functions": { x: 860, y: 800, constellation: "Algebra 2", state: "activated" },
+                    "Asymptotes": { x: 940, y: 740, constellation: "Algebra 2", state: "available" },
+                    // Series/Sequences (right)
+                    "Sequence and Series": { x: 1020, y: 800, constellation: "Algebra 2", state: "activated" },
+                    "Binomial Theorem": { x: 1100, y: 740, constellation: "Algebra 2", state: "available" },
+                    // Probability cluster (left)
+                    "Permutations": { x: 320, y: 760, constellation: "Algebra 2", state: "available" },
+                    "Combinations": { x: 260, y: 700, constellation: "Algebra 2", state: "available" },
+                    "Expected Value": { x: 200, y: 640, constellation: "Algebra 2", state: "available" },
+                    // Matrix intro
+                    "Matrices Intro": { x: 640, y: 680, constellation: "Algebra 2", state: "available" },
 
-                    // Pre-Calculus
-                    "Conic Sections": { x: 1068, y: 642, constellation: "Pre-Calculus", state: "activated" },
-                    "Trigonometry": { x: 1660, y: 479, constellation: "Pre-Calculus", state: "activated" },
-                    "Matrices": { x: 824, y: 452, constellation: "Pre-Calculus", state: "activated" },
-                    "Advanced Functions": { x: 1116, y: 516, constellation: "Pre-Calculus", state: "activated" },
-                    "Vectors": { x: 1367, y: 363, constellation: "Pre-Calculus", state: "activated" },
-                    "Radian Measure": { x: 1550, y: 400, constellation: "Pre-Calculus", state: "available" },
-                    "Inverse Trig": { x: 1750, y: 380, constellation: "Pre-Calculus", state: "available" },
-                    "Parametric Equations": { x: 1300, y: 450, constellation: "Pre-Calculus", state: "available" },
-                    "Polar Coordinates": { x: 1450, y: 350, constellation: "Pre-Calculus", state: "available" },
-                    "Normal Distribution": { x: 200, y: 500, constellation: "Pre-Calculus", state: "available" },
+                    // ═══════════════════════════════════════════════════════════════
+                    // PRE-CALCULUS - "The Wings" (Spread pattern, trigonometry focus)
+                    // ═══════════════════════════════════════════════════════════════
+                    "Conic Sections": { x: 1000, y: 680, constellation: "Pre-Calculus", state: "activated" },
+                    "Advanced Functions": { x: 1080, y: 620, constellation: "Pre-Calculus", state: "activated" },
+                    "Parametric Equations": { x: 1160, y: 560, constellation: "Pre-Calculus", state: "available" },
+                    "Series Convergence": { x: 1180, y: 640, constellation: "Pre-Calculus", state: "available" },
+                    // Matrices branch (left)
+                    "Matrices": { x: 720, y: 620, constellation: "Pre-Calculus", state: "activated" },
+                    // Trig cluster (right wing)
+                    "Trigonometry": { x: 1400, y: 600, constellation: "Pre-Calculus", state: "activated" },
+                    "Radian Measure": { x: 1480, y: 540, constellation: "Pre-Calculus", state: "available" },
+                    "Unit Circle": { x: 1560, y: 480, constellation: "Pre-Calculus", state: "available" },
+                    "Trig Identities": { x: 1480, y: 420, constellation: "Pre-Calculus", state: "available" },
+                    "Graphing Trig Functions": { x: 1560, y: 360, constellation: "Pre-Calculus", state: "available" },
+                    "Inverse Trig": { x: 1400, y: 480, constellation: "Pre-Calculus", state: "available" },
+                    // Vectors branch
+                    "Vectors": { x: 1300, y: 500, constellation: "Pre-Calculus", state: "activated" },
+                    "Polar Coordinates": { x: 1360, y: 420, constellation: "Pre-Calculus", state: "available" },
+                    // Stats
+                    "Normal Distribution": { x: 280, y: 580, constellation: "Pre-Calculus", state: "available" },
 
-                    // Calculus
-                    "Limits": { x: 1091, y: 316, constellation: "Calculus", state: "activated" },
-                    "Derivatives": { x: 1175, y: 234, constellation: "Calculus", state: "activated" },
-                    "Integrals": { x: 1071, y: 144, constellation: "Calculus", state: "activated" },
-                    "Multivariable Calculus": { x: 1144, y: 65, constellation: "Calculus", state: "activated" },
-                    "Differential Equations": { x: 910, y: 20, constellation: "Calculus", state: "activated" },
-                    "Chain Rule": { x: 1250, y: 180, constellation: "Calculus", state: "available" },
-                    "Product Rule": { x: 1300, y: 220, constellation: "Calculus", state: "available" },
+                    // ═══════════════════════════════════════════════════════════════
+                    // CALCULUS - "The Apex" (Diamond converging to peak)
+                    // ═══════════════════════════════════════════════════════════════
+                    "Limits": { x: 1000, y: 480, constellation: "Calculus", state: "activated" },
+                    "Derivatives": { x: 1000, y: 380, constellation: "Calculus", state: "activated" },
+                    // Derivative rules (spread)
+                    "Chain Rule": { x: 1100, y: 340, constellation: "Calculus", state: "available" },
+                    "Product Rule": { x: 1160, y: 280, constellation: "Calculus", state: "available" },
+                    "Quotient Rule": { x: 1100, y: 220, constellation: "Calculus", state: "available" },
+                    "Implicit Differentiation": { x: 900, y: 340, constellation: "Calculus", state: "available" },
+                    "Related Rates": { x: 840, y: 280, constellation: "Calculus", state: "available" },
+                    "Applications": { x: 920, y: 220, constellation: "Calculus", state: "available" },
+                    // Integration branch
+                    "Integrals": { x: 1000, y: 280, constellation: "Calculus", state: "activated" },
+                    "U-Substitution": { x: 1060, y: 160, constellation: "Calculus", state: "available" },
+                    "Integration by Parts": { x: 940, y: 160, constellation: "Calculus", state: "available" },
                     "Integration Techniques": { x: 1000, y: 100, constellation: "Calculus", state: "available" },
+                    // Advanced calc
+                    "Differential Equations": { x: 860, y: 120, constellation: "Calculus", state: "activated" },
+                    "Multivariable Calculus": { x: 1000, y: 20, constellation: "Calculus", state: "activated" },
 
-                    // Advanced Mathematics
-                    "Probability and Statistics": { x: 298, y: 287, constellation: "Advanced Mathematics", state: "activated" },
-                    "Linear Algebra": { x: 462, y: 389, constellation: "Advanced Mathematics", state: "activated" },
-                    "Real Analysis": { x: 678, y: 248, constellation: "Advanced Mathematics", state: "activated" },
-                    "Complex Analysis": { x: 619, y: 327, constellation: "Advanced Mathematics", state: "activated" },
+                    // ═══════════════════════════════════════════════════════════════
+                    // ADVANCED MATHEMATICS - "The Nebula" (Clustered cloud, left side)
+                    // ═══════════════════════════════════════════════════════════════
+                    "Partial Derivatives": { x: 900, y: -40, constellation: "Advanced Mathematics", state: "available" },
+                    "Double Integrals": { x: 1100, y: -40, constellation: "Advanced Mathematics", state: "available" },
+                    "Triple Integrals": { x: 1100, y: -120, constellation: "Advanced Mathematics", state: "available" },
+                    "Vector Calculus": { x: 1000, y: -100, constellation: "Advanced Mathematics", state: "available" },
+                    // Analysis cluster
+                    "Real Analysis": { x: 700, y: 100, constellation: "Advanced Mathematics", state: "activated" },
+                    "Complex Analysis": { x: 620, y: 40, constellation: "Advanced Mathematics", state: "activated" },
+                    // Linear algebra cluster
+                    "Linear Algebra": { x: 540, y: 180, constellation: "Advanced Mathematics", state: "activated" },
+                    "Eigenvalues": { x: 460, y: 120, constellation: "Advanced Mathematics", state: "available" },
+                    "Series": { x: 780, y: 40, constellation: "Advanced Mathematics", state: "available" },
+                    // Stats connection
+                    "Probability and Statistics": { x: 380, y: 280, constellation: "Advanced Mathematics", state: "activated" },
 
-                    // Specialized Topics
-                    "Abstract Algebra": { x: 185, y: 236, constellation: "Specialized Topics", state: "activated" },
-                    "Number Theory": { x: -119, y: 165, constellation: "Specialized Topics", state: "activated" },
-                    "Discrete Mathematics": { x: 7, y: 218, constellation: "Specialized Topics", state: "activated" },
-                    "Advanced Number Theory": { x: -226, y: 259, constellation: "Specialized Topics", state: "activated" },
-                    "Mathematical Logic": { x: 37, y: 15, constellation: "Specialized Topics", state: "activated" },
+                    // ═══════════════════════════════════════════════════════════════
+                    // SPECIALIZED TOPICS - "The Distant Stars" (Far left cluster)
+                    // ═══════════════════════════════════════════════════════════════
+                    "Abstract Algebra": { x: 300, y: 120, constellation: "Specialized Topics", state: "activated" },
+                    "Number Theory": { x: 180, y: 180, constellation: "Specialized Topics", state: "activated" },
+                    "Advanced Number Theory": { x: 100, y: 120, constellation: "Specialized Topics", state: "activated" },
+                    "Discrete Mathematics": { x: 220, y: 60, constellation: "Specialized Topics", state: "activated" },
+                    "Mathematical Logic": { x: 140, y: 0, constellation: "Specialized Topics", state: "activated" },
 
-                    // Mastery and Research
-                    "Mathematical Research Techniques": { x: 358, y: 62, constellation: "Mastery and Research", state: "activated" },
-                    "Applied Mathematics": { x: 464, y: 121, constellation: "Mastery and Research", state: "activated" },
-                    "Theoretical Mathematics": { x: 372, y: 215, constellation: "Mastery and Research", state: "activated" },
-                    "Advanced Computational Methods": { x: 292, y: -95, constellation: "Mastery and Research", state: "activated" },
+                    // ═══════════════════════════════════════════════════════════════
+                    // MASTERY AND RESEARCH - "The Summit" (Peak formation)
+                    // ═══════════════════════════════════════════════════════════════
+                    "Applied Mathematics": { x: 760, y: -60, constellation: "Mastery and Research", state: "activated" },
+                    "Theoretical Mathematics": { x: 540, y: -20, constellation: "Mastery and Research", state: "activated" },
+                    "Mathematical Research Techniques": { x: 650, y: -120, constellation: "Mastery and Research", state: "activated" },
+                    "Advanced Computational Methods": { x: 380, y: -60, constellation: "Mastery and Research", state: "activated" },
 
-                    // Final Specializations
-                    "Differential Geometry": { x: 527, y: -16, constellation: "Final Specializations", state: "activated" },
-                    "Topology": { x: 654, y: 135, constellation: "Final Specializations", state: "activated" },
-                    "Advanced Statistics": { x: 664, y: -194, constellation: "Final Specializations", state: "activated" }
+                    // ═══════════════════════════════════════════════════════════════
+                    // FINAL SPECIALIZATIONS - "The Crown Jewels" (Top of tree)
+                    // ═══════════════════════════════════════════════════════════════
+                    "Differential Geometry": { x: 800, y: -180, constellation: "Final Specializations", state: "activated" },
+                    "Topology": { x: 650, y: -200, constellation: "Final Specializations", state: "activated" },
+                    "Advanced Statistics": { x: 500, y: -140, constellation: "Final Specializations", state: "activated" }
                 };
         
                 this.CONNECTIONS = [
@@ -1261,6 +1824,19 @@
                     ["Money and Coins", "Patterns and Sequences"],
                     ["Place Value Understanding", "Basic Addition"],
                     ["Place Value Understanding", "Basic Subtraction"],
+                    // Additional Tier 1 connections
+                    ["Counting and Number Recognition", "Teen Numbers"],
+                    ["Counting and Number Recognition", "Number Bonds"],
+                    ["Teen Numbers", "Place Value Understanding"],
+                    ["Number Bonds", "Basic Addition"],
+                    ["Number Bonds", "Basic Subtraction"],
+                    ["Skip Counting", "Picture Graphs"],
+                    ["Basic Geometry Concepts", "3D Shapes"],
+                    ["Basic Geometry Concepts", "Partitioning Shapes"],
+                    ["Partitioning Shapes", "Composing Shapes"],
+                    ["Comparing Numbers", "Comparing Lengths"],
+                    ["Comparing Lengths", "Positional Words"],
+                    ["Positional Words", "Classifying Objects"],
 
                     // Intermediate Arithmetic connections
                     ["Basic Addition", "Multi-Digit Addition"],
@@ -1281,6 +1857,22 @@
                     ["Basic Geometry Concepts", "Basic Measurement"],
                     ["Basic Measurement", "Unit Conversion"],
                     ["Basic Measurement", "Perimeter"],
+                    // Additional Tier 2 connections
+                    ["Basic Fractions", "Fraction Operations"],
+                    ["Equivalent Fractions", "Simplifying Fractions"],
+                    ["Fraction Operations", "Fraction Word Problems"],
+                    ["Division", "Word Problems"],
+                    ["Multiplication", "Factors and Multiples"],
+                    ["Factors and Multiples", "Prime and Composite"],
+                    ["Data Collection", "Bar Graphs"],
+                    ["Bar Graphs", "Line Plots"],
+                    ["Basic Geometry Concepts", "Line Symmetry"],
+                    ["Angles and Lines", "Types of Angles"],
+                    ["Types of Angles", "Types of Lines"],
+                    ["Basic Measurement", "Mass and Capacity"],
+                    ["Time Telling", "Elapsed Time"],
+                    ["Multiplication", "Multiplication Properties"],
+                    ["Perimeter", "Area"],
 
                     // Advanced Arithmetic connections
                     ["Basic Subtraction", "Negatives"],
@@ -1295,6 +1887,33 @@
                     ["Basic Graphing", "Data Collection"],
                     ["Data Collection", "Mean Median Mode"],
                     ["Mean Median Mode", "Probability and Statistics"],
+                    // Additional Tier 3 connections
+                    ["Factors and Multiples", "GCF and LCM"],
+                    ["Place Value Understanding", "Powers of 10"],
+                    ["Basic Graphing", "Coordinate Plane"],
+                    ["Basic Algebraic Expressions", "Expressions with Variables"],
+                    ["Solving Simple Equations", "One-Step Equations"],
+                    ["Probability Basics", "Simple Probability"],
+                    ["Mean Median Mode", "Comparing Distributions"],
+                    ["3D Shapes", "Nets of 3D Shapes"],
+                    // Additional forward connections for leaf nodes
+                    ["Long Division", "Basic Fractions"],
+                    ["Unit Conversion", "Proportions"],
+                    ["Proportions", "Ratio and Proportion"],
+                    ["Coordinate Plane", "Coordinate Geometry"],
+                    ["Ratio and Proportion", "Proportions"],
+                    ["GCF and LCM", "Simplifying Fractions"],
+                    ["Powers of 10", "Scientific Notation"],
+                    ["One-Step Equations", "Multi-Step Equations"],
+                    ["Expressions with Variables", "Basic Algebraic Expressions"],
+                    ["Simple Probability", "Compound Probability"],
+                    ["Mixed Numbers", "Fraction Operations"],
+                    ["Line Plots", "Mean Median Mode"],
+                    ["Types of Lines", "Parallel Lines and Transversals"],
+                    ["Area", "Area and Perimeter"],
+                    ["Prime and Composite", "GCF and LCM"],
+                    ["Fraction Word Problems", "Word Problems"],
+                    ["Simplifying Fractions", "Fraction Operations"],
 
                     // Pre-Algebra connections
                     ["Percentages", "Basic Algebraic Expressions"],
@@ -1308,6 +1927,25 @@
                     ["Scatter Plots", "Box Plots"],
                     ["Data Collection", "Probability Basics"],
                     ["Volume", "Surface Area"],
+                    // Additional Tier 4 connections
+                    ["Order of Operations", "Exponents"],
+                    ["Square Roots", "Irrational Numbers"],
+                    ["Square Roots", "Cube Roots"],
+                    ["Probability Basics", "Compound Probability"],
+                    ["Data Collection", "Sampling Methods"],
+                    ["Similarity", "Similar Figures"],
+                    ["Angles and Lines", "Parallel Lines and Transversals"],
+                    ["Volume", "Volume of Cylinders Cones Spheres"],
+                    // Additional forward connections
+                    ["Exponents", "Exponential Functions"],
+                    ["Irrational Numbers", "Radicals"],
+                    ["Cube Roots", "Radicals"],
+                    ["Sampling Methods", "Probability and Statistics"],
+                    ["Similar Figures", "Dilations"],
+                    ["Parallel Lines and Transversals", "Proofs"],
+                    ["Volume of Cylinders Cones Spheres", "Surface Area"],
+                    ["Surface Area", "Volume"],
+                    ["Compound Probability", "Permutations"],
 
                     // Geometry connections
                     ["Basic Geometry Concepts", "Angles and Lines"],
@@ -1322,6 +1960,29 @@
                     ["Triangles and Pythagorean Theorem", "Law of Sines"],
                     ["Triangles and Pythagorean Theorem", "Law of Cosines"],
                     ["Angles and Lines", "Coordinate Geometry"],
+                    // Additional Tier 6 Geometry connections
+                    ["Angles and Lines", "Angle Bisectors"],
+                    ["Angles and Lines", "Perpendicular Bisectors"],
+                    ["Triangles and Pythagorean Theorem", "Triangle Inequality"],
+                    ["Triangles and Pythagorean Theorem", "Triangle Centers"],
+                    ["Triangles and Pythagorean Theorem", "Midsegments"],
+                    ["Circles", "Inscribed Angles"],
+                    ["Circles", "Arc Length"],
+                    ["Circles", "Sector Area"],
+                    ["Circles", "Tangent Lines"],
+                    ["Transformations", "Dilations"],
+                    // Additional Geometry forward connections
+                    ["Angle Bisectors", "Triangle Centers"],
+                    ["Perpendicular Bisectors", "Triangle Centers"],
+                    ["Triangle Inequality", "Proofs"],
+                    ["Midsegments", "Similarity"],
+                    ["Inscribed Angles", "Arc Length"],
+                    ["Arc Length", "Sector Area"],
+                    ["Tangent Lines", "Conic Sections"],
+                    ["Coordinate Geometry", "Conic Sections"],
+                    ["Law of Sines", "Trigonometry"],
+                    ["Law of Cosines", "Trigonometry"],
+                    ["Proofs", "Mathematical Logic"],
 
                     // Algebra 1 connections
                     ["Solving Simple Equations", "Polynomials"],
@@ -1336,6 +1997,28 @@
                     ["Basic Functions", "Arithmetic Sequences"],
                     ["Arithmetic Sequences", "Geometric Sequences"],
                     ["Exponential Functions", "Compound Interest"],
+                    // Additional Tier 5 Algebra 1 connections
+                    ["Linear Equations", "Multi-Step Equations"],
+                    ["Solving Simple Equations", "Literal Equations"],
+                    ["Absolute Value", "Absolute Value Equations"],
+                    ["Inequalities", "Graphing Linear Inequalities"],
+                    ["Linear Equations", "Systems by Graphing"],
+                    ["Linear Equations", "Systems by Substitution"],
+                    ["Linear Equations", "Systems by Elimination"],
+                    ["Scatter Plots", "Correlation and Trend Lines"],
+                    // Additional Algebra 1 forward connections
+                    ["Multi-Step Equations", "Literal Equations"],
+                    ["Literal Equations", "Systems by Substitution"],
+                    ["Absolute Value Equations", "Piecewise Functions"],
+                    ["Graphing Linear Inequalities", "Systems by Graphing"],
+                    ["Systems by Graphing", "Conic Sections"],
+                    ["Systems by Substitution", "Systems by Elimination"],
+                    ["Systems by Elimination", "Matrices"],
+                    ["Correlation and Trend Lines", "Probability and Statistics"],
+                    ["Geometric Sequences", "Sequence and Series"],
+                    ["Domain and Range", "Rational Functions"],
+                    ["Compound Interest", "Exponential and Logarithmic Functions"],
+                    ["Radicals", "Complex Numbers"],
 
                     // Algebra 2 connections
                     ["Quadratic Equations", "Complex Numbers"],
@@ -1349,6 +2032,19 @@
                     ["Probability Basics", "Permutations"],
                     ["Permutations", "Combinations"],
                     ["Probability and Statistics", "Expected Value"],
+                    // Additional Tier 7 Algebra 2 connections
+                    ["Advanced Polynomials", "Synthetic Division"],
+                    ["Sequence and Series", "Binomial Theorem"],
+                    ["Matrices", "Matrices Intro"],
+                    // Additional Algebra 2 forward connections
+                    ["Completing the Square", "Conic Sections"],
+                    ["Piecewise Functions", "Advanced Functions"],
+                    ["Asymptotes", "Limits"],
+                    ["Combinations", "Binomial Theorem"],
+                    ["Expected Value", "Normal Distribution"],
+                    ["Synthetic Division", "Rational Functions"],
+                    ["Binomial Theorem", "Series"],
+                    ["Matrices Intro", "Matrices"],
 
                     // Pre-Calculus connections
                     ["Exponential and Logarithmic Functions", "Conic Sections"],
@@ -1361,6 +2057,22 @@
                     ["Trigonometry", "Vectors"],
                     ["Vectors", "Polar Coordinates"],
                     ["Probability and Statistics", "Normal Distribution"],
+                    // Additional Tier 8 Pre-Calculus connections
+                    ["Trigonometry", "Unit Circle"],
+                    ["Trigonometry", "Trig Identities"],
+                    ["Trigonometry", "Graphing Trig Functions"],
+                    ["Sequence and Series", "Series Convergence"],
+                    // Additional Pre-Calculus forward connections
+                    ["Unit Circle", "Trig Identities"],
+                    ["Trig Identities", "Inverse Trig"],
+                    ["Graphing Trig Functions", "Limits"],
+                    ["Series Convergence", "Series"],
+                    ["Radian Measure", "Unit Circle"],
+                    ["Inverse Trig", "Derivatives"],
+                    ["Parametric Equations", "Vector Calculus"],
+                    ["Polar Coordinates", "Double Integrals"],
+                    ["Normal Distribution", "Advanced Statistics"],
+                    ["Conic Sections", "Multivariable Calculus"],
 
                     // Calculus connections
                     ["Advanced Functions", "Limits"],
@@ -1373,12 +2085,36 @@
                     ["Integrals", "Integration Techniques"],
                     ["Integrals", "Multivariable Calculus"],
                     ["Integrals", "Differential Equations"],
+                    // Additional Tier 9 Calculus connections
+                    ["Derivatives", "Quotient Rule"],
+                    ["Derivatives", "Implicit Differentiation"],
+                    ["Derivatives", "Related Rates"],
+                    ["Derivatives", "Applications"],
+                    ["Integrals", "U-Substitution"],
+                    ["Integrals", "Integration by Parts"],
+                    // Additional Calculus forward connections
+                    ["Chain Rule", "Implicit Differentiation"],
+                    ["Product Rule", "Integration by Parts"],
+                    ["Quotient Rule", "Rational Functions"],
+                    ["Implicit Differentiation", "Related Rates"],
+                    ["Related Rates", "Applications"],
+                    ["Applications", "Applied Mathematics"],
+                    ["U-Substitution", "Integration Techniques"],
+                    ["Integration by Parts", "Integration Techniques"],
+                    ["Integration Techniques", "Differential Equations"],
 
                     // Advanced Mathematics connections
                     ["Basic Graphing", "Probability and Statistics"],
                     ["Matrices", "Linear Algebra"],
                     ["Integrals", "Real Analysis"],
                     ["Real Analysis", "Complex Analysis"],
+                    // Additional Tier 10 connections
+                    ["Multivariable Calculus", "Partial Derivatives"],
+                    ["Sequence and Series", "Series"],
+                    ["Linear Algebra", "Eigenvalues"],
+                    ["Multivariable Calculus", "Double Integrals"],
+                    ["Double Integrals", "Triple Integrals"],
+                    ["Multivariable Calculus", "Vector Calculus"],
 
                     // Specialized Topics connections
                     ["Advanced Polynomials", "Abstract Algebra"],
@@ -1419,19 +2155,19 @@
                 };
         
                 this.CONSTELLATION_POSITIONS = {
-                    "Basic Arithmetic": { x: 1197, y: 2555 },
-                    "Intermediate Arithmetic": { x: 1169, y: 2222 },
-                    "Advanced Arithmetic": { x: 1068, y: 1803 },
-                    "Pre-Algebra": { x: 1000, y: 1400 },
-                    "Geometry": { x: 1671, y: 1053 },
-                    "Algebra 1": { x: 800, y: 1100 },
-                    "Algebra 2": { x: 1047, y: 875 },
-                    "Pre-Calculus": { x: 959, y: 476 },
-                    "Calculus": { x: 1026, y: 224 },
-                    "Advanced Mathematics": { x: 400, y: 296 },
-                    "Specialized Topics": { x: -191, y: 97 },
-                    "Mastery and Research": { x: 186, y: -145 },
-                    "Final Specializations": { x: 640, y: -11 }
+                    "Basic Arithmetic": { x: 1100, y: 2640 },
+                    "Intermediate Arithmetic": { x: 1000, y: 2060 },
+                    "Advanced Arithmetic": { x: 600, y: 1620 },
+                    "Pre-Algebra": { x: 580, y: 1260 },
+                    "Geometry": { x: 1800, y: 840 },
+                    "Algebra 1": { x: 760, y: 1020 },
+                    "Algebra 2": { x: 560, y: 760 },
+                    "Pre-Calculus": { x: 1200, y: 540 },
+                    "Calculus": { x: 1000, y: 240 },
+                    "Advanced Mathematics": { x: 760, y: 50 },
+                    "Specialized Topics": { x: 190, y: 100 },
+                    "Mastery and Research": { x: 580, y: -60 },
+                    "Final Specializations": { x: 650, y: -170 }
                 };
             }
         
@@ -2301,6 +3037,37 @@
                 this.viewport.addEventListener('mouseleave', (e) => this.handleMouseUp(e));
                 
                 this.viewport.addEventListener('contextmenu', e => e.preventDefault());
+
+                // Mouse wheel zoom
+                this.viewport.addEventListener('wheel', (e) => this.handleWheel(e), { passive: false });
+            }
+
+            handleWheel(e) {
+                e.preventDefault();
+                if (!this.viewport || !this.container) return;
+
+                const STEP = 1.08;
+                const factor = e.deltaY < 0 ? STEP : 1 / STEP;
+
+                // Get mouse position relative to viewport
+                const rect = this.viewport.getBoundingClientRect();
+                const mouseX = e.clientX - rect.left;
+                const mouseY = e.clientY - rect.top;
+
+                // Get world coordinates under mouse
+                const worldX = (mouseX - this.currentX) / this.currentScale;
+                const worldY = (mouseY - this.currentY) / this.currentScale;
+
+                const newScale = Math.max(0.1, Math.min(2, this.currentScale * factor));
+                if (newScale === this.currentScale) return;
+
+                this.currentScale = newScale;
+
+                // Adjust position to keep mouse point stationary
+                this.currentX = mouseX - worldX * this.currentScale;
+                this.currentY = mouseY - worldY * this.currentScale;
+
+                this.updateTransform();
             }
 
             setupZoomControls() {
@@ -2315,21 +3082,62 @@
 
             handleTouchStart(e) {
                 e.preventDefault();
-                if (e.touches.length === 1) {
+                if (e.touches.length === 2) {
+                    // Start pinch-to-zoom
+                    this.endDrag();
+                    this.isPinching = true;
+                    const dx = e.touches[0].clientX - e.touches[1].clientX;
+                    const dy = e.touches[0].clientY - e.touches[1].clientY;
+                    this.initialPinchDistance = Math.sqrt(dx * dx + dy * dy);
+                    this.initialPinchScale = this.currentScale;
+                    // Store pinch center in viewport coordinates
+                    this.pinchCenterX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+                    this.pinchCenterY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+                } else if (e.touches.length === 1 && !this.isPinching) {
                     this.startDrag(e.touches[0].clientX, e.touches[0].clientY);
                 }
             }
-            
+
             handleTouchMove(e) {
                 e.preventDefault();
-                if (e.touches.length === 1 && this.isDragging) {
+                if (e.touches.length === 2 && this.isPinching) {
+                    // Handle pinch-to-zoom
+                    const dx = e.touches[0].clientX - e.touches[1].clientX;
+                    const dy = e.touches[0].clientY - e.touches[1].clientY;
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+
+                    if (this.initialPinchDistance > 0) {
+                        const scale = distance / this.initialPinchDistance;
+                        const newScale = Math.max(0.1, Math.min(2, this.initialPinchScale * scale));
+
+                        if (newScale !== this.currentScale) {
+                            // Get the pinch center in world coordinates before scaling
+                            const worldX = (this.pinchCenterX - this.currentX) / this.currentScale;
+                            const worldY = (this.pinchCenterY - this.currentY) / this.currentScale;
+
+                            this.currentScale = newScale;
+
+                            // Adjust position to keep pinch center stationary
+                            this.currentX = this.pinchCenterX - worldX * this.currentScale;
+                            this.currentY = this.pinchCenterY - worldY * this.currentScale;
+
+                            this.updateTransform();
+                        }
+                    }
+                } else if (e.touches.length === 1 && this.isDragging && !this.isPinching) {
                     this.drag(e.touches[0].clientX, e.touches[0].clientY);
                 }
             }
-            
+
             handleTouchEnd(e) {
                 e.preventDefault();
-                this.endDrag();
+                if (e.touches.length < 2) {
+                    this.isPinching = false;
+                    this.initialPinchDistance = 0;
+                }
+                if (e.touches.length === 0) {
+                    this.endDrag();
+                }
             }
             
             handleMouseDown(e) {
@@ -2386,7 +3194,7 @@
                 const worldX = (centerX - this.currentX) / this.currentScale;
                 const worldY = (centerY - this.currentY) / this.currentScale;
 
-                const newScale = Math.max(0.2, Math.min(2, this.currentScale * factor));
+                const newScale = Math.max(0.1, Math.min(2, this.currentScale * factor));
                 if (newScale === this.currentScale) return;
 
                 this.currentScale = newScale;
@@ -2398,11 +3206,17 @@
             }
 
             centerViewport() {
+                // Fit-all: zoom to show entire tree
+                this.fitAll();
+            }
+
+            fitAll() {
                 if (!this.viewport || !this.container) return;
 
                 const vpW = this.viewport.offsetWidth;
                 const vpH = this.viewport.offsetHeight;
 
+                // Calculate the bounding box of all skills
                 let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
                 Object.values(this.SKILL_TREE).forEach(s => {
                     minX = Math.min(minX, s.x);
@@ -2412,6 +3226,25 @@
                 });
                 if (!isFinite(minX) || !isFinite(minY)) return;
 
+                // Add padding around the tree (account for node size ~40px)
+                const padding = 80;
+                minX -= padding;
+                maxX += padding;
+                minY -= padding;
+                maxY += padding;
+
+                const treeWidth = maxX - minX;
+                const treeHeight = maxY - minY;
+
+                // Calculate scale to fit tree in viewport
+                const scaleX = vpW / treeWidth;
+                const scaleY = vpH / treeHeight;
+                const fitScale = Math.min(scaleX, scaleY);
+
+                // Clamp to min/max scale
+                this.currentScale = Math.max(0.1, Math.min(2, fitScale));
+
+                // Center the tree
                 const cx = (minX + maxX) / 2;
                 const cy = (minY + maxY) / 2;
 
@@ -2429,7 +3262,7 @@
                 const vpW = this.viewport.offsetWidth;
                 const vpH = this.viewport.offsetHeight;
                 
-                // Use different world sizes based on subject
+                // Use different world sizes based on subject for pan limits
                 let worldW, worldH;
                 if (this.currentSubject === 'Robotics') {
                     worldW = 4000;
@@ -2437,6 +3270,10 @@
                 } else if (this.currentSubject === 'Programming') {
                     worldW = 3000;
                     worldH = 3500;
+                } else if (this.currentSubject === 'Math') {
+                    // Math tree spans x: 60-2040, y: -200 to 2800
+                    worldW = 2200;
+                    worldH = 3200;
                 } else {
                     worldW = 2400;
                     worldH = 2000;
@@ -2627,7 +3464,24 @@
                     }
                 }
 
-                tooltip.innerHTML = `<strong>${skillName}</strong><br>${prereqText}${masteryInfo}`;
+                // Add "Practice in Dojo" button for Math skills that are not locked
+                let practiceButton = '';
+                if (this.currentSubject === 'Math' && skill.state !== 'locked') {
+                    practiceButton = `<br><br><button onclick="skillTreeManager.requestPracticeInDojo('${skillName}')" style="
+                        background: linear-gradient(135deg, #f59e0b, #fbbf24);
+                        color: #0f172a;
+                        border: none;
+                        padding: 0.5rem 1rem;
+                        border-radius: 6px;
+                        cursor: pointer;
+                        font-weight: 600;
+                        font-size: 0.85rem;
+                        width: 100%;
+                        margin-top: 0.5rem;
+                    ">Practice in Math Dojo</button>`;
+                }
+
+                tooltip.innerHTML = `<strong>${skillName}</strong><br>${prereqText}${masteryInfo}${practiceButton}`;
                 
                 const rect = node.getBoundingClientRect();
                 const tooltipRect = tooltip.getBoundingClientRect();
