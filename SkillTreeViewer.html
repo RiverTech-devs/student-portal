@@ -438,18 +438,19 @@
         
         .tooltip {
             position: absolute;
-            background: rgba(0, 0, 0, 0.9);
+            background: rgba(0, 0, 0, 0.95);
             color: #d4af37;
-            padding: 8px 12px;
-            border-radius: 5px;
+            padding: 10px 14px;
+            border-radius: 8px;
             font-size: 11px;
             border: 1px solid #d4af37;
-            pointer-events: none;
+            pointer-events: auto;
             z-index: 1000;
             max-width: 250px;
             text-align: left;
-            line-height: 1.3;
+            line-height: 1.4;
             display: none;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
         }
         
         .hidden { display: none !important; }
@@ -774,6 +775,11 @@
                 this.initialPinchScale = 1;
                 this.pinchCenterX = 0;
                 this.pinchCenterY = 0;
+
+                // Tooltip state
+                this.tooltipHideTimer = null;
+                this.currentTooltipSkill = null;
+                this.currentHoveredNode = null;
                 
                 // Mobile detection
                 this.isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || 
@@ -3002,6 +3008,7 @@
                 
                 this.setupTouchControls();
                 this.setupZoomControls();
+                this.setupTooltipHover();
             }
 
             enterApplication() {
@@ -3375,13 +3382,13 @@
                     node.addEventListener('touchend', handleTouchEnd, { passive: false });
                 } else {
                     node.addEventListener('mouseenter', () => {
+                        this.cancelTooltipHide();
                         this.showTooltipForNode(node, skillName);
                         this.startPathHighlight(skillName);
+                        this.currentHoveredNode = node;
                     });
                     node.addEventListener('mouseleave', () => {
-                        this.hideTooltip();
-                        node.classList.remove('highlighted');
-                        this.clearPathHighlight();
+                        this.scheduleTooltipHide(node);
                     });
                     node.addEventListener('click', (e) => {
                         e.stopPropagation();
@@ -3482,31 +3489,75 @@
                 }
 
                 tooltip.innerHTML = `<strong>${skillName}</strong><br>${prereqText}${masteryInfo}${practiceButton}`;
-                
+
                 const rect = node.getBoundingClientRect();
+                tooltip.style.display = 'block';
                 const tooltipRect = tooltip.getBoundingClientRect();
-                
-                let left = rect.left + rect.width / 2 - tooltipRect.width / 2;
-                let top = rect.top - tooltipRect.height - 10;
-                
+
+                // Offset to the right side of the node to avoid covering paths
+                const offsetX = 60; // Horizontal offset from node center
+                const offsetY = 20; // Vertical offset above node
+
+                let left = rect.right + offsetX - tooltipRect.width / 2;
+                let top = rect.top - offsetY;
+
+                // Keep tooltip on screen
                 if (left < 10) left = 10;
                 if (left + tooltipRect.width > window.innerWidth - 10) {
-                    left = window.innerWidth - tooltipRect.width - 10;
+                    // If no room on right, try left side
+                    left = rect.left - offsetX - tooltipRect.width / 2;
+                    if (left < 10) left = 10;
                 }
                 if (top < 10) {
                     top = rect.bottom + 10;
                 }
-                
-                tooltip.style.cssText += `
-                    display: block;
-                    left: ${left}px;
-                    top: ${top}px;
-                `;
+                if (top + tooltipRect.height > window.innerHeight - 10) {
+                    top = window.innerHeight - tooltipRect.height - 10;
+                }
+
+                tooltip.style.left = `${left}px`;
+                tooltip.style.top = `${top}px`;
+
+                // Store current skill for tooltip hover handling
+                this.currentTooltipSkill = skillName;
             }
 
             hideTooltip() {
                 const tooltip = document.getElementById('tooltip');
                 if (tooltip) tooltip.style.display = 'none';
+                this.currentTooltipSkill = null;
+                if (this.currentHoveredNode) {
+                    this.currentHoveredNode.classList.remove('highlighted');
+                    this.currentHoveredNode = null;
+                }
+                this.clearPathHighlight();
+            }
+
+            scheduleTooltipHide(node) {
+                // Give user time to move mouse to tooltip
+                this.tooltipHideTimer = setTimeout(() => {
+                    this.hideTooltip();
+                }, 200);
+            }
+
+            cancelTooltipHide() {
+                if (this.tooltipHideTimer) {
+                    clearTimeout(this.tooltipHideTimer);
+                    this.tooltipHideTimer = null;
+                }
+            }
+
+            setupTooltipHover() {
+                const tooltip = document.getElementById('tooltip');
+                if (!tooltip) return;
+
+                tooltip.addEventListener('mouseenter', () => {
+                    this.cancelTooltipHide();
+                });
+
+                tooltip.addEventListener('mouseleave', () => {
+                    this.scheduleTooltipHide();
+                });
             }
 
             getStateLabel(state) {
