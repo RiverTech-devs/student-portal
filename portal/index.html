@@ -2474,6 +2474,9 @@
             case 'SKILL_UNLOCKED':
               this.handleSkillUnlocked(event.data);
               break;
+            case 'BACKFILL_SKILLS':
+              await this.handleBackfillSkills(event.data);
+              break;
             // Testing Center messages
             case 'TESTING_CENTER_AUTH_READY':
               console.log('Testing Center auth acknowledged');
@@ -2578,6 +2581,43 @@
       handleSkillUnlocked(data) {
         const { skill } = data;
         this.showNotification(`Skill unlocked: ${skill}!`, 'success');
+      }
+
+      async handleBackfillSkills(data) {
+        const { subject, skills } = data;
+        if (!subject || !skills || skills.length === 0) return;
+
+        console.log(`🔄 Backfilling ${skills.length} prerequisite skills to Supabase for ${subject}`);
+
+        const userId = this.userInfo?.user?.id;
+        if (!userId) return;
+
+        try {
+          const now = new Date().toISOString();
+          const rows = skills.map(s => ({
+            user_id: userId,
+            subject: subject,
+            skill_name: s.skillName,
+            state: 'mastered',
+            mastery_score: 100,
+            last_practiced: now,
+            practice_count: 1,
+            mastered_at: now,
+            updated_at: now
+          }));
+
+          const { error } = await this.auth.supabase
+            .from('skill_progress')
+            .upsert(rows, { onConflict: 'user_id,subject,skill_name' });
+
+          if (error) {
+            console.error('Failed to backfill skills to database:', error);
+          } else {
+            console.log(`✅ Backfilled ${skills.length} skills to database`);
+          }
+        } catch (e) {
+          console.error('Error backfilling skills:', e);
+        }
       }
 
       // Upsert skill progress to database
@@ -25469,10 +25509,37 @@
       }
 
       async removeStudentFromClass(studentId, classId, studentName, className) {
-        if (!confirm(`Remove ${studentName} from ${className}?\n\nThis will remove all their grades and assignments for this class.`)) {
-          return;
-        }
-        
+        // Use custom modal instead of native confirm() to avoid browser blocking issues
+        const overlay = document.createElement('div');
+        overlay.id = 'remove-from-class-overlay';
+        overlay.style.cssText = 'position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); z-index: 10001; display: flex; align-items: center; justify-content: center; padding: 20px;';
+
+        overlay.innerHTML = `
+          <div style="background: var(--card); border-radius: 12px; max-width: 400px; width: 100%; padding: 25px;">
+            <h3 style="margin: 0 0 15px 0; color: var(--text);">Remove Student from Class</h3>
+            <p style="color: var(--muted); margin-bottom: 20px;">
+              Remove <strong>${studentName}</strong> from <strong>${className}</strong>?
+            </p>
+            <p style="color: var(--warning); font-size: 13px; margin-bottom: 20px;">
+              This will mark their enrollment as removed. Grades and submissions are preserved.
+            </p>
+
+            <div style="display: flex; gap: 10px; justify-content: flex-end;">
+              <button onclick="document.getElementById('remove-from-class-overlay').remove()"
+                      class="btn btn-secondary">Cancel</button>
+              <button onclick="app.executeRemoveFromClass('${studentId}', '${classId}', '${studentName}', '${className}')"
+                      class="btn danger">Remove</button>
+            </div>
+          </div>
+        `;
+
+        document.body.appendChild(overlay);
+      }
+
+      async executeRemoveFromClass(studentId, classId, studentName, className) {
+        // Close the confirmation dialog
+        document.getElementById('remove-from-class-overlay')?.remove();
+
         try {
           // Update enrollment status to removed
           const { error } = await this.supabaseQuery(() => this.auth.supabase
@@ -25480,15 +25547,15 @@
             .update({ status: 'removed' })
             .eq('student_id', studentId)
             .eq('class_id', classId));
-          
+
           if (error) throw error;
-          
+
           this.showNotification(`${studentName} removed from ${className}`, 'success');
-          
+
           // Refresh the student details view
           this.closeModal('student-details');
           this.viewStudentDetails(studentId);
-          
+
         } catch (error) {
           console.error('Error removing student from class:', error);
           this.showNotification('Error: ' + error.message, 'error');

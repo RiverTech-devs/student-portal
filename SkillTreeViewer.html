@@ -3218,6 +3218,68 @@
                 console.log('All skills unlocked');
             }
 
+            backfillMasteredPrerequisites() {
+                console.log('Backfilling mastered prerequisites');
+                const backfilledSkills = [];
+
+                // Helper to get all prerequisites recursively
+                const getAllPrereqs = (skillName, visited = new Set()) => {
+                    if (visited.has(skillName)) return [];
+                    visited.add(skillName);
+
+                    const directPrereqs = this.CONNECTIONS
+                        .filter(c => c.to === skillName)
+                        .map(c => c.from);
+
+                    let allPrereqs = [...directPrereqs];
+                    for (const prereq of directPrereqs) {
+                        allPrereqs = allPrereqs.concat(getAllPrereqs(prereq, visited));
+                    }
+                    return [...new Set(allPrereqs)];
+                };
+
+                // Find all mastered skills
+                const masteredSkills = Object.keys(this.SKILL_TREE)
+                    .filter(name => this.SKILL_TREE[name].state === 'mastered');
+
+                // For each mastered skill, mark all prerequisites as mastered
+                for (const skillName of masteredSkills) {
+                    const prereqs = getAllPrereqs(skillName);
+                    for (const prereq of prereqs) {
+                        const skill = this.SKILL_TREE[prereq];
+                        if (skill && skill.state !== 'mastered') {
+                            skill.state = 'mastered';
+                            skill.mastery_score = 100;
+                            skill.mastered_at = new Date().toISOString();
+                            this.skillProgress[prereq] = 'mastered';
+                            backfilledSkills.push(prereq);
+                        }
+                    }
+                }
+
+                // Save to localStorage
+                this.saveProgressToStorage();
+
+                // Sync backfilled skills to Supabase via parent
+                if (backfilledSkills.length > 0 && window.parent && window.parent !== window) {
+                    window.parent.postMessage({
+                        type: 'BACKFILL_SKILLS',
+                        subject: this.currentSubject,
+                        skills: backfilledSkills.map(name => ({
+                            skillName: name,
+                            state: 'mastered',
+                            mastery_score: 100
+                        }))
+                    }, '*');
+                }
+
+                // Refresh all visuals
+                this.refreshAllVisuals();
+
+                console.log(`Backfill complete: ${backfilledSkills.length} prerequisites marked as mastered`);
+                return backfilledSkills.length;
+            }
+
             showOverrideModal(skillName) {
                 console.log('showOverrideModal called with:', skillName);
                 this.pendingUnlockSkill = skillName;
@@ -3275,6 +3337,14 @@
                     this.unlockAllSkills();
                     this.hideOverrideModal();
                     this.showNotification('All skills unlocked!');
+                    return;
+                }
+
+                // Special BACKFILL code - mark all prerequisites of mastered skills as mastered
+                if (enteredCode === 'BACKFILL') {
+                    const count = this.backfillMasteredPrerequisites();
+                    this.hideOverrideModal();
+                    this.showNotification(count > 0 ? `Backfilled ${count} prerequisite skills as mastered` : 'All prerequisites already up to date');
                     return;
                 }
 

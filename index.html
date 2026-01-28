@@ -2980,6 +2980,11 @@
                         this.forwardSkillStatesToDojo(event.data);
                         break;
 
+                    case 'BACKFILL_SKILLS':
+                        // Skill tree requesting bulk backfill of prerequisite skills to Supabase
+                        this.handleBackfillSkills(event.data);
+                        break;
+
                     default:
                         console.log('Unknown message from skill tree/game:', event.data.type);
                 }
@@ -3036,6 +3041,63 @@
                 } catch (e) {
                     console.error('Error resetting skill progress:', e);
                 }
+            }
+
+            async handleBackfillSkills(data) {
+                const { subject, skills } = data;
+                if (!subject || !skills || skills.length === 0) return;
+
+                console.log(`🔄 Backfilling ${skills.length} prerequisite skills to Supabase for ${subject}`);
+
+                // Update local progress
+                if (!this.skillProgress[subject]) {
+                    this.skillProgress[subject] = {};
+                }
+
+                const now = new Date().toISOString();
+                for (const s of skills) {
+                    this.skillProgress[subject][s.skillName] = {
+                        state: 'mastered',
+                        mastery_score: 100,
+                        last_practiced: now,
+                        practice_count: 1,
+                        decay_rate: 14,
+                        mastered_at: now
+                    };
+                }
+
+                // Bulk upsert to Supabase
+                if (this.portal.auth.isAuthenticated()) {
+                    try {
+                        const userId = this.portal.auth.getUserInfo().profile.id;
+
+                        const rows = skills.map(s => ({
+                            user_id: userId,
+                            subject: subject,
+                            skill_name: s.skillName,
+                            state: 'mastered',
+                            mastery_score: 100,
+                            last_practiced: now,
+                            practice_count: 1,
+                            mastered_at: now,
+                            updated_at: now
+                        }));
+
+                        const { error } = await this.portal.auth.supabase
+                            .from('skill_progress')
+                            .upsert(rows);
+
+                        if (error) {
+                            console.error('Failed to backfill skills to database:', error);
+                        } else {
+                            console.log(`✅ Backfilled ${skills.length} skills to database`);
+                        }
+                    } catch (e) {
+                        console.error('Error backfilling skills:', e);
+                    }
+                }
+
+                this.updateSkillsCounter();
             }
 
             handleDojoSkillUpdate(data) {
