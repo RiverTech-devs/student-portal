@@ -2133,6 +2133,8 @@ function endSessionTracking() {
         if (result.accuracy >= 80 && result.total >= 3) {
             skill.state = 'mastered';
             skill.mastery_score = Math.max(skill.mastery_score || 0, result.accuracy);
+            // Unlock dependent skills when mastery is achieved
+            triggerDependentUnlocks(result.skill);
         } else if (result.accuracy >= 60 && result.total >= 2) {
             if (skill.state !== 'mastered') {
                 skill.state = 'activated';
@@ -2287,6 +2289,41 @@ function updateSkillInTree(skillName, newState, mastery) {
 
     if (newState === 'mastered' && !skill.mastered_at) {
         skill.mastered_at = new Date().toISOString();
+    }
+}
+
+// When a skill is mastered, unlock dependent skills whose prerequisites are all met
+function triggerDependentUnlocks(masteredSkillName) {
+    // Find all skills that depend on the mastered skill
+    const dependents = MATH_CONNECTIONS
+        .filter(([from, to]) => from === masteredSkillName)
+        .map(([from, to]) => to);
+
+    for (const dependent of dependents) {
+        // Initialize if not tracked yet
+        if (!skillTreeData.skills[dependent]) {
+            skillTreeData.skills[dependent] = { state: 'locked', mastery_score: 0 };
+        }
+
+        const depSkill = skillTreeData.skills[dependent];
+        // Only unlock if currently locked
+        if (depSkill.state !== 'locked') continue;
+
+        // Check if ALL prerequisites for this dependent are mastered
+        const prereqs = MATH_CONNECTIONS
+            .filter(([from, to]) => to === dependent)
+            .map(([from]) => from);
+
+        const allMet = prereqs.every(prereq => {
+            const s = skillTreeData.skills[prereq];
+            return s && (s.state === 'mastered' || s.state === 'activated');
+        });
+
+        if (allMet) {
+            depSkill.state = 'available';
+            console.log(`Unlocked dependent skill: ${dependent}`);
+            // Recurse in case this unlock cascades (available doesn't trigger further, but be safe)
+        }
     }
 }
 
@@ -29524,6 +29561,17 @@ function goBackToLearn() {
 function completeLearning() {
     // End session tracking and send batched update to tree
     endSessionTracking();
+
+    // Ensure the mastered skill unlocks dependents in our local tree data
+    const treeSkill = getTreeSkillName(state.learningSkill);
+    if (!skillTreeData.skills[treeSkill]) {
+        skillTreeData.skills[treeSkill] = { state: 'mastered', mastery_score: 100 };
+    } else {
+        skillTreeData.skills[treeSkill].state = 'mastered';
+        skillTreeData.skills[treeSkill].mastery_score = 100;
+    }
+    triggerDependentUnlocks(treeSkill);
+    saveSkillTreeData();
 
     // Send skill mastery to Skill Tree (completed lesson = high mastery)
     sendSkillProgress(state.learningSkill, state.learningTier, 3, 3, 0);
