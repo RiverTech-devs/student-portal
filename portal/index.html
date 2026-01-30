@@ -2791,7 +2791,7 @@
                   )
                 )
               `)
-              .eq('teacher_id', this.userInfo.user.id)
+              .or(`teacher_id.eq.${this.userInfo.user.id},secondary_teacher_id.eq.${this.userInfo.user.id}`)
               .eq('class_enrollments.status', 'active')
           );
 
@@ -3743,7 +3743,7 @@
           this.auth.supabase
             .from('classes')
             .select('*')
-            .eq('teacher_id', this.userInfo.user.id)
+            .or(`teacher_id.eq.${this.userInfo.user.id},secondary_teacher_id.eq.${this.userInfo.user.id}`)
             .eq('is_active', true)
             .order('name'));
       
@@ -11929,9 +11929,24 @@
         this.currentClass = classData;
         
         // Build the modal content
-        const isOwnClass = classData.teacher_id === this.userInfo.user.id;
+        const isPrimaryTeacher = classData.teacher_id === this.userInfo.user.id;
+        const isSecondaryTeacher = classData.secondary_teacher_id === this.userInfo.user.id;
+        const isOwnClass = isPrimaryTeacher || isSecondaryTeacher;
         const showTeacherFeatures = isTeacher && (isOwnClass || isAdmin);
         
+        // Fetch secondary teacher name if one is assigned
+        let secondaryTeacherName = '';
+        if (classData.secondary_teacher_id) {
+          const { data: secTeacher } = await this.supabaseQuery(() => this.auth.supabase
+            .from('user_profiles')
+            .select('first_name, last_name')
+            .eq('id', classData.secondary_teacher_id)
+            .single());
+          if (secTeacher) {
+            secondaryTeacherName = `${secTeacher.first_name} ${secTeacher.last_name}`;
+          }
+        }
+
         // Get grading weight info
         const gradingWeight = classData.grading_weight || 'even';
         
@@ -11981,7 +11996,12 @@
               <strong>👨‍👩‍👧‍👦 Parent View</strong> - Viewing your child's class
             </div>
           ` : ''}
-          
+          ${isSecondaryTeacher ? `
+            <div style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color: white; padding: 12px 20px; border-radius: 8px; margin-bottom: 20px;">
+              <strong>Secondary Teacher</strong> - You can add assignments, grade, add notes, and take attendance for this class.
+            </div>
+          ` : ''}
+
           <div style="margin-bottom: 20px;">
             <h3 style="color: var(--accent); margin-bottom: 10px;">${classData.name}</h3>
             <p style="color: var(--muted); margin-bottom: 15px;">${classData.description || 'No description available'}</p>
@@ -11996,6 +12016,7 @@
                 <strong>Max Students:</strong> ${classData.max_students || 30}<br>
                 <strong>Created:</strong> ${new Date(classData.created_at).toLocaleDateString()}<br>
                 ${showTeacherFeatures ? `<strong>Current Students:</strong> ${classData.student_count || 0}` : ''}
+                ${secondaryTeacherName && showTeacherFeatures ? `<br><strong>Secondary Teacher:</strong> ${secondaryTeacherName}` : ''}
               </div>
             </div>
             
@@ -12073,7 +12094,7 @@
       
             <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end; flex-wrap: wrap;">
               <button class="btn btn-secondary" onclick="app.closeModal('class-details')">Close</button>
-              ${(isOwnClass || isAdmin) ? `
+              ${(isPrimaryTeacher || isAdmin) ? `
                 ${isClosed ? `
                   <button class="btn btn-success" onclick="app.reopenClass('${classId}')" style="background: var(--accent-2); color: black;">🔓 Reopen Class</button>
                 ` : `
@@ -12141,11 +12162,11 @@
             const userInfo = this.auth.getUserInfo();
             const teacherId = userInfo.profile.id;
             
-            // Get teacher's classes
+            // Get teacher's classes (primary or secondary)
             const { data: classes, error } = await this.supabaseQuery(() => this.auth.supabase
                 .from('classes')
                 .select('*')
-                .eq('teacher_id', teacherId)
+                .or(`teacher_id.eq.${teacherId},secondary_teacher_id.eq.${teacherId}`)
                 .order('name', { ascending: true }));
             
             const listDiv = document.getElementById('class-roster-list');
@@ -13618,6 +13639,18 @@
         const courseWeight = classData.course_weight || 'normal';
         const isAdmin = this.userInfo.profile?.user_type === 'admin';
 
+        // Load all teachers for secondary teacher dropdown
+        const { data: allTeachers } = await this.supabaseQuery(() => this.auth.supabase
+          .from('user_profiles')
+          .select('id, first_name, last_name')
+          .eq('user_type', 'teacher')
+          .order('last_name'));
+
+        const teacherOptions = (allTeachers || [])
+          .filter(t => t.id !== classData.teacher_id) // exclude primary teacher
+          .map(t => `<option value="${t.id}" ${classData.secondary_teacher_id === t.id ? 'selected' : ''}>${t.last_name}, ${t.first_name}</option>`)
+          .join('');
+
         // Load existing class schedule
         const { data: existingSchedule } = await this.auth.supabase
           .from('class_schedule')
@@ -13723,6 +13756,14 @@
               <label for="edit-max-students">Maximum Students</label>
               <input type="number" id="edit-max-students" min="1" max="100" value="${classData.max_students || 30}">
             </div>
+            <div class="form-group">
+              <label for="edit-secondary-teacher">Secondary Teacher</label>
+              <select id="edit-secondary-teacher" style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+                <option value="">None</option>
+                ${teacherOptions}
+              </select>
+              <span style="font-size: 11px; color: var(--muted); display: block; margin-top: 4px;">Secondary teachers can add assignments, grade, add notes, and take attendance but cannot edit or delete the class.</span>
+            </div>
             ${isAdmin ? `
             <!-- Course Weight Section - Admin Only -->
             <div class="form-group" style="margin-top: 20px; padding-top: 20px; border-top: 2px solid var(--border);">
@@ -13791,12 +13832,15 @@
         const gradingWeight = document.querySelector('input[name="edit-grading-weight"]:checked')?.value || 'even';
         const isAdmin = this.userInfo.profile?.user_type === 'admin';
 
+        const secondaryTeacherVal = document.getElementById('edit-secondary-teacher')?.value || null;
+
         const updatedData = {
           name: document.getElementById('edit-class-name').value,
           subject: document.getElementById('edit-class-subject').value,
           description: document.getElementById('edit-class-description').value || null,
           max_students: parseInt(document.getElementById('edit-max-students').value) || 30,
-          grading_weight: gradingWeight
+          grading_weight: gradingWeight,
+          secondary_teacher_id: secondaryTeacherVal || null
         };
 
         // Only admins can set course weight
