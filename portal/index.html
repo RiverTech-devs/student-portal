@@ -1868,7 +1868,7 @@
                   .from('class_enrollments')
                   .select('id, class_id')
                   .eq('student_id', studentId)
-                  .eq('status', 'active'));
+                  .in('status', ['active', 'archived']));
 
               if (enrollments && enrollments.length > 0) {
                 const classIds = enrollments.map(e => e.class_id);
@@ -1968,8 +1968,9 @@
 
             if (classCount > 0) {
               const quarterGPA = totalWeightedGPA / classCount;
+              const validGrades = gradeData.filter(g => g.class_grade != null);
               result.quarters[quarterNum] = {
-                grade: gradeData.reduce((sum, g) => sum + (g.class_grade || 0), 0) / gradeData.length,
+                grade: validGrades.length > 0 ? validGrades.reduce((sum, g) => sum + g.class_grade, 0) / validGrades.length : null,
                 gpa: quarterGPA,
                 classes: quarterClasses
               };
@@ -22236,6 +22237,23 @@
                   📄 Report Card
                 </button>
               </div>
+              <!-- Report Card Options (shown when a student is selected) -->
+              <div id="report-card-options" style="display: none; margin-top: 15px; padding-top: 15px; border-top: 1px solid var(--border);">
+                <div style="margin-bottom: 10px;">
+                  <label style="display: block; margin-bottom: 5px; font-weight: bold;">Report Card Columns</label>
+                  <div style="display: flex; flex-wrap: wrap; gap: 10px;">
+                    <label style="font-size: 13px; cursor: pointer;"><input type="checkbox" id="rc-col-credits" checked> Cr (Credits)</label>
+                    <label style="font-size: 13px; cursor: pointer;"><input type="checkbox" id="rc-col-finals" checked> Finals</label>
+                    <label style="font-size: 13px; cursor: pointer;"><input type="checkbox" id="rc-col-hc" checked> H/C</label>
+                    <label style="font-size: 13px; cursor: pointer;"><input type="checkbox" id="rc-col-gp" checked> GP</label>
+                    <label style="font-size: 13px; cursor: pointer;"><input type="checkbox" id="rc-col-wtgp" checked> Wt GP</label>
+                  </div>
+                </div>
+                <div id="rc-class-exclusion" style="display: none;">
+                  <label style="display: block; margin-bottom: 5px; font-weight: bold;">Include Classes</label>
+                  <div id="rc-class-list" style="display: flex; flex-wrap: wrap; gap: 8px; max-height: 120px; overflow-y: auto;"></div>
+                </div>
+              </div>
             </div>
 
             <!-- Report Display Area -->
@@ -22323,12 +22341,22 @@
             // Enable/disable report card button based on student selection
             studentSelect.addEventListener('change', () => {
               const reportCardBtn = document.getElementById('report-card-btn');
+              const rcOptions = document.getElementById('report-card-options');
+              const isStudentSelected = studentSelect.value !== 'all';
               if (reportCardBtn) {
-                const isStudentSelected = studentSelect.value !== 'all';
                 reportCardBtn.disabled = !isStudentSelected;
                 reportCardBtn.title = isStudentSelected
                   ? 'Generate printable report card for this student'
                   : 'Select a specific student to generate report card';
+              }
+              if (rcOptions) {
+                rcOptions.style.display = isStudentSelected ? 'block' : 'none';
+              }
+              if (isStudentSelected) {
+                this.loadReportCardClassList(studentSelect.value);
+              } else {
+                const classExclusion = document.getElementById('rc-class-exclusion');
+                if (classExclusion) classExclusion.style.display = 'none';
               }
             });
           }
@@ -22366,6 +22394,41 @@
         if (reportCardBtn) {
           reportCardBtn.disabled = true;
           reportCardBtn.title = 'Select a specific student to generate report card';
+        }
+        const rcOptions = document.getElementById('report-card-options');
+        if (rcOptions) rcOptions.style.display = 'none';
+      }
+
+      async loadReportCardClassList(studentId) {
+        const classExclusion = document.getElementById('rc-class-exclusion');
+        const classList = document.getElementById('rc-class-list');
+        if (!classExclusion || !classList) return;
+
+        try {
+          const { data: enrollments } = await this.auth.supabase
+            .from('class_enrollments')
+            .select('class_id, classes(id, name)')
+            .eq('student_id', studentId)
+            .in('status', ['active', 'archived']);
+
+          if (!enrollments || enrollments.length === 0) {
+            classExclusion.style.display = 'none';
+            return;
+          }
+
+          classList.innerHTML = '';
+          enrollments.forEach(e => {
+            if (!e.classes) return;
+            const label = document.createElement('label');
+            label.style.cssText = 'font-size: 13px; cursor: pointer; white-space: nowrap;';
+            label.innerHTML = `<input type="checkbox" class="rc-class-checkbox" value="${e.class_id}" checked> ${e.classes.name}`;
+            classList.appendChild(label);
+          });
+
+          classExclusion.style.display = 'block';
+        } catch (error) {
+          console.error('Error loading class list for report card:', error);
+          classExclusion.style.display = 'none';
         }
       }
 
@@ -22673,10 +22736,26 @@
         }
         const quarterSelect = document.getElementById('report-card-quarter');
         const upToQuarterId = quarterSelect?.value === 'current' ? null : quarterSelect?.value;
-        this.generateReportCard(studentSelect.value, upToQuarterId);
+
+        // Read column visibility settings
+        const columnVisibility = {
+          credits: document.getElementById('rc-col-credits')?.checked !== false,
+          finals: document.getElementById('rc-col-finals')?.checked !== false,
+          hc: document.getElementById('rc-col-hc')?.checked !== false,
+          gp: document.getElementById('rc-col-gp')?.checked !== false,
+          wtgp: document.getElementById('rc-col-wtgp')?.checked !== false
+        };
+
+        // Read excluded class IDs
+        const excludedClassIds = [];
+        document.querySelectorAll('.rc-class-checkbox').forEach(cb => {
+          if (!cb.checked) excludedClassIds.push(cb.value);
+        });
+
+        this.generateReportCard(studentSelect.value, upToQuarterId, { columnVisibility, excludedClassIds });
       }
 
-      async generateReportCard(studentId, upToQuarterId = null) {
+      async generateReportCard(studentId, upToQuarterId = null, options = {}) {
         this.showNotification('Generating report card...', 'info');
 
         try {
@@ -22776,11 +22855,17 @@
           // Sort to ensure Q1, Q2, etc. order
           activeQuarters.sort();
 
+          // Filter excluded classes
+          let filteredEnrollments = enrollments || [];
+          if (options.excludedClassIds && options.excludedClassIds.length > 0) {
+            filteredEnrollments = filteredEnrollments.filter(e => !options.excludedClassIds.includes(e.class_id));
+          }
+
           // Group classes by subject
           const subjectGroups = {};
           const subjectOrder = ['Math', 'English', 'Science', 'Science & Tech', 'Social Studies', 'Humanities', 'Health', 'Health & PE', 'PE', 'Electives', 'Other'];
 
-          for (const enrollment of (enrollments || [])) {
+          for (const enrollment of filteredEnrollments) {
             const cls = enrollment.classes;
             if (!cls) continue;
 
@@ -22815,7 +22900,9 @@
                 quarterGrades[`Q${qNum}`] = {
                   skill: this.percentageToLetter(snapshot.academic_grade),
                   part: this.percentageToLetter(snapshot.participation_grade),
-                  total: this.percentageToLetter(snapshot.class_grade)
+                  total: this.percentageToLetter(snapshot.class_grade),
+                  rawTotal: snapshot.class_grade,
+                  isAtRisk: snapshot.class_grade !== null && snapshot.class_grade < 70
                 };
               }
             }
@@ -22828,7 +22915,9 @@
               quarterGrades[`Q${currentQuarterNum}`] = {
                 skill: this.percentageToLetter(enrollment.academic_grade),
                 part: this.percentageToLetter(enrollment.participation_grade),
-                total: letter
+                total: letter,
+                rawTotal: enrollment.class_grade,
+                isAtRisk: enrollment.class_grade < 70
               };
             }
 
@@ -22843,8 +22932,17 @@
             else if (cls.course_weight === 'ap') honorsCollege = 'AP';
             else if (cls.course_weight === 'dual_credit') honorsCollege = 'C';
 
-            // Check for flags (at-risk or significant change)
-            const isAtRisk = enrollment.class_grade !== null && enrollment.class_grade < 70;
+            // Check for purple flags (significant grade shift between consecutive quarters)
+            const qKeys = Object.keys(quarterGrades).sort(); // Q1, Q2, Q3, Q4
+            for (let i = 1; i < qKeys.length; i++) {
+              const prev = quarterGrades[qKeys[i - 1]];
+              const curr = quarterGrades[qKeys[i]];
+              if (prev.rawTotal !== null && prev.rawTotal !== undefined &&
+                  curr.rawTotal !== null && curr.rawTotal !== undefined) {
+                const shift = Math.abs(curr.rawTotal - prev.rawTotal);
+                curr.isSignificantChange = shift >= 10;
+              }
+            }
 
             subjectGroups[subject].courses.push({
               courseName: cls.name,
@@ -22853,11 +22951,7 @@
               finalGradeLetter: '', // Only filled at end of year
               honorsCollege: honorsCollege,
               gradePoints: baseGPA,
-              weightedGP: weightedGPA,
-              flags: {
-                orange: isAtRisk,
-                purple: false
-              }
+              weightedGP: weightedGPA
             });
           }
 
@@ -22876,6 +22970,18 @@
 
           // Calculate current GPA
           const gpaData = await this.calculateStudentGPA(studentId);
+          let currentGPA = gpaData?.cumulativeGPA;
+
+          // If classes were excluded, recalculate GPA from filtered courses
+          if (options.excludedClassIds && options.excludedClassIds.length > 0) {
+            let totalWGP = 0, courseCount = 0;
+            for (const group of sortedGroups) {
+              for (const course of group.courses) {
+                if (course.weightedGP != null) { totalWGP += course.weightedGP; courseCount++; }
+              }
+            }
+            currentGPA = courseCount > 0 ? totalWGP / courseCount : null;
+          }
 
           // Build report card data structure
           const reportCardData = {
@@ -22887,11 +22993,12 @@
             },
             currentSchoolYear: currentSchoolYear,
             currentQuarter: targetQuarter, // The quarter shown on the report card (may be selected end quarter)
-            currentGPA: gpaData?.cumulativeGPA,
+            currentGPA: currentGPA,
             gpaHistory: {}, // TODO: Load historical GPA from archived years
-            approxCredits: `${(enrollments || []).reduce((sum, e) => sum + (e.classes?.credits || 1), 0)} earned`,
+            approxCredits: `${filteredEnrollments.reduce((sum, e) => sum + (e.classes?.credits || 1), 0)} earned`,
             subjectGroups: sortedGroups,
             activeQuarters: activeQuarters, // Only includes quarters from Q1 up to target quarter
+            columnVisibility: options.columnVisibility || { credits: true, finals: true, hc: true, gp: true, wtgp: true },
             config: {
               schoolFoundingYear: 2021 // River Tech started 2021-2022, so 2025-2026 = Y5
             }
