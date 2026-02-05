@@ -20769,6 +20769,9 @@
                               ⭐ Set Current
                             </button>
                           ` : ''}
+                          <button class="btn btn-secondary small" onclick="app.snapshotQuarterGrades('${q.id}', '${q.name}')">
+                            📸 Snapshot
+                          </button>
                           <button class="btn btn-secondary small" onclick="app.editQuarter('${q.id}')">
                             ✏️
                           </button>
@@ -20974,6 +20977,58 @@
         }
       }
       
+      async snapshotQuarterGrades(quarterId, quarterName) {
+        if (!confirm(`Snapshot all grades for ${quarterName}? This will calculate and store academic, participation, and class grades for every active enrollment in this quarter.`)) {
+          return;
+        }
+
+        try {
+          if (window.portalLoading) {
+            window.portalLoading.show('snapshot', `Snapshotting grades for ${quarterName}...`);
+          }
+
+          const { data: activeEnrollments } = await this.supabaseQuery(() => this.auth.supabase
+            .from('class_enrollments')
+            .select('id')
+            .eq('status', 'active'));
+
+          if (!activeEnrollments || activeEnrollments.length === 0) {
+            this.showNotification('No active enrollments found.', 'warning');
+            return;
+          }
+
+          let succeeded = 0;
+          let failed = 0;
+          const results = await Promise.allSettled(activeEnrollments.map(enrollment =>
+            this.auth.supabase.rpc('calculate_quarter_grades', {
+              p_enrollment_id: enrollment.id,
+              p_quarter_id: quarterId
+            })
+          ));
+
+          for (const result of results) {
+            if (result.status === 'fulfilled' && !result.value.error) {
+              succeeded++;
+            } else {
+              failed++;
+            }
+          }
+
+          if (failed > 0) {
+            this.showNotification(`Snapshot complete: ${succeeded} saved, ${failed} failed.`, 'warning');
+          } else {
+            this.showNotification(`Snapshot complete: ${succeeded} enrollment grades saved for ${quarterName}.`, 'success');
+          }
+        } catch (error) {
+          console.error('Error snapshotting grades:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+        } finally {
+          if (window.portalLoading) {
+            window.portalLoading.hide('snapshot');
+          }
+        }
+      }
+
       async setCurrentQuarter(quarterId) {
         if (!confirm('Set this as the current quarter? This will transition all enrollments to the new quarter.')) {
           return;
