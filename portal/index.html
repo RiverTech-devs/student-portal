@@ -20975,72 +20975,66 @@
       }
       
       async setCurrentQuarter(quarterId) {
-        if (!confirm('Set this as the current quarter? This will transition all enrollments and snapshot the current quarter\'s grades.')) {
+        if (!confirm('Set this as the current quarter? This will transition all enrollments to the new quarter.')) {
           return;
         }
-        
+
         try {
           if (window.portalLoading) {
             window.portalLoading.show('set-current', 'Transitioning to new quarter...');
           }
-          
-          // Get current quarter to snapshot
+
+          // Get current quarter to snapshot its grades before switching
           const { data: currentQuarter } = await this.supabaseQuery(() => this.auth.supabase
             .from('quarters')
             .select('*')
             .eq('is_current', true)
             .single());
-          
-          // Snapshot current quarter grades
+
+          // Snapshot outgoing quarter grades using calculate_quarter_grades per enrollment.
+          // This stores grades in quarter_grade_snapshots keyed by (enrollment_id, quarter_id),
+          // so they won't be lost when the enrollment's live fields change.
           if (currentQuarter) {
-            await this.supabaseQuery(() => this.auth.supabase.rpc('snapshot_quarter_grades', { 
-              p_quarter_id: currentQuarter.id 
-            }));
+            const { data: activeEnrollments } = await this.supabaseQuery(() => this.auth.supabase
+              .from('class_enrollments')
+              .select('id')
+              .eq('status', 'active'));
+
+            if (activeEnrollments && activeEnrollments.length > 0) {
+              await Promise.allSettled(activeEnrollments.map(enrollment =>
+                this.auth.supabase.rpc('calculate_quarter_grades', {
+                  p_enrollment_id: enrollment.id,
+                  p_quarter_id: currentQuarter.id
+                })
+              ));
+            }
           }
-          
+
           // Unset all current quarters
           await this.supabaseQuery(() => this.auth.supabase
             .from('quarters')
             .update({ is_current: false })
             .eq('is_current', true));
-          
+
           // Set new current quarter
           const { error: updateError } = await this.supabaseQuery(() => this.auth.supabase
             .from('quarters')
             .update({ is_current: true })
             .eq('id', quarterId));
-          
+
           if (updateError) throw updateError;
-          
-          // Update all enrollments
+
+          // Update enrollment quarter pointer only - do NOT reset participation/notes
+          // as that destroys data. Per-quarter grades live in quarter_grade_snapshots.
           await this.supabaseQuery(() => this.auth.supabase
             .from('class_enrollments')
-            .update({ 
-              current_quarter_id: quarterId,
-              participation_grade: null,
-              teacher_notes: null
-            })
+            .update({ current_quarter_id: quarterId })
             .eq('status', 'active'));
-          
-          // Recalculate grades
-          const { data: enrollments } = await this.supabaseQuery(() => this.auth.supabase
-            .from('class_enrollments')
-            .select('id')
-            .eq('status', 'active'));
-          
-          if (enrollments) {
-            // Run grade updates in parallel
-            await Promise.allSettled(enrollments.map(enrollment =>
-              this.auth.supabase.rpc('update_enrollment_grades', {
-                p_enrollment_id: enrollment.id
-              })
-            ));
-          }
 
           this.showNotification('Quarter set as current!', 'success');
           this.closeModal('quarter-management');
           setTimeout(() => this.showQuarterManagement(), 100);
-          
+
         } catch (error) {
           console.error('Error setting current quarter:', error);
           this.showNotification('Error: ' + error.message, 'error');
@@ -22936,20 +22930,23 @@
               }
             }
 
-            // Current quarter grade from enrollment (overwrite snapshot if exists)
-            // Only include if current quarter is within the target range
+            // Current quarter: only use enrollment live data as FALLBACK if no snapshot exists.
+            // After quarter switches the enrollment's live grades may be stale/from a different quarter,
+            // so snapshots are the authoritative source and must not be overwritten.
             const currentQuarterNum = this.getQuarterNumber(currentQuarter);
-            // class_grade=0 means no real data (grade rounding floor is 55)
-            const effectiveCurrentGrade = enrollment.class_grade === 0 ? null : enrollment.class_grade;
-            if (currentQuarterNum && currentQuarterNum <= targetQuarterNum && effectiveCurrentGrade !== null) {
-              const letter = this.percentageToLetter(effectiveCurrentGrade);
-              quarterGrades[`Q${currentQuarterNum}`] = {
-                skill: this.percentageToLetter(enrollment.academic_grade === 0 ? null : enrollment.academic_grade),
-                part: this.percentageToLetter(enrollment.participation_grade),
-                total: letter,
-                rawTotal: effectiveCurrentGrade,
-                isAtRisk: effectiveCurrentGrade < 70
-              };
+            if (currentQuarterNum && currentQuarterNum <= targetQuarterNum && !quarterGrades[`Q${currentQuarterNum}`]) {
+              // No snapshot for current quarter - fall back to enrollment live data
+              const effectiveCurrentGrade = enrollment.class_grade === 0 ? null : enrollment.class_grade;
+              if (effectiveCurrentGrade !== null) {
+                const letter = this.percentageToLetter(effectiveCurrentGrade);
+                quarterGrades[`Q${currentQuarterNum}`] = {
+                  skill: this.percentageToLetter(enrollment.academic_grade === 0 ? null : enrollment.academic_grade),
+                  part: this.percentageToLetter(enrollment.participation_grade),
+                  total: letter,
+                  rawTotal: effectiveCurrentGrade,
+                  isAtRisk: effectiveCurrentGrade < 70
+                };
+              }
             }
 
             // Calculate GPA: convert each quarter's percentage to GPA first, then weighted average
