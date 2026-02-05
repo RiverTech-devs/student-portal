@@ -1858,7 +1858,9 @@
             if (snapshots && snapshots.length > 0) {
               gradeData = snapshots.map(s => ({
                 class_id: s.class_enrollments.class_id,
-                class_grade: s.class_grade
+                // Treat class_grade=0 as null (no real data). The grade rounding floor is 55,
+                // so 0 only occurs from DB bug where COALESCE(NULL,0) forced no-data classes to 0.
+                class_grade: s.class_grade === 0 ? null : s.class_grade
               }));
             } else {
               // No snapshots - calculate from assignment submissions within quarter date range
@@ -12472,17 +12474,17 @@
         try {
           const classData = this.classes.find(c => c.id === classId);
 
-          // Load ALL enrolled students (active and archived)
+          // Load ALL enrolled students (active, archived, and removed)
           const { data: allEnrollments, error } = await this.supabaseQuery(() => this.auth.supabase
             .from('class_enrollments')
             .select('*')
             .eq('class_id', classId)
-            .in('status', ['active', 'archived']));
+            .in('status', ['active', 'archived', 'removed']));
 
           if (error) throw error;
 
           const activeEnrollments = allEnrollments?.filter(e => e.status === 'active') || [];
-          const withdrawnEnrollments = allEnrollments?.filter(e => e.status === 'archived') || [];
+          const withdrawnEnrollments = allEnrollments?.filter(e => e.status === 'archived' || e.status === 'removed') || [];
 
           // Get student profiles for all enrollments
           const allStudentIds = allEnrollments?.map(e => e.student_id) || [];
@@ -14010,7 +14012,7 @@
           classData = this.currentClass;
         }
 
-        if (!confirm(`Reopen "${classData?.name}"?\n\nThe class will appear in active views again and students can resume activity.`)) {
+        if (!confirm(`Reopen "${classData?.name}"?\n\nThe class will appear in active views again and all students will be re-enrolled.`)) {
           return;
         }
 
@@ -14029,6 +14031,30 @@
           const { error } = await this.supabaseQuery(() => query);
 
           if (error) throw error;
+
+          // Reactivate archived enrollments so students appear in the class again
+          const { error: enrollErrorArchived } = await this.supabaseQuery(() =>
+            this.auth.supabase
+              .from('class_enrollments')
+              .update({ status: 'active', updated_at: new Date().toISOString() })
+              .eq('class_id', classId)
+              .eq('status', 'archived'));
+
+          if (enrollErrorArchived) {
+            console.error('Error reactivating archived enrollments:', enrollErrorArchived);
+          }
+
+          // Also reactivate removed enrollments
+          const { error: enrollErrorRemoved } = await this.supabaseQuery(() =>
+            this.auth.supabase
+              .from('class_enrollments')
+              .update({ status: 'active', updated_at: new Date().toISOString() })
+              .eq('class_id', classId)
+              .eq('status', 'removed'));
+
+          if (enrollErrorRemoved) {
+            console.error('Error reactivating removed enrollments:', enrollErrorRemoved);
+          }
 
           this.showNotification('Class reopened successfully', 'success');
           this.closeModal('class-details');
@@ -20254,12 +20280,12 @@
         try {
           const classData = this.classes.find(c => c.id === classId);
 
-          // Get enrollment data
+          // Get enrollment data (include all statuses for closed class analytics)
           const { data: enrollments } = await this.supabaseQuery(() => this.auth.supabase
             .from('class_enrollments')
             .select('*')
             .eq('class_id', classId)
-            .eq('status', 'active')
+            .in('status', ['active', 'archived', 'removed'])
            );
 
           // Get assignments
@@ -20380,13 +20406,13 @@
             return;
           }
       
-          // Get the student's enrollment for this class
+          // Get the student's enrollment for this class (include archived so students can view grades from closed classes)
           const { data: enrollment } = await this.supabaseQuery(() => this.auth.supabase
             .from('class_enrollments')
             .select('*')
             .eq('class_id', classId)
             .eq('student_id', this.userInfo.user.id)
-            .eq('status', 'active')
+            .in('status', ['active', 'archived'])
             .single());
       
           if (!enrollment) {
@@ -22897,12 +22923,15 @@
               const snapshot = snapshotMap[snapshotKey];
 
               if (snapshot) {
+                // class_grade=0 means no real data (grade rounding floor is 55).
+                // This is caused by DB bug where COALESCE(NULL,0) forced no-data classes to 0.
+                const effectiveGrade = snapshot.class_grade === 0 ? null : snapshot.class_grade;
                 quarterGrades[`Q${qNum}`] = {
-                  skill: this.percentageToLetter(snapshot.academic_grade),
+                  skill: this.percentageToLetter(snapshot.academic_grade === 0 ? null : snapshot.academic_grade),
                   part: this.percentageToLetter(snapshot.participation_grade),
-                  total: this.percentageToLetter(snapshot.class_grade),
-                  rawTotal: snapshot.class_grade,
-                  isAtRisk: snapshot.class_grade !== null && snapshot.class_grade < 70
+                  total: this.percentageToLetter(effectiveGrade),
+                  rawTotal: effectiveGrade,
+                  isAtRisk: effectiveGrade !== null && effectiveGrade < 70
                 };
               }
             }
@@ -22910,14 +22939,16 @@
             // Current quarter grade from enrollment (overwrite snapshot if exists)
             // Only include if current quarter is within the target range
             const currentQuarterNum = this.getQuarterNumber(currentQuarter);
-            if (currentQuarterNum && currentQuarterNum <= targetQuarterNum && enrollment.class_grade !== null) {
-              const letter = this.percentageToLetter(enrollment.class_grade);
+            // class_grade=0 means no real data (grade rounding floor is 55)
+            const effectiveCurrentGrade = enrollment.class_grade === 0 ? null : enrollment.class_grade;
+            if (currentQuarterNum && currentQuarterNum <= targetQuarterNum && effectiveCurrentGrade !== null) {
+              const letter = this.percentageToLetter(effectiveCurrentGrade);
               quarterGrades[`Q${currentQuarterNum}`] = {
-                skill: this.percentageToLetter(enrollment.academic_grade),
+                skill: this.percentageToLetter(enrollment.academic_grade === 0 ? null : enrollment.academic_grade),
                 part: this.percentageToLetter(enrollment.participation_grade),
                 total: letter,
-                rawTotal: enrollment.class_grade,
-                isAtRisk: enrollment.class_grade < 70
+                rawTotal: effectiveCurrentGrade,
+                isAtRisk: effectiveCurrentGrade < 70
               };
             }
 
@@ -28413,11 +28444,12 @@
           `;
           
           // Get enrollments WITHOUT relationship join
+          // Include all statuses so teachers can still see/adjust grades for closed classes or removed students
           const { data: enrollments, error: enrollError } = await window.app.auth.supabase
             .from('class_enrollments')
             .select('*')
             .eq('class_id', classId)
-            .eq('status', 'active');
+            .in('status', ['active', 'archived', 'removed']);
           
           if (enrollError) throw enrollError;
           
@@ -29456,12 +29488,12 @@
             </div>
           `;
 
-          // Load enrollments
+          // Load enrollments (include all statuses so teachers can view/adjust grades for closed classes or removed students)
           const { data: enrollments, error: enrollError } = await window.app.auth.supabase
             .from('class_enrollments')
             .select('*')
             .eq('class_id', classId)
-            .eq('status', 'active');
+            .in('status', ['active', 'archived', 'removed']);
 
           if (enrollError) throw enrollError;
 
