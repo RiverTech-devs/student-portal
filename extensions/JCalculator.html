@@ -461,13 +461,20 @@ const helpCategories = {
   formulas: { name: 'Custom Formulas', desc: 'Save & reuse your own formulas', commands: [
     '── SAVE A FORMULA ──',
     'save NAME = FORMULA',
+    'save NAME = FORMULA // description',
+    'save NAME = FORMULA | description',
     '',
     'Examples:',
     '  save tri = 0.5 * b * h',
-    '  save hyp = sqrt(a^2 + b^2)',
-    '  save circle = pi * r^2',
+    '  save hyp = sqrt(a^2 + b^2) // Pythagorean theorem',
+    '  save circle = pi * r^2 | Area of a circle',
     '  save interest = P * r * t',
     '  save fToC = (f - 32) * 5/9',
+    '',
+    '── VIEW FORMULA INFO ──',
+    'NAME               (just the name)',
+    '',
+    'Shows formula, description, variables, and usage.',
     '',
     '── USE A FORMULA ──',
     'NAME where var1=value, var2=value',
@@ -480,10 +487,11 @@ const helpCategories = {
     '  fToC f=98.6             →  37',
     '',
     '── MANAGE FORMULAS ──',
-    'formulas           List all saved',
-    'saved              List all saved',
-    'delete NAME        Remove a formula',
-    'clear formulas     Remove ALL formulas',
+    'formulas             List all saved',
+    'NAME                 View formula details',
+    'describe NAME = ...  Add/update description',
+    'delete NAME          Remove a formula',
+    'clear formulas       Remove ALL formulas',
     '',
     '── HOW IT WORKS ──',
     '• Formulas save to your browser',
@@ -2078,13 +2086,28 @@ function process(input) {
     return { type: 'error', result: 'Need 3 of: P=, V=, n=, T= (e.g., gas P=1 V=22.4 T=273)' };
   }
   
-  // Save formula: save NAME = FORMULA
+  // Save formula: save NAME = FORMULA  or  save NAME = FORMULA // description
   const saveMatch = input.match(/^save\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(.+)$/i);
   if (saveMatch) {
     const name = saveMatch[1];
-    const formula = saveMatch[2].trim();
-    saveFormula(name, formula);
-    return { type: 'result', result: `✓ Saved "${name}"\n  Formula: ${formula}\n\n  Use: ${name} where x=1, y=2` };
+    let formulaPart = saveMatch[2].trim();
+    let description = '';
+
+    // Check for description after // or |
+    const descMatch = formulaPart.match(/^(.+?)\s*(?:\/\/|\|)\s*(.+)$/);
+    if (descMatch) {
+      formulaPart = descMatch[1].trim();
+      description = descMatch[2].trim();
+    }
+
+    saveFormula(name, formulaPart, description);
+    let result = `✓ Saved "${name}"\n  Formula: ${formulaPart}`;
+    if (description) {
+      result += `\n  Description: ${description}`;
+    }
+    result += `\n\n  Use: ${name} where x=1, y=2`;
+    result += `\n  Info: Just type "${name}" to see details`;
+    return { type: 'result', result };
   }
   
   // Delete formula
@@ -2097,7 +2120,21 @@ function process(input) {
     }
     return { type: 'error', result: `Formula "${name}" not found.` };
   }
-  
+
+  // Describe formula: describe NAME = description
+  const describeMatch = input.match(/^describe\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(.+)$/i);
+  if (describeMatch) {
+    const name = describeMatch[1].toLowerCase();
+    const description = describeMatch[2].trim();
+    if (customFormulas[name]) {
+      customFormulas[name].description = description;
+      customFormulas[name].updated = new Date().toISOString();
+      localStorage.setItem('jcalc_formulas', JSON.stringify(customFormulas));
+      return { type: 'result', result: `✓ Updated description for "${customFormulas[name].name}"\n  ${description}` };
+    }
+    return { type: 'error', result: `Formula "${name}" not found. Save it first with:\n  save ${name} = your formula` };
+  }
+
   // Clear all formulas
   if (s === 'clear formulas' || s === 'delete all formulas') {
     const count = Object.keys(customFormulas).length;
@@ -2106,6 +2143,40 @@ function process(input) {
     return { type: 'result', result: `✓ Cleared ${count} formula(s).` };
   }
   
+  // View formula info: just typing the formula name shows its details
+  const lowerInput = input.toLowerCase().trim();
+  if (customFormulas[lowerInput] && !input.includes('=') && !input.includes(' ')) {
+    const f = customFormulas[lowerInput];
+    let info = `📐 ${f.name}\n`;
+    info += `${'─'.repeat(40)}\n`;
+    if (f.description) {
+      info += `📝 ${f.description}\n\n`;
+    }
+    info += `Formula: ${f.formula}\n\n`;
+
+    // Extract variables from the formula
+    const vars = f.formula.match(/\b[a-zA-Z_][a-zA-Z0-9_]*\b/g) || [];
+    const uniqueVars = [...new Set(vars)].filter(v =>
+      !['pi', 'e', 'ans', 'sin', 'cos', 'tan', 'sqrt', 'abs', 'log', 'ln', 'exp', 'floor', 'ceil', 'round'].includes(v.toLowerCase()) &&
+      !customFormulas[v.toLowerCase()]
+    );
+
+    if (uniqueVars.length > 0) {
+      info += `Variables: ${uniqueVars.join(', ')}\n`;
+      info += `Usage: ${f.name} ${uniqueVars.map(v => `${v}=?`).join(', ')}\n`;
+    }
+
+    if (f.created) {
+      const created = new Date(f.created).toLocaleDateString();
+      info += `\nCreated: ${created}`;
+      if (f.updated && f.updated !== f.created) {
+        info += ` • Updated: ${new Date(f.updated).toLocaleDateString()}`;
+      }
+    }
+
+    return { type: 'help', result: info };
+  }
+
   // Use formula: NAME where x=1, y=2  OR  NAME x=1, y=2
   const useMatch = input.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s+(?:where\s+)?(.+)$/i);
   if (useMatch) {
@@ -2939,8 +3010,15 @@ function process(input) {
 // ===== CUSTOM FORMULAS (localStorage) =====
 let customFormulas = JSON.parse(localStorage.getItem('jcalc_formulas') || '{}');
 
-function saveFormula(name, formula) {
-  customFormulas[name.toLowerCase()] = { name: name, formula: formula, created: new Date().toISOString() };
+function saveFormula(name, formula, description = '') {
+  const existing = customFormulas[name.toLowerCase()];
+  customFormulas[name.toLowerCase()] = {
+    name: name,
+    formula: formula,
+    description: description || (existing?.description || ''),
+    created: existing?.created || new Date().toISOString(),
+    updated: new Date().toISOString()
+  };
   localStorage.setItem('jcalc_formulas', JSON.stringify(customFormulas));
 }
 
@@ -2956,10 +3034,11 @@ function listFormulas() {
     t += '┌─── HOW TO SAVE A FORMULA ───────────────────┐\n';
     t += '│                                             │\n';
     t += '│  save NAME = FORMULA                        │\n';
+    t += '│  save NAME = FORMULA // description         │\n';
     t += '│                                             │\n';
     t += '│  Examples:                                  │\n';
     t += '│    save tri = 0.5 * b * h                   │\n';
-    t += '│    save hyp = sqrt(a^2 + b^2)               │\n';
+    t += '│    save hyp = sqrt(a^2 + b^2) // Pythagorean│\n';
     t += '│    save circle = pi * r^2                   │\n';
     t += '│                                             │\n';
     t += '│  Then use it:                               │\n';
@@ -2974,18 +3053,24 @@ function listFormulas() {
     t += '└─────────────────────────────────────────────┘';
     return t;
   }
-  
-  let t = `Your Saved Formulas (${keys.length}):\n`;
+
+  let t = `📐 Your Saved Formulas (${keys.length}):\n`;
   t += '┌────────────────────────────────────────────┐\n';
   keys.forEach(k => {
     const f = customFormulas[k];
     const name = f.name.length > 12 ? f.name.substring(0, 9) + '...' : f.name;
-    const formula = f.formula.length > 26 ? f.formula.substring(0, 23) + '...' : f.formula;
+    const formula = f.formula.length > 24 ? f.formula.substring(0, 21) + '...' : f.formula;
     t += `│  ${name.padEnd(12)} = ${formula.padEnd(26)} │\n`;
+    if (f.description) {
+      const desc = f.description.length > 36 ? f.description.substring(0, 33) + '...' : f.description;
+      t += `│    └─ ${desc.padEnd(36)} │\n`;
+    }
   });
   t += '├────────────────────────────────────────────┤\n';
-  t += '│  Usage: NAME where x=1, y=2              │\n';
-  t += '│  Delete: delete NAME                      │\n';
+  t += '│  NAME              → View formula details   │\n';
+  t += '│  NAME x=1, y=2     → Use with values       │\n';
+  t += '│  describe NAME = ? → Set description       │\n';
+  t += '│  delete NAME       → Remove formula        │\n';
   t += '└────────────────────────────────────────────┘';
   return t;
 }
@@ -3038,17 +3123,34 @@ input.addEventListener('keydown', e => {
 });
 
 // Welcome message
-const formulaCount = Object.keys(customFormulas).length;
+const formulaKeys = Object.keys(customFormulas);
+const formulaCount = formulaKeys.length;
 let welcomeMsg = '╔══════════════════════════════════════════╗\n';
 welcomeMsg += '║      JCALCULATOR v2.0 - Math Teacher     ║\n';
 welcomeMsg += '╠══════════════════════════════════════════╣\n';
 welcomeMsg += '║  "help"     → See all commands           ║\n';
 welcomeMsg += '║  "formulas" → Save your own formulas     ║\n';
-if (formulaCount > 0) {
-  welcomeMsg += `║  ✓ ${formulaCount} saved formula${formulaCount > 1 ? 's' : ''} loaded from storage   ║\n`;
-}
 welcomeMsg += '╚══════════════════════════════════════════╝';
 addLine(welcomeMsg, 'system');
+
+// Show loaded formulas separately for better formatting
+if (formulaCount > 0) {
+  let formulaMsg = `\n📐 ${formulaCount} Saved Formula${formulaCount > 1 ? 's' : ''} Loaded:\n`;
+  formulaMsg += '┌────────────────────────────────────────────┐\n';
+  formulaKeys.forEach(k => {
+    const f = customFormulas[k];
+    const name = f.name.length > 12 ? f.name.substring(0, 9) + '...' : f.name;
+    const formula = f.formula.length > 24 ? f.formula.substring(0, 21) + '...' : f.formula;
+    formulaMsg += `│  ${name.padEnd(12)} = ${formula.padEnd(24)} │\n`;
+    if (f.description) {
+      const desc = f.description.length > 36 ? f.description.substring(0, 33) + '...' : f.description;
+      formulaMsg += `│    └─ ${desc.padEnd(34)} │\n`;
+    }
+  });
+  formulaMsg += '└────────────────────────────────────────────┘\n';
+  formulaMsg += 'Type a formula name to see details, or use with values.';
+  addLine(formulaMsg, 'system');
+}
 input.focus();
 </script>
 </body>
