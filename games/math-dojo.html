@@ -1146,6 +1146,490 @@ const TIERS = {
     ]}
 };
 
+// ========================================
+// INTELLIGENT ANSWER INTERPRETER
+// ========================================
+// Handles flexible answer matching with semantic equivalence
+const AnswerInterpreter = {
+    // Word-to-number mappings
+    wordNumbers: {
+        'zero': 0, 'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
+        'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10,
+        'eleven': 11, 'twelve': 12, 'thirteen': 13, 'fourteen': 14, 'fifteen': 15,
+        'sixteen': 16, 'seventeen': 17, 'eighteen': 18, 'nineteen': 19, 'twenty': 20,
+        'thirty': 30, 'forty': 40, 'fifty': 50, 'sixty': 60, 'seventy': 70,
+        'eighty': 80, 'ninety': 90, 'hundred': 100, 'thousand': 1000,
+        'half': 0.5, 'quarter': 0.25, 'third': 1/3, 'fourth': 0.25
+    },
+
+    // Detect the type of answer expected
+    detectType(expectedAnswer) {
+        const ans = String(expectedAnswer).toLowerCase().trim();
+
+        // Fraction: contains / but not a date-like format
+        if (/^\d+\s*\/\s*\d+$/.test(ans) || /^\d+\s+\d+\s*\/\s*\d+$/.test(ans)) return 'fraction';
+        if (/mixed|improper/i.test(ans)) return 'fraction';
+
+        // Percent
+        if (ans.includes('%') || /percent/i.test(ans)) return 'percent';
+
+        // Money
+        if (/^\$|¢$|cents?$|dollars?$/i.test(ans)) return 'money';
+
+        // Time
+        if (/^\d{1,2}:\d{2}/.test(ans) || /\d+\s*(hours?|minutes?|seconds?|hr|min|sec)/i.test(ans)) return 'time';
+        if (/am|pm/i.test(ans)) return 'time';
+
+        // Measurement with units
+        if (/\d+\s*(ft|feet|foot|in|inch|inches|cm|m|mm|km|mi|mile|yd|yard)/i.test(ans)) return 'measurement';
+        if (/\d+\s*(lb|lbs|pound|oz|ounce|kg|g|gram|mg)/i.test(ans)) return 'weight';
+        if (/\d+\s*(l|liter|litre|ml|gal|gallon|cup|qt|quart|pt|pint)/i.test(ans)) return 'capacity';
+
+        // Coordinate/ordered pair
+        if (/^\(?\s*-?\d+\s*,\s*-?\d+\s*\)?$/.test(ans)) return 'coordinate';
+
+        // Angle
+        if (/\d+\s*°|degrees?$/i.test(ans)) return 'angle';
+        if (/acute|obtuse|right|straight|reflex/i.test(ans)) return 'angle_type';
+
+        // Pure number (integer or decimal)
+        if (/^-?\d+\.?\d*$/.test(ans.replace(/,/g, ''))) return 'number';
+
+        // Ratio
+        if (/^\d+\s*:\s*\d+$/.test(ans) || /^\d+\s+to\s+\d+$/i.test(ans)) return 'ratio';
+
+        // Boolean/Yes-No
+        if (/^(yes|no|true|false)$/i.test(ans)) return 'boolean';
+
+        // Operation name
+        if (/^(add|subtract|multiply|divide|addition|subtraction|multiplication|division)$/i.test(ans)) return 'operation';
+
+        // Shape/geometry terms
+        if (/triangle|square|rectangle|circle|pentagon|hexagon|parallel|perpendicular/i.test(ans)) return 'geometry';
+
+        // Default to text
+        return 'text';
+    },
+
+    // Parse a fraction string into {numerator, denominator, whole}
+    parseFraction(str) {
+        const s = String(str).trim();
+
+        // Mixed number: "2 3/4"
+        const mixedMatch = s.match(/^(-?\d+)\s+(\d+)\s*\/\s*(\d+)$/);
+        if (mixedMatch) {
+            const whole = parseInt(mixedMatch[1]);
+            const num = parseInt(mixedMatch[2]);
+            const den = parseInt(mixedMatch[3]);
+            const sign = whole < 0 ? -1 : 1;
+            return { value: sign * (Math.abs(whole) + num / den), whole: Math.abs(whole), num, den };
+        }
+
+        // Simple fraction: "3/4"
+        const fracMatch = s.match(/^(-?\d+)\s*\/\s*(\d+)$/);
+        if (fracMatch) {
+            const num = parseInt(fracMatch[1]);
+            const den = parseInt(fracMatch[2]);
+            return { value: num / den, whole: 0, num: Math.abs(num), den };
+        }
+
+        return null;
+    },
+
+    // Parse money value to cents
+    parseMoney(str) {
+        const s = String(str).toLowerCase().trim();
+
+        // Dollar format: $1.50, $2
+        const dollarMatch = s.match(/\$\s*(\d+)(?:\.(\d{1,2}))?/);
+        if (dollarMatch) {
+            const dollars = parseInt(dollarMatch[1]);
+            const cents = dollarMatch[2] ? parseInt(dollarMatch[2].padEnd(2, '0')) : 0;
+            return dollars * 100 + cents;
+        }
+
+        // Cents format: 150¢, 150 cents
+        const centsMatch = s.match(/(\d+)\s*(?:¢|cents?)/i);
+        if (centsMatch) {
+            return parseInt(centsMatch[1]);
+        }
+
+        // Just a number (assume cents if context suggests)
+        const numMatch = s.match(/^(\d+)$/);
+        if (numMatch) {
+            return parseInt(numMatch[1]);
+        }
+
+        return null;
+    },
+
+    // Parse time to minutes from midnight (for comparison)
+    parseTime(str) {
+        const s = String(str).toLowerCase().trim();
+
+        // Format: "2:30 PM" or "2:30PM" or "14:30"
+        const timeMatch = s.match(/(\d{1,2}):(\d{2})\s*(am|pm)?/i);
+        if (timeMatch) {
+            let hours = parseInt(timeMatch[1]);
+            const minutes = parseInt(timeMatch[2]);
+            const period = timeMatch[3]?.toLowerCase();
+
+            if (period === 'pm' && hours !== 12) hours += 12;
+            if (period === 'am' && hours === 12) hours = 0;
+
+            return hours * 60 + minutes;
+        }
+
+        // Duration: "2 hours 30 minutes"
+        const durationMatch = s.match(/(\d+)\s*h(?:ours?)?\s*(?:and\s*)?(\d+)?\s*m(?:in(?:utes?)?)?/i);
+        if (durationMatch) {
+            const hours = parseInt(durationMatch[1]) || 0;
+            const mins = parseInt(durationMatch[2]) || 0;
+            return hours * 60 + mins;
+        }
+
+        // Just hours or minutes: "3 hours", "45 minutes"
+        const hoursOnly = s.match(/^(\d+)\s*h(?:ours?)?$/i);
+        if (hoursOnly) return parseInt(hoursOnly[1]) * 60;
+
+        const minsOnly = s.match(/^(\d+)\s*m(?:in(?:utes?)?)?$/i);
+        if (minsOnly) return parseInt(minsOnly[1]);
+
+        return null;
+    },
+
+    // Parse measurement to a base unit (inches for length, etc.)
+    parseMeasurement(str) {
+        const s = String(str).toLowerCase().trim();
+
+        // Length conversions to inches
+        const lengthUnits = {
+            'in': 1, 'inch': 1, 'inches': 1, '"': 1,
+            'ft': 12, 'feet': 12, 'foot': 12, "'": 12,
+            'yd': 36, 'yard': 36, 'yards': 36,
+            'cm': 0.3937, 'm': 39.37, 'mm': 0.03937,
+            'km': 39370, 'mi': 63360, 'mile': 63360, 'miles': 63360
+        };
+
+        // Try feet and inches format: "3 ft 6 in" or "3'6""
+        const feetInches = s.match(/(\d+)\s*(?:ft|feet|foot|')\s*(\d+)?\s*(?:in|inch|inches|")?/i);
+        if (feetInches) {
+            const feet = parseInt(feetInches[1]) || 0;
+            const inches = parseInt(feetInches[2]) || 0;
+            return feet * 12 + inches;
+        }
+
+        // Single unit measurement
+        const singleUnit = s.match(/^(\d+\.?\d*)\s*([a-z'"]+)$/i);
+        if (singleUnit) {
+            const value = parseFloat(singleUnit[1]);
+            const unit = singleUnit[2].toLowerCase();
+            if (lengthUnits[unit]) {
+                return value * lengthUnits[unit];
+            }
+        }
+
+        return null;
+    },
+
+    // Parse percentage to decimal
+    parsePercent(str) {
+        const s = String(str).toLowerCase().trim();
+
+        const match = s.match(/^(\d+\.?\d*)\s*%?$/);
+        if (match) {
+            return parseFloat(match[1]) / 100;
+        }
+
+        // Word: "fifty percent"
+        for (const [word, val] of Object.entries(this.wordNumbers)) {
+            if (s.includes(word) && s.includes('percent')) {
+                return val / 100;
+            }
+        }
+
+        return null;
+    },
+
+    // Convert word numbers to numeric: "twenty-one" -> 21
+    parseWordNumber(str) {
+        let s = String(str).toLowerCase().trim().replace(/-/g, ' ');
+        let total = 0;
+        let current = 0;
+
+        const words = s.split(/\s+/);
+        for (const word of words) {
+            if (this.wordNumbers[word] !== undefined) {
+                const val = this.wordNumbers[word];
+                if (val === 100) {
+                    current = (current || 1) * 100;
+                } else if (val === 1000) {
+                    current = (current || 1) * 1000;
+                    total += current;
+                    current = 0;
+                } else {
+                    current += val;
+                }
+            }
+        }
+        total += current;
+        return total || null;
+    },
+
+    // Normalize any answer to a comparable value
+    normalize(input, type = null) {
+        if (input === null || input === undefined) return null;
+
+        let s = String(input).toLowerCase().trim();
+
+        // Auto-detect type if not provided
+        const answerType = type || this.detectType(s);
+
+        switch (answerType) {
+            case 'fraction': {
+                const frac = this.parseFraction(s);
+                if (frac) return { type: 'fraction', value: frac.value, original: s };
+                // Try as decimal that could be a fraction
+                const num = parseFloat(s);
+                if (!isNaN(num)) return { type: 'fraction', value: num, original: s };
+                break;
+            }
+
+            case 'percent': {
+                const pct = this.parsePercent(s);
+                if (pct !== null) return { type: 'percent', value: pct, original: s };
+                break;
+            }
+
+            case 'money': {
+                const cents = this.parseMoney(s);
+                if (cents !== null) return { type: 'money', value: cents, original: s };
+                break;
+            }
+
+            case 'time': {
+                const mins = this.parseTime(s);
+                if (mins !== null) return { type: 'time', value: mins, original: s };
+                break;
+            }
+
+            case 'measurement': {
+                const inches = this.parseMeasurement(s);
+                if (inches !== null) return { type: 'measurement', value: inches, original: s };
+                break;
+            }
+
+            case 'number': {
+                // Remove commas and try to parse
+                const cleaned = s.replace(/,/g, '').replace(/\s/g, '');
+                let num = parseFloat(cleaned);
+
+                // Try word number if numeric parse fails
+                if (isNaN(num)) {
+                    num = this.parseWordNumber(s);
+                }
+
+                if (num !== null && !isNaN(num)) {
+                    return { type: 'number', value: num, original: s };
+                }
+                break;
+            }
+
+            case 'ratio': {
+                const ratioMatch = s.match(/(\d+)\s*(?::|to)\s*(\d+)/i);
+                if (ratioMatch) {
+                    const a = parseInt(ratioMatch[1]);
+                    const b = parseInt(ratioMatch[2]);
+                    // Store as simplified ratio + decimal for comparison
+                    const gcd = this.gcd(a, b);
+                    return { type: 'ratio', value: a / b, simplified: [a/gcd, b/gcd], original: s };
+                }
+                break;
+            }
+
+            case 'boolean': {
+                const isYes = /^(yes|true|y|correct|right)$/i.test(s);
+                const isNo = /^(no|false|n|incorrect|wrong)$/i.test(s);
+                if (isYes || isNo) {
+                    return { type: 'boolean', value: isYes, original: s };
+                }
+                break;
+            }
+
+            case 'operation': {
+                const opMap = {
+                    'add': 'addition', 'addition': 'addition', 'plus': 'addition', '+': 'addition',
+                    'subtract': 'subtraction', 'subtraction': 'subtraction', 'minus': 'subtraction', '-': 'subtraction',
+                    'multiply': 'multiplication', 'multiplication': 'multiplication', 'times': 'multiplication', '×': 'multiplication', '*': 'multiplication',
+                    'divide': 'division', 'division': 'division', '÷': 'division', '/': 'division'
+                };
+                const op = opMap[s];
+                if (op) return { type: 'operation', value: op, original: s };
+                break;
+            }
+
+            case 'angle_type': {
+                // Normalize angle type names
+                if (/acute/i.test(s)) return { type: 'angle_type', value: 'acute', original: s };
+                if (/obtuse/i.test(s)) return { type: 'angle_type', value: 'obtuse', original: s };
+                if (/right/i.test(s)) return { type: 'angle_type', value: 'right', original: s };
+                if (/straight/i.test(s)) return { type: 'angle_type', value: 'straight', original: s };
+                if (/reflex/i.test(s)) return { type: 'angle_type', value: 'reflex', original: s };
+                break;
+            }
+
+            case 'geometry': {
+                // Normalize geometry terms
+                const geoTerms = {
+                    'parallel': 'parallel', 'perpendicular': 'perpendicular', 'intersecting': 'intersecting',
+                    'triangle': 'triangle', 'square': 'square', 'rectangle': 'rectangle', 'circle': 'circle',
+                    'pentagon': 'pentagon', 'hexagon': 'hexagon', 'octagon': 'octagon',
+                    'equilateral': 'equilateral', 'isosceles': 'isosceles', 'scalene': 'scalene',
+                    'prime': 'prime', 'composite': 'composite'
+                };
+                for (const [term, normalized] of Object.entries(geoTerms)) {
+                    if (s.includes(term)) {
+                        return { type: 'geometry', value: normalized, original: s };
+                    }
+                }
+                break;
+            }
+        }
+
+        // Default: normalized text
+        return { type: 'text', value: s.replace(/\s+/g, '').replace(/[.,!?]/g, ''), original: s };
+    },
+
+    // Greatest common divisor for ratio simplification
+    gcd(a, b) {
+        return b === 0 ? a : this.gcd(b, a % b);
+    },
+
+    // Check if two normalized values are equivalent
+    isEquivalent(normA, normB, tolerance = 0.0001) {
+        if (!normA || !normB) return false;
+
+        // Same type comparison
+        if (normA.type === normB.type) {
+            switch (normA.type) {
+                case 'number':
+                case 'fraction':
+                case 'percent':
+                case 'money':
+                case 'time':
+                case 'measurement':
+                    return Math.abs(normA.value - normB.value) < tolerance;
+
+                case 'ratio':
+                    // Compare simplified ratios
+                    if (normA.simplified && normB.simplified) {
+                        return normA.simplified[0] === normB.simplified[0] &&
+                               normA.simplified[1] === normB.simplified[1];
+                    }
+                    return Math.abs(normA.value - normB.value) < tolerance;
+
+                case 'boolean':
+                case 'operation':
+                case 'angle_type':
+                case 'geometry':
+                    return normA.value === normB.value;
+
+                case 'text':
+                    return normA.value === normB.value;
+            }
+        }
+
+        // Cross-type equivalence (fraction ↔ decimal ↔ percent)
+        const numericTypes = ['number', 'fraction', 'percent'];
+        if (numericTypes.includes(normA.type) && numericTypes.includes(normB.type)) {
+            // Compare numeric values
+            let valA = normA.value;
+            let valB = normB.value;
+
+            // Percent is stored as decimal already
+            return Math.abs(valA - valB) < tolerance;
+        }
+
+        return false;
+    },
+
+    // Main entry point: check if user answer matches expected answer
+    checkAnswer(userInput, expectedAnswer, options = {}) {
+        const {
+            type = null,              // Force a specific type
+            tolerance = 0.0001,       // Numeric tolerance
+            acceptEquivalent = true,  // Accept equivalent forms (1/2 = 0.5)
+            caseSensitive = false     // Case sensitivity for text
+        } = options;
+
+        // Handle array of acceptable answers
+        if (Array.isArray(expectedAnswer)) {
+            return expectedAnswer.some(exp => this.checkAnswer(userInput, exp, options));
+        }
+
+        // Normalize both
+        const userNorm = this.normalize(userInput, type);
+        const expectedNorm = this.normalize(expectedAnswer, type);
+
+        // Check equivalence
+        if (this.isEquivalent(userNorm, expectedNorm, tolerance)) {
+            return { correct: true, matchType: 'exact' };
+        }
+
+        // If accepting equivalent forms, try cross-type comparison
+        if (acceptEquivalent) {
+            // Fraction answers might accept decimal input
+            if (expectedNorm.type === 'fraction') {
+                const userAsNumber = this.normalize(userInput, 'number');
+                if (userAsNumber && Math.abs(userAsNumber.value - expectedNorm.value) < tolerance) {
+                    return { correct: true, matchType: 'equivalent' };
+                }
+            }
+        }
+
+        // Fuzzy text matching for close answers
+        if (userNorm.type === 'text' && expectedNorm.type === 'text') {
+            // Check if it's a minor typo (Levenshtein distance <= 1 for short answers)
+            const dist = this.levenshtein(userNorm.value, expectedNorm.value);
+            if (dist === 1 && userNorm.value.length >= 4) {
+                return { correct: false, matchType: 'close', suggestion: expectedNorm.original };
+            }
+        }
+
+        return { correct: false, matchType: 'none' };
+    },
+
+    // Levenshtein distance for fuzzy matching
+    levenshtein(a, b) {
+        if (a.length === 0) return b.length;
+        if (b.length === 0) return a.length;
+
+        const matrix = [];
+        for (let i = 0; i <= b.length; i++) {
+            matrix[i] = [i];
+        }
+        for (let j = 0; j <= a.length; j++) {
+            matrix[0][j] = j;
+        }
+
+        for (let i = 1; i <= b.length; i++) {
+            for (let j = 1; j <= a.length; j++) {
+                if (b.charAt(i - 1) === a.charAt(j - 1)) {
+                    matrix[i][j] = matrix[i - 1][j - 1];
+                } else {
+                    matrix[i][j] = Math.min(
+                        matrix[i - 1][j - 1] + 1,
+                        matrix[i][j - 1] + 1,
+                        matrix[i - 1][j] + 1
+                    );
+                }
+            }
+        }
+
+        return matrix[b.length][a.length];
+    }
+};
+
 const QUESTION_TYPES = ["procedural", "conceptual", "reasoning"];
 
 // ========================================
@@ -3283,7 +3767,7 @@ const generators = {
                 const d = pick([2, 3, 4]);
                 const n = rand(1, d);
                 const lineDesc = d === 2 ? "two equal parts" : d === 3 ? "three equal parts" : "four equal parts";
-                return { question: `A number line from 0 to 1 is divided into ${lineDesc}. What fraction is at the ${n === 1 ? "first" : n === 2 ? "second" : n === 3 ? "third" : "fourth"} mark?`,
+                return { question: `A number line from 0 to 1 is divided into ${lineDesc}. What fraction is at the ${n === 1 ? "1st" : n === 2 ? "2nd" : n === 3 ? "3rd" : "4th"} mark after 0?`,
                     answer: n === d ? "1" : `${n}/${d}`, type: "conceptual",
                     options: [`${n}/${d}`, `${d}/${n}`, `${n}/${d+1}`, `${d-n}/${d}`].filter((v,i,a) => a.indexOf(v) === i),
                     explanation: `The number line is divided into ${d} equal parts. The ${n === 1 ? "first" : n === 2 ? "second" : n === 3 ? "third" : "fourth"} mark represents ${n}/${d}${n === d ? " = 1" : ""}.` };
@@ -3324,7 +3808,7 @@ const generators = {
                 const n2 = rand(1, n1 - 1);
                 const diff = n1 - n2;
                 return { question: `What is ${n1}/${d} - ${n2}/${d}?`, answer: `${diff}/${d}`, type: "procedural",
-                    options: [`${diff}/${d}`, `${n1 - n2}/${d - d || 1}`, `${n1}/${d - n2 || 1}`, `${diff}/${d * 2}`].filter((v,i,a) => a.indexOf(v) === i),
+                    options: [`${diff}/${d}`, `${n1 + n2}/${d}`, `${diff}/${d * 2}`, `${n1}/${n2}`].filter((v,i,a) => a.indexOf(v) === i),
                     explanation: `When subtracting fractions with the same denominator, subtract the numerators and keep the denominator: ${n1}/${d} - ${n2}/${d} = ${diff}/${d}` };
             } else if (type === "add_visual") {
                 // Visual addition with context
@@ -3344,7 +3828,7 @@ const generators = {
                 const n2 = rand(1, n1 - 1);
                 const diff = n1 - n2;
                 const item = d === 4 ? "cake" : "pie";
-                return { question: `A ${item} has ${n1}/${d} left. You eat ${n2}/${d} of the whole ${item}. How much is left now?`,
+                return { question: `A ${item} has ${n1}/${d} remaining. If you eat ${n2}/${d} of it, how much is left?`,
                     answer: `${diff}/${d}`, type: "reasoning",
                     options: [`${diff}/${d}`, `${n1 + n2}/${d}`, `${diff}/${d * 2}`, `${n1 * n2}/${d}`].filter((v,i,a) => a.indexOf(v) === i),
                     explanation: `Subtract the parts: ${n1}/${d} - ${n2}/${d} = ${diff}/${d} of the ${item} remains.` };
@@ -3411,12 +3895,10 @@ const generators = {
             } else if (type === "simplify_gcf") {
                 // Teach GCF concept
                 const gcf = pick([2, 3, 4, 5]);
-                const n = rand(1, 3) * gcf;
-                const d = rand(2, 4) * gcf;
-                if (n >= d) return { question: `Simplify ${gcf * 2}/${gcf * 4} to lowest terms.`, answer: `1/2`, type: "procedural",
-                    options: ["1/2", `${gcf}/2`, `2/${gcf}`, `${gcf * 2 - 1}/${gcf * 4 - 1}`],
-                    explanation: `The GCF of ${gcf * 2} and ${gcf * 4} is ${gcf * 2}. Divide both: ${gcf * 2}÷${gcf * 2}/${gcf * 4}÷${gcf * 2} = 1/2` };
-                const simpN = n / gcf, simpD = d / gcf;
+                const simpN = rand(1, 3);
+                const simpD = rand(simpN + 1, 5);
+                const n = simpN * gcf;
+                const d = simpD * gcf;
                 return { question: `Simplify ${n}/${d}. (Hint: GCF is ${gcf})`, answer: `${simpN}/${simpD}`, type: "procedural",
                     options: [`${simpN}/${simpD}`, `${n - gcf}/${d - gcf}`, `${n}/${simpD}`, `${simpN}/${d}`].filter((v,i,a) => a.indexOf(v) === i && !v.includes("-") && !v.includes("/0")),
                     explanation: `Divide both numerator and denominator by the GCF (${gcf}): ${n}÷${gcf}/${d}÷${gcf} = ${simpN}/${simpD}` };
@@ -3586,7 +4068,7 @@ const generators = {
                 const elapsed = pick([1, 2, 3]);
                 const end = start + elapsed;
                 return {
-                    question: `The clock shows ${start}:00. What time will it be in ${elapsed} hour${elapsed > 1 ? 's' : ''}?`,
+                    question: `The clock shows ${start}:00 ${start < 12 ? 'AM' : 'PM'}. What time will it be in ${elapsed} hour${elapsed > 1 ? 's' : ''}?`,
                     answer: `${end}:00`, type: "procedural",
                     options: [`${end}:00`, `${start + elapsed - 1}:00`, `${start}:${elapsed}0`, `${end + 1}:00`],
                     explanation: `${start}:00 + ${elapsed} hours = ${end}:00`,
@@ -3606,7 +4088,7 @@ const generators = {
                 const dimes = rand(0, 5);
                 const nickels = rand(0, 4);
                 const total = quarters * 25 + dimes * 10 + nickels * 5;
-                return { question: `${quarters} quarter${quarters !== 1 ? 's' : ''}, ${dimes} dime${dimes !== 1 ? 's' : ''}, ${nickels} nickel${nickels !== 1 ? 's' : ''}. How many cents?`,
+                return { question: `${quarters === 0 ? 'no quarters' : quarters + ' quarter' + (quarters !== 1 ? 's' : '')}, ${dimes === 0 ? 'no dimes' : dimes + ' dime' + (dimes !== 1 ? 's' : '')}, ${nickels === 0 ? 'no nickels' : nickels + ' nickel' + (nickels !== 1 ? 's' : '')}. How many cents?`,
                     answer: total, type: "procedural",
                     explanation: `${quarters}×25¢ + ${dimes}×10¢ + ${nickels}×5¢ = ${quarters*25} + ${dimes*10} + ${nickels*5} = ${total}¢` };
             } else if (type === "add") {
@@ -3630,7 +4112,7 @@ const generators = {
                 const num = rand(11, 99);
                 const rounded = Math.round(num / 10) * 10;
                 return { question: `Round ${num} to the nearest ten.`, answer: rounded, type: "procedural",
-                    explanation: `${num} is closer to ${rounded} than ${rounded < num ? rounded - 10 : rounded + 10}. Rounded: ${rounded}` };
+                    explanation: `${num} is closer to ${rounded} than ${rounded <= num ? rounded + 10 : rounded - 10}. Rounded: ${rounded}` };
             } else {
                 const num = rand(101, 999);
                 const rounded = Math.round(num / 100) * 100;
@@ -3644,7 +4126,7 @@ const generators = {
                 const inches = rand(12, 36);
                 const feet = Math.floor(inches / 12);
                 const remainInches = inches % 12;
-                return { question: `${inches} inches = ? feet and ? inches`, answer: `${feet} ft ${remainInches} in`, type: "procedural",
+                return { question: `Convert ${inches} inches to feet and inches.`, answer: `${feet} ft ${remainInches} in`, type: "procedural",
                     options: [`${feet} ft ${remainInches} in`, `${feet + 1} ft ${remainInches} in`, `${feet} ft ${remainInches + 1} in`, `${remainInches} ft ${feet} in`],
                     explanation: `${inches} ÷ 12 = ${feet} remainder ${remainInches}. So ${feet} feet and ${remainInches} inches.` };
             } else if (type === "compare") {
@@ -3728,7 +4210,7 @@ const generators = {
                     question: `Find the perimeter of this triangle with sides ${a}, ${b}, and ${c}.`,
                     answer: perimeter, type: "procedural",
                     explanation: `Perimeter = ${a} + ${b} + ${c} = ${perimeter}`,
-                    visual: { type: 'shape', mode: 'display', data: { shape: 'triangle', dimensions: { base: a, height: b }, showMeasurements: true } }
+                    visual: { type: 'shape', mode: 'display', data: { shape: 'triangle', dimensions: { sides: [a, b, c] }, showMeasurements: true } }
                 };
             }
         },
@@ -3863,7 +4345,7 @@ const generators = {
                     question: `This square has an area of ${area} square units. What is the side length?`,
                     answer: side, type: "reasoning",
                     options: [side, side + 1, side - 1, area / 2],
-                    explanation: `If area = side × side = ${area}, then side = √${area} = ${side}`,
+                    explanation: `If area = side × side = ${area}, think: what number times itself equals ${area}? ${side} × ${side} = ${area}, so the side is ${side}`,
                     visual: { type: 'shape', mode: 'display', data: { shape: 'square', dimensions: { side }, showMeasurements: false, shaded: true } }
                 };
             } else {
@@ -3930,25 +4412,36 @@ const generators = {
         },
         "Line Plots": () => {
             const type = pick(["read", "count", "most_common", "range"]);
-            const values = [2, 2, 3, 3, 3, 4, 4, 5];
-            const linePlotData = { type: 'line_plot', labels: [2, 3, 4, 5], counts: [2, 3, 2, 1], title: 'Shoe Sizes' };
+            // Generate random line plot data
+            const baseVal = rand(1, 5);
+            const labels = [baseVal, baseVal + 1, baseVal + 2, baseVal + 3];
+            const counts = [rand(1, 4), rand(2, 5), rand(1, 4), rand(1, 3)];
+            const values = [];
+            labels.forEach((label, i) => { for (let j = 0; j < counts[i]; j++) values.push(label); });
+            const total = counts.reduce((a, b) => a + b, 0);
+            const maxCount = Math.max(...counts);
+            const mostCommonIdx = counts.indexOf(maxCount);
+            const mostCommonVal = labels[mostCommonIdx];
+            const topics = pick([['Shoe Sizes', 'shoe size'], ['Books Read', 'books'], ['Goals Scored', 'goals'], ['Pets Owned', 'pets']]);
+            const linePlotData = { type: 'line_plot', labels, counts, title: topics[0] };
             const visual = { type: 'chart', mode: 'display', data: linePlotData };
             if (type === "read") {
-                const target = pick([2, 3, 4, 5]);
-                const count = values.filter(v => v === target).length;
-                return { question: `How many students have shoe size ${target}?`, answer: count, type: "procedural",
+                const targetIdx = rand(0, 3);
+                const target = labels[targetIdx];
+                const count = counts[targetIdx];
+                return { question: `How many students have ${topics[1]} ${target}?`, answer: count, type: "procedural",
                     explanation: `Count the X's above ${target}: ${count} students.`, visual };
             } else if (type === "count") {
-                return { question: `How many students are shown in this line plot?`, answer: values.length, type: "procedural",
-                    explanation: `Total X's: 2 + 3 + 2 + 1 = ${values.length} students.`, visual };
+                return { question: `How many students are shown in this line plot?`, answer: total, type: "procedural",
+                    explanation: `Total X's: ${counts.join(' + ')} = ${total} students.`, visual };
             } else if (type === "most_common") {
-                return { question: `What is the most common shoe size?`, answer: 3, type: "conceptual",
-                    options: [2, 3, 4, 5],
-                    explanation: `Size 3 has the most X's (3), so it's most common.`, visual };
+                return { question: `What is the most common ${topics[1]}?`, answer: mostCommonVal, type: "conceptual",
+                    options: labels,
+                    explanation: `${mostCommonVal} has the most X's (${maxCount}), so it's most common.`, visual };
             } else {
-                const min = Math.min(...values);
-                const max = Math.max(...values);
-                return { question: `What is the range of shoe sizes?`, answer: max - min, type: "procedural",
+                const min = Math.min(...labels);
+                const max = Math.max(...labels);
+                return { question: `What is the range of ${topics[1]}?`, answer: max - min, type: "procedural",
                     explanation: `Range = largest - smallest = ${max} - ${min} = ${max - min}`, visual };
             }
         },
@@ -3985,7 +4478,7 @@ const generators = {
                     { name: "butterfly", symmetric: true },
                     { name: "human face", symmetric: true },
                     { name: "leaf", symmetric: true },
-                    { name: "hand", symmetric: false },
+                    { name: "scissors", symmetric: false },
                     { name: "starfish", symmetric: true }
                 ];
                 const item = pick(items);
@@ -4024,7 +4517,7 @@ const generators = {
                     options: [`${angle1}°`, `${angle2}°`],
                     explanation: `${angle2}° > ${angle1}°. The obtuse angle is larger than the acute angle.` };
             } else {
-                const cornerType = pick(["book", "door", "slice of pizza", "clock at 3:00"]);
+                const cornerType = pick(["book", "door", "thin pizza slice", "clock at 3:00"]);
                 const isRight = cornerType === "book" || cornerType === "door" || cornerType === "clock at 3:00";
                 return { question: `The corner of a ${cornerType} is most likely what type of angle?`, answer: isRight ? "right" : "acute", type: "reasoning",
                     options: ["acute", "right", "obtuse"],
@@ -9568,7 +10061,7 @@ const lessons = {
                     problem: `What is ${a} × ${b}?`,
                     steps: [
                         { label: `Read as "${a} groups of ${b}"`, value: `${Array(a).fill(b).join(' + ')}` },
-                        { label: "Add them up", value: `${Array(a).fill(b).reduce((sum, n, i) => i === 0 ? String(n) : sum + ' + ' + n + ' = ' + (parseInt(sum.split(' = ').pop() || sum) + n), '0').split(' = ').pop()}... wait, let's count!` },
+                        { label: "Add them up", value: `${Array(a).fill(b).join(' + ')} = ?` },
                         { label: "Total", value: "?" }
                     ],
                     answer: String(a * b),
@@ -9661,7 +10154,7 @@ const lessons = {
                 keyPoints: [
                     "Division is splitting into EQUAL groups",
                     "Think multiplication backwards: ___ × 4 = 12? Answer: 3",
-                    "The first number (12) gets split BY the second number (4)"
+                    "The dividend (12) gets split into groups of the divisor (4)"
                 ],
                 mistakes: [
                     { wrong: "Dividing in the wrong order (4 ÷ 12)", why: "The big number gets divided BY the small number. 12 ÷ 4 ≠ 4 ÷ 12" },
@@ -9860,7 +10353,7 @@ const lessons = {
                 "4 quarters = 100¢ = $1.00"
             ],
             mistakes: [
-                { wrong: "Thinking a dime is worth more than a nickel because it's smaller", why: "Size doesn't matter! Dime = 10¢, Nickel = 5¢" },
+                { wrong: "Thinking a dime is worth less than a nickel because it's smaller", why: "Size doesn't equal value! Dime = 10¢, Nickel = 5¢. The smaller coin is worth more!" },
                 { wrong: "Forgetting to count all the coins", why: "Count each type separately, then add them up." }
             ],
             guided: {
@@ -10191,7 +10684,7 @@ const lessons = {
             ],
             mistakes: [
                 { wrong: "Writing the numbers upside down", why: "Parts you HAVE go on TOP. Total parts go on BOTTOM." },
-                { wrong: "3/4 of a pizza is bigger than 2/4", why: "Correct! More shaded parts = bigger fraction (when denominators are the same)" }
+                { wrong: "Thinking 2/4 is bigger than 3/4 because 2 comes before 3", why: "Compare numerators when denominators match: 3 > 2, so 3/4 > 2/4. More shaded parts = bigger fraction!" }
             ],
             guided: {
                 problem: `A cake is cut into 8 equal slices. You eat 3. What fraction did you eat?`,
@@ -10507,7 +11000,7 @@ const lessons = {
                     "Always subtract: TOP minus BOTTOM"
                 ],
                 mistakes: [
-                    { wrong: "Subtracting smaller from larger (8 - 2 = 6)", why: "Always subtract TOP - BOTTOM! If top is smaller, borrow." },
+                    { wrong: "Flipping digits when bottom is bigger (doing 8 - 2 instead of 2 - 8)", why: "Always subtract TOP - BOTTOM! If top is smaller, borrow first." },
                     { wrong: "Forgetting you borrowed", why: "After borrowing, the digit you borrowed FROM is 1 less!" },
                     { wrong: "Borrowing when you don't need to", why: "Only borrow if top digit < bottom digit" }
                 ],
@@ -10991,7 +11484,7 @@ const lessons = {
                         visual: "Perimeter = total distance around (works for ALL shapes!)"
                     },
                     {
-                        title: "The Universal Rule",
+                        title: "The Basic Rule",
                         explanation: "For <strong>ANY shape</strong>, perimeter = <strong>add all the sides together</strong>. That's it! This works for triangles, rectangles, pentagons - everything!",
                         visual: "Triangle: a + b + c | Rectangle: L + W + L + W | Pentagon: add all 5 sides"
                     },
@@ -11142,7 +11635,7 @@ const lessons = {
                     "Breaking apart makes big multiplications easier"
                 ],
                 mistakes: [
-                    { wrong: "Confusing rows and columns", why: "Rows go across (horizontal), columns go up/down (vertical). But 4×6 = 6×4!" },
+                    { wrong: "Confusing rows and columns", why: "Rows go across (horizontal) like rows of seats. Columns go up/down (vertical) like columns on a building. But 4×6 = 6×4!" },
                     { wrong: "Adding instead of multiplying", why: "4 rows of 6 means 4 × 6, not 4 + 6" },
                     { wrong: "Miscounting the array", why: "Multiply: rows × columns. Don't count one by one!" }
                 ],
@@ -11401,7 +11894,7 @@ const lessons = {
                 "Watch for AM/PM changes (noon, midnight)"
             ],
             mistakes: [
-                { wrong: "Subtracting times like regular numbers", why: "4:30 - 2:00 ≠ 2:30. Count hours, then minutes separately!" },
+                { wrong: "Subtracting times like regular numbers", why: "3:15 - 1:45 ≠ 2:30 (you can't just subtract 45 from 15). Count hours, then handle minutes carefully!" },
                 { wrong: "Forgetting about AM/PM", why: "From 10:00 AM to 1:00 PM is 3 hours, not 3 hours backward!" }
             ],
             guided: {
@@ -11673,8 +12166,8 @@ const lessons = {
                     { label: "Have", value: "1/4 cup" },
                     { label: "More needed (subtract)", value: "?" }
                 ],
-                answer: "2/4",
-                answerLabel: "How much more? (simplify: 1/2)",
+                answer: "1/2",
+                answerLabel: "How much more?",
                 interactiveSteps: [
                     {
                         prompt: "'How much MORE' tells us to do what operation?",
@@ -11696,7 +12189,7 @@ const lessons = {
                     }
                 ]
             },
-            practice: { problem: `Jake ran 2/5 mile. Sara ran 3/5 mile. How much did they run in total?`, answer: "5/5 or 1 mile", options: ["5/10 mile", "5/5 mile", "1/5 mile", "6/5 miles"],
+            practice: { problem: `Jake ran 2/5 mile. Sara ran 3/5 mile. How much did they run in total?`, answer: "5/5 mile", options: ["5/10 mile", "5/5 mile", "1/5 mile", "6/5 miles"],
                 mistakeAnalysis: {
                     "5/10 mile": "Don't add denominators! 2/5 + 3/5 = 5/5 = 1 mile",
                     "1/5 mile": "You subtracted. 'Total' means add: 2/5 + 3/5 = 5/5",
@@ -28424,11 +28917,11 @@ function renderQuestion() {
         inputDiv.style.cssText = 'display: flex; align-items: center; gap: 12px; padding: 16px 0;';
         inputDiv.innerHTML = `
             <label style="font-size: 1.1rem; color: var(--slate-300); white-space: nowrap;">Your answer:</label>
-            <input type="number" id="typed-answer-input" class="typed-answer-input"
+            <input type="text" id="typed-answer-input" class="typed-answer-input"
                    style="flex: 1; max-width: 200px; padding: 12px 16px; font-size: 1.2rem; background: var(--slate-700); border: 2px solid var(--slate-600); border-radius: 10px; color: white; outline: none; text-align: center;"
-                   placeholder="Type a number"
+                   placeholder="Type your answer"
                    autocomplete="off"
-                   inputmode="decimal">
+                   inputmode="text">
         `;
         opts.appendChild(inputDiv);
 
@@ -28519,10 +29012,11 @@ function submitAnswer() {
         correct = compareVisualAnswer(state.visualAnswer, visualTarget, state.visualType);
         correctAnswerDisplay = formatVisualAnswer(visualTarget, state.visualType);
     } else if (state.isTypedAnswer) {
-        // Typed numeric answer
+        // Typed answer - use intelligent interpreter
         const input = document.getElementById('typed-answer-input');
-        const typedValue = parseFloat(input?.value?.trim());
-        correct = !isNaN(typedValue) && Math.abs(typedValue - q.answer) < 0.001;
+        const userInput = input?.value?.trim();
+        const result = AnswerInterpreter.checkAnswer(userInput, q.answer);
+        correct = result.correct;
         correctAnswerDisplay = q.answer;
     } else {
         // Standard multiple choice
@@ -29325,13 +29819,10 @@ function selectGuidedOption(value, index) {
 
     state.guidedAttempts++;
 
-    // Normalize for comparison
-    const normalizeAnswer = (ans) => String(ans).toLowerCase().replace(/\s+/g, '').replace(/,/g, '');
-    const userAnswer = normalizeAnswer(value);
-
-    // Check if correct
+    // Use intelligent answer interpreter
     const acceptableAnswers = step.acceptableAnswers || [step.answer];
-    const isCorrect = acceptableAnswers.some(ans => normalizeAnswer(ans) === userAnswer);
+    const result = AnswerInterpreter.checkAnswer(value, acceptableAnswers);
+    const isCorrect = result.correct;
 
     // Highlight selected option
     document.querySelectorAll('.guided-select-option').forEach((opt, i) => {
@@ -29360,7 +29851,8 @@ function selectGuidedOption(value, index) {
         }, 1000);
     } else {
         // Check for specific mistake feedback
-        const mistakeFeedback = step.commonMistakes?.[value] || step.commonMistakes?.[userAnswer];
+        const normalizedValue = String(value).toLowerCase().replace(/\s+/g, '');
+        const mistakeFeedback = step.commonMistakes?.[value] || step.commonMistakes?.[normalizedValue];
 
         if (mistakeFeedback) {
             fb.className = 'guided-feedback show incorrect';
@@ -29396,13 +29888,17 @@ function checkGuidedStepAnswer() {
 
     state.guidedAttempts++;
 
-    // Normalize answers for comparison
-    const normalizeAnswer = (ans) => String(ans).toLowerCase().replace(/\s+/g, '').replace(/,/g, '');
-    const userAnswer = normalizeAnswer(input);
-
-    // Check if correct (allow multiple acceptable answers)
+    // Use intelligent answer interpreter
     const acceptableAnswers = step.acceptableAnswers || [step.answer];
-    const isCorrect = acceptableAnswers.some(ans => normalizeAnswer(ans) === userAnswer);
+    const result = AnswerInterpreter.checkAnswer(input, acceptableAnswers);
+    const isCorrect = result.correct;
+
+    // Provide "close answer" feedback if applicable
+    if (!isCorrect && result.matchType === 'close') {
+        fb.className = 'guided-feedback show hint';
+        fb.innerHTML = `Almost! Did you mean "${result.suggestion}"?`;
+        return;
+    }
 
     if (isCorrect) {
         fb.className = 'guided-feedback show correct';
@@ -29424,8 +29920,9 @@ function checkGuidedStepAnswer() {
             }
         }, 1000);
     } else {
-        // Check for common mistakes
-        const mistakeFeedback = step.commonMistakes?.[input] || step.commonMistakes?.[userAnswer];
+        // Check for common mistakes (try both raw input and normalized)
+        const normalizedInput = input.toLowerCase().replace(/\s+/g, '');
+        const mistakeFeedback = step.commonMistakes?.[input] || step.commonMistakes?.[normalizedInput];
 
         if (mistakeFeedback) {
             fb.className = 'guided-feedback show incorrect';
