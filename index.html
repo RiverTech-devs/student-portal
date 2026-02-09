@@ -1140,46 +1140,28 @@
                         throw new Error('An account with this email already exists. Please login instead.');
                     }
             
-                    // Check if profile already exists (in case of partial registration)
-                    const { data: existingProfile, error: checkError } = await this.auth.supabase
-                        .from('user_profiles')
-                        .select('id')
-                        .eq('id', authData.user.id);
-            
-                    if (!checkError && existingProfile && existingProfile.length > 0) {
-                        console.log('Profile already exists for this user, skipping profile creation');
-                    } else {
-                        // Create the user profile
-                        const { error: profileError } = await this.auth.supabase
-                            .from('user_profiles')
-                            .insert({
-                                id: authData.user.id,
-                                auth_user_id: authData.user.id,
-                                email: email,
-                                username: username,
-                                first_name: firstName,
-                                last_name: lastName,
-                                user_type: userType,
-                                grade_level: userType === 'student' ? grade : null,
-                                enrollment_type: userType === 'student' ? enrollmentType : null
-                            });
-            
-                        if (profileError) {
-                            // If profile creation fails, we have an auth user with no profile
-                            console.error('Profile creation error:', profileError);
-                            
-                            // Try to clean up the auth user
-                            try {
-                                await this.auth.supabase.auth.admin.deleteUser(authData.user.id);
-                            } catch (deleteError) {
-                                console.error('Could not clean up auth user:', deleteError);
-                            }
-                            
-                            if (profileError.message.includes('duplicate key')) {
-                                throw new Error('A profile with this email or username already exists.');
-                            }
-                            throw new Error(`Profile creation failed: ${profileError.message}`);
-                        }
+                    // Create user profile using the secure signup function
+                    // This bypasses RLS since auth.uid() is NULL during signup
+                    const { data: profileResult, error: profileError } = await this.auth.supabase
+                        .rpc('create_signup_profile', {
+                            user_id: authData.user.id,
+                            user_email: email,
+                            user_username: username,
+                            user_first_name: firstName,
+                            user_last_name: lastName,
+                            user_type: userType,
+                            user_grade_level: userType === 'student' ? grade : null,
+                            user_enrollment_type: userType === 'student' ? enrollmentType : null
+                        });
+
+                    if (profileError) {
+                        console.error('Profile creation RPC error:', profileError);
+                        throw new Error(`Profile creation failed: ${profileError.message}`);
+                    }
+
+                    if (profileResult && profileResult.error) {
+                        console.error('Profile creation failed:', profileResult.error);
+                        throw new Error(profileResult.error);
                     }
             
                     // If parent, handle child relationships
