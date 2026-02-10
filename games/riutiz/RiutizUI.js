@@ -1233,6 +1233,7 @@ class RiutizUI {
         if (state.phase === 'main' && isYourTurn && isYours && !state.combatStep) {
             if (this.selectedFieldCard?.instanceId === card.instanceId) {
                 this.selectedFieldCard = null;
+                this.setMessage(''); // Clear the message when deselecting
             } else {
                 this.selectedFieldCard = card;
                 this.selectedCard = null;
@@ -1296,6 +1297,7 @@ class RiutizUI {
             }
             btns.appendChild(this.createButton('✕ Cancel', 'btn-secondary', () => {
                 this.selectedFieldCard = null;
+                this.setMessage(''); // Clear the message when cancelling
                 this.render();
             }));
             return;

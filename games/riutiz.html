@@ -607,6 +607,7 @@
       bottom: 3.5rem; /* Above action bar */
       transition: all 0.2s ease-out;
       transform-origin: bottom center;
+      will-change: transform, z-index;
     }
 
     .hand-card-wrapper:hover {
@@ -615,7 +616,19 @@
     }
 
     .hand-card-wrapper .card {
+      pointer-events: auto;
       box-shadow: 0 5px 20px rgba(0,0,0,0.5);
+    }
+
+    /* Expand hover area for better detection */
+    .hand-card-wrapper::before {
+      content: '';
+      position: absolute;
+      top: -10px;
+      left: -10px;
+      right: -10px;
+      bottom: -10px;
+      z-index: -1;
     }
 
     /* Action Bar - Bottom overlay */
@@ -2274,9 +2287,15 @@ function startQuickGame() {
   });
 
   game.addEventListener('combatResolved', (e) => {
-    ui.setMessage(e.detail.pointsScored > 0 ?
-      `Dealt ${e.detail.pointsScored} points!` :
-      'Combat resolved!');
+    const isYourTurn = game.state.currentPlayer === 1;
+    if (e.detail.pointsScored > 0) {
+      // Show different message based on who scored
+      ui.setMessage(isYourTurn ?
+        `Earned ${e.detail.pointsScored} Points!` :
+        `Opponent earned ${e.detail.pointsScored} points!`);
+    } else {
+      ui.setMessage('Combat resolved!');
+    }
     ui.render();
   });
 
@@ -2699,6 +2718,7 @@ function renderDeckManagement() {
           </div>
         </div>
         <div class="deck-card-actions">
+          <button class="deck-action-btn edit" onclick="viewDeck('starter', '${chosenStarter.id}')">View</button>
           <button class="deck-action-btn duplicate" onclick="duplicateDeck('starter', '${chosenStarter.id}')">Duplicate</button>
         </div>
       </div>
@@ -2726,6 +2746,7 @@ function renderDeckManagement() {
             </div>
           </div>
           <div class="deck-card-actions">
+            <button class="deck-action-btn edit" onclick="viewDeck('user', '${deck.id}')">View</button>
             <button class="deck-action-btn edit" onclick="editDeck('${deck.id}')">Edit</button>
             <button class="deck-action-btn duplicate" onclick="duplicateDeck('user', '${deck.id}')">Copy</button>
             <button class="deck-action-btn delete" onclick="deleteDeckConfirm('${deck.id}')">Delete</button>
@@ -2860,6 +2881,89 @@ function openDeckEditor() {
   renderCardGrid();
   renderDeckList();
   updateDeckStats();
+}
+
+// ============================================
+// VIEW DECK (Read-only)
+// ============================================
+function viewDeck(source, deckId) {
+  let deckCards = [];
+  let deckName = 'Unknown Deck';
+
+  if (source === 'starter') {
+    const starter = deckBuilder.starterDecks.find(d => d.id === deckId);
+    if (starter) {
+      deckCards = starter.deck_list || [];
+      deckName = starter.name;
+    }
+  } else {
+    const deck = deckBuilder.savedDecks[deckId];
+    if (deck) {
+      deckCards = deck.cards || [];
+      deckName = deck.name;
+    }
+  }
+
+  // Show a modal with the deck contents
+  showDeckViewModal(deckName, deckCards);
+}
+
+function showDeckViewModal(deckName, deckCards) {
+  // Create or get modal
+  let modal = document.getElementById('deck-view-modal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'deck-view-modal';
+    modal.className = 'deck-type-modal hidden';
+    document.body.appendChild(modal);
+  }
+
+  // Count cards by id and sort by cost
+  const cardCounts = {};
+  deckCards.forEach(cardId => {
+    cardCounts[cardId] = (cardCounts[cardId] || 0) + 1;
+  });
+
+  // Build card list HTML
+  let cardsHtml = '';
+  const uniqueCards = Object.keys(cardCounts).map(id => CARD_DATA.find(c => c.id === parseInt(id))).filter(Boolean);
+  uniqueCards.sort((a, b) => {
+    const aCost = parseInt(a.cost?.match(/\d+/)?.[0] || '0');
+    const bCost = parseInt(b.cost?.match(/\d+/)?.[0] || '0');
+    return aCost - bCost || a.name.localeCompare(b.name);
+  });
+
+  uniqueCards.forEach(card => {
+    const count = cardCounts[card.id];
+    const color = getCardColor(card.cost);
+    cardsHtml += `
+      <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.5rem; border-radius: 0.25rem; background: ${color === 'C' ? '#27272a' : `var(--${color.toLowerCase()}-bg, #27272a)`}; margin-bottom: 0.25rem;">
+        <span style="font-size: 0.85rem;">${card.name}</span>
+        <span style="font-size: 0.75rem; opacity: 0.7;">x${count}</span>
+      </div>
+    `;
+  });
+
+  modal.innerHTML = `
+    <div class="deck-type-modal-content" style="max-height: 80vh; overflow-y: auto;">
+      <div class="deck-type-modal-title">${deckName} (${deckCards.length} cards)</div>
+      <div style="margin: 1rem 0; max-height: 50vh; overflow-y: auto;">
+        ${cardsHtml || '<p style="color: #71717a;">No cards in deck</p>'}
+      </div>
+      <div class="deck-type-modal-actions">
+        <button class="btn btn-secondary" onclick="closeDeckViewModal()">Close</button>
+      </div>
+    </div>
+  `;
+
+  modal.classList.remove('hidden');
+}
+
+function closeDeckViewModal() {
+  const modal = document.getElementById('deck-view-modal');
+  if (modal) {
+    modal.classList.add('hidden');
+  }
 }
 
 // ============================================

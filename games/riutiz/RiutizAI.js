@@ -161,9 +161,18 @@ class RiutizAI {
             // Combat decisions based on personality
             await this.doCombat();
 
-            // End turn
+            // Wait for combat to resolve if attackers were declared
+            if (this.game.state.combatStep) {
+                // Combat is in progress - wait for player to declare blockers
+                // and for combat to resolve before ending turn
+                await this.waitForCombatResolution();
+            }
+
+            // End turn (only if combat is resolved or was skipped)
             await this.delay(500);
-            this.game.endTurn(this.playerNum);
+            if (!this.game.state.combatStep) {
+                this.game.endTurn(this.playerNum);
+            }
 
         } catch (error) {
             console.error('AI error:', error);
@@ -555,6 +564,23 @@ class RiutizAI {
         const count = parseInt(match[1]) || 1;
         const sides = parseInt(match[2]);
         return count * (sides + 1) / 2;
+    }
+
+    /**
+     * Wait for combat to be resolved (player must declare blockers first)
+     */
+    waitForCombatResolution() {
+        return new Promise(resolve => {
+            const checkCombat = () => {
+                if (!this.game.state.combatStep) {
+                    resolve();
+                } else {
+                    setTimeout(checkCombat, 200);
+                }
+            };
+            // Initial check after a delay
+            setTimeout(checkCombat, 200);
+        });
     }
 
     /**

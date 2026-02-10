@@ -231,18 +231,51 @@ class RiutizGame extends EventTarget {
     }
 
     /**
+     * Get all colors from cost (for multicolor cards)
+     */
+    getAllColors(costStr) {
+        const { colors } = this.parseCost(costStr);
+        const keys = Object.keys(colors);
+        return keys.length > 0 ? keys : ['C'];
+    }
+
+    /**
+     * Check if a resource can provide a specific color
+     */
+    resourceProvidesColor(resource, color) {
+        // Check if the resource has multiple colors (multicolor card)
+        if (resource.colors && Array.isArray(resource.colors)) {
+            return resource.colors.includes(color);
+        }
+        // Fallback to single color
+        return resource.color === color;
+    }
+
+    /**
      * Check if player can afford a card
      */
     canAfford(card, player) {
         const cost = this.parseCost(card.cost);
         const available = player.resources.filter(r => !r.spent);
 
-        // Check colored requirements
+        // Track which resources are "used" in this check
+        const usedIndices = new Set();
+
+        // Check colored requirements first
         for (const [color, count] of Object.entries(cost.colors)) {
-            if (available.filter(r => r.color === color).length < count) return false;
+            let found = 0;
+            for (let i = 0; i < available.length && found < count; i++) {
+                if (!usedIndices.has(i) && this.resourceProvidesColor(available[i], color)) {
+                    usedIndices.add(i);
+                    found++;
+                }
+            }
+            if (found < count) return false;
         }
 
-        return available.length >= cost.total;
+        // Check if remaining resources can cover generic cost
+        const remainingResources = available.length - usedIndices.size;
+        return remainingResources >= cost.generic;
     }
 
     /**
@@ -255,7 +288,7 @@ class RiutizGame extends EventTarget {
         for (const [color, count] of Object.entries(cost.colors)) {
             let paid = 0;
             for (const r of player.resources) {
-                if (r.color === color && !r.spent && paid < count) {
+                if (!r.spent && paid < count && this.resourceProvidesColor(r, color)) {
                     r.spent = true;
                     paid++;
                 }
@@ -293,19 +326,30 @@ class RiutizGame extends EventTarget {
         const card = player.hand[cardIndex];
 
         if (asResource) {
+            // Check if resource already played this turn
+            if (player.resourcePlayedThisTurn) {
+                return { success: false, error: 'Already played a resource this turn' };
+            }
+
             // Play as resource - store full card data for preview
-            const color = this.getPrimaryColor(card.cost) || 'C';
+            // Get all colors the card can produce (for multicolored cards)
+            const allColors = this.getAllColors(card.cost);
+            const primaryColor = allColors.length > 0 ? allColors[0] : 'C';
             player.hand.splice(cardIndex, 1);
             player.resources.push({
-                color,
+                color: primaryColor,
+                colors: allColors, // Store all colors for multicolor cards
                 spent: false,
                 id: card.instanceId,
                 cardName: card.name,
                 card: card  // Store full card for preview
             });
 
-            this.emitEvent('cardPlayedAsResource', { player: playerNum, card, color });
-            return { success: true, action: 'resource', color };
+            // Mark that a resource was played this turn
+            player.resourcePlayedThisTurn = true;
+
+            this.emitEvent('cardPlayedAsResource', { player: playerNum, card, color: primaryColor });
+            return { success: true, action: 'resource', color: primaryColor };
         }
 
         // Play normally
@@ -2887,6 +2931,17 @@ class RiutizGame extends EventTarget {
             return { success: false, error: 'Card is Grounded and cannot attack' };
         }
 
+        // Cannot Attack text (e.g., The Loner)
+        const cannotAttack = card.ability?.toLowerCase().includes('cannot attack');
+        if (cannotAttack && !card.abilitiesDisabled) {
+            return { success: false, error: 'This card cannot attack' };
+        }
+
+        // Locked down by Resource Officer
+        if (card.cannotAttack) {
+            return { success: false, error: 'Card is locked down and cannot attack' };
+        }
+
         const isRelentless = card.ability?.toLowerCase().includes('relentless');
         if (card.isSpent && !isRelentless) {
             return { success: false, error: 'Card is spent' };
@@ -3442,6 +3497,11 @@ class RiutizGame extends EventTarget {
             return { success: false, error: 'Not your turn' };
         }
 
+        // Cannot end turn during combat - must resolve combat first
+        if (this.state.combatStep) {
+            return { success: false, error: 'Must resolve combat before ending turn' };
+        }
+
         const nextPlayer = playerNum === 1 ? 2 : 1;
 
         // Increment turn counter when player 2 ends their turn
@@ -3503,6 +3563,7 @@ class RiutizGame extends EventTarget {
         });
         player.resources.forEach(r => r.spent = false);
         player.interruptionPlayed = false;
+        player.resourcePlayedThisTurn = false;
         player.canReroll = false;
 
         // Return temporarily controlled Tools
