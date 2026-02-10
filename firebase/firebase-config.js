@@ -19,6 +19,9 @@ const FIREBASE_CONFIG = {
     appId: "1:517239105316:web:0edae220734c960f64b5b1"
 };
 
+// Make available on window for arcade system
+window.FIREBASE_CONFIG = FIREBASE_CONFIG;
+
 // Firebase SDK URLs (use these in HTML files)
 const FIREBASE_SDK_URLS = {
     app: 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js',
