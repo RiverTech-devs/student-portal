@@ -70,7 +70,7 @@ class RiutizDeckBuilder {
     setMode(mode) {
         this.mode = mode;
         // Clear deck if switching to ranked and cards aren't owned
-        if (mode === 'ranked') {
+        if (mode === 'ranked' && this.collection) {
             this.currentDeck = this.currentDeck.filter(cardId =>
                 this.collection.getQuantity(cardId) > 0
             );
@@ -81,7 +81,7 @@ class RiutizDeckBuilder {
      * Get available cards based on mode
      */
     getAvailableCards() {
-        if (this.mode === 'casual') {
+        if (this.mode === 'casual' || !this.collection) {
             return this.cardData;
         }
 
@@ -153,7 +153,7 @@ class RiutizDeckBuilder {
         }
 
         // Check ownership in ranked mode
-        if (this.mode === 'ranked') {
+        if (this.mode === 'ranked' && this.collection) {
             const owned = this.collection.getQuantity(cardId);
             if (currentCount >= owned) {
                 return { can: false, reason: `You only own ${owned} copies` };
@@ -279,7 +279,7 @@ class RiutizDeckBuilder {
             }
 
             // Check ownership in ranked
-            if (this.mode === 'ranked') {
+            if (this.mode === 'ranked' && this.collection) {
                 const owned = this.collection.getQuantity(parseInt(cardId));
                 if (count > owned) {
                     const card = this.cardData.find(c => c.id === parseInt(cardId));
@@ -361,6 +361,8 @@ class RiutizDeckBuilder {
      * Check if a deck is valid for ranked play (all cards owned)
      */
     isDeckValidForRanked(deck) {
+        if (!this.collection) return false;
+
         const cardCounts = {};
         deck.cards.forEach(id => {
             cardCounts[id] = (cardCounts[id] || 0) + 1;
@@ -380,6 +382,11 @@ class RiutizDeckBuilder {
      */
     getRankedValidationErrors(deck) {
         const errors = [];
+        if (!this.collection) {
+            errors.push('Collection not available');
+            return errors;
+        }
+
         const cardCounts = {};
         deck.cards.forEach(id => {
             cardCounts[id] = (cardCounts[id] || 0) + 1;
