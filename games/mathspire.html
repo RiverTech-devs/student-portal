@@ -1491,7 +1491,12 @@
         .collection-card.rare {
             border-color: #f39c12;
         }
-        
+
+        .collection-card.legendary {
+            border-color: #e74c3c;
+            box-shadow: 0 0 12px rgba(231, 76, 60, 0.5);
+        }
+
         .collection-card.attack {
             border-color: #e74c3c;
         }
@@ -2987,7 +2992,7 @@
             // ===== FUNCTION CARDS =====
             funcSquare: { name: "x²", type: "function", func: "square", rarity: "uncommon", description: "Square: Multiply number by itself", skillRequired: "exponents" },
             funcSqrt: { name: "√", type: "function", func: "sqrt", rarity: "uncommon", description: "Square Root: Find the root", skillRequired: "roots" },
-            funcFactorial: { name: "!", type: "function", func: "factorial", rarity: "rare", description: "Factorial: Multiply by all numbers below (Exhaust)", skillRequired: "factorial", exhaust: true },
+            funcFactorial: { name: "!", type: "function", func: "factorial", rarity: "legendary", description: "Factorial: Multiply by all numbers below. Max 7! (Exhaust)", skillRequired: "factorial", exhaust: true },
             
             // ===== GROUPING CARDS =====
             groupOpen: { name: "(", type: "grouping", group: "open", rarity: "common", description: "Open Parenthesis: Start a group", skillRequired: "parentheses" },
@@ -6580,11 +6585,11 @@
                         } else if (card.func === 'sqrt') {
                             expression = `Math.sqrt(${expression})`;
                         } else if (card.func === 'factorial') {
-                            // Factorial needs special handling
+                            // Factorial needs special handling - capped at 7! (5040) for balance
                             try {
                                 const num = eval(expression);
-                                if (!Number.isInteger(num) || num < 0) {
-                                    expression = 'NaN';
+                                if (!Number.isInteger(num) || num < 0 || num > 7) {
+                                    expression = 'NaN'; // Invalid: negatives, non-integers, or >7
                                 } else {
                                     let fact = 1;
                                     for (let i = 2; i <= num; i++) {
@@ -7834,18 +7839,62 @@
                 }
             }
 
+            // Get a weighted card pool based on game progression
+            getWeightedCardPool() {
+                const floor = this.currentNode >= 0 ? (this.map[this.currentNode]?.floor || 0) : 0;
+                const act = this.currentAct || 1;
+                const progress = act === 2 ? floor + 15 : floor; // 0-29 scale across both acts
+
+                // Filter: exclude basic and curse cards
+                const basePool = Object.keys(CARD_DATABASE).filter(id => {
+                    const card = CARD_DATABASE[id];
+                    if (card.rarity === 'basic' || card.type === 'curse') return false;
+                    return true;
+                });
+
+                // Build weighted pool: rarity weights change with progression
+                // Early game (floor 0-4): mostly common, very rare to see rare
+                // Mid game (floor 5-10): uncommon appears more, rare small chance
+                // Late game (floor 11+): rare appears regularly
+                // Legendary: only appears in Act 2 and very rarely
+                const weighted = [];
+                basePool.forEach(id => {
+                    const card = CARD_DATABASE[id];
+                    let weight = 1;
+                    if (card.rarity === 'common') {
+                        weight = 10;
+                    } else if (card.rarity === 'uncommon') {
+                        // Uncommon: starts low, scales up
+                        weight = progress < 3 ? 2 : progress < 8 ? 5 : 8;
+                    } else if (card.rarity === 'rare') {
+                        // Rare: nearly impossible early, scales with progression
+                        if (progress < 4) weight = 0;       // Floors 0-3: unavailable
+                        else if (progress < 8) weight = 1;  // Floors 4-7: very rare
+                        else if (progress < 12) weight = 2; // Floors 8-11: rare
+                        else weight = 4;                     // Floor 12+: uncommon-ish
+                    } else if (card.rarity === 'legendary') {
+                        // Legendary (e.g. Factorial): Act 2 only, extremely rare
+                        if (act < 2) weight = 0;             // Act 1: never appears
+                        else if (progress < 22) weight = 0;  // Early Act 2: unavailable
+                        else weight = 1;                      // Late Act 2: very rare
+                    }
+                    for (let i = 0; i < weight; i++) {
+                        weighted.push(id);
+                    }
+                });
+
+                return weighted.length > 0 ? weighted : basePool;
+            }
+
             showCardRewards() {
                 const rewardEl = document.getElementById('card-rewards');
                 rewardEl.innerHTML = '';
 
-                // Get available cards (exclude basic and curse cards)
-                const availableCards = Object.keys(CARD_DATABASE).filter(id => 
-                    CARD_DATABASE[id].rarity !== 'basic' && CARD_DATABASE[id].type !== 'curse'
-                );
-                
+                const pool = this.getWeightedCardPool();
+
                 const rewards = [];
                 for (let i = 0; i < 3; i++) {
-                    const cardId = this.rng.choice(availableCards);
+                    const cardId = this.rng.choice(pool);
                     rewards.push(cardId);
                 }
 
@@ -8080,15 +8129,13 @@
                 const shopItems = document.getElementById('shop-items');
                 shopItems.innerHTML = '';
 
-                // Generate shop items (exclude basic and curse cards)
-                const availableCards = Object.keys(CARD_DATABASE).filter(id => 
-                    CARD_DATABASE[id].rarity !== 'basic' && CARD_DATABASE[id].type !== 'curse'
-                );
+                // Generate shop items using progression-weighted pool
+                const availableCards = this.getWeightedCardPool();
 
                 for (let i = 0; i < 5; i++) {
                     const cardId = this.rng.choice(availableCards);
                     const card = CARD_DATABASE[cardId];
-                    const price = card.rarity === 'common' ? 40 : card.rarity === 'uncommon' ? 60 : 85;
+                    const price = card.rarity === 'common' ? 40 : card.rarity === 'uncommon' ? 60 : card.rarity === 'legendary' ? 120 : 85;
 
                     const itemEl = document.createElement('div');
                     itemEl.className = 'shop-item';
@@ -8562,9 +8609,7 @@
             }
 
             addRandomCard() {
-                const availableCards = Object.keys(CARD_DATABASE).filter(id => 
-                    CARD_DATABASE[id].rarity !== 'basic' && CARD_DATABASE[id].type !== 'curse'
-                );
+                const availableCards = this.getWeightedCardPool();
                 const cardId = this.rng.choice(availableCards);
                 const card = CARD_DATABASE[cardId];
                 this.deck.push(cardId);
@@ -9345,7 +9390,7 @@
             grid.innerHTML = '';
             
             // Group cards by rarity
-            const rarities = ['starter', 'common', 'uncommon', 'rare'];
+            const rarities = ['starter', 'common', 'uncommon', 'rare', 'legendary'];
             
             rarities.forEach(rarity => {
                 const cards = Object.entries(CARD_DATABASE).filter(([id, card]) => card.rarity === rarity);
@@ -9488,7 +9533,7 @@
                 cardsGrid.innerHTML = '';
                 
                 // Group cards by rarity
-                const rarities = ['starter', 'common', 'uncommon', 'rare'];
+                const rarities = ['starter', 'common', 'uncommon', 'rare', 'legendary'];
                 
                 rarities.forEach(rarity => {
                     const cards = Object.entries(CARD_DATABASE).filter(([id, card]) => card.rarity === rarity);
