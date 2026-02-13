@@ -2987,7 +2987,7 @@
             // ===== FUNCTION CARDS =====
             funcSquare: { name: "x²", type: "function", func: "square", rarity: "uncommon", description: "Square: Multiply number by itself", skillRequired: "exponents" },
             funcSqrt: { name: "√", type: "function", func: "sqrt", rarity: "uncommon", description: "Square Root: Find the root", skillRequired: "roots" },
-            funcFactorial: { name: "!", type: "function", func: "factorial", rarity: "rare", description: "Factorial: Multiply by all numbers below", skillRequired: "factorial" },
+            funcFactorial: { name: "!", type: "function", func: "factorial", rarity: "rare", description: "Factorial: Multiply by all numbers below (Exhaust)", skillRequired: "factorial", exhaust: true },
             
             // ===== GROUPING CARDS =====
             groupOpen: { name: "(", type: "grouping", group: "open", rarity: "common", description: "Open Parenthesis: Start a group", skillRequired: "parentheses" },
@@ -4365,6 +4365,7 @@
                 try {
                     // Initialize seed and RNG
                     this.seed = seed || this.generateSeed();
+                    this.seedString = String(this.seed);
                     this.rng = new SeededRNG(this.seed);
                     console.log('Using seed:', this.seed);
                     
@@ -6269,9 +6270,16 @@
             
                     console.log(`Equation evaluated: ${baseResult} → ${finalResult} (${operatorCount} operators, +${Math.round(comboBonus * 100)}% bonus)`);
                     
-                    // NOW discard the cards
+                    // NOW discard the cards (exhaust cards are removed from combat entirely)
                     equationToEvaluate.forEach(cardId => {
-                        this.discardPile.push(cardId);
+                        const card = CARD_DATABASE[cardId];
+                        if (card && card.exhaust) {
+                            // Remove from draw pile and deck for remainder of combat
+                            this.drawPile = this.drawPile.filter(id => id !== cardId);
+                            console.log(`Exhausted card: ${cardId} (${card.name}) - removed from combat`);
+                        } else {
+                            this.discardPile.push(cardId);
+                        }
                     });
                     this.currentEquation = [];
             
@@ -7166,6 +7174,10 @@
             }
 
             async endTurn() {
+                // Prevent multiple end turns while processing (async enemy turn)
+                if (this.isAnimating) return;
+                this.isAnimating = true;
+
                 // Clean up turn-temporary cards first (they don't go to discard)
                 this.cleanupTempCards('turn');
 
@@ -7203,6 +7215,7 @@
                 
                 // Only continue if player is still alive
                 if (this.player.hp <= 0) {
+                    this.isAnimating = false;
                     return;
                 }
             
@@ -7298,10 +7311,13 @@
                 console.log(`Drawing ${drawCount} cards. Draw pile: ${this.drawPile.length}, Discard pile: ${this.discardPile.length}`);
                 
                 this.drawCards(drawCount);
-                
+
                 this.setEnemyIntents();
                 this.renderCombat();
                 this.updateUI();
+
+                // Re-enable actions now that the turn is fully complete
+                this.isAnimating = false;
             }
 
             async enemyTurn() {
