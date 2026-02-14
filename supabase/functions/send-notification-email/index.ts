@@ -136,6 +136,41 @@ serve(async (req) => {
           </div>
         </div>
       `
+    } else if (payload.type === 'assignment_posted') {
+      const data = payload.data || {}
+      subject = `📝 New Assignment: ${data.assignmentTitle}`
+      html = `
+        <div style="font-family: Inter, system-ui, Segoe UI, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+            <h2 style="margin: 0;">📝 New Assignment Posted</h2>
+          </div>
+          <div style="padding: 20px; border: 1px solid #ddd; border-top: none; border-radius: 0 0 8px 8px;">
+            <p>Hi ${data.studentName || 'Student'},</p>
+            <p>A new assignment has been posted for you.</p>
+
+            <div style="background: #f5f5f5; padding: 15px; border-radius: 8px; margin: 20px 0;">
+              <div style="margin-bottom: 10px;">
+                <strong>Assignment:</strong> ${data.assignmentTitle}
+              </div>
+              <div style="margin-bottom: 10px;">
+                <strong>Class:</strong> ${data.className}
+              </div>
+              <div>
+                <strong>Due Date:</strong>
+                <span style="background: #667eea; color: white; padding: 4px 12px; border-radius: 12px; font-weight: bold;">
+                  ${data.dueDate}
+                </span>
+              </div>
+            </div>
+
+            <p><a href="https://rivertech.me/portal/" style="display: inline-block; background: #667eea; color: white; padding: 10px 20px; border-radius: 6px; text-decoration: none;">View Assignment</a></p>
+
+            <p style="color: #999; font-size: 12px; margin-top: 30px;">
+              You're receiving this because you have new assignment notifications enabled.
+            </p>
+          </div>
+        </div>
+      `
     } else if (payload.type === 'child_assignment_posted') {
       const data = payload.data || {}
       subject = `📝 New Assignment for ${data.childNames}: ${data.assignmentTitle}`

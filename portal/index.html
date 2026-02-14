@@ -9577,31 +9577,20 @@
 
           if (!parentLinks || parentLinks.length === 0) return;
 
-          // Get parent info and their notification preferences
+          // Get parent info with notification preferences
           const parentIds = parentLinks.map(l => l.parent_id);
           const { data: parents } = await this.supabaseQuery(() => this.auth.supabase
             .from('user_profiles')
-            .select('id, first_name, email')
+            .select('id, first_name, email, email_notifications')
             .in('id', parentIds));
 
           if (!parents || parents.length === 0) return;
 
-          // Get notification preferences for parents
-          const { data: prefs } = await this.supabaseQuery(() => this.auth.supabase
-            .from('notification_prefs')
-            .select('user_id, child_assignment_graded')
-            .in('user_id', parentIds));
-
-          const prefsMap = {};
-          prefs?.forEach(p => { prefsMap[p.user_id] = p; });
-
           // Notify each parent
           for (const parent of parents) {
-            const parentPrefs = prefsMap[parent.id];
+            const emailPrefs = parent.email_notifications || {};
             // Default to true if no preference set
-            const wantsNotification = parentPrefs?.child_assignment_graded !== false;
-
-            if (!wantsNotification) continue;
+            if (emailPrefs.child_assignment_graded === false) continue;
 
             // Create in-app notification for parent
             await this.createNotificationFor(
@@ -9655,7 +9644,7 @@
           if (studentIds && studentIds.length > 0) {
             const { data } = await this.supabaseQuery(() => this.auth.supabase
               .from('user_profiles')
-              .select('id, first_name, last_name')
+              .select('id, first_name, last_name, email, email_notifications')
               .in('id', studentIds));
             students = data || [];
           } else {
@@ -9669,7 +9658,7 @@
             if (enrollments && enrollments.length > 0) {
               const { data } = await this.supabaseQuery(() => this.auth.supabase
                 .from('user_profiles')
-                .select('id, first_name, last_name')
+                .select('id, first_name, last_name, email, email_notifications')
                 .in('id', enrollments.map(e => e.student_id)));
               students = data || [];
             }
@@ -9677,21 +9666,12 @@
 
           if (students.length === 0) return;
 
-          // Get student notification preferences
+          // Notify each student (in-app + email)
           const studentIdList = students.map(s => s.id);
-          const { data: studentPrefs } = await this.supabaseQuery(() => this.auth.supabase
-            .from('notification_prefs')
-            .select('user_id, assignment_posted')
-            .in('user_id', studentIdList));
-
-          const studentPrefsMap = {};
-          studentPrefs?.forEach(p => { studentPrefsMap[p.user_id] = p; });
-
-          // Notify each student (in-app only)
           for (const student of students) {
-            const prefs = studentPrefsMap[student.id];
+            const emailPrefs = student.email_notifications || {};
             // Default to true if no preference set
-            if (prefs?.assignment_posted === false) continue;
+            if (emailPrefs.assignment_posted === false) continue;
 
             await this.createNotificationFor(
               student.id,
@@ -9701,6 +9681,21 @@
               null,
               { assignmentId, assignmentTitle, className, dueDate }
             );
+
+            // Send email notification to student
+            if (student.email) {
+              await this.sendEmailWithTracking(
+                student.email,
+                'assignment_posted',
+                {
+                  studentName: student.first_name,
+                  assignmentTitle: assignmentTitle,
+                  className: className,
+                  dueDate: formattedDueDate
+                },
+                { assignmentId, notificationType: 'new_assignment' }
+              );
+            }
           }
 
           // Find parent(s) for all students
@@ -9714,22 +9709,13 @@
           // Get unique parent IDs
           const parentIds = [...new Set(parentLinks.map(l => l.parent_id))];
 
-          // Get parent info
+          // Get parent info with notification preferences
           const { data: parents } = await this.supabaseQuery(() => this.auth.supabase
             .from('user_profiles')
-            .select('id, first_name, email')
+            .select('id, first_name, email, email_notifications')
             .in('id', parentIds));
 
           if (!parents || parents.length === 0) return;
-
-          // Get notification preferences for parents
-          const { data: prefs } = await this.supabaseQuery(() => this.auth.supabase
-            .from('notification_prefs')
-            .select('user_id, child_assignment_posted')
-            .in('user_id', parentIds));
-
-          const prefsMap = {};
-          prefs?.forEach(p => { prefsMap[p.user_id] = p; });
 
           // Build map of parent to their children in this assignment
           const parentChildrenMap = {};
@@ -9745,9 +9731,9 @@
 
           // Notify each parent
           for (const parent of parents) {
-            const parentPrefs = prefsMap[parent.id];
+            const emailPrefs = parent.email_notifications || {};
             // Default to true if no preference set
-            if (parentPrefs?.child_assignment_posted === false) continue;
+            if (emailPrefs.child_assignment_posted === false) continue;
 
             const children = parentChildrenMap[parent.id] || [];
             if (children.length === 0) continue;
@@ -9819,17 +9805,18 @@
 
           const studentName = `${student.first_name} ${student.last_name}`;
 
-          // Get teacher's notification preferences
-          const { data: prefs } = await this.supabaseQuery(() => this.auth.supabase
-            .from('notification_prefs')
-            .select('assignment_submitted, late_submissions')
-            .eq('user_id', classData.teacher_id)
+          // Get teacher's notification preferences from user_profiles
+          const { data: teacherProfile } = await this.supabaseQuery(() => this.auth.supabase
+            .from('user_profiles')
+            .select('email_notifications')
+            .eq('id', classData.teacher_id)
             .single());
 
           // Check if teacher wants this notification
+          const teacherEmailPrefs = teacherProfile?.email_notifications || {};
           const prefKey = isLate ? 'late_submissions' : 'assignment_submitted';
           // Default to true if no preference set
-          if (prefs && prefs[prefKey] === false) return;
+          if (teacherEmailPrefs[prefKey] === false) return;
 
           const notificationType = isLate ? 'late_submission' : 'submission_received';
           const title = isLate ? 'Late Submission' : 'New Submission';
@@ -9879,32 +9866,22 @@
       // Send notification to admins when a new user registers
       async sendNewUserRegistrationNotification(userId, firstName, lastName, email, userType) {
         try {
-          // Get all admins
+          // Get all admins with notification preferences
           const { data: admins } = await this.supabaseQuery(() => this.auth.supabase
             .from('user_profiles')
-            .select('id, first_name, email')
+            .select('id, first_name, email, email_notifications')
             .eq('user_type', 'admin'));
 
           if (!admins || admins.length === 0) return;
-
-          // Get admin notification preferences
-          const adminIds = admins.map(a => a.id);
-          const { data: prefs } = await this.supabaseQuery(() => this.auth.supabase
-            .from('notification_prefs')
-            .select('user_id, new_user_registration')
-            .in('user_id', adminIds));
-
-          const prefsMap = {};
-          prefs?.forEach(p => { prefsMap[p.user_id] = p; });
 
           const userName = `${firstName} ${lastName}`;
           const userTypeLabel = userType.charAt(0).toUpperCase() + userType.slice(1);
 
           // Notify each admin
           for (const admin of admins) {
-            const adminPrefs = prefsMap[admin.id];
+            const emailPrefs = admin.email_notifications || {};
             // Default to true if no preference set
-            if (adminPrefs?.new_user_registration === false) continue;
+            if (emailPrefs.new_user_registration === false) continue;
 
             // Create in-app notification for admin
             await this.createNotificationFor(
@@ -9939,29 +9916,19 @@
       // Send system alert to admins
       async sendSystemAlert(alertType, title, message, details = {}) {
         try {
-          // Get all admins
+          // Get all admins with notification preferences
           const { data: admins } = await this.supabaseQuery(() => this.auth.supabase
             .from('user_profiles')
-            .select('id, first_name, email')
+            .select('id, first_name, email, email_notifications')
             .eq('user_type', 'admin'));
 
           if (!admins || admins.length === 0) return;
 
-          // Get admin notification preferences
-          const adminIds = admins.map(a => a.id);
-          const { data: prefs } = await this.supabaseQuery(() => this.auth.supabase
-            .from('notification_prefs')
-            .select('user_id, system_alerts')
-            .in('user_id', adminIds));
-
-          const prefsMap = {};
-          prefs?.forEach(p => { prefsMap[p.user_id] = p; });
-
           // Notify each admin
           for (const admin of admins) {
-            const adminPrefs = prefsMap[admin.id];
+            const emailPrefs = admin.email_notifications || {};
             // Default to true if no preference set
-            if (adminPrefs?.system_alerts === false) continue;
+            if (emailPrefs.system_alerts === false) continue;
 
             // Create in-app notification for admin
             await this.createNotificationFor(

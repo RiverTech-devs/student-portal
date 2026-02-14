@@ -47,13 +47,13 @@ Deno.serve(async () => {
 
     if (!toNotify.length) return new Response("all reminders already sent", { status: 200 });
 
-    // Get student notification preferences
-    const { data: prefs } = await sb
-      .from("notification_prefs")
-      .select("user_id, assignment_due_reminder")
-      .in("user_id", studentIds);
+    // Get student notification preferences from user_profiles
+    const { data: profiles } = await sb
+      .from("user_profiles")
+      .select("id, email_notifications")
+      .in("id", studentIds);
 
-    const prefsMap = new Map((prefs || []).map(p => [p.user_id, p]));
+    const prefsMap = new Map((profiles || []).map(p => [p.id, p.email_notifications || {}]));
 
     // Get class names for better notification messages
     const classIds = uniq(rows.map(r => r.class_id));
@@ -68,9 +68,9 @@ Deno.serve(async () => {
 
     // Send notifications
     for (const row of toNotify) {
-      const studentPrefs = prefsMap.get(row.student_id);
+      const studentPrefs = prefsMap.get(row.student_id) || {};
       // Default to true if no preference set
-      if (studentPrefs?.assignment_due_reminder === false) continue;
+      if (studentPrefs.assignment_due_reminder === false) continue;
 
       const className = classNameMap.get(row.class_id) || "Class";
       const dueDate = new Date(row.due_at);

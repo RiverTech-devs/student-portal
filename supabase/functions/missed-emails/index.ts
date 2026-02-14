@@ -37,17 +37,17 @@ Deno.serve(async () => {
 
     const parentIds = uniq(links.map(l => l.parent_id));
 
-    // Check notification preferences
-    const { data: prefs, error: perr } = await sb
-      .from("notification_prefs")
-      .select("user_id, child_late_assignment")
-      .in("user_id", parentIds);
+    // Check notification preferences from user_profiles
+    const { data: parentProfiles, error: perr } = await sb
+      .from("user_profiles")
+      .select("id, email_notifications")
+      .in("id", parentIds);
     if (perr) throw perr;
 
     // Build set of parents who explicitly opted OUT
-    const optedOut = new Set((prefs || [])
-      .filter(p => p.child_late_assignment === false)
-      .map(p => p.user_id));
+    const optedOut = new Set((parentProfiles || [])
+      .filter(p => (p.email_notifications || {}).child_late_assignment === false)
+      .map(p => p.id));
 
     // Get parent emails and student names
     const { data: parents } = await sb
