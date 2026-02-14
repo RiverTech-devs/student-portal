@@ -2662,6 +2662,9 @@
 
         // Increment practice count separately
         await this.incrementPracticeCount(userId, subject, skillName);
+
+        // Check if this progress completes any skill mastery homework assignments
+        await this.checkSkillMasteryHomework(skillName, subject, masteryScore);
       }
 
       // Increment practice count for a skill
@@ -2688,6 +2691,266 @@
             .eq('subject', subject)
             .eq('skill_name', skillName)
         );
+      }
+
+      // ==================== SKILL TREE VALIDATION ====================
+
+      // Check if students have unlocked a skill's prerequisites in the skill tree
+      async checkSkillTreePrerequisites(studentIds, subject, skillName) {
+        const warnings = [];
+        try {
+          // Get skill progress for all target students for this subject
+          const { data: progressData, error } = await this.supabaseQuery(() =>
+            this.auth.supabase
+              .from('skill_progress')
+              .select('user_id, skill_name, state, mastery_score')
+              .in('user_id', studentIds)
+              .eq('subject', subject)
+          );
+
+          if (error) {
+            console.error('Error checking skill tree prerequisites:', error);
+            return []; // Don't block assignment on query failure
+          }
+
+          // Build a map of each student's skill states
+          const studentSkills = {};
+          (progressData || []).forEach(row => {
+            if (!studentSkills[row.user_id]) studentSkills[row.user_id] = {};
+            studentSkills[row.user_id][row.skill_name] = row;
+          });
+
+          // Define prerequisite chains for each subject (matches SkillTreeViewer CONNECTIONS)
+          const prereqMap = this.getSkillPrerequisites(subject);
+          const prereqs = prereqMap[skillName] || [];
+
+          // If skill has no prerequisites (root skill), no validation needed
+          if (prereqs.length === 0) return [];
+
+          // Get student names for warnings
+          const { data: profiles } = await this.supabaseQuery(() =>
+            this.auth.supabase
+              .from('profiles')
+              .select('id, first_name, last_name')
+              .in('id', studentIds)
+          );
+          const nameMap = {};
+          (profiles || []).forEach(p => {
+            nameMap[p.id] = `${p.first_name || ''} ${p.last_name || ''}`.trim() || 'Unknown';
+          });
+
+          // Check each student
+          const unlockedStates = ['activated', 'mastered', 'needs_review'];
+          for (const studentId of studentIds) {
+            const skills = studentSkills[studentId] || {};
+            const missingPrereqs = prereqs.filter(prereq => {
+              const progress = skills[prereq];
+              return !progress || !unlockedStates.includes(progress.state);
+            });
+
+            if (missingPrereqs.length > 0) {
+              warnings.push({
+                studentId,
+                name: nameMap[studentId] || 'Unknown',
+                missingPrereqs
+              });
+            }
+          }
+        } catch (err) {
+          console.error('Error in checkSkillTreePrerequisites:', err);
+        }
+        return warnings;
+      }
+
+      // Get immediate prerequisites for skills by subject (mirrors SkillTreeViewer CONNECTIONS)
+      getSkillPrerequisites(subject) {
+        const prereqMaps = {
+          'Math': {
+            'Number Lines': ['Counting and Number Recognition'],
+            'Even and Odd': ['Number Lines'],
+            'Skip Counting': ['Counting and Number Recognition'],
+            'Picture Graphs': ['Skip Counting'],
+            'Teen Numbers': ['Counting and Number Recognition'],
+            'Place Value Understanding': ['Counting and Number Recognition', 'Teen Numbers'],
+            'Number Bonds': ['Counting and Number Recognition'],
+            'Comparing Numbers': ['Counting and Number Recognition'],
+            'Ordering Numbers': ['Comparing Numbers'],
+            'Comparing Lengths': ['Comparing Numbers'],
+            'Positional Words': ['Comparing Lengths'],
+            'Classifying Objects': ['Positional Words'],
+            'Time Telling': ['Comparing Numbers', 'Place Value Understanding'],
+            'Money and Coins': ['Time Telling'],
+            'Patterns and Sequences': ['Money and Coins'],
+            'Basic Addition': ['Place Value Understanding', 'Number Bonds'],
+            'Basic Subtraction': ['Place Value Understanding', 'Number Bonds'],
+            'Basic Geometry Concepts': ['Counting and Number Recognition'],
+            '3D Shapes': ['Basic Geometry Concepts'],
+            'Partitioning Shapes': ['Basic Geometry Concepts'],
+            'Composing Shapes': ['Partitioning Shapes'],
+            'Multi-Digit Addition': ['Basic Addition'],
+            'Multi-Digit Subtraction': ['Basic Subtraction'],
+            'Multiplication': ['Multi-Digit Addition', 'Multi-Digit Subtraction'],
+            'Division': ['Multiplication'],
+            'Long Division': ['Division'],
+            'Basic Fractions': ['Multiplication'],
+            'Equivalent Fractions': ['Basic Fractions'],
+            'Mixed Numbers': ['Basic Fractions'],
+            'Fraction Operations': ['Equivalent Fractions', 'Mixed Numbers'],
+            'Rounding and Estimation': ['Multi-Digit Addition'],
+            'Word Problems': ['Multi-Digit Addition', 'Multi-Digit Subtraction'],
+            'Decimals': ['Fraction Operations'],
+            'Decimal Operations': ['Decimals'],
+            'Percentages': ['Decimal Operations'],
+            'Ratios and Proportions': ['Percentages'],
+            'Order of Operations': ['Decimal Operations'],
+            'Variables and Expressions': ['Order of Operations'],
+            'Solving Equations': ['Variables and Expressions'],
+            'Inequalities': ['Solving Equations'],
+            'Linear Functions': ['Solving Equations', 'Coordinate Plane'],
+            'Coordinate Plane': ['Solving Equations'],
+            'Perimeter': ['Basic Fractions'],
+            'Area': ['Perimeter'],
+            'Volume': ['Area'],
+            'Pythagorean Theorem': ['Volume'],
+            'Transformations': ['Pythagorean Theorem']
+          },
+          'Reading': {
+            'Phonics': ['Letter Recognition'],
+            'Sight Words': ['Letter Recognition'],
+            'Decoding': ['Phonics', 'Sight Words'],
+            'Fluency': ['Decoding'],
+            'Vocabulary': ['Fluency'],
+            'Reading Comprehension': ['Vocabulary'],
+            'Main Ideas': ['Reading Comprehension'],
+            'Supporting Details': ['Main Ideas'],
+            'Inferences': ['Main Ideas'],
+            'Cause and Effect': ['Supporting Details', 'Inferences'],
+            'Fiction Elements': ['Reading Comprehension'],
+            'Character Analysis': ['Fiction Elements'],
+            'Plot Structure': ['Character Analysis'],
+            'Theme': ['Plot Structure'],
+            'Poetry Analysis': ['Cause and Effect'],
+            'Text Features': ['Inferences'],
+            'Research Skills': ['Poetry Analysis'],
+            'Critical Thinking': ['Text Features']
+          },
+          'Science': {
+            'Observation Skills': ['Scientific Method'],
+            'Hypothesis Formation': ['Observation Skills'],
+            'Data Collection': ['Observation Skills'],
+            'Basic Chemistry': ['Scientific Method'],
+            'States of Matter': ['Basic Chemistry'],
+            'Chemical Reactions': ['States of Matter'],
+            'Atoms and Molecules': ['Chemical Reactions'],
+            'Forces and Motion': ['Scientific Method'],
+            'Energy Types': ['Forces and Motion'],
+            'Simple Machines': ['Energy Types'],
+            'Magnetism': ['Simple Machines'],
+            'Plant Biology': ['Scientific Method'],
+            'Animal Biology': ['Plant Biology'],
+            'Ecosystems': ['Animal Biology'],
+            'Human Body': ['Ecosystems'],
+            'Weather Patterns': ['Scientific Method'],
+            'Rock Cycle': ['Weather Patterns'],
+            'Solar System': ['Rock Cycle'],
+            'Climate Change': ['Solar System']
+          },
+          'Programming': {
+            'Basic Software Tools': ['Introduction to Operating Systems'],
+            'Programming/Basic Theory': ['Basic Computer Operations', 'Basic Arithmetic'],
+            'Text Manipulation': ['Basic Arithmetic'],
+            'Basic Database Concepts': ['Basic Software Tools'],
+            'Markup Languages': ['Programming/Basic Theory'],
+            'Object Oriented Programming': ['Programming/Basic Theory'],
+            'Computer Science Algebra': ['Text Manipulation'],
+            'Introduction to Hardware': ['Basic Database Concepts'],
+            'Intro Computer Science': ['Markup Languages'],
+            'Basic Concepts': ['Object Oriented Programming'],
+            'Console UI Fundamentals': ['Computer Science Algebra'],
+            'HTML CSS': ['Console UI Fundamentals'],
+            'JavaScript/jQuery': ['Console UI Fundamentals'],
+            'SQL': ['Basic Concepts'],
+            'Event Driven Programming': ['Console UI Fundamentals']
+          },
+          'Art': {
+            'Line': ['Foundational Drawing'],
+            'Color Theory': ['Foundational Drawing'],
+            'Digital Drawing Tools': ['Foundational Drawing'],
+            '2D Graphic Design': ['Foundational Drawing'],
+            'Animation Basics': ['Foundational Drawing'],
+            'AI-Assisted Art': ['Foundational Drawing'],
+            'Portfolio Development': ['Foundational Drawing'],
+            'Shape': ['Line'],
+            'Anatomy': ['Line'],
+            'Form': ['Shape'],
+            'Composition': ['Shape'],
+            'Figure Drawing': ['Anatomy'],
+            'Value & Perspective': ['Form'],
+            'Color Mixing': ['Color Theory'],
+            'Basic Painting': ['Color Mixing'],
+            'Digital Painting': ['Digital Drawing Tools'],
+            'Character Design': ['Digital Painting'],
+            'Concept Art': ['Character Design'],
+            'Logo Design': ['2D Graphic Design'],
+            'Typography': ['2D Graphic Design'],
+            '2D Animation': ['Animation Basics'],
+            '3D Basics': ['Animation Basics']
+          }
+        };
+        return prereqMaps[subject] || {};
+      }
+
+      // Check if any in-progress skill mastery homework should be auto-completed
+      async checkSkillMasteryHomework(skillName, subject, masteryScore) {
+        if (this.userInfo?.profile?.user_type !== 'student') return;
+
+        const userId = this.userInfo.profile.id;
+        try {
+          // Find any active skill mastery homework for this skill
+          const { data: activeHomework, error } = await this.supabaseQuery(() =>
+            this.auth.supabase
+              .from('homework_assignments')
+              .select('id, target_mastery_score, status')
+              .eq('student_id', userId)
+              .eq('assignment_type', 'skill_mastery')
+              .eq('skill_name', skillName)
+              .eq('subject', subject)
+              .in('status', ['assigned', 'in_progress'])
+          );
+
+          if (error || !activeHomework || activeHomework.length === 0) return;
+
+          // Check each matching homework
+          for (const hw of activeHomework) {
+            const target = hw.target_mastery_score || 80;
+            if (masteryScore >= target) {
+              // Student met the target — mark homework as completed
+              const { error: updateError } = await this.supabaseQuery(() =>
+                this.auth.supabase
+                  .from('homework_assignments')
+                  .update({
+                    status: 'completed',
+                    completed_at: new Date().toISOString(),
+                    final_score: masteryScore
+                  })
+                  .eq('id', hw.id)
+              );
+
+              if (!updateError) {
+                console.log(`✅ Skill mastery homework auto-completed: ${skillName} (${masteryScore}% >= ${target}%)`);
+                this.showNotification(
+                  `🎯 Assignment Complete! You reached ${masteryScore}% mastery in ${skillName}!`,
+                  'success',
+                  5000
+                );
+              } else {
+                console.error('Error auto-completing homework:', updateError);
+              }
+            }
+          }
+        } catch (err) {
+          console.error('Error checking skill mastery homework completion:', err);
+        }
       }
 
       // ==================== TESTING CENTER METHODS ====================
@@ -15533,6 +15796,20 @@
             return;
           }
 
+          // Check skill tree prerequisites for each student before assigning
+          const prereqWarnings = await this.checkSkillTreePrerequisites(studentIds, skillSubject, skillName);
+          if (prereqWarnings.length > 0) {
+            const studentNames = prereqWarnings.map(w => w.name || 'Unknown').join(', ');
+            const proceed = confirm(
+              `⚠️ Skill Tree Prerequisite Warning\n\n` +
+              `The following students have NOT unlocked "${skillName}" in the ${skillSubject} skill tree yet:\n\n` +
+              `${studentNames}\n\n` +
+              `They may not have completed the prerequisite skills needed to practice this skill effectively.\n\n` +
+              `Do you want to assign it anyway?`
+            );
+            if (!proceed) return;
+          }
+
           title = document.getElementById('assignment-title').value || `Master: ${skillName}`;
 
           homeworkData = {
@@ -16607,11 +16884,75 @@
             `, true);
 
           } else if (hw.assignment_type === 'skill_mastery') {
-            // Open skill tree for the subject
+            // Fetch current skill progress and prerequisite status
+            const userId = this.userInfo.profile.id;
+            let currentMastery = 0;
+            let currentState = 'locked';
+            let prereqHtml = '';
+
+            try {
+              // Get current progress for this skill
+              const { data: progress } = await this.supabaseQuery(() =>
+                this.auth.supabase
+                  .from('skill_progress')
+                  .select('mastery_score, state')
+                  .eq('user_id', userId)
+                  .eq('subject', hw.subject)
+                  .eq('skill_name', hw.skill_name)
+                  .single()
+              );
+
+              if (progress) {
+                currentMastery = progress.mastery_score || 0;
+                currentState = progress.state || 'locked';
+              }
+
+              // Check prerequisite skills from the skill tree
+              const prereqMap = this.getSkillPrerequisites(hw.subject);
+              const prereqs = prereqMap[hw.skill_name] || [];
+
+              if (prereqs.length > 0) {
+                const { data: prereqProgress } = await this.supabaseQuery(() =>
+                  this.auth.supabase
+                    .from('skill_progress')
+                    .select('skill_name, mastery_score, state')
+                    .eq('user_id', userId)
+                    .eq('subject', hw.subject)
+                    .in('skill_name', prereqs)
+                );
+
+                const prereqMap2 = {};
+                (prereqProgress || []).forEach(p => { prereqMap2[p.skill_name] = p; });
+
+                const prereqItems = prereqs.map(prereq => {
+                  const p = prereqMap2[prereq];
+                  const mastered = p && ['activated', 'mastered', 'needs_review'].includes(p.state);
+                  const score = p ? p.mastery_score : 0;
+                  const icon = mastered ? '✅' : '🔒';
+                  const color = mastered ? '#4caf50' : 'var(--danger)';
+                  return `<div style="display: flex; align-items: center; gap: 8px; padding: 4px 0;">
+                    <span>${icon}</span>
+                    <span style="flex: 1;">${prereq}</span>
+                    <span style="color: ${color}; font-weight: 600; font-size: 13px;">${score}%</span>
+                  </div>`;
+                }).join('');
+
+                prereqHtml = `
+                  <div style="text-align: left; background: rgba(255,255,255,0.05); border: 1px solid var(--border); padding: 12px; border-radius: 8px; margin: 15px 0;">
+                    <div style="font-weight: 600; margin-bottom: 8px; font-size: 13px; color: var(--muted);">📋 Prerequisite Skills:</div>
+                    ${prereqItems}
+                  </div>
+                `;
+              }
+            } catch (err) {
+              console.error('Error loading skill progress for modal:', err);
+            }
+
+            const progressPercent = Math.min(100, Math.round((currentMastery / (hw.target_mastery_score || 80)) * 100));
+            const progressColor = currentMastery >= (hw.target_mastery_score || 80) ? '#4caf50' : '#d4af37';
+
             this.showNotification(`Practice ${hw.skill_name} in the ${hw.subject} Skill Tree to achieve ${hw.target_mastery_score}% mastery!`, 'info', 5000);
 
-            // Could open skill tree viewer here
-            // For now, show instructions
             this.showModal('skill-practice', `🎯 ${hw.title}`, `
               <div style="text-align: center; padding: 20px;">
                 <div style="font-size: 48px; margin-bottom: 15px;">🎯</div>
@@ -16622,7 +16963,16 @@
                 <div style="background: rgba(212, 175, 55, 0.1); border: 2px solid #d4af37; padding: 15px; border-radius: 8px; margin: 15px 0;">
                   <div style="font-size: 24px; font-weight: 700; color: #d4af37;">${hw.skill_name}</div>
                   <div style="color: var(--muted);">${hw.subject}</div>
+                  <div style="margin-top: 10px;">
+                    <div style="background: rgba(255,255,255,0.1); border-radius: 10px; height: 20px; overflow: hidden; margin: 8px 0;">
+                      <div style="background: ${progressColor}; height: 100%; width: ${progressPercent}%; border-radius: 10px; transition: width 0.3s;"></div>
+                    </div>
+                    <div style="font-size: 14px; font-weight: 600; color: ${progressColor};">
+                      Current: ${currentMastery}% / Target: ${hw.target_mastery_score}%
+                    </div>
+                  </div>
                 </div>
+                ${prereqHtml}
                 <p style="color: var(--muted); font-size: 14px;">
                   Practice this skill through games or skill tree activities. Your progress is tracked automatically.
                 </p>
@@ -19361,13 +19711,58 @@
           return;
         }
 
-        // Skills by subject (these match the skill tree)
+        // Skills by subject - must match the actual skill tree names in SkillTreeViewer.html
         const skillsBySubject = {
-          'Math': ['Addition', 'Subtraction', 'Multiplication', 'Division', 'Fractions', 'Decimals', 'Percentages', 'Algebra Basics', 'Geometry', 'Word Problems'],
-          'Reading': ['Phonics', 'Vocabulary', 'Comprehension', 'Main Idea', 'Inference', 'Context Clues', 'Summarizing', 'Character Analysis'],
-          'Science': ['Scientific Method', 'Biology Basics', 'Chemistry Basics', 'Physics Basics', 'Earth Science', 'Ecosystems', 'Human Body'],
-          'Programming': ['Variables', 'Loops', 'Conditionals', 'Functions', 'Arrays', 'Objects', 'Debugging', 'Algorithms'],
-          'Art': ['Color Theory', 'Drawing Basics', 'Perspective', 'Shading', 'Composition', 'Art History']
+          'Math': [
+            // Basic Arithmetic
+            'Counting and Number Recognition', 'Number Lines', 'Even and Odd', 'Skip Counting',
+            'Teen Numbers', 'Place Value Understanding', 'Number Bonds',
+            'Comparing Numbers', 'Ordering Numbers', 'Time Telling', 'Money and Coins',
+            'Basic Addition', 'Basic Subtraction',
+            // Intermediate Arithmetic
+            'Multi-Digit Addition', 'Multi-Digit Subtraction', 'Multiplication', 'Division',
+            'Long Division', 'Basic Fractions', 'Equivalent Fractions', 'Mixed Numbers',
+            'Fraction Operations', 'Rounding and Estimation', 'Word Problems',
+            // Advanced Arithmetic
+            'Decimals', 'Decimal Operations', 'Percentages', 'Ratios and Proportions',
+            'Order of Operations',
+            // Pre-Algebra & Algebra
+            'Variables and Expressions', 'Solving Equations', 'Inequalities',
+            'Linear Functions', 'Coordinate Plane',
+            // Geometry
+            'Basic Geometry Concepts', 'Perimeter', 'Area', 'Volume',
+            'Pythagorean Theorem', 'Transformations'
+          ],
+          'Reading': [
+            'Letter Recognition', 'Phonics', 'Sight Words', 'Decoding', 'Fluency',
+            'Vocabulary', 'Reading Comprehension', 'Main Ideas', 'Supporting Details',
+            'Inferences', 'Cause and Effect', 'Fiction Elements', 'Character Analysis',
+            'Plot Structure', 'Theme', 'Poetry Analysis', 'Text Features',
+            'Research Skills', 'Critical Thinking'
+          ],
+          'Science': [
+            'Scientific Method', 'Observation Skills', 'Hypothesis Formation', 'Data Collection',
+            'Basic Chemistry', 'States of Matter', 'Chemical Reactions', 'Atoms and Molecules',
+            'Forces and Motion', 'Energy Types', 'Simple Machines', 'Magnetism',
+            'Plant Biology', 'Animal Biology', 'Ecosystems', 'Human Body',
+            'Weather Patterns', 'Rock Cycle', 'Solar System', 'Climate Change'
+          ],
+          'Programming': [
+            'Introduction to Operating Systems', 'Basic Computer Operations', 'Basic Arithmetic',
+            'Basic Software Tools', 'Programming/Basic Theory', 'Text Manipulation',
+            'Markup Languages', 'Object Oriented Programming', 'Basic Database Concepts',
+            'Computer Science Algebra', 'Intro Computer Science', 'Basic Concepts',
+            'Console UI Fundamentals', 'HTML CSS', 'JavaScript/jQuery',
+            'SQL', 'Event Driven Programming'
+          ],
+          'Art': [
+            'Foundational Drawing', 'Line', 'Shape', 'Form', 'Color Theory',
+            'Color Mixing', 'Basic Painting', 'Composition', 'Value & Perspective',
+            'Anatomy', 'Figure Drawing', 'Digital Drawing Tools', 'Digital Painting',
+            'Character Design', 'Concept Art', '2D Graphic Design', 'Logo Design',
+            'Typography', 'Animation Basics', '2D Animation', '3D Basics',
+            'AI-Assisted Art', 'Portfolio Development'
+          ]
         };
 
         const skills = skillsBySubject[subject] || [];
