@@ -3951,7 +3951,7 @@
             calculusCodex: {
                 name: "Calculus Codex",
                 icon: "📚",
-                description: "Upgrade all cards.",
+                description: "Draw 2 extra cards each turn. Curses can no longer be removed.",
                 tier: "boss",
                 effect: "calculusCodex",
                 drawback: true
@@ -6601,8 +6601,11 @@
 
                         // Cap damage to the most any enemy could absorb (hp + block)
                         // No point calculating millions of overkill damage
-                        const maxEnemyPool = Math.max(...this.enemies.filter(e => e.hp > 0).map(e => e.hp + (e.block || 0)));
-                        attackDamage = Math.min(attackDamage, maxEnemyPool);
+                        const livingEnemies = this.enemies.filter(e => e.hp > 0);
+                        if (livingEnemies.length > 0) {
+                            const maxEnemyPool = Math.max(...livingEnemies.map(e => e.hp + (e.block || 0)));
+                            attackDamage = Math.min(attackDamage, maxEnemyPool);
+                        }
 
                         if (hasDivision) {
                             // AoE damage - hit all enemies one by one
@@ -6838,10 +6841,10 @@
                         } else if (card.func === 'sqrt') {
                             expression = `Math.sqrt(${expression})`;
                         } else if (card.func === 'factorial') {
-                            // Factorial calculates n! normally
+                            // Factorial calculates n! normally (capped at 12! to prevent overflow)
                             try {
                                 const num = eval(expression);
-                                if (!Number.isInteger(num) || num < 0) {
+                                if (!Number.isInteger(num) || num < 0 || num > 12) {
                                     expression = 'NaN';
                                 } else {
                                     let fact = 1;
@@ -6883,9 +6886,19 @@
                 try {
                     const result = new Function('return ' + expression)();
 
-                    // Check for invalid results
+                    // Check for invalid results (negative, NaN, Infinity, or too large)
                     if (result === undefined || result === null || isNaN(result) || !isFinite(result)) {
                         return null;
+                    }
+
+                    // Reject negative results - equations must produce positive damage/block
+                    if (result < 0) {
+                        return null;
+                    }
+
+                    // Cap extremely large results to prevent overflow issues
+                    if (result > 999999) {
+                        return 999999;
                     }
 
                     return result;
@@ -6928,8 +6941,8 @@
                 // Check for prime numbers (2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31)
                 if (this.isPrime(result)) {
                     if (this.currentMode === 'attack') {
-                        // Damage ignores block (already applied, but note for future)
-                        console.log('Prime number - damage ignores block!');
+                        // Prime number bonus: draw an extra card
+                        this.drawCards(1);
                     } else if (this.currentMode === 'defend') {
                         // Gain 50% more block
                         this.player.block = Math.floor(this.player.block * 1.5);
@@ -7126,7 +7139,7 @@
                 }
 
                 // Balanced Equation relic - gain 2 block when playing attack
-                if (this.hasRelic('balancedEquation')) {
+                if (this.hasRelic('balancedEquation') && !this.hasRelic('axiomAmulet')) {
                     this.player.block += 2;
                 }
 
@@ -7388,16 +7401,22 @@
             }
 
             gainBlock(amount) {
+                // Axiom Amulet - cannot gain block from cards
+                if (this.hasRelic('axiomAmulet')) {
+                    this.showFloatingText('Axiom Amulet: No block from cards!', '#e74c3c');
+                    return;
+                }
+
                 let finalBlock = amount;
                 if (this.modifiers.numericBonus) {
                     finalBlock += this.modifiers.numericBonus;
                 }
-                
+
                 // Apply Distracted debuff - reduces block by 25%
                 if (this.player.debuffs.distracted > 0) {
                     finalBlock = Math.floor(finalBlock * 0.75);
                 }
-                
+
                 this.player.block += finalBlock;
                 
                 // Blue flash effect for gaining block
@@ -7498,7 +7517,10 @@
                 });
             
                 // Start new turn
-                this.player.block = 0; // Block doesn't carry over
+                // Carry over persistent block from perfect-square defend combos
+                const carryBlock = this.player.persistentBlock || 0;
+                this.player.block = carryBlock;
+                this.player.persistentBlock = 0;
                 this.turnCount++;
                 this.attacksPlayedThisTurn = 0;
                 this.hasPlayedCardThisTurn = false;
@@ -8112,6 +8134,11 @@
 
                 this.gainGold(goldGained);
 
+                // Hypothesis Heart - heal 3 HP after each combat
+                if (this.hasRelic('hypothesisHeart')) {
+                    this.heal(3);
+                }
+
                 // Show appropriate rewards
                 if (wasBoss) {
                     // Show boss relic selection FIRST
@@ -8480,8 +8507,9 @@
                 }
 
                 // Add curse removal option (cheaper, only removes curses, scaled by ascension)
+                // Calculus Codex prevents curse removal
                 const curseCount = this.deck.filter(id => CARD_DATABASE[id].type === 'curse').length;
-                if (curseCount > 0) {
+                if (curseCount > 0 && !this.hasRelic('calculusCodex')) {
                     const curseRemovalPrice = Math.round(40 * this.difficultyMultipliers.shopPriceMultiplier);
                     const curseRemovalEl = document.createElement('div');
                     curseRemovalEl.className = 'shop-item';
@@ -8906,7 +8934,14 @@
             }
 
             heal(amount) {
-                this.player.hp = Math.min(this.player.maxHp, this.player.hp + amount);
+                let healAmount = amount;
+
+                // Proof Pendant - healing is 50% effective
+                if (this.hasRelic('proofPendant')) {
+                    healAmount = Math.floor(healAmount * 0.5);
+                }
+
+                this.player.hp = Math.min(this.player.maxHp, this.player.hp + healAmount);
                 this.updateUI();
             }
 
@@ -9621,7 +9656,10 @@
                     // Filter based on cursesOnly flag
                     const card = CARD_DATABASE[cardId];
                     if (cursesOnly && card.type !== 'curse') return;
-                    
+
+                    // Calculus Codex prevents removing curses
+                    if (this.hasRelic('calculusCodex') && card.type === 'curse') return;
+
                     cardCounts[cardId] = (cardCounts[cardId] || 0) + 1;
                 });
                 
