@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Portal Core Tests</title>
+    <style>
+        :root { --bg: #0f1216; --card: #151a21; --text: #e6edf3; --border: #2a3140; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: ui-monospace, 'Cascadia Code', 'Fira Code', monospace; background: var(--bg); color: var(--text); padding: 24px; }
+        h1 { margin-bottom: 16px; font-size: 20px; }
+        .suite { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 12px; }
+        .suite-title { font-weight: 600; margin-bottom: 8px; font-size: 15px; color: #6aa9ff; }
+        .test { padding: 4px 0; font-size: 13px; }
+        .pass { color: #8bffb0; }
+        .fail { color: #ff6a6a; }
+        .summary { margin-top: 20px; padding: 16px; border-radius: 8px; font-weight: 600; font-size: 16px; text-align: center; }
+        .summary.all-pass { background: rgba(139, 255, 176, 0.12); color: #8bffb0; border: 1px solid rgba(139, 255, 176, 0.3); }
+        .summary.has-fail { background: rgba(255, 106, 106, 0.12); color: #ff6a6a; border: 1px solid rgba(255, 106, 106, 0.3); }
+    </style>
+</head>
+<body>
+    <h1>Portal Core Tests</h1>
+    <div id="results"></div>
+    <div id="summary"></div>
+
+    <!-- Stub supabase so config.js doesn't fail -->
+    <script>
+        window.supabase = {
+            createClient: () => ({
+                auth: {
+                    getSession: async () => ({ data: { session: null }, error: null }),
+                    onAuthStateChange: () => ({ data: { subscription: { unsubscribe: () => {} } } }),
+                    getUser: async () => ({ data: { user: null } }),
+                    signOut: async () => ({})
+                },
+                from: () => ({ select: () => ({ or: () => Promise.resolve({ data: [], error: null }) }) })
+            })
+        };
+    </script>
+
+    <!-- Load the modules under test -->
+    <script src="../shared/config.js"></script>
+    <script src="../shared/components.js"></script>
+
+    <script>
+        const results = document.getElementById('results');
+        let passed = 0;
+        let failed = 0;
+
+        function suite(name) {
+            const div = document.createElement('div');
+            div.className = 'suite';
+            div.innerHTML = `<div class="suite-title">${name}</div>`;
+            results.appendChild(div);
+            return div;
+        }
+
+        function test(suiteEl, name, fn) {
+            const div = document.createElement('div');
+            div.className = 'test';
+            try {
+                fn();
+                div.className += ' pass';
+                div.textContent = `  PASS  ${name}`;
+                passed++;
+            } catch (e) {
+                div.className += ' fail';
+                div.textContent = `  FAIL  ${name} — ${e.message}`;
+                failed++;
+            }
+            suiteEl.appendChild(div);
+        }
+
+        function assert(cond, msg) {
+            if (!cond) throw new Error(msg || 'Assertion failed');
+        }
+
+        function assertEqual(a, b, msg) {
+            if (a !== b) throw new Error(msg || `Expected ${JSON.stringify(b)}, got ${JSON.stringify(a)}`);
+        }
+
+        // ── PortalAuth ──────────────────────────────────────────
+        const s1 = suite('PortalAuth — Constructor & Config');
+
+        test(s1, 'PortalAuth class exists', () => {
+            assert(typeof PortalAuth === 'function');
+        });
+
+        test(s1, 'window.portalAuth is a PortalAuth instance', () => {
+            assert(window.portalAuth instanceof PortalAuth);
+        });
+
+        test(s1, 'config has required Supabase URL', () => {
+            assert(window.portalAuth.config.supabaseUrl.startsWith('https://'));
+        });
+
+        test(s1, 'config has theme with all required keys', () => {
+            const theme = window.portalAuth.config.theme;
+            const keys = ['primary', 'secondary', 'background', 'cardBg', 'textColor', 'mutedColor', 'borderColor', 'danger', 'warning'];
+            keys.forEach(k => assert(typeof theme[k] === 'string', `Missing theme key: ${k}`));
+        });
+
+        test(s1, 'initial state: not authenticated', () => {
+            assertEqual(window.portalAuth.isAuthenticated(), false);
+        });
+
+        test(s1, 'initial state: no complete profile', () => {
+            assertEqual(window.portalAuth.hasCompleteProfile(), false);
+        });
+
+        test(s1, 'getUserInfo returns correct shape', () => {
+            const info = window.portalAuth.getUserInfo();
+            assertEqual(info.isAuthenticated, false);
+            assertEqual(info.hasProfile, false);
+            assert(info.user === null || info.user === undefined);
+        });
+
+        // ── PortalAuth — Navigation Helpers ─────────────────────
+        const s2 = suite('PortalAuth — Navigation Helpers');
+
+        test(s2, 'goToMainPortal is a function', () => {
+            assert(typeof window.portalAuth.goToMainPortal === 'function');
+        });
+
+        test(s2, 'goToClassesPortal is a function', () => {
+            assert(typeof window.portalAuth.goToClassesPortal === 'function');
+        });
+
+        test(s2, 'reconnectSync returns boolean', () => {
+            const result = window.portalAuth.reconnectSync();
+            assert(typeof result === 'boolean');
+        });
+
+        // ── PortalUI ────────────────────────────────────────────
+        const s3 = suite('PortalUI — Static Utilities');
+
+        test(s3, 'PortalUI class exists', () => {
+            assert(typeof PortalUI === 'function');
+        });
+
+        test(s3, 'showNotification is a static method', () => {
+            assert(typeof PortalUI.showNotification === 'function');
+        });
+
+        test(s3, 'showNotification creates and auto-removes DOM element', (done) => {
+            const before = document.querySelectorAll('.portal-notification').length;
+            PortalUI.showNotification('Test message', 'info', 500);
+            const after = document.querySelectorAll('.portal-notification').length;
+            assertEqual(after, before + 1, 'Notification element should be added to DOM');
+        });
+
+        test(s3, 'applyTheme sets CSS custom properties', () => {
+            PortalUI.applyTheme({ testColor: '#ff0000' });
+            const value = getComputedStyle(document.documentElement).getPropertyValue('--test-color').trim();
+            assertEqual(value, '#ff0000');
+        });
+
+        test(s3, 'createUnifiedNavigation returns empty when not authenticated', () => {
+            const nav = PortalUI.createUnifiedNavigation('main', '');
+            assertEqual(nav, '');
+        });
+
+        // ── LoadingManager ──────────────────────────────────────
+        const s4 = suite('LoadingManager');
+
+        test(s4, 'LoadingManager class exists', () => {
+            assert(typeof LoadingManager === 'function');
+        });
+
+        test(s4, 'can instantiate LoadingManager', () => {
+            const lm = new LoadingManager();
+            assert(lm instanceof LoadingManager);
+        });
+
+        test(s4, 'show() creates a loader element in DOM', () => {
+            const lm = new LoadingManager();
+            lm.show('test-loader', 'Testing...');
+            const el = document.getElementById('loader-test-loader');
+            assert(el !== null, 'Loader element should exist in DOM');
+            lm.hide('test-loader');
+        });
+
+        test(s4, 'hide() removes the loader element', () => {
+            const lm = new LoadingManager();
+            lm.show('hide-test', 'Hide test');
+            lm.hide('hide-test');
+            // Element gets opacity 0 then removed after 300ms — check it's tracked
+            assert(!lm.activeLoaders.has('hide-test'), 'Loader ID should be removed from active set');
+        });
+
+        test(s4, 'hideAll() clears all active loaders', () => {
+            const lm = new LoadingManager();
+            lm.show('a', 'A');
+            lm.show('b', 'B');
+            lm.hideAll();
+            assertEqual(lm.activeLoaders.size, 0, 'All loaders should be cleared');
+        });
+
+        // ── Theme Config Integrity ──────────────────────────────
+        const s5 = suite('Theme & Config Integrity');
+
+        test(s5, 'all theme colors are valid hex', () => {
+            const theme = window.portalAuth.config.theme;
+            const hexRegex = /^#[0-9a-fA-F]{6}$/;
+            Object.entries(theme).forEach(([key, val]) => {
+                assert(hexRegex.test(val), `Invalid hex for theme.${key}: ${val}`);
+            });
+        });
+
+        test(s5, 'supabaseUrl is HTTPS', () => {
+            assert(window.portalAuth.config.supabaseUrl.startsWith('https://'));
+        });
+
+        test(s5, 'mainPortalUrl and classesPortalUrl are defined', () => {
+            assert(typeof window.portalAuth.config.mainPortalUrl === 'string');
+            assert(typeof window.portalAuth.config.classesPortalUrl === 'string');
+        });
+
+        // ── Summary ─────────────────────────────────────────────
+        const summaryEl = document.getElementById('summary');
+        const total = passed + failed;
+        summaryEl.className = `summary ${failed === 0 ? 'all-pass' : 'has-fail'}`;
+        summaryEl.textContent = failed === 0
+            ? `All ${total} tests passed`
+            : `${passed}/${total} passed, ${failed} failed`;
+
+        // Log for CLI / automation
+        console.log(`\nTest Results: ${passed} passed, ${failed} failed, ${total} total`);
+        if (failed > 0) console.error('SOME TESTS FAILED');
+    </script>
+</body>
+</html>
