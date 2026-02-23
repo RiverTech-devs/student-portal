@@ -2022,12 +2022,43 @@
                         return;
                     }
                     
+                    // Store children profiles for later use
+                    this.childProfiles = childProfiles;
+
+                    // Get enrollment data for all children
+                    const childIds = childProfiles.map(c => c.id);
+                    let enrollmentCounts = {};
+                    let enrollmentTypes = {};
+                    try {
+                        const { data: enrollments } = await this.auth.supabase
+                            .from('class_enrollments')
+                            .select('student_id')
+                            .in('student_id', childIds)
+                            .eq('status', 'active');
+
+                        childIds.forEach(id => { enrollmentCounts[id] = 0; });
+                        (enrollments || []).forEach(e => {
+                            enrollmentCounts[e.student_id] = (enrollmentCounts[e.student_id] || 0) + 1;
+                        });
+
+                        const { data: profiles } = await this.auth.supabase
+                            .from('user_profiles')
+                            .select('id, enrollment_type')
+                            .in('id', childIds);
+                        (profiles || []).forEach(p => {
+                            enrollmentTypes[p.id] = p.enrollment_type === 'homeschool' ? 'Homeschool' : 'Full-Time';
+                        });
+                    } catch (e) {
+                        console.warn('Could not load enrollment data:', e);
+                    }
+
                     // Build the dashboard with the children data
                     let childSelectorHTML = '';
                     if (childProfiles.length > 1) {
                         childSelectorHTML = `
                             <div style="margin-bottom: 20px;">
-                                <select id="child-selector" class="form-control" style="max-width: 300px;">
+                                <label style="color: var(--muted); font-size: 13px; margin-bottom: 6px; display: block;">Select Child</label>
+                                <select id="child-selector" class="form-control" style="max-width: 300px;" onchange="portal.onChildSelectorChange(this.value)">
                                     ${childProfiles.map((child, index) => `
                                         <option value="${child.id}" ${index === 0 ? 'selected' : ''}>
                                             ${child.first_name} ${child.last_name}
@@ -2037,21 +2068,27 @@
                             </div>
                         `;
                     }
-                    
+
                     // Show the first child's basic info immediately
                     const firstChild = childProfiles[0];
+                    this.selectedChildId = firstChild.id;
+
                     dashboardSection.innerHTML = `
                         <h2>Parent Dashboard - Welcome, ${firstName}</h2>
                         ${childSelectorHTML}
                         <div class="dashboard">
                             <div class="card">
                                 <h3>👶 Linked Child${childProfiles.length > 1 ? 'ren' : ''}</h3>
-                                ${childProfiles.map(child => `
+                                ${childProfiles.map(child => {
+                                    const classCount = enrollmentCounts[child.id] || 0;
+                                    const enrType = enrollmentTypes[child.id] || 'Full-Time';
+                                    return `
                                     <div style="padding: 10px; border-bottom: 1px solid var(--border);">
                                         <strong>${child.first_name} ${child.last_name}</strong><br>
-                                        <small>Grade ${child.grade_level || 'N/A'} • ${child.email}</small>
+                                        <small>Grade ${child.grade_level || 'N/A'} • ${enrType} • ${classCount} class${classCount !== 1 ? 'es' : ''}</small>
                                     </div>
-                                `).join('')}
+                                    `;
+                                }).join('')}
                                 <button class="btn btn-secondary" onclick="portal.showLinkChildModal()" style="width: 100%; margin-top: 10px;">
                                     ➕ Link Another Child
                                 </button>
@@ -2061,11 +2098,8 @@
                                 <button class="btn btn-primary" onclick="window.portalAuth.goToClassesPortal()" style="width: 100%; margin-bottom: 10px;">
                                     View Classes & Messages
                                 </button>
-                                <button class="btn btn-secondary" onclick="portal.loadChildDetails('${firstChild.id}')" style="width: 100%; margin-bottom: 10px;">
+                                <button class="btn btn-secondary" id="view-child-details-btn" onclick="portal.loadChildDetails(portal.selectedChildId)" style="width: 100%; margin-bottom: 10px;">
                                     View ${firstChild.first_name}'s Details
-                                </button>
-                                <button class="btn btn-primary" onclick="portal.showLinkChildModal()" style="width: 100%; background: linear-gradient(135deg, #6aa9ff 0%, #8bffb0 100%);">
-                                    ➕ Link Another Child
                                 </button>
                             </div>
                         </div>
@@ -2246,6 +2280,20 @@
                 }
             }
             
+            onChildSelectorChange(childId) {
+                this.selectedChildId = childId;
+                const child = this.childProfiles?.find(c => c.id === childId);
+                if (child) {
+                    const btn = document.getElementById('view-child-details-btn');
+                    if (btn) {
+                        btn.textContent = `View ${child.first_name}'s Details`;
+                    }
+                }
+                // Clear previous child details
+                const container = document.getElementById('child-details-container');
+                if (container) container.innerHTML = '';
+            }
+
             async viewAssignmentDetails(assignmentId) {
                 try {
                     const { data: assignment, error } = await this.auth.supabase

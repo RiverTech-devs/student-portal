@@ -562,14 +562,14 @@ class PortalUI {
                         </a>
                         ` : ''}
                     
-                    <a href="${currentPortal === 'classes' ? './index.html' : './portal/index.html'}" 
-                       class="nav-link ${currentPortal === 'classes' ? 'active' : ''}"
-                       title="Classes & Assignments">
+                    <a href="${currentPortal === 'classes' ? './index.html#classes' : './portal/index.html#classes'}"
+                       class="nav-link ${currentPortal === 'classes' && currentSection === 'classes' ? 'active' : ''}"
+                       title="${isParent ? "Children's Classes" : 'Classes & Assignments'}">
                         <span class="nav-icon">📚</span>
-                        <span class="nav-text">Classes</span>
+                        <span class="nav-text">${isParent ? "Children's Classes" : 'Classes'}</span>
                     </a>
-                    
-                    <a href="${currentPortal === 'classes' ? './index.html#messaging' : './portal/index.html#messaging'}" 
+
+                    <a href="${currentPortal === 'classes' ? './index.html#messaging' : './portal/index.html#messaging'}"
                        class="nav-link ${currentPortal === 'classes' && currentSection === 'messaging' ? 'active' : ''}"
                        title="Messages">
                         <span class="nav-icon">💬</span>
