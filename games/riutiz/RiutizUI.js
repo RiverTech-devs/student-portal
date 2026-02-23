@@ -82,6 +82,37 @@ class RiutizUI {
     }
 
     /**
+     * Keyword definitions for tooltips
+     */
+    static get KEYWORD_TOOLTIPS() {
+        return {
+            'impulsive': 'Can attack the turn it enters the field',
+            'relentless': 'Can attack even while spent/tapped',
+            'grounded': 'Cannot attack, but can still block',
+            'lethal': 'Any damage defeats the target regardless of Endurance',
+            'stubborn': 'Cannot be defeated by combat damage alone',
+            'non-sequitur': 'Triggers a random coin-flip effect',
+            'overwhelm': 'Excess damage beyond blocker\'s Endurance scores as points',
+            'interject': 'Triggers an effect when entering the battlefield',
+            'lockdown': 'Target cannot attack or block',
+            'closed-minded': 'Cannot gain new abilities or receive buffs'
+        };
+    }
+
+    /**
+     * Highlight keywords in ability text with styled tooltips
+     */
+    highlightKeywords(abilityText) {
+        if (!abilityText) return '';
+        let result = abilityText;
+        for (const [keyword, tooltip] of Object.entries(RiutizUI.KEYWORD_TOOLTIPS)) {
+            const regex = new RegExp(`\\b(${keyword})\\b`, 'gi');
+            result = result.replace(regex, `<span class="keyword-highlight" title="${tooltip}">$1</span>`);
+        }
+        return result;
+    }
+
+    /**
      * Create hover preview element
      */
     createHoverPreviewElement() {
@@ -718,7 +749,7 @@ class RiutizUI {
                 <div class="card-type">${card.type}${card.subTypes ? ' — ' + card.subTypes : ''}</div>
                 <div class="card-art" style="background: linear-gradient(180deg, ${c.hex}20 0%, ${c.bg} 100%); border: 1px solid ${c.hex}40;">${icon}</div>
                 ${isPupil ? `<div class="card-stats"><span class="stat-dice">🎲 ${card.dice}${(card.dieRollBonus || card.cumulativeDieBonus) ? ` +${(card.dieRollBonus || 0) + (card.cumulativeDieBonus || 0)}` : ''}</span><span class="stat-hp">❤️ ${(card.currentEndurance ?? card.endurance) + (card.auraEnduranceBonus || 0) + (card.counters?.plusOne || 0)}${card.auraDamageReduction ? ` 🛡${card.auraDamageReduction}` : ''}</span></div>` : ''}
-                ${card.ability ? `<div class="card-ability">${card.ability}</div>` : ''}
+                ${card.ability ? `<div class="card-ability">${this.highlightKeywords(card.ability)}</div>` : ''}
             </div>
             <div class="card-rarity ${card.rarity || 'C'}"></div>
         `;
@@ -843,11 +874,12 @@ class RiutizUI {
                 <div style="height: 4rem; display: flex; align-items: center; justify-content: center;
                             font-size: 2rem; opacity: 0.6; background: ${c.bg}; border-radius: 0.25rem; margin-bottom: 0.5rem;">${icon}</div>
                 ${isPupil ? `<div style="display: flex; justify-content: space-between; font-size: 0.8rem; margin-bottom: 0.5rem;">
-                    <span style="color: #fbbf24;">🎲 ${card.dice}</span>
-                    <span style="color: #ef4444;">❤️ ${card.currentEndurance ?? card.endurance}</span>
+                    <span style="color: #fbbf24;" title="Attack Dice">🎲 ${card.dice}</span>
+                    <span style="color: #3b82f6;" title="Attack Damage (points scored when unblocked)">⚔️ ${card.ad}</span>
+                    <span style="color: #ef4444;" title="Endurance (health)">❤️ ${card.currentEndurance ?? card.endurance}</span>
                 </div>` : ''}
                 <div style="font-size: 0.75rem; color: #e4e4e7; line-height: 1.4; min-height: 2rem;">
-                    ${card.ability || '<span style="color:#71717a;font-style:italic;">No ability</span>'}
+                    ${card.ability ? this.highlightKeywords(card.ability) : '<span style="color:#71717a;font-style:italic;">No ability</span>'}
                 </div>
                 <div style="font-size: 0.65rem; color: #71717a; margin-top: 0.5rem; border-top: 1px solid ${c.hex}40; padding-top: 0.25rem;">
                     ${rarityText}
@@ -1143,7 +1175,7 @@ class RiutizUI {
                 <div class="preview-art" style="background: linear-gradient(180deg, ${c.hex}30 0%, ${c.bg} 100%); border: 1px solid ${c.hex}50;">${icon}</div>
                 ${isPupil ? `<div class="preview-stats"><span style="color: #fbbf24">🎲 ${card.dice}</span><span style="color: #3b82f6">⚔️ AD: ${card.ad}</span><span style="color: #ef4444">❤️ ${card.currentEndurance ?? card.endurance}</span></div>` : ''}
                 <div class="preview-ability">
-                    ${card.ability ? `<p>${card.ability}</p>` : '<p class="no-ability">No ability text.</p>'}
+                    ${card.ability ? `<p>${this.highlightKeywords(card.ability)}</p>` : '<p class="no-ability">No ability text.</p>'}
                 </div>
                 ${card.resourceAbility ? `<div class="preview-resource"><p><span>Resource:</span> ${card.resourceAbility}</p></div>` : ''}
                 <div class="preview-footer">
