@@ -5617,7 +5617,7 @@
                         hasExponentShield: template.hasExponentShield || false,
                         // Fibonacci counter system
                         hasFibonacciCounter: template.hasFibonacciCounter || false,
-                        fibonacciSequence: [1, 1],  // Start with first two Fibonacci numbers
+                        fibonacciSequence: [1, 1, 2, 3, 5, 8, 13, 21, 34, 55],  // Pre-filled Fibonacci numbers
                         fibonacciIndex: 0  // Current position in sequence
                     };
                 });
@@ -5947,8 +5947,8 @@
                     
                     // Special handling for split intent - check if enemy can actually split
                     if (pattern.intent === 'split') {
-                        if (enemy.hp <= 1) {
-                            // Can't split at 1 HP or less, attack instead
+                        if (enemy.hp <= 1 || this.enemies.length >= 6) {
+                            // Can't split at 1 HP or less, or at enemy cap - attack instead
                             enemy.nextIntent = { intent: "attack", value: 5 };
                         } else {
                             enemy.nextIntent = pattern;
@@ -7872,7 +7872,8 @@
                         this.applyDebuff(intent.debuffType, intent.value);
                         this.renderPlayerDebuffs();
                     } else if (intent.intent === 'split') {
-                        if (enemy.hp > 1) {
+                        const MAX_ENEMIES = 6;
+                        if (enemy.hp > 1 && this.enemies.length < MAX_ENEMIES) {
                             const newHp = Math.floor(enemy.hp / 2);
                             
                             // Update original enemy HP
@@ -7938,6 +7939,21 @@
                             // Skip the newly inserted enemy so it acts next turn, not this turn
                             // The for loop will increment i, so we increment here to skip the new enemy
                             i++;
+                        } else if (this.enemies.length >= MAX_ENEMIES) {
+                            // Can't split due to enemy cap - attack instead
+                            let damage = 5;
+                            damage = Math.round(damage * this.difficultyMultipliers.enemyDamageMultiplier);
+                            const playerBlock = this.player.block || 0;
+                            const damageBlocked = Math.min(damage, playerBlock);
+                            const damageToHealth = Math.max(0, damage - playerBlock);
+                            this.player.block = Math.max(0, playerBlock - damage);
+                            this.player.hp = Math.max(0, this.player.hp - damageToHealth);
+                            if (damageToHealth > 0) {
+                                this.showPlayerDamageNumber(damageToHealth);
+                                this.flashScreen('red');
+                            }
+                            this.updateUI();
+                            console.log(`${enemy.name} can't split (enemy cap ${MAX_ENEMIES}), attacked for ${damage} instead`);
                         }
                     } else if (intent.intent === 'special') {
                         let damage = intent.value;
@@ -8039,68 +8055,84 @@
                             console.log(`${enemy.name} exponent shield deactivated`);
                         }
                     } else if (intent.intent === 'summon') {
-                        // SUMMON MECHANIC
-                        let minionHp = 5; // Default
-                        
-                        if (enemy.hasFibonacciCounter) {
-                            // Get current Fibonacci number
-                            minionHp = enemy.fibonacciSequence[enemy.fibonacciIndex];
-                            
-                            // Advance Fibonacci sequence
-                            const nextFib = enemy.fibonacciSequence[enemy.fibonacciIndex] + 
-                                            enemy.fibonacciSequence[enemy.fibonacciIndex - 1];
-                            enemy.fibonacciSequence.push(nextFib);
-                            enemy.fibonacciIndex++;
-                            
-                            console.log(`Fibonacci advanced: ${enemy.fibonacciSequence[enemy.fibonacciIndex]} (sequence: ${enemy.fibonacciSequence.join(', ')})`);
+                        // SUMMON MECHANIC - cap at 6 enemies to prevent performance issues
+                        const MAX_ENEMIES = 6;
+                        if (this.enemies.length >= MAX_ENEMIES) {
+                            // Too many enemies - buff self instead of summoning
+                            enemy.buffs.push({ type: 'strength', value: 3 });
+                            this.showFloatingText(`${enemy.name} can't summon! +3 Strength!`, '#e67e22');
+                            console.log(`${enemy.name} tried to summon but enemy cap (${MAX_ENEMIES}) reached. Gained strength instead.`);
+                        } else {
+                            let minionHp = 5; // Default
+
+                            if (enemy.hasFibonacciCounter) {
+                                // Get current Fibonacci number (safely bounded)
+                                minionHp = enemy.fibonacciSequence[Math.min(enemy.fibonacciIndex, enemy.fibonacciSequence.length - 1)] || 1;
+
+                                // Extend sequence if approaching the end
+                                if (enemy.fibonacciIndex >= enemy.fibonacciSequence.length - 2) {
+                                    const len = enemy.fibonacciSequence.length;
+                                    enemy.fibonacciSequence.push(enemy.fibonacciSequence[len - 1] + enemy.fibonacciSequence[len - 2]);
+                                }
+                                enemy.fibonacciIndex++;
+
+                                console.log(`Fibonacci advanced to index ${enemy.fibonacciIndex} (sequence: ${enemy.fibonacciSequence.join(', ')})`);
+                            }
+
+                            // Create minion with an intent set so it doesn't crash if processed
+                            const minionTemplate = ENEMY_DATABASE['fibonacciMinion'];
+                            const minion = {
+                                ...minionTemplate,
+                                hp: minionHp,
+                                maxHp: minionHp,
+                                block: 0,
+                                patternIndex: 0,
+                                nextIntent: minionTemplate.patterns[0],  // Set intent immediately to prevent null crash
+                                buffs: [],
+                                persistentBlock: false
+                            };
+
+                            // Insert minion after the summoner
+                            this.enemies.splice(i + 1, 0, minion);
+
+                            // Visual feedback
+                            this.flashScreen('blue');
+
+                            const summonFeedback = document.createElement('div');
+                            summonFeedback.style.cssText = `
+                                position: fixed;
+                                top: 30%;
+                                left: 50%;
+                                transform: translate(-50%, -50%);
+                                background: rgba(155, 89, 182, 0.95);
+                                border: 3px solid #9b59b6;
+                                border-radius: 15px;
+                                padding: 20px 40px;
+                                font-size: 28px;
+                                font-weight: bold;
+                                color: #fff;
+                                z-index: 10000;
+                                pointer-events: none;
+                                animation: feedback-float 1s ease-out forwards;
+                            `;
+                            summonFeedback.textContent = `${enemy.name} summoned ${minionHp} HP minion!`;
+                            document.body.appendChild(summonFeedback);
+
+                            setTimeout(() => {
+                                summonFeedback.remove();
+                            }, 1000);
+
+                            console.log(`${enemy.name} summoned minion with ${minionHp} HP`);
+
+                            // Update target dropdown and render
+                            this.updateTargetDropdown();
+                            this.renderCombat();
+
+                            await this.wait(800);
+
+                            // Skip the newly summoned minion so it acts next turn, not this turn
+                            i++;
                         }
-                        
-                        // Create minion
-                        const minion = {
-                            ...ENEMY_DATABASE['fibonacciMinion'],
-                            hp: minionHp,
-                            maxHp: minionHp,
-                            block: 0,
-                            patternIndex: 0,
-                            nextIntent: null,
-                            buffs: [],
-                            persistentBlock: false
-                        };
-                        
-                        // Insert minion after the summoner
-                        this.enemies.splice(i + 1, 0, minion);
-                        
-                        // Visual feedback
-                        this.flashScreen('blue');
-                        
-                        const summonFeedback = document.createElement('div');
-                        summonFeedback.style.cssText = `
-                            position: fixed;
-                            top: 30%;
-                            left: 50%;
-                            transform: translate(-50%, -50%);
-                            background: rgba(155, 89, 182, 0.95);
-                            border: 3px solid #9b59b6;
-                            border-radius: 15px;
-                            padding: 20px 40px;
-                            font-size: 28px;
-                            font-weight: bold;
-                            color: #fff;
-                            z-index: 10000;
-                            pointer-events: none;
-                            animation: feedback-float 1s ease-out forwards;
-                        `;
-                        summonFeedback.textContent = `${enemy.name} summoned ${minionHp} HP minion!`;
-                        document.body.appendChild(summonFeedback);
-                        
-                        setTimeout(() => {
-                            summonFeedback.remove();
-                        }, 1000);
-                        
-                        console.log(`${enemy.name} summoned minion with ${minionHp} HP`);
-                        
-                        // Update target dropdown
-                        this.updateTargetDropdown();
                     }
                     
                     // Remove highlight from enemy
