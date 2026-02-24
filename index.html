@@ -465,6 +465,11 @@
           box-shadow: inset 0 0 0 2px var(--accent);
         }
         .calendar-day.other-month { opacity: .35; }
+        .calendar-day.no-school {
+          background: repeating-linear-gradient(135deg, #0c1118, #0c1118 4px, #13171e 4px, #13171e 8px);
+          opacity: .55;
+        }
+        .calendar-day.no-school:hover { opacity: .75; }
         .calendar-day .day-num {
           font-size: 12px; font-weight: 600; margin-bottom: 2px;
         }
@@ -2796,7 +2801,7 @@
                 this.calendarYear = now.getFullYear();
                 this.calendarMonth = now.getMonth();
                 this.calendarEvents = [];
-                this.calendarFilters = { assignments: true, tests: true, classes: true, quarters: true, attendance: true };
+                this.calendarFilters = { assignments: true, tests: true, classes: true, quarters: true, school_events: true, attendance: true };
                 this.loadCalendarEvents(this.calendarYear, this.calendarMonth).then(() => {
                     this.renderCalendar(this.calendarYear, this.calendarMonth);
                 });
@@ -2887,6 +2892,25 @@
                         }
                     });
 
+                    // School events (all users)
+                    const { data: schoolEvents } = await sb.from('school_events')
+                        .select('id, title, description, event_type, start_date, end_date, created_by')
+                        .or(`and(start_date.gte.${monthStart},start_date.lte.${monthEnd}),and(end_date.gte.${monthStart},end_date.lte.${monthEnd}),and(start_date.lte.${monthStart},end_date.gte.${monthEnd})`);
+
+                    const noSchoolDates = new Set();
+                    (schoolEvents || []).forEach(ev => {
+                        const start = new Date(ev.start_date + 'T00:00:00');
+                        const end = ev.end_date ? new Date(ev.end_date + 'T00:00:00') : start;
+                        for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+                            const dayStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+                            events.push({ type: 'school_event', date: dayStr, title: ev.title, eventType: ev.event_type, description: ev.description, id: ev.id });
+                            if (ev.event_type === 'holiday' || ev.event_type === 'closure') {
+                                noSchoolDates.add(dayStr);
+                            }
+                        }
+                    });
+                    this.noSchoolDates = noSchoolDates;
+
                 } catch (err) {
                     console.error('Error loading calendar events:', err);
                 }
@@ -2901,13 +2925,14 @@
                     test: 'var(--danger)',
                     class: 'var(--muted)',
                     quarter: 'var(--warning)',
+                    school_event: '#e879f9',
                     attendance: 'var(--accent-2)'
                 };
                 return colors[type] || 'var(--muted)';
             }
 
             getFilterKey(type) {
-                const map = { assignment: 'assignments', test: 'tests', class: 'classes', quarter: 'quarters', attendance: 'attendance' };
+                const map = { assignment: 'assignments', test: 'tests', class: 'classes', quarter: 'quarters', school_event: 'school_events', attendance: 'attendance' };
                 return map[type] || type;
             }
 
@@ -2932,6 +2957,7 @@
                     { key: 'tests', label: 'Tests', color: 'var(--danger)' },
                     { key: 'classes', label: 'Classes', color: 'var(--muted)' },
                     { key: 'quarters', label: 'Quarters', color: 'var(--warning)' },
+                    { key: 'school_events', label: 'School Events', color: '#e879f9' },
                 ];
                 if (userType === 'teacher' || userType === 'admin') {
                     filterTypes.push({ key: 'attendance', label: 'Attendance', color: 'var(--accent-2)' });
@@ -2972,7 +2998,8 @@
                     const dotTypes = [...new Set(dayEvents.map(e => e.type))];
                     const dotsHTML = dotTypes.map(t => `<span class="calendar-dot" style="background:${this.getEventColor(t)}"></span>`).join('');
 
-                    cellsHTML += `<div class="calendar-day${isToday ? ' today' : ''}" onclick="portal.showDayDetail('${dateStr}')">
+                    const noSchool = this.noSchoolDates?.has(dateStr) ? ' no-school' : '';
+                    cellsHTML += `<div class="calendar-day${isToday ? ' today' : ''}${noSchool}" onclick="portal.showDayDetail('${dateStr}')">
                         <div class="day-num">${d}</div>
                         <div class="calendar-dots">${dotsHTML}</div>
                     </div>`;
@@ -2985,7 +3012,12 @@
                     cellsHTML += `<div class="calendar-day other-month"><div class="day-num">${i}</div></div>`;
                 }
 
+                const manageEventsLink = userType === 'admin'
+                    ? `<div style="text-align:right;margin-bottom:8px;"><a href="#" onclick="event.preventDefault();portal.showManageSchoolEvents()" style="color:#e879f9;font-size:13px;">Manage School Events</a></div>`
+                    : '';
+
                 mount.innerHTML = `
+                    ${manageEventsLink}
                     <div class="calendar-container card" style="margin-top: 20px;">
                         <div class="calendar-header">
                             <h3>${monthNames[month]} ${year}</h3>
@@ -3044,7 +3076,7 @@
                     grouped[key].push(ev);
                 });
 
-                const typeLabels = { assignments: 'Assignments', tests: 'Tests', classes: 'Class Schedule', quarters: 'Quarter Boundaries', attendance: 'Attendance' };
+                const typeLabels = { assignments: 'Assignments', tests: 'Tests', classes: 'Class Schedule', quarters: 'Quarter Boundaries', school_events: 'School Events', attendance: 'Attendance' };
 
                 let listHTML = '';
                 if (dayEvents.length === 0) {
@@ -3056,7 +3088,8 @@
                         evts.forEach(ev => {
                             const detail = ev.className ? `<span style="color:var(--muted);font-size:12px;"> - ${ev.className}</span>` : '';
                             const period = ev.period ? `<span style="color:var(--muted);font-size:12px;"> (Period ${ev.period})</span>` : '';
-                            listHTML += `<li><span class="day-event-dot" style="background:${this.getEventColor(ev.type)}"></span>${ev.title}${detail}${period}</li>`;
+                            const eventTypeBadge = ev.eventType ? `<span style="color:var(--muted);font-size:12px;"> (${ev.eventType})</span>` : '';
+                            listHTML += `<li><span class="day-event-dot" style="background:${this.getEventColor(ev.type)}"></span>${ev.title}${detail}${period}${eventTypeBadge}</li>`;
                         });
                         listHTML += '</ul>';
                     }
@@ -3070,6 +3103,14 @@
                             <button class="btn btn-secondary" onclick="portal.showQuickAddForm('${dateStr}')" style="width:100%;">+ Add Assignment</button>
                         </div>
                         <div id="quick-add-form-area"></div>
+                    `;
+                }
+                if (userType === 'admin') {
+                    quickAddHTML += `
+                        <div style="border-top: 1px solid var(--border); margin-top: 12px; padding-top: 12px;">
+                            <button class="btn btn-secondary" onclick="portal.showQuickAddEventForm('${dateStr}')" style="width:100%;background:#e879f9;color:#000;border-color:#e879f9;">+ Add School Event</button>
+                        </div>
+                        <div id="quick-add-event-area"></div>
                     `;
                 }
 
@@ -3176,6 +3217,145 @@
                 } catch (err) {
                     console.error('Quick add error:', err);
                     window.PortalUI?.showNotification('Failed to create assignment: ' + err.message, 'error');
+                }
+            }
+
+            // ── School Event Methods ─────────────────────────────────
+            showQuickAddEventForm(dateStr) {
+                const area = document.getElementById('quick-add-event-area');
+                if (!area) return;
+
+                area.innerHTML = `
+                    <div style="margin-top: 12px;">
+                        <div class="form-group">
+                            <label>Title</label>
+                            <input type="text" id="qae-title" placeholder="Event title" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Type</label>
+                            <select id="qae-type">
+                                <option value="event">Event</option>
+                                <option value="holiday">Holiday</option>
+                                <option value="closure">Closure</option>
+                                <option value="half_day">Half Day</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>End Date (optional, for multi-day)</label>
+                            <input type="date" id="qae-end-date" value="${dateStr}">
+                        </div>
+                        <div class="form-group">
+                            <label>Description (optional)</label>
+                            <textarea id="qae-description" rows="2" placeholder="Description"></textarea>
+                        </div>
+                        <div style="display:flex;gap:8px;">
+                            <button class="btn btn-primary" onclick="portal.submitQuickAddEvent('${dateStr}')" style="flex:1;background:#e879f9;border-color:#e879f9;color:#000;">Save</button>
+                            <button class="btn" onclick="document.getElementById('quick-add-event-area').innerHTML=''" style="flex:1;">Cancel</button>
+                        </div>
+                    </div>
+                `;
+            }
+
+            async submitQuickAddEvent(dateStr) {
+                const title = document.getElementById('qae-title')?.value?.trim();
+                const eventType = document.getElementById('qae-type')?.value || 'event';
+                const endDate = document.getElementById('qae-end-date')?.value || null;
+                const description = document.getElementById('qae-description')?.value?.trim() || null;
+
+                if (!title) {
+                    window.PortalUI?.showNotification('Please enter a title.', 'warning');
+                    return;
+                }
+
+                const userId = this.auth.getUserInfo().profile?.id;
+
+                try {
+                    const { error } = await this.auth.supabase.from('school_events').insert({
+                        title,
+                        event_type: eventType,
+                        start_date: dateStr,
+                        end_date: endDate && endDate !== dateStr ? endDate : null,
+                        description,
+                        created_by: userId
+                    });
+
+                    if (error) throw error;
+
+                    window.PortalUI?.showNotification('School event created!', 'success');
+                    this.closeModal();
+
+                    await this.loadCalendarEvents(this.calendarYear, this.calendarMonth);
+                    this.renderCalendar(this.calendarYear, this.calendarMonth);
+
+                } catch (err) {
+                    console.error('Add school event error:', err);
+                    window.PortalUI?.showNotification('Failed to create school event: ' + err.message, 'error');
+                }
+            }
+
+            async showManageSchoolEvents() {
+                try {
+                    const { data: events, error } = await this.auth.supabase
+                        .from('school_events')
+                        .select('id, title, event_type, start_date, end_date, description, created_at')
+                        .order('start_date', { ascending: false });
+
+                    if (error) throw error;
+
+                    let listHTML = '';
+                    if (!events || events.length === 0) {
+                        listHTML = '<p style="color:var(--muted);padding:12px 0;">No school events yet.</p>';
+                    } else {
+                        listHTML = '<div style="max-height:400px;overflow-y:auto;">';
+                        events.forEach(ev => {
+                            const dateRange = ev.end_date ? `${ev.start_date} to ${ev.end_date}` : ev.start_date;
+                            const typeBadge = `<span style="background:#e879f9;color:#000;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600;margin-left:6px;">${ev.event_type}</span>`;
+                            const desc = ev.description ? `<div style="font-size:12px;color:var(--muted);margin-top:2px;">${ev.description}</div>` : '';
+                            listHTML += `
+                                <div style="display:flex;justify-content:space-between;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--border);">
+                                    <div style="flex:1;">
+                                        <div style="font-weight:600;">${ev.title}${typeBadge}</div>
+                                        <div style="font-size:12px;color:var(--muted);margin-top:2px;">${dateRange}</div>
+                                        ${desc}
+                                    </div>
+                                    <button class="btn btn-sm" onclick="portal.deleteSchoolEvent('${ev.id}')" style="color:var(--danger);border-color:var(--danger);margin-left:10px;flex-shrink:0;">Delete</button>
+                                </div>
+                            `;
+                        });
+                        listHTML += '</div>';
+                    }
+
+                    this.showModal('manage-school-events', 'Manage School Events', listHTML);
+
+                } catch (err) {
+                    console.error('Error loading school events:', err);
+                    window.PortalUI?.showNotification('Failed to load school events: ' + err.message, 'error');
+                }
+            }
+
+            async deleteSchoolEvent(eventId) {
+                if (!confirm('Delete this school event?')) return;
+
+                try {
+                    const { error } = await this.auth.supabase
+                        .from('school_events')
+                        .delete()
+                        .eq('id', eventId);
+
+                    if (error) throw error;
+
+                    window.PortalUI?.showNotification('School event deleted.', 'success');
+
+                    // Refresh the management modal
+                    await this.showManageSchoolEvents();
+
+                    // Refresh calendar in background
+                    await this.loadCalendarEvents(this.calendarYear, this.calendarMonth);
+                    this.renderCalendar(this.calendarYear, this.calendarMonth);
+
+                } catch (err) {
+                    console.error('Delete school event error:', err);
+                    window.PortalUI?.showNotification('Failed to delete school event: ' + err.message, 'error');
                 }
             }
 
