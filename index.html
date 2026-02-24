@@ -2031,7 +2031,7 @@
                 
                 if (userType === 'parent') {
                     await this.loadParentDashboard(dashboardSection, userInfo, firstName);
-                } else if (userType === 'teacher') {
+                } else if (userType === 'teacher' || userType === 'admin') {
                     await this.loadTeacherDashboard(dashboardSection, userInfo, firstName);
                 }
             }
@@ -2631,27 +2631,70 @@
             }
 
             async loadTeacherDashboard(dashboardSection, userInfo, firstName) {
-                // Keep existing teacher dashboard
+                const isAdmin = userInfo.profile?.user_type === 'admin';
+                const userId = userInfo.profile?.id;
+
+                // Fetch real stats
+                let classCount = 0;
+                let totalStudents = 0;
+                let unreadMessages = 0;
+
+                try {
+                    // Get classes
+                    const { data: classes } = await this.auth.supabase
+                        .from('classes')
+                        .select('id')
+                        .eq('teacher_id', userId);
+                    classCount = classes?.length || 0;
+
+                    if (classCount > 0) {
+                        // Get unique student count
+                        const classIds = classes.map(c => c.id);
+                        const { data: enrollments } = await this.auth.supabase
+                            .from('class_enrollments')
+                            .select('student_id')
+                            .in('class_id', classIds);
+                        const uniqueStudents = new Set(enrollments?.map(e => e.student_id) || []);
+                        totalStudents = uniqueStudents.size;
+                    }
+
+                    // Get unread messages
+                    const { data: messages } = await this.auth.supabase
+                        .from('messages')
+                        .select('id')
+                        .eq('recipient_id', userId)
+                        .eq('is_read', false);
+                    unreadMessages = messages?.length || 0;
+                } catch (e) {
+                    console.warn('Could not load dashboard stats:', e);
+                }
+
                 dashboardSection.innerHTML = `
-                    <h2>Teacher Dashboard - Welcome, ${firstName}</h2>
-                    <div class="dashboard">
+                    <h2>${isAdmin ? 'Admin' : 'Teacher'} Dashboard - Welcome, ${firstName}</h2>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-top: 16px;">
                         <div class="card">
-                            <h3>👨‍🏫 Your Classes</h3>
-                            <p>Manage your classes, students, and assignments.</p>
-                            <button class="btn btn-primary" onclick="window.portalAuth.goToClassesPortal()" style="margin-top: 15px; width: 100%;">
-                                📚 Go to Classes & Messaging
-                            </button>
-                        </div>
-                        <div class="card">
-                            <h3>📊 Overview</h3>
-                            <div class="stats">
-                                <div class="stat">
-                                    <div class="stat-value">0</div>
-                                    <div class="stat-label">New Submissions</div>
+                            <h3>📊 Teaching Overview</h3>
+                            <div style="display: flex; flex-direction: column; gap: 12px;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border, #223041);">
+                                    <div>
+                                        <div style="font-weight: 600;">Active Classes</div>
+                                        <div style="font-size: 12px; color: var(--muted, #97a2b0);">Currently teaching</div>
+                                    </div>
+                                    <div style="font-size: 20px; font-weight: 700; color: var(--accent, #6aa9ff);">${classCount}</div>
                                 </div>
-                                <div class="stat">
-                                    <div class="stat-value">0</div>
-                                    <div class="stat-label">Pending Grades</div>
+                                <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border, #223041);">
+                                    <div>
+                                        <div style="font-weight: 600;">Total Students</div>
+                                        <div style="font-size: 12px; color: var(--muted, #97a2b0);">Across all classes</div>
+                                    </div>
+                                    <div style="font-size: 20px; font-weight: 700; color: var(--accent-2, #8bffb0);">${totalStudents}</div>
+                                </div>
+                                <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0;">
+                                    <div>
+                                        <div style="font-weight: 600;">Unread Messages</div>
+                                        <div style="font-size: 12px; color: var(--muted, #97a2b0);">New notifications</div>
+                                    </div>
+                                    <div style="font-size: 20px; font-weight: 700; color: var(--warning, #ffd36a);">${unreadMessages}</div>
                                 </div>
                             </div>
                         </div>
