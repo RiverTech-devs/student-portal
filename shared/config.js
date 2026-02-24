@@ -535,7 +535,7 @@ class PortalUI {
 
         // Define all nav items — each knows which app it belongs to
         const allItems = [
-            { icon: '🏠', label: 'Dashboard', app: 'main', section: 'dashboard', roles: ['student', 'teacher', 'admin', 'parent'] },
+            { icon: '🏠', label: 'Dashboard', app: 'main', section: 'dashboard', roles: ['student', 'parent'] },
             { icon: '🎮', label: 'Games', app: 'main', section: 'games', roles: ['student'] },
             { icon: '🌟', label: 'Skills', app: 'main', section: 'skills', roles: ['student'] },
             { icon: '📊', label: 'Overview', app: 'portal', section: 'home', roles: ['student', 'teacher', 'admin', 'parent'] },
