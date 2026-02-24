@@ -538,6 +538,7 @@ class PortalUI {
             { icon: '🏠', label: 'Dashboard', app: 'main', section: 'dashboard', roles: ['student', 'teacher', 'admin', 'parent'] },
             { icon: '🎮', label: 'Games', app: 'main', section: 'games', roles: ['student'] },
             { icon: '🌟', label: 'Skills', app: 'main', section: 'skills', roles: ['student'] },
+            { icon: '📊', label: 'Overview', app: 'portal', section: 'home', roles: ['student', 'teacher', 'admin', 'parent'] },
             { icon: '📚', label: userType === 'parent' ? "Children's Classes" : 'Classes', app: 'portal', section: 'classes', roles: ['student', 'teacher', 'admin', 'parent'] },
             { icon: '📝', label: 'Testing', app: 'portal', section: 'testing-center', roles: ['student', 'teacher', 'admin'] },
             { icon: '👥', label: 'My Students', app: 'portal', section: 'my-students', roles: ['teacher', 'admin'] },
