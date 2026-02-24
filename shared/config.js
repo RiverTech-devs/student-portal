@@ -521,73 +521,55 @@ class PortalUI {
         }, duration);
     }
 
-    static createUnifiedNavigation(currentPortal = 'main', currentSection = '') {
+    static createUnifiedNavigation(currentApp = 'main', currentSection = '') {
+        return this.buildUnifiedNav(currentApp, currentSection);
+    }
+
+    static buildUnifiedNav(currentApp = 'main', currentSection = '') {
         const auth = window.portalAuth;
         const userInfo = auth ? auth.getUserInfo() : { isAuthenticated: false };
-        
-        if (!userInfo.isAuthenticated) return '';
-        
-        const isTeacher = userInfo.profile?.user_type === 'teacher';
-        const isParent = userInfo.profile?.user_type === 'parent';
-        const isStudent = userInfo.profile?.user_type === 'student';
-        
-        return `
-            <nav class="unified-portal-nav">
-                <div class="nav-brand">
-                    <span class="nav-logo">🎓</span>
-                    <span class="nav-title">EduPortal</span>
-                </div>
-                
-                <div class="nav-links">
-                    <a href="${currentPortal === 'classes' ? '../index.html' : window.location.pathname}#dashboard" 
-                       class="nav-link ${currentPortal === 'main' && currentSection === 'dashboard' ? 'active' : ''}"
-                       title="Dashboard">
-                        <span class="nav-icon">🏠</span>
-                        <span class="nav-text">Dashboard</span>
-                    </a>
-                    
-                    ${isStudent ? `
-                        <a href="${currentPortal === 'classes' ? '../index.html#games' : window.location.pathname + '#games'}" 
-                           class="nav-link ${currentPortal === 'main' && currentSection === 'games' ? 'active' : ''}"
-                           title="Educational Games">
-                            <span class="nav-icon">🎮</span>
-                            <span class="nav-text">Games</span>
-                        </a>
-                        
-                        <a href="${currentPortal === 'classes' ? '../index.html#skills' : window.location.pathname + '#skills'}" 
-                           class="nav-link ${currentPortal === 'main' && currentSection === 'skills' ? 'active' : ''}"
-                           title="Skill Trees">
-                            <span class="nav-icon">🌟</span>
-                            <span class="nav-text">Skills</span>
-                        </a>
-                        ` : ''}
-                    
-                    <a href="${currentPortal === 'classes' ? './index.html#classes' : './portal/index.html#classes'}"
-                       class="nav-link ${currentPortal === 'classes' && currentSection === 'classes' ? 'active' : ''}"
-                       title="${isParent ? "Children's Classes" : 'Classes & Assignments'}">
-                        <span class="nav-icon">📚</span>
-                        <span class="nav-text">${isParent ? "Children's Classes" : 'Classes'}</span>
-                    </a>
 
-                    <a href="${currentPortal === 'classes' ? './index.html#messaging' : './portal/index.html#messaging'}"
-                       class="nav-link ${currentPortal === 'classes' && currentSection === 'messaging' ? 'active' : ''}"
-                       title="Messages">
-                        <span class="nav-icon">💬</span>
-                        <span class="nav-text">Messages</span>
-                    </a>
-                </div>
-                
-                <div class="nav-user">
-                    <div class="user-info">
-                        <span class="user-name">${userInfo.profile?.first_name || 'User'}</span>
-                        <span class="user-type">${userInfo.profile?.user_type || 'student'}</span>
-                    </div>
-                    <button class="nav-logout" onclick="window.portalAuth?.logout()" title="Logout">
-                        <span class="nav-icon">🚪</span>
-                    </button>
-                </div>
-            </nav>
-        `;
+        if (!userInfo.isAuthenticated) return '';
+
+        const userType = userInfo.profile?.user_type || 'student';
+
+        // Define all nav items — each knows which app it belongs to
+        const allItems = [
+            { icon: '🏠', label: 'Dashboard', app: 'main', section: 'dashboard', roles: ['student', 'teacher', 'admin', 'parent'] },
+            { icon: '🎮', label: 'Games', app: 'main', section: 'games', roles: ['student'] },
+            { icon: '🌟', label: 'Skills', app: 'main', section: 'skills', roles: ['student'] },
+            { icon: '📚', label: userType === 'parent' ? "Children's Classes" : 'Classes', app: 'portal', section: 'classes', roles: ['student', 'teacher', 'admin', 'parent'] },
+            { icon: '📝', label: 'Testing', app: 'portal', section: 'testing-center', roles: ['student', 'teacher', 'admin'] },
+            { icon: '👥', label: 'My Students', app: 'portal', section: 'my-students', roles: ['teacher', 'admin'] },
+            { icon: '💬', label: 'Messages', app: 'portal', section: 'messaging', roles: ['student', 'teacher', 'admin', 'parent'] },
+            { icon: '👤', label: 'Profile', app: 'portal', section: 'profile', roles: ['student', 'teacher', 'admin', 'parent'] },
+            { icon: '🔑', label: 'Admin', app: 'portal', section: 'admin-dashboard', roles: ['admin'] },
+        ];
+
+        // Filter to items visible for this user type
+        const visibleItems = allItems.filter(item => item.roles.includes(userType));
+
+        // URLs for cross-app navigation
+        const mainUrl = currentApp === 'portal' ? '../index.html' : window.location.pathname;
+        const portalUrl = currentApp === 'main' ? './portal/index.html' : window.location.pathname;
+
+        // Build nav items HTML
+        const navItemsHTML = visibleItems.map(item => {
+            const isActive = item.app === currentApp && item.section === currentSection;
+            const activeClass = isActive ? ' active' : '';
+
+            if (item.app === currentApp) {
+                // Same app — button with local navigation
+                const onclickFn = currentApp === 'main' ? 'portal.showTab' : 'app.showSection';
+                return `<button class="nav-item${activeClass}" data-section="${item.section}" onclick="${onclickFn}('${item.section}')"><span>${item.icon}</span><span>${item.label}</span></button>`;
+            } else {
+                // Other app — link to the other app with hash
+                const targetUrl = item.app === 'main' ? mainUrl : portalUrl;
+                return `<a href="${targetUrl}#${item.section}" class="nav-item${activeClass}"><span>${item.icon}</span><span>${item.label}</span></a>`;
+            }
+        }).join('');
+
+        return navItemsHTML;
     }
 
     static addNavigationStyles() {
