@@ -1258,7 +1258,71 @@
                     }
                 }
 
-                // Notify portal
+                // Directly create/link assignment_submission (works even when not embedded)
+                let linkedAssignmentId = null;
+                if (testAssignmentId) {
+                    const { data: ta } = await supabaseClient
+                        .from('test_assignments')
+                        .select('linked_assignment_id')
+                        .eq('id', testAssignmentId)
+                        .single();
+                    linkedAssignmentId = ta?.linked_assignment_id;
+                }
+
+                if (!linkedAssignmentId) {
+                    const { data: tas } = await supabaseClient
+                        .from('test_assignments')
+                        .select('linked_assignment_id')
+                        .eq('test_id', testId)
+                        .not('linked_assignment_id', 'is', null)
+                        .limit(1);
+                    if (tas && tas.length > 0) linkedAssignmentId = tas[0].linked_assignment_id;
+                }
+
+                if (linkedAssignmentId) {
+                    const subData = {
+                        assignment_id: linkedAssignmentId,
+                        student_id: currentUser.id,
+                        submitted_at: new Date().toISOString(),
+                        status: status === 'graded' ? 'graded' : 'submitted'
+                    };
+
+                    // If auto-graded (all MC), sync the grade directly
+                    if (status === 'graded') {
+                        const { data: assignmentData } = await supabaseClient
+                            .from('assignments')
+                            .select('max_points')
+                            .eq('id', linkedAssignmentId)
+                            .single();
+
+                        const assignmentMaxPoints = assignmentData?.max_points || maxScore;
+                        const actualPoints = Math.round((autoScore / 100) * assignmentMaxPoints);
+                        const letterGrade = autoScore >= 97 ? 'A+' : autoScore >= 93 ? 'A' : autoScore >= 90 ? 'A-' :
+                            autoScore >= 87 ? 'B+' : autoScore >= 83 ? 'B' : autoScore >= 80 ? 'B-' :
+                            autoScore >= 77 ? 'C+' : autoScore >= 73 ? 'C' : autoScore >= 70 ? 'C-' :
+                            autoScore >= 67 ? 'D+' : autoScore >= 63 ? 'D' : autoScore >= 60 ? 'D-' : 'F';
+
+                        subData.points_earned = actualPoints;
+                        subData.grade = letterGrade;
+                        subData.graded_at = new Date().toISOString();
+                    }
+
+                    const { data: asSub } = await supabaseClient
+                        .from('assignment_submissions')
+                        .upsert(subData, { onConflict: 'assignment_id,student_id' })
+                        .select()
+                        .single();
+
+                    if (asSub) {
+                        // Link test_submission to assignment_submission
+                        await supabaseClient
+                            .from('test_submissions')
+                            .update({ linked_submission_id: asSub.id })
+                            .eq('id', submission.id);
+                    }
+                }
+
+                // Also notify portal via postMessage (for real-time UI update when embedded)
                 if (isEmbedded) {
                     window.parent.postMessage({
                         type: 'TEST_SUBMISSION_COMPLETE',
@@ -1318,7 +1382,103 @@
                     })
                     .eq('id', submissionId);
 
-                // Notify portal
+                // Sync grade directly to assignment_submissions (works even when not embedded)
+                let linkedSubId = submission?.linked_submission_id;
+
+                if (!linkedSubId) {
+                    // Try to find or create the linked assignment submission
+                    const { data: testSubData } = await supabaseClient
+                        .from('test_submissions')
+                        .select('student_id, test_id, test_assignment_id')
+                        .eq('id', submissionId)
+                        .single();
+
+                    let linkedAssignmentId = null;
+
+                    if (testSubData?.test_assignment_id) {
+                        const { data: ta } = await supabaseClient
+                            .from('test_assignments')
+                            .select('linked_assignment_id')
+                            .eq('id', testSubData.test_assignment_id)
+                            .single();
+                        linkedAssignmentId = ta?.linked_assignment_id;
+                    }
+
+                    if (!linkedAssignmentId && testSubData?.test_id) {
+                        const { data: tas } = await supabaseClient
+                            .from('test_assignments')
+                            .select('linked_assignment_id')
+                            .eq('test_id', testSubData.test_id)
+                            .not('linked_assignment_id', 'is', null)
+                            .limit(1);
+                        if (tas && tas.length > 0) linkedAssignmentId = tas[0].linked_assignment_id;
+                    }
+
+                    if (linkedAssignmentId && testSubData?.student_id) {
+                        // Create assignment_submission if missing
+                        const { data: newSub } = await supabaseClient
+                            .from('assignment_submissions')
+                            .upsert({
+                                assignment_id: linkedAssignmentId,
+                                student_id: testSubData.student_id,
+                                submitted_at: new Date().toISOString(),
+                                status: 'submitted'
+                            }, { onConflict: 'assignment_id,student_id' })
+                            .select()
+                            .single();
+
+                        if (newSub) {
+                            linkedSubId = newSub.id;
+                            // Link back
+                            await supabaseClient
+                                .from('test_submissions')
+                                .update({ linked_submission_id: newSub.id })
+                                .eq('id', submissionId);
+                        }
+                    }
+                }
+
+                if (linkedSubId) {
+                    // Look up assignment max_points for correct conversion
+                    const { data: asSub } = await supabaseClient
+                        .from('assignment_submissions')
+                        .select('assignment_id')
+                        .eq('id', linkedSubId)
+                        .single();
+
+                    let assignmentMaxPoints = submission?.max_possible_score || 100;
+
+                    if (asSub?.assignment_id) {
+                        const { data: assignmentData } = await supabaseClient
+                            .from('assignments')
+                            .select('max_points')
+                            .eq('id', asSub.assignment_id)
+                            .single();
+                        if (assignmentData?.max_points) {
+                            assignmentMaxPoints = assignmentData.max_points;
+                        }
+                    }
+
+                    const actualPoints = Math.round((finalScore / 100) * assignmentMaxPoints);
+                    const letterGrade = finalScore >= 97 ? 'A+' : finalScore >= 93 ? 'A' : finalScore >= 90 ? 'A-' :
+                        finalScore >= 87 ? 'B+' : finalScore >= 83 ? 'B' : finalScore >= 80 ? 'B-' :
+                        finalScore >= 77 ? 'C+' : finalScore >= 73 ? 'C' : finalScore >= 70 ? 'C-' :
+                        finalScore >= 67 ? 'D+' : finalScore >= 63 ? 'D' : finalScore >= 60 ? 'D-' : 'F';
+
+                    await supabaseClient
+                        .from('assignment_submissions')
+                        .update({
+                            status: 'graded',
+                            points_earned: actualPoints,
+                            grade: letterGrade,
+                            graded_at: new Date().toISOString()
+                        })
+                        .eq('id', linkedSubId);
+
+                    console.log('Grade synced to assignment_submissions:', { linkedSubId, actualPoints, letterGrade });
+                }
+
+                // Also notify portal via postMessage (for real-time UI update when embedded)
                 if (isEmbedded) {
                     window.parent.postMessage({
                         type: 'TEST_GRADED',
@@ -1326,7 +1486,7 @@
                             submissionId: submissionId,
                             finalScore: finalScore,
                             maxScore: submission?.max_possible_score || 100,
-                            linkedSubmissionId: submission?.linked_submission_id
+                            linkedSubmissionId: linkedSubId
                         }
                     }, '*');
                 }
