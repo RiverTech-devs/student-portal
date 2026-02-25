@@ -3360,28 +3360,98 @@
           }
 
           if (!assignmentSubmissionId) {
-            console.log('No linked assignment submission found');
-            return;
+            // No linked submission exists — create one now (handles cases where
+            // handleTestSubmissionComplete failed, e.g. iframe timing issues)
+            let linkedAssignmentId = null;
+
+            // Find linked assignment via test_submissions → test_assignments
+            const { data: testSub } = await this.supabaseQuery(() =>
+              this.auth.supabase
+                .from('test_submissions')
+                .select('student_id, test_id, test_assignment_id')
+                .eq('id', submissionId)
+                .single()
+            );
+
+            if (testSub?.test_assignment_id) {
+              const { data: ta } = await this.supabaseQuery(() =>
+                this.auth.supabase
+                  .from('test_assignments')
+                  .select('linked_assignment_id')
+                  .eq('id', testSub.test_assignment_id)
+                  .single()
+              );
+              linkedAssignmentId = ta?.linked_assignment_id;
+            }
+
+            if (!linkedAssignmentId && testSub?.test_id) {
+              const { data: tas } = await this.supabaseQuery(() =>
+                this.auth.supabase
+                  .from('test_assignments')
+                  .select('linked_assignment_id')
+                  .eq('test_id', testSub.test_id)
+                  .not('linked_assignment_id', 'is', null)
+              );
+              if (tas && tas.length > 0) linkedAssignmentId = tas[0].linked_assignment_id;
+            }
+
+            if (!linkedAssignmentId) {
+              console.log('No linked assignment found for test - cannot sync grade');
+              return;
+            }
+
+            // Create the assignment_submission and link it
+            const { data: newSub, error: createErr } = await this.supabaseQuery(() =>
+              this.auth.supabase
+                .from('assignment_submissions')
+                .upsert({
+                  assignment_id: linkedAssignmentId,
+                  student_id: testSub.student_id,
+                  submitted_at: new Date().toISOString(),
+                  status: 'submitted'
+                }, { onConflict: 'assignment_id,student_id' })
+                .select()
+                .single()
+            );
+
+            if (createErr || !newSub) {
+              console.error('Failed to create assignment submission for graded test:', createErr);
+              return;
+            }
+
+            assignmentSubmissionId = newSub.id;
+
+            // Link back to test_submissions
+            await this.supabaseQuery(() =>
+              this.auth.supabase
+                .from('test_submissions')
+                .update({ linked_submission_id: newSub.id })
+                .eq('id', submissionId)
+            );
+
+            console.log('Created missing assignment submission for graded test:', newSub.id);
           }
 
-          // Check if gradebook already has a grade (gradebook is authoritative after first sync)
-          const { data: existingSubmission } = await this.supabaseQuery(() =>
+          // Look up the actual assignment max_points for correct percentage calculation
+          const { data: subWithAssignment } = await this.supabaseQuery(() =>
             this.auth.supabase
               .from('assignment_submissions')
-              .select('points_earned')
+              .select('points_earned, assignment_id, assignments!inner(max_points)')
               .eq('id', assignmentSubmissionId)
               .single()
           );
 
+          const assignmentMaxPoints = subWithAssignment?.assignments?.max_points || maxScore || 100;
+
           // Only sync if no grade exists yet - gradebook can override afterward
-          if (existingSubmission?.points_earned !== null) {
+          if (subWithAssignment?.points_earned !== null) {
             console.log('Gradebook already has a grade - skipping sync (gradebook is authoritative)');
             return;
           }
 
           // finalScore from Testing Center is a percentage (0-100)
-          // Convert to actual points for gradebook
-          const actualPoints = Math.round((finalScore / 100) * maxScore);
+          // Convert to actual points using the assignment's max_points
+          const actualPoints = Math.round((finalScore / 100) * assignmentMaxPoints);
           const letterGrade = this.calculateLetterGrade(finalScore);
 
           // Update assignment_submission with grade
