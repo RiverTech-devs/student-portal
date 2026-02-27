@@ -675,6 +675,12 @@ class PortalUI {
         const theme = this.SITE_THEMES[themeName] || this.SITE_THEMES['default-dark'];
         const root = document.documentElement;
 
+        // Store resolved colors for bg-image alpha styles
+        this._currentColors = { ...theme.colors };
+        if (customOverrides && typeof customOverrides === 'object') {
+            Object.assign(this._currentColors, customOverrides);
+        }
+
         // Apply all color variables from the preset
         Object.entries(theme.colors).forEach(([prop, value]) => {
             root.style.setProperty(prop, value);
@@ -787,85 +793,76 @@ class PortalUI {
         return `rgba(${r}, ${g}, ${b}, ${a})`;
     }
 
-    static _injectAlphaStyles() {
-        // Inject a <style> tag at the END of <head> so it wins over all inline <style> blocks
+    static _currentColors = {};
+
+    /**
+     * Make UI elements semi-transparent by replacing CSS variable values with rgba equivalents.
+     * This works because every element uses var(--card), var(--nav-bg), etc. for backgrounds,
+     * including inline style="" attributes. Changing the variable value itself means everything
+     * that references it becomes transparent — no cascade/specificity battles.
+     */
+    static _applyTransparentVars() {
+        const c = this._currentColors || {};
+        const root = document.documentElement;
+
+        // Replace solid hex vars with rgba transparent versions
+        const alphaMap = {
+            '--card':          { fallback: '#151a21', alpha: 0.80 },
+            '--nav-bg':        { fallback: '#0c1118', alpha: 0.75 },
+            '--nav-active-bg': { fallback: '#0b0f14', alpha: 0.70 },
+            '--surface-bg':    { fallback: '#0b1017', alpha: 0.75 },
+            '--input-bg':      { fallback: '#0e1319', alpha: 0.80 },
+        };
+
+        Object.entries(alphaMap).forEach(([varName, { fallback, alpha }]) => {
+            const hex = c[varName] || fallback;
+            root.style.setProperty(varName, this._rgba(hex, alpha));
+        });
+
+        // Inject a minimal style for backdrop-filter (blur effect, not background overrides)
         let el = document.getElementById('bg-image-alpha-styles');
         if (!el) {
             el = document.createElement('style');
             el.id = 'bg-image-alpha-styles';
-            // Append to body (not head) to guarantee it loads after all <style> blocks in <head>
-            (document.body || document.head).appendChild(el);
+            document.head.appendChild(el);
         }
-
-        const cs = getComputedStyle(document.documentElement);
-        const get = (v, fb) => cs.getPropertyValue(v).trim() || fb;
-
-        const card      = this._rgba(get('--card', '#151a21'), 0.80);
-        const navBg     = this._rgba(get('--nav-bg', '#0c1118'), 0.75);
-        const navActive = this._rgba(get('--nav-active-bg', '#0b0f14'), 0.70);
-        const surface   = this._rgba(get('--surface-bg', '#0b1017'), 0.75);
-        const inputBg   = this._rgba(get('--input-bg', '#0e1319'), 0.80);
-
         el.textContent = `
 body.has-bg-image .card,
 body.has-bg-image .portal-container,
 body.has-bg-image .container,
 body.has-bg-image .modal,
-body.has-bg-image .modal-head {
-  background: ${card} !important;
+body.has-bg-image .modal-head,
+body.has-bg-image .header,
+body.has-bg-image .notification-dropdown,
+body.has-bg-image .user-badge {
   backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
 }
 body.has-bg-image .nav,
 body.has-bg-image .app-nav,
 body.has-bg-image .nav-tabs,
 body.has-bg-image .notification-bell-container {
-  background: ${navBg} !important;
   backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
-}
-body.has-bg-image .nav-item.active {
-  background: ${navActive} !important;
-}
-body.has-bg-image .btn:hover {
-  background: ${navActive} !important;
 }
 body.has-bg-image .subs-row,
 body.has-bg-image .roster-row,
 body.has-bg-image .note-card,
-body.has-bg-image .game-card {
-  background: ${surface} !important;
-  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
-}
-body.has-bg-image .notes-filters,
-body.has-bg-image .kbd,
-body.has-bg-image .subs-pre {
-  background: ${navActive} !important;
-}
-body.has-bg-image input,
-body.has-bg-image select,
-body.has-bg-image textarea {
-  background: ${inputBg} !important;
-}
-body.has-bg-image .btn:not(.btn-primary):not(.btn-secondary):not(.btn-danger):not(.btn-success):not(.btn-warning):not(.btn.danger):not(.btn.warn) {
-  background: ${navBg} !important;
-}
-body.has-bg-image .class-card {
-  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
-}
-body.has-bg-image .header,
-body.has-bg-image .notification-dropdown,
-body.has-bg-image .user-badge {
-  background: ${navBg} !important;
-  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
-}
-body.has-bg-image .progress-bar {
-  background: ${inputBg} !important;
-}
+body.has-bg-image .game-card,
+body.has-bg-image .class-card,
 body.has-bg-image .alert {
   backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
 }`;
     }
 
-    static _removeAlphaStyles() {
+    /**
+     * Restore solid (opaque) CSS variable values from stored theme colors.
+     */
+    static _restoreSolidVars() {
+        const c = this._currentColors || {};
+        const root = document.documentElement;
+        const keys = ['--card', '--nav-bg', '--nav-active-bg', '--surface-bg', '--input-bg'];
+        keys.forEach(k => {
+            if (c[k]) root.style.setProperty(k, c[k]);
+        });
         const el = document.getElementById('bg-image-alpha-styles');
         if (el) el.remove();
     }
@@ -874,20 +871,20 @@ body.has-bg-image .alert {
         if (!url) {
             document.documentElement.style.setProperty('--bg-image', 'none');
             document.body.classList.remove('has-bg-image');
-            this._removeAlphaStyles();
+            this._restoreSolidVars();
             return;
         }
         document.documentElement.style.setProperty('--bg-image', `url("${url}")`);
         document.body.classList.add('has-bg-image');
 
         // Set overlay
-        const bgColor = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#0f1216';
-        const { r, g, b } = this._hexToRgb(bgColor);
+        const bgHex = this._currentColors['--bg'] || '#0f1216';
+        const { r, g, b } = this._hexToRgb(bgHex);
         const alpha = (parseInt(opacity || 85) / 100).toFixed(2);
         document.documentElement.style.setProperty('--bg-overlay', `rgba(${r}, ${g}, ${b}, ${alpha})`);
 
-        // Inject dynamic stylesheet with computed rgba values
-        this._injectAlphaStyles();
+        // Replace CSS vars with transparent rgba versions
+        this._applyTransparentVars();
     }
 
     static addNavigationStyles() {
@@ -1051,12 +1048,10 @@ window.PortalUI = PortalUI;
             }
             if (data.bgImage) {
                 root.style.setProperty('--bg-image', `url("${data.bgImage}")`);
-                document.body.classList.add('has-bg-image');
-                const _h = (hex) => ({ r: parseInt((hex||'#0f1216').slice(1,3),16)||0, g: parseInt((hex||'').slice(3,5),16)||0, b: parseInt((hex||'').slice(5,7),16)||0 });
-                const bg = _h(data.colors?.['--bg'] || '#0f1216');
-                const a = (parseInt(data.bgOverlay || 85) / 100).toFixed(2);
-                root.style.setProperty('--bg-overlay', `rgba(${bg.r}, ${bg.g}, ${bg.b}, ${a})`);
-                // Alpha styles will be injected by PortalUI._injectAlphaStyles after DOM ready
+                // Note: document.body may not exist yet (script in <head>), so we
+                // defer has-bg-image class and transparent vars to DOMContentLoaded
+                PortalUI._currentColors = data.colors || {};
+                PortalUI._pendingBgImage = { overlay: data.bgOverlay };
             }
         }
         const btnCache = localStorage.getItem('btn_scheme_cache');
@@ -1067,20 +1062,25 @@ window.PortalUI = PortalUI;
 })();
 
 // Auto-initialize when DOM is ready
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => {
-        window.portalAuth.initialize();
-        PortalUI.addNavigationStyles();
-        if (document.body.classList.contains('has-bg-image')) {
-            PortalUI._injectAlphaStyles();
-        }
-    });
-} else {
+function _portalInit() {
     window.portalAuth.initialize();
     PortalUI.addNavigationStyles();
-    if (document.body.classList.contains('has-bg-image')) {
-        PortalUI._injectAlphaStyles();
+    // If the IIFE cached a pending bg image, apply it now that document.body exists
+    if (PortalUI._pendingBgImage) {
+        const pending = PortalUI._pendingBgImage;
+        document.body.classList.add('has-bg-image');
+        const bgHex = PortalUI._currentColors['--bg'] || '#0f1216';
+        const { r, g, b } = PortalUI._hexToRgb(bgHex);
+        const a = (parseInt(pending.overlay || 85) / 100).toFixed(2);
+        document.documentElement.style.setProperty('--bg-overlay', `rgba(${r}, ${g}, ${b}, ${a})`);
+        PortalUI._applyTransparentVars();
+        PortalUI._pendingBgImage = null;
     }
+}
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', _portalInit);
+} else {
+    _portalInit();
 }
 
 
