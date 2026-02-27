@@ -819,6 +819,13 @@ class PortalUI {
             root.style.setProperty(varName, this._rgba(hex, alpha));
         });
 
+        // Make class card gradient semi-transparent by adding alpha to color stops
+        const gradient = c['--class-card-bg'] || 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
+        const transparentGradient = gradient.replace(/#[0-9a-fA-F]{6}/g, (hex) => {
+            return this._rgba(hex, 0.75);
+        });
+        root.style.setProperty('--class-card-bg', transparentGradient);
+
         // Inject a minimal style for backdrop-filter (blur effect, not background overrides)
         let el = document.getElementById('bg-image-alpha-styles');
         if (!el) {
@@ -859,7 +866,7 @@ body.has-bg-image .alert {
     static _restoreSolidVars() {
         const c = this._currentColors || {};
         const root = document.documentElement;
-        const keys = ['--card', '--nav-bg', '--nav-active-bg', '--surface-bg', '--input-bg'];
+        const keys = ['--card', '--nav-bg', '--nav-active-bg', '--surface-bg', '--input-bg', '--class-card-bg'];
         keys.forEach(k => {
             if (c[k]) root.style.setProperty(k, c[k]);
         });
