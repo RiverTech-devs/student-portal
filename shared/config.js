@@ -763,6 +763,31 @@ class PortalUI {
         if (btnScheme) {
             this.applyButtonScheme(btnScheme);
         }
+
+        // Apply background image if set
+        if (customOverrides && customOverrides['--bg-image-url']) {
+            this.applyBgImage(customOverrides['--bg-image-url'], customOverrides['--bg-overlay-opacity']);
+        } else {
+            document.body.classList.remove('has-bg-image');
+        }
+    }
+
+    static applyBgImage(url, opacity) {
+        if (!url) {
+            document.documentElement.style.setProperty('--bg-image', 'none');
+            document.body.classList.remove('has-bg-image');
+            return;
+        }
+        document.documentElement.style.setProperty('--bg-image', `url("${url}")`);
+        document.body.classList.add('has-bg-image');
+        if (opacity) {
+            const bgColor = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#0f1216';
+            const r = parseInt(bgColor.slice(1,3), 16) || 15;
+            const g = parseInt(bgColor.slice(3,5), 16) || 18;
+            const b = parseInt(bgColor.slice(5,7), 16) || 22;
+            const alpha = (parseInt(opacity) / 100).toFixed(2);
+            document.documentElement.style.setProperty('--bg-overlay', `rgba(${r}, ${g}, ${b}, ${alpha})`);
+        }
     }
 
     static addNavigationStyles() {
@@ -923,6 +948,18 @@ window.PortalUI = PortalUI;
                 root.style.setProperty('--btn-bg', data.buttons.bg);
                 root.style.setProperty('--btn-text', data.buttons.text);
                 root.style.setProperty('--btn-shadow', data.buttons.shadow);
+            }
+            if (data.bgImage) {
+                root.style.setProperty('--bg-image', `url("${data.bgImage}")`);
+                document.body.classList.add('has-bg-image');
+                if (data.bgOverlay) {
+                    const bg = data.colors?.['--bg'] || '#0f1216';
+                    const r = parseInt(bg.slice(1,3), 16) || 15;
+                    const g = parseInt(bg.slice(3,5), 16) || 18;
+                    const b = parseInt(bg.slice(5,7), 16) || 22;
+                    const a = (parseInt(data.bgOverlay) / 100).toFixed(2);
+                    root.style.setProperty('--bg-overlay', `rgba(${r}, ${g}, ${b}, ${a})`);
+                }
             }
         }
         const btnCache = localStorage.getItem('btn_scheme_cache');
