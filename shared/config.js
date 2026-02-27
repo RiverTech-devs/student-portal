@@ -585,7 +585,9 @@ class PortalUI {
                 '--success': '#8bffb0', '--link': '#a0c2ff', '--border': '#2a3140',
                 '--nav-bg': '#0c1118', '--nav-text': '#c7d2fe', '--nav-hover': '#a5b4fc',
                 '--nav-active-bg': '#0b0f14', '--input-bg': '#0e1319',
-                '--surface-bg': '#0b1017', '--surface-border': '#1a2330', '--text-light': '#e5e7eb'
+                '--surface-bg': '#0b1017', '--surface-border': '#1a2330', '--text-light': '#e5e7eb',
+                '--class-card-bg': 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                '--class-card-hover-shadow': 'rgba(102, 126, 234, 0.3)'
             },
             buttons: { bg: 'linear-gradient(135deg, #6aa9ff, #8bffb0)', text: '#0b0f14', shadow: 'rgba(106, 169, 255, 0.3)' }
         },
@@ -597,7 +599,9 @@ class PortalUI {
                 '--success': '#6ee7b7', '--link': '#a5b4fc', '--border': '#1e293b',
                 '--nav-bg': '#0f172a', '--nav-text': '#c7d2fe', '--nav-hover': '#a5b4fc',
                 '--nav-active-bg': '#0a0f1f', '--input-bg': '#0f172a',
-                '--surface-bg': '#0d1323', '--surface-border': '#1e293b', '--text-light': '#e0e7ff'
+                '--surface-bg': '#0d1323', '--surface-border': '#1e293b', '--text-light': '#e0e7ff',
+                '--class-card-bg': 'linear-gradient(135deg, #4338ca 0%, #6d28d9 100%)',
+                '--class-card-hover-shadow': 'rgba(99, 102, 241, 0.3)'
             },
             buttons: { bg: 'linear-gradient(135deg, #818cf8, #c084fc)', text: '#0a0e1a', shadow: 'rgba(129, 140, 248, 0.3)' }
         },
@@ -609,7 +613,9 @@ class PortalUI {
                 '--success': '#10b981', '--link': '#2563eb', '--border': '#e2e8f0',
                 '--nav-bg': '#ffffff', '--nav-text': '#475569', '--nav-hover': '#1e293b',
                 '--nav-active-bg': '#f1f5f9', '--input-bg': '#f8fafc',
-                '--surface-bg': '#f1f5f9', '--surface-border': '#e2e8f0', '--text-light': '#334155'
+                '--surface-bg': '#f1f5f9', '--surface-border': '#e2e8f0', '--text-light': '#334155',
+                '--class-card-bg': 'linear-gradient(135deg, #3b82f6 0%, #6366f1 100%)',
+                '--class-card-hover-shadow': 'rgba(59, 130, 246, 0.3)'
             },
             buttons: { bg: 'linear-gradient(135deg, #3b82f6, #10b981)', text: '#ffffff', shadow: 'rgba(59, 130, 246, 0.3)' }
         },
@@ -621,7 +627,9 @@ class PortalUI {
                 '--success': '#84cc16', '--link': '#fbbf24', '--border': '#3d2e24',
                 '--nav-bg': '#1e1512', '--nav-text': '#d4a574', '--nav-hover': '#f59e0b',
                 '--nav-active-bg': '#171010', '--input-bg': '#1e1512',
-                '--surface-bg': '#1c1410', '--surface-border': '#3d2e24', '--text-light': '#f0dcc8'
+                '--surface-bg': '#1c1410', '--surface-border': '#3d2e24', '--text-light': '#f0dcc8',
+                '--class-card-bg': 'linear-gradient(135deg, #b45309 0%, #dc2626 100%)',
+                '--class-card-hover-shadow': 'rgba(180, 83, 9, 0.3)'
             },
             buttons: { bg: 'linear-gradient(135deg, #f59e0b, #ef4444)', text: '#1a1210', shadow: 'rgba(245, 158, 11, 0.3)' }
         },
@@ -633,7 +641,9 @@ class PortalUI {
                 '--success': '#a3be8c', '--link': '#81a1c1', '--border': '#434c5e',
                 '--nav-bg': '#2e3440', '--nav-text': '#d8dee9', '--nav-hover': '#88c0d0',
                 '--nav-active-bg': '#292e39', '--input-bg': '#3b4252',
-                '--surface-bg': '#353b48', '--surface-border': '#434c5e', '--text-light': '#e5e9f0'
+                '--surface-bg': '#353b48', '--surface-border': '#434c5e', '--text-light': '#e5e9f0',
+                '--class-card-bg': 'linear-gradient(135deg, #5e81ac 0%, #81a1c1 100%)',
+                '--class-card-hover-shadow': 'rgba(94, 129, 172, 0.3)'
             },
             buttons: { bg: 'linear-gradient(135deg, #88c0d0, #a3be8c)', text: '#2e3440', shadow: 'rgba(136, 192, 208, 0.3)' }
         },
@@ -645,7 +655,9 @@ class PortalUI {
                 '--success': '#34d399', '--link': '#c4b5fd', '--border': '#27272a',
                 '--nav-bg': '#0a0a0a', '--nav-text': '#a1a1aa', '--nav-hover': '#a78bfa',
                 '--nav-active-bg': '#000000', '--input-bg': '#0a0a0a',
-                '--surface-bg': '#050505', '--surface-border': '#27272a', '--text-light': '#d4d4d8'
+                '--surface-bg': '#050505', '--surface-border': '#27272a', '--text-light': '#d4d4d8',
+                '--class-card-bg': 'linear-gradient(135deg, #7c3aed 0%, #4f46e5 100%)',
+                '--class-card-hover-shadow': 'rgba(124, 58, 237, 0.3)'
             },
             buttons: { bg: 'linear-gradient(135deg, #a78bfa, #34d399)', text: '#000000', shadow: 'rgba(167, 139, 250, 0.3)' }
         }
