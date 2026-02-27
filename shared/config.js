@@ -772,6 +772,34 @@ class PortalUI {
         }
     }
 
+    static _hexToRgb(hex) {
+        hex = (hex || '').trim();
+        if (!hex.startsWith('#') || hex.length < 7) return { r: 15, g: 18, b: 22 };
+        return {
+            r: parseInt(hex.slice(1,3), 16) || 0,
+            g: parseInt(hex.slice(3,5), 16) || 0,
+            b: parseInt(hex.slice(5,7), 16) || 0
+        };
+    }
+
+    static _setAlphaVars() {
+        // Read current theme hex colors and set rgba alpha versions for bg-image transparency
+        const root = document.documentElement;
+        const cs = getComputedStyle(root);
+        const alphaMap = {
+            '--card-alpha':           { src: '--card',          a: 0.80 },
+            '--nav-bg-alpha':         { src: '--nav-bg',        a: 0.75 },
+            '--nav-active-bg-alpha':  { src: '--nav-active-bg', a: 0.70 },
+            '--surface-bg-alpha':     { src: '--surface-bg',    a: 0.75 },
+            '--input-bg-alpha':       { src: '--input-bg',      a: 0.80 },
+        };
+        for (const [varName, { src, a }] of Object.entries(alphaMap)) {
+            const hex = cs.getPropertyValue(src).trim();
+            const { r, g, b } = this._hexToRgb(hex);
+            root.style.setProperty(varName, `rgba(${r}, ${g}, ${b}, ${a})`);
+        }
+    }
+
     static applyBgImage(url, opacity) {
         if (!url) {
             document.documentElement.style.setProperty('--bg-image', 'none');
@@ -780,14 +808,15 @@ class PortalUI {
         }
         document.documentElement.style.setProperty('--bg-image', `url("${url}")`);
         document.body.classList.add('has-bg-image');
-        if (opacity) {
-            const bgColor = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#0f1216';
-            const r = parseInt(bgColor.slice(1,3), 16) || 15;
-            const g = parseInt(bgColor.slice(3,5), 16) || 18;
-            const b = parseInt(bgColor.slice(5,7), 16) || 22;
-            const alpha = (parseInt(opacity) / 100).toFixed(2);
-            document.documentElement.style.setProperty('--bg-overlay', `rgba(${r}, ${g}, ${b}, ${alpha})`);
-        }
+
+        // Set overlay
+        const bgColor = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#0f1216';
+        const { r, g, b } = this._hexToRgb(bgColor);
+        const alpha = (parseInt(opacity || 85) / 100).toFixed(2);
+        document.documentElement.style.setProperty('--bg-overlay', `rgba(${r}, ${g}, ${b}, ${alpha})`);
+
+        // Compute rgba alpha versions of theme colors for element transparency
+        this._setAlphaVars();
     }
 
     static addNavigationStyles() {
@@ -952,14 +981,23 @@ window.PortalUI = PortalUI;
             if (data.bgImage) {
                 root.style.setProperty('--bg-image', `url("${data.bgImage}")`);
                 document.body.classList.add('has-bg-image');
-                if (data.bgOverlay) {
-                    const bg = data.colors?.['--bg'] || '#0f1216';
-                    const r = parseInt(bg.slice(1,3), 16) || 15;
-                    const g = parseInt(bg.slice(3,5), 16) || 18;
-                    const b = parseInt(bg.slice(5,7), 16) || 22;
-                    const a = (parseInt(data.bgOverlay) / 100).toFixed(2);
-                    root.style.setProperty('--bg-overlay', `rgba(${r}, ${g}, ${b}, ${a})`);
-                }
+                const bg = data.colors?.['--bg'] || '#0f1216';
+                const _h = (hex) => ({ r: parseInt((hex||'#0f1216').slice(1,3),16)||0, g: parseInt((hex||'').slice(3,5),16)||0, b: parseInt((hex||'').slice(5,7),16)||0 });
+                const { r, g, b } = _h(bg);
+                const a = (parseInt(data.bgOverlay || 85) / 100).toFixed(2);
+                root.style.setProperty('--bg-overlay', `rgba(${r}, ${g}, ${b}, ${a})`);
+                // Set alpha vars for element transparency
+                const alphas = [
+                    ['--card-alpha', data.colors?.['--card'] || '#151a21', 0.80],
+                    ['--nav-bg-alpha', data.colors?.['--nav-bg'] || '#0c1118', 0.75],
+                    ['--nav-active-bg-alpha', data.colors?.['--nav-active-bg'] || '#0b0f14', 0.70],
+                    ['--surface-bg-alpha', data.colors?.['--surface-bg'] || '#0b1017', 0.75],
+                    ['--input-bg-alpha', data.colors?.['--input-bg'] || '#0e1319', 0.80],
+                ];
+                alphas.forEach(([v, hex, al]) => {
+                    const c = _h(hex);
+                    root.style.setProperty(v, `rgba(${c.r}, ${c.g}, ${c.b}, ${al})`);
+                });
             }
         }
         const btnCache = localStorage.getItem('btn_scheme_cache');
