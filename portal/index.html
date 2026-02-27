@@ -1640,7 +1640,12 @@
             <section id="student-management-section" class="hidden">
               <div id="student-management-modal"></div>
             </section>
-  
+
+            <!-- Materials Requests Section (Teachers + Admins) -->
+            <section id="materials-requests-section" class="hidden">
+              <!-- Populated by renderMaterialsRequests() -->
+            </section>
+
             <!-- Admin Dashboard Section (Admins only) -->
             <section id="admin-dashboard-section" class="hidden">
               <!-- Populated by renderAdminDashboard() -->
@@ -2137,7 +2142,7 @@
 
         // Navigate to hash section if present, otherwise show home
         const hash = window.location.hash.substring(1);
-        const validSections = ['home', 'classes', 'messaging', 'profile', 'my-students', 'testing-center', 'admin-dashboard', 'admin-classes', 'admin-users', 'admin-settings', 'admin-reports', 'admin-attendance', 'admin-student-records'];
+        const validSections = ['home', 'classes', 'messaging', 'profile', 'my-students', 'materials-requests', 'testing-center', 'admin-dashboard', 'admin-classes', 'admin-users', 'admin-settings', 'admin-reports', 'admin-attendance', 'admin-student-records'];
         if (hash && validSections.includes(hash)) {
           this.showSection(hash);
         } else {
@@ -3935,7 +3940,7 @@
 
       handleHashNavigation() {
         const hash = window.location.hash.substring(1);
-        const validSections = ['home', 'classes', 'messaging', 'profile', 'my-students', 'testing-center', 'admin-dashboard', 'admin-classes', 'admin-users', 'admin-settings', 'admin-reports', 'admin-attendance', 'admin-student-records'];
+        const validSections = ['home', 'classes', 'messaging', 'profile', 'my-students', 'materials-requests', 'testing-center', 'admin-dashboard', 'admin-classes', 'admin-users', 'admin-settings', 'admin-reports', 'admin-attendance', 'admin-student-records'];
         
         if (hash && validSections.includes(hash)) {
           this.showSection(hash);
@@ -4023,6 +4028,9 @@
             break;
           case 'admin-student-records':
             this.renderAdminStudentRecords();
+            break;
+          case 'materials-requests':
+            this.renderMaterialsRequests();
             break;
           case 'my-students':
             this.renderMyStudents();
@@ -28820,6 +28828,339 @@
       } catch (error) {
         console.error('Error restoring class:', error);
         this.showNotification('Error restoring class: ' + error.message, 'error');
+      }
+    }
+
+    // ==================== MATERIALS REQUESTS ====================
+
+    renderMaterialsRequests() {
+      const section = document.getElementById('materials-requests-section');
+      if (!section) return;
+
+      const isAdmin = this.userInfo?.profile?.user_type === 'admin';
+
+      section.innerHTML = `
+        <div style="margin-bottom: 25px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px;">
+          <h2 style="margin: 0;">📦 Materials Requests</h2>
+          <button class="btn btn-primary" onclick="app.showNewMaterialRequestModal()">+ New Request</button>
+        </div>
+        <div style="display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap;" id="materials-filter-tabs">
+          <button class="btn btn-primary" data-filter="all" onclick="app.loadMaterialRequests('all', this)">All</button>
+          <button class="btn btn-secondary" data-filter="pending" onclick="app.loadMaterialRequests('pending', this)">Pending</button>
+          <button class="btn btn-secondary" data-filter="in_progress" onclick="app.loadMaterialRequests('in_progress', this)">In Progress</button>
+          <button class="btn btn-secondary" data-filter="completed" onclick="app.loadMaterialRequests('completed', this)">Completed</button>
+        </div>
+        <div id="materials-requests-container">
+          <div style="text-align: center; padding: 20px;"><div class="loading-spinner"></div><p>Loading requests...</p></div>
+        </div>
+      `;
+
+      this.loadMaterialRequests('all');
+    }
+
+    async loadMaterialRequests(statusFilter = 'all', activeBtn = null) {
+      const container = document.getElementById('materials-requests-container');
+      if (!container) return;
+
+      // Update filter tab styles
+      if (activeBtn) {
+        document.querySelectorAll('#materials-filter-tabs button').forEach(btn => {
+          btn.className = 'btn btn-secondary';
+        });
+        activeBtn.className = 'btn btn-primary';
+      }
+
+      container.innerHTML = '<div style="text-align: center; padding: 20px;"><div class="loading-spinner"></div><p>Loading requests...</p></div>';
+
+      try {
+        const isAdmin = this.userInfo?.profile?.user_type === 'admin';
+        let query = this.auth.supabase
+          .from('material_requests')
+          .select('*')
+          .order('created_at', { ascending: false });
+
+        if (!isAdmin) {
+          query = query.eq('user_id', this.userInfo.user.id);
+        }
+
+        if (statusFilter !== 'all') {
+          query = query.eq('status', statusFilter);
+        }
+
+        const { data: requests, error } = await this.supabaseQuery(() => query);
+        if (error) throw error;
+
+        if (!requests || requests.length === 0) {
+          container.innerHTML = `
+            <div style="text-align: center; padding: 40px; color: var(--muted);">
+              <div style="font-size: 48px; margin-bottom: 10px;">📦</div>
+              <p>No materials requests${statusFilter !== 'all' ? ' with this status' : ''} yet.</p>
+            </div>
+          `;
+          return;
+        }
+
+        const statusColors = {
+          'pending': 'var(--warning)',
+          'in_progress': 'var(--info, #3b82f6)',
+          'completed': 'var(--accent-2, #22c55e)'
+        };
+
+        const statusLabels = {
+          'pending': 'Pending',
+          'in_progress': 'In Progress',
+          'completed': 'Completed'
+        };
+
+        const priorityColors = {
+          'low': 'var(--muted)',
+          'normal': 'var(--text)',
+          'high': 'var(--warning)',
+          'urgent': 'var(--danger)'
+        };
+
+        const categoryLabels = {
+          'supplies': '🖊️ Supplies',
+          'technology': '💻 Technology',
+          'furniture': '🪑 Furniture',
+          'books': '📚 Books',
+          'other': '📋 Other'
+        };
+
+        container.innerHTML = requests.map(req => `
+          <div onclick="app.showMaterialRequestDetails('${req.id}')" style="background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 12px; cursor: pointer; transition: transform 0.1s, box-shadow 0.1s;" onmouseover="this.style.transform='translateY(-1px)';this.style.boxShadow='0 4px 12px rgba(0,0,0,0.1)'" onmouseout="this.style.transform='';this.style.boxShadow=''">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; flex-wrap: wrap;">
+              <div style="flex: 1; min-width: 200px;">
+                <h3 style="margin: 0 0 8px 0; font-size: 16px;">${this.escapeHtml(req.title)}</h3>
+                <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px;">
+                  <span style="padding: 2px 10px; border-radius: 12px; font-size: 12px; background: ${statusColors[req.status] || 'var(--muted)'}22; color: ${statusColors[req.status] || 'var(--muted)'}; border: 1px solid ${statusColors[req.status] || 'var(--muted)'}44;">${statusLabels[req.status] || req.status}</span>
+                  <span style="padding: 2px 10px; border-radius: 12px; font-size: 12px; background: var(--bg); border: 1px solid var(--border);">${categoryLabels[req.category] || req.category}</span>
+                  <span style="padding: 2px 10px; border-radius: 12px; font-size: 12px; color: ${priorityColors[req.priority] || 'var(--text)'}; background: ${priorityColors[req.priority] || 'var(--text)'}11; border: 1px solid ${priorityColors[req.priority] || 'var(--text)'}33;">${req.priority.charAt(0).toUpperCase() + req.priority.slice(1)}</span>
+                </div>
+                ${req.description ? `<p style="margin: 0; color: var(--muted); font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 500px;">${this.escapeHtml(req.description)}</p>` : ''}
+              </div>
+              <div style="text-align: right; font-size: 12px; color: var(--muted); white-space: nowrap;">
+                ${isAdmin && req.user_name ? `<div style="margin-bottom: 4px; font-weight: 500; color: var(--text);">${this.escapeHtml(req.user_name)}</div>` : ''}
+                <div>${new Date(req.created_at).toLocaleDateString()}</div>
+              </div>
+            </div>
+          </div>
+        `).join('');
+
+      } catch (error) {
+        console.error('Error loading material requests:', error);
+        container.innerHTML = `<div style="text-align: center; padding: 20px; color: var(--danger);">Error loading requests: ${error.message}</div>`;
+      }
+    }
+
+    showNewMaterialRequestModal() {
+      const modalContent = `
+        <form id="material-request-form" onsubmit="app.submitMaterialRequest(event)">
+          <div style="margin-bottom: 15px;">
+            <label style="display: block; margin-bottom: 5px; font-weight: bold;">Title *</label>
+            <input type="text" id="material-title" required maxlength="200" placeholder="What do you need?"
+              style="width: 100%; padding: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text);">
+          </div>
+
+          <div style="margin-bottom: 15px;">
+            <label style="display: block; margin-bottom: 5px; font-weight: bold;">Category *</label>
+            <select id="material-category" required style="width: 100%; padding: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text);">
+              <option value="">Select a category...</option>
+              <option value="supplies">🖊️ Supplies</option>
+              <option value="technology">💻 Technology</option>
+              <option value="furniture">🪑 Furniture</option>
+              <option value="books">📚 Books</option>
+              <option value="other">📋 Other</option>
+            </select>
+          </div>
+
+          <div style="margin-bottom: 15px;">
+            <label style="display: block; margin-bottom: 5px; font-weight: bold;">Priority *</label>
+            <select id="material-priority" required style="width: 100%; padding: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text);">
+              <option value="normal">Normal</option>
+              <option value="low">Low</option>
+              <option value="high">High</option>
+              <option value="urgent">Urgent</option>
+            </select>
+          </div>
+
+          <div style="margin-bottom: 15px;">
+            <label style="display: block; margin-bottom: 5px; font-weight: bold;">Description</label>
+            <textarea id="material-description" rows="4" placeholder="Provide additional details about what you need, quantity, specifications, etc."
+              style="width: 100%; padding: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); resize: vertical;"></textarea>
+          </div>
+
+          <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px;">
+            <button type="button" class="btn btn-secondary" onclick="app.closeModal('material-request')">Cancel</button>
+            <button type="submit" class="btn btn-primary" id="submit-material-btn">Submit Request</button>
+          </div>
+        </form>
+      `;
+
+      this.showModal('material-request', '📦 New Materials Request', modalContent);
+    }
+
+    async submitMaterialRequest(event) {
+      event.preventDefault();
+
+      const submitBtn = document.getElementById('submit-material-btn');
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Submitting...';
+
+      try {
+        const title = document.getElementById('material-title').value.trim();
+        const category = document.getElementById('material-category').value;
+        const priority = document.getElementById('material-priority').value;
+        const description = document.getElementById('material-description').value.trim();
+
+        if (!title || !category) {
+          throw new Error('Please fill in all required fields');
+        }
+
+        const userName = `${this.userInfo.profile.first_name} ${this.userInfo.profile.last_name}`;
+
+        const { error } = await this.supabaseQuery(() => this.auth.supabase
+          .from('material_requests')
+          .insert({
+            user_id: this.userInfo.user.id,
+            user_email: this.userInfo.user.email,
+            user_name: userName,
+            user_type: this.userInfo.profile.user_type,
+            title: title,
+            description: description || null,
+            category: category,
+            priority: priority,
+            status: 'pending',
+            created_at: new Date().toISOString()
+          }));
+
+        if (error) throw error;
+
+        this.closeModal('material-request');
+        this.showNotification('Materials request submitted successfully!', 'success');
+        this.loadMaterialRequests('all');
+
+      } catch (error) {
+        console.error('Error submitting material request:', error);
+        this.showNotification('Error submitting request: ' + error.message, 'error');
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Submit Request';
+      }
+    }
+
+    async showMaterialRequestDetails(requestId) {
+      try {
+        const { data: request, error } = await this.supabaseQuery(() => this.auth.supabase
+          .from('material_requests')
+          .select('*')
+          .eq('id', requestId)
+          .single());
+
+        if (error) throw error;
+
+        const isAdmin = this.userInfo?.profile?.user_type === 'admin';
+
+        const statusLabels = {
+          'pending': 'Pending',
+          'in_progress': 'In Progress',
+          'completed': 'Completed'
+        };
+
+        const categoryLabels = {
+          'supplies': '🖊️ Supplies',
+          'technology': '💻 Technology',
+          'furniture': '🪑 Furniture',
+          'books': '📚 Books',
+          'other': '📋 Other'
+        };
+
+        const adminControls = isAdmin ? `
+          <hr style="border-color: var(--border); margin: 20px 0;">
+          <h4 style="margin: 0 0 12px 0;">Admin Controls</h4>
+          <div style="margin-bottom: 15px;">
+            <label style="display: block; margin-bottom: 5px; font-weight: bold;">Status</label>
+            <select id="detail-material-status" style="width: 100%; padding: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text);">
+              <option value="pending" ${request.status === 'pending' ? 'selected' : ''}>Pending</option>
+              <option value="in_progress" ${request.status === 'in_progress' ? 'selected' : ''}>In Progress</option>
+              <option value="completed" ${request.status === 'completed' ? 'selected' : ''}>Completed</option>
+            </select>
+          </div>
+          <div style="margin-bottom: 15px;">
+            <label style="display: block; margin-bottom: 5px; font-weight: bold;">Admin Notes</label>
+            <textarea id="detail-admin-notes" rows="3" placeholder="Add notes about this request..."
+              style="width: 100%; padding: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); resize: vertical;">${this.escapeHtml(request.admin_notes || '')}</textarea>
+          </div>
+          <div style="display: flex; gap: 10px; justify-content: flex-end;">
+            <button class="btn btn-primary" onclick="app.updateMaterialRequestStatus('${request.id}')">Update Status</button>
+          </div>
+        ` : (request.admin_notes ? `
+          <hr style="border-color: var(--border); margin: 20px 0;">
+          <div>
+            <h4 style="margin: 0 0 8px 0;">Admin Notes</h4>
+            <p style="margin: 0; color: var(--muted); background: var(--bg); padding: 12px; border-radius: 8px;">${this.escapeHtml(request.admin_notes)}</p>
+          </div>
+        ` : '');
+
+        const modalContent = `
+          <div>
+            <div style="margin-bottom: 15px;">
+              <h3 style="margin: 0 0 10px 0;">${this.escapeHtml(request.title)}</h3>
+              <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                <span style="padding: 3px 12px; border-radius: 12px; font-size: 13px; background: var(--bg); border: 1px solid var(--border);">${statusLabels[request.status] || request.status}</span>
+                <span style="padding: 3px 12px; border-radius: 12px; font-size: 13px; background: var(--bg); border: 1px solid var(--border);">${categoryLabels[request.category] || request.category}</span>
+                <span style="padding: 3px 12px; border-radius: 12px; font-size: 13px; background: var(--bg); border: 1px solid var(--border);">${request.priority.charAt(0).toUpperCase() + request.priority.slice(1)} Priority</span>
+              </div>
+            </div>
+
+            <div style="margin-bottom: 15px; font-size: 13px; color: var(--muted);">
+              <span>Requested by ${this.escapeHtml(request.user_name)} on ${new Date(request.created_at).toLocaleDateString()}</span>
+              ${request.status_updated_at ? `<br>Last updated: ${new Date(request.status_updated_at).toLocaleDateString()}` : ''}
+            </div>
+
+            ${request.description ? `
+              <div style="margin-bottom: 15px;">
+                <h4 style="margin: 0 0 8px 0;">Description</h4>
+                <p style="margin: 0; color: var(--muted); white-space: pre-wrap;">${this.escapeHtml(request.description)}</p>
+              </div>
+            ` : ''}
+
+            ${adminControls}
+          </div>
+        `;
+
+        this.showModal('material-request-detail', '📦 Request Details', modalContent);
+
+      } catch (error) {
+        console.error('Error loading material request details:', error);
+        this.showNotification('Error loading request details: ' + error.message, 'error');
+      }
+    }
+
+    async updateMaterialRequestStatus(requestId) {
+      try {
+        const status = document.getElementById('detail-material-status').value;
+        const adminNotes = document.getElementById('detail-admin-notes').value.trim();
+
+        const { error } = await this.supabaseQuery(() => this.auth.supabase
+          .from('material_requests')
+          .update({
+            status: status,
+            admin_notes: adminNotes || null,
+            status_updated_by: this.userInfo.user.id,
+            status_updated_at: new Date().toISOString()
+          })
+          .eq('id', requestId));
+
+        if (error) throw error;
+
+        this.closeModal('material-request-detail');
+        this.showNotification('Request status updated successfully!', 'success');
+        this.loadMaterialRequests('all');
+
+      } catch (error) {
+        console.error('Error updating material request:', error);
+        this.showNotification('Error updating request: ' + error.message, 'error');
       }
     }
 
