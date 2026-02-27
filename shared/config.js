@@ -574,6 +574,185 @@ class PortalUI {
         return navItemsHTML;
     }
 
+    // ==================== SITE THEME SYSTEM ====================
+
+    static SITE_THEMES = {
+        'default-dark': {
+            label: 'Default Dark',
+            colors: {
+                '--bg': '#0f1216', '--card': '#151a21', '--text': '#e6edf3', '--muted': '#97a2b0',
+                '--accent': '#6aa9ff', '--accent-2': '#8bffb0', '--danger': '#ff6a6a', '--warning': '#ffd36a',
+                '--success': '#8bffb0', '--link': '#a0c2ff', '--border': '#2a3140',
+                '--nav-bg': '#0c1118', '--nav-text': '#c7d2fe', '--nav-hover': '#a5b4fc',
+                '--nav-active-bg': '#0b0f14', '--input-bg': '#0e1319',
+                '--surface-bg': '#0b1017', '--surface-border': '#1a2330', '--text-light': '#e5e7eb'
+            },
+            buttons: { bg: 'linear-gradient(135deg, #6aa9ff, #8bffb0)', text: '#0b0f14', shadow: 'rgba(106, 169, 255, 0.3)' }
+        },
+        'midnight-blue': {
+            label: 'Midnight Blue',
+            colors: {
+                '--bg': '#0a0e1a', '--card': '#111827', '--text': '#e0e7ff', '--muted': '#9ca3bf',
+                '--accent': '#818cf8', '--accent-2': '#c084fc', '--danger': '#f87171', '--warning': '#fbbf24',
+                '--success': '#6ee7b7', '--link': '#a5b4fc', '--border': '#1e293b',
+                '--nav-bg': '#0f172a', '--nav-text': '#c7d2fe', '--nav-hover': '#a5b4fc',
+                '--nav-active-bg': '#0a0f1f', '--input-bg': '#0f172a',
+                '--surface-bg': '#0d1323', '--surface-border': '#1e293b', '--text-light': '#e0e7ff'
+            },
+            buttons: { bg: 'linear-gradient(135deg, #818cf8, #c084fc)', text: '#0a0e1a', shadow: 'rgba(129, 140, 248, 0.3)' }
+        },
+        'light': {
+            label: 'Light',
+            colors: {
+                '--bg': '#f8fafc', '--card': '#ffffff', '--text': '#1e293b', '--muted': '#64748b',
+                '--accent': '#3b82f6', '--accent-2': '#10b981', '--danger': '#ef4444', '--warning': '#f59e0b',
+                '--success': '#10b981', '--link': '#2563eb', '--border': '#e2e8f0',
+                '--nav-bg': '#ffffff', '--nav-text': '#475569', '--nav-hover': '#1e293b',
+                '--nav-active-bg': '#f1f5f9', '--input-bg': '#f8fafc',
+                '--surface-bg': '#f1f5f9', '--surface-border': '#e2e8f0', '--text-light': '#334155'
+            },
+            buttons: { bg: 'linear-gradient(135deg, #3b82f6, #10b981)', text: '#ffffff', shadow: 'rgba(59, 130, 246, 0.3)' }
+        },
+        'warm-ember': {
+            label: 'Warm Ember',
+            colors: {
+                '--bg': '#1a1210', '--card': '#231a16', '--text': '#f5e6d3', '--muted': '#a89080',
+                '--accent': '#f59e0b', '--accent-2': '#ef4444', '--danger': '#dc2626', '--warning': '#fbbf24',
+                '--success': '#84cc16', '--link': '#fbbf24', '--border': '#3d2e24',
+                '--nav-bg': '#1e1512', '--nav-text': '#d4a574', '--nav-hover': '#f59e0b',
+                '--nav-active-bg': '#171010', '--input-bg': '#1e1512',
+                '--surface-bg': '#1c1410', '--surface-border': '#3d2e24', '--text-light': '#f0dcc8'
+            },
+            buttons: { bg: 'linear-gradient(135deg, #f59e0b, #ef4444)', text: '#1a1210', shadow: 'rgba(245, 158, 11, 0.3)' }
+        },
+        'nord': {
+            label: 'Nord',
+            colors: {
+                '--bg': '#2e3440', '--card': '#3b4252', '--text': '#eceff4', '--muted': '#a0aec0',
+                '--accent': '#88c0d0', '--accent-2': '#a3be8c', '--danger': '#bf616a', '--warning': '#ebcb8b',
+                '--success': '#a3be8c', '--link': '#81a1c1', '--border': '#434c5e',
+                '--nav-bg': '#2e3440', '--nav-text': '#d8dee9', '--nav-hover': '#88c0d0',
+                '--nav-active-bg': '#292e39', '--input-bg': '#3b4252',
+                '--surface-bg': '#353b48', '--surface-border': '#434c5e', '--text-light': '#e5e9f0'
+            },
+            buttons: { bg: 'linear-gradient(135deg, #88c0d0, #a3be8c)', text: '#2e3440', shadow: 'rgba(136, 192, 208, 0.3)' }
+        },
+        'amoled-black': {
+            label: 'AMOLED Black',
+            colors: {
+                '--bg': '#000000', '--card': '#0a0a0a', '--text': '#e4e4e7', '--muted': '#71717a',
+                '--accent': '#a78bfa', '--accent-2': '#34d399', '--danger': '#f87171', '--warning': '#fbbf24',
+                '--success': '#34d399', '--link': '#c4b5fd', '--border': '#27272a',
+                '--nav-bg': '#0a0a0a', '--nav-text': '#a1a1aa', '--nav-hover': '#a78bfa',
+                '--nav-active-bg': '#000000', '--input-bg': '#0a0a0a',
+                '--surface-bg': '#050505', '--surface-border': '#27272a', '--text-light': '#d4d4d8'
+            },
+            buttons: { bg: 'linear-gradient(135deg, #a78bfa, #34d399)', text: '#000000', shadow: 'rgba(167, 139, 250, 0.3)' }
+        }
+    };
+
+    static BUTTON_COLOR_SCHEMES = {
+        ocean:  { bg: 'linear-gradient(135deg, #6aa9ff, #8bffb0)', text: '#0b0f14', shadow: 'rgba(106, 169, 255, 0.3)' },
+        sunset: { bg: 'linear-gradient(135deg, #f7971e, #f5576c)', text: '#0b0f14', shadow: 'rgba(247, 151, 30, 0.3)' },
+        purple: { bg: 'linear-gradient(135deg, #667eea, #f093fb)', text: '#0b0f14', shadow: 'rgba(102, 126, 234, 0.3)' },
+        cyber:  { bg: 'linear-gradient(135deg, #4facfe, #00f2fe)', text: '#0b0f14', shadow: 'rgba(79, 172, 254, 0.3)' },
+        slate:  { bg: '#2b3442',                                   text: '#e6edf3', shadow: 'rgba(43, 52, 66, 0.3)' }
+    };
+
+    static applySiteTheme(themeName, customOverrides) {
+        const theme = this.SITE_THEMES[themeName] || this.SITE_THEMES['default-dark'];
+        const root = document.documentElement;
+
+        // Apply all color variables from the preset
+        Object.entries(theme.colors).forEach(([prop, value]) => {
+            root.style.setProperty(prop, value);
+        });
+
+        // Apply custom overrides on top (if any)
+        if (customOverrides && typeof customOverrides === 'object') {
+            Object.entries(customOverrides).forEach(([prop, value]) => {
+                if (value) root.style.setProperty(prop, value);
+            });
+        }
+
+        // Update semantic aliases
+        root.style.setProperty('--primary', 'var(--accent)');
+        root.style.setProperty('--secondary', 'var(--accent-2)');
+        root.style.setProperty('--background', 'var(--bg)');
+        root.style.setProperty('--card-bg', 'var(--card)');
+        root.style.setProperty('--text-color', 'var(--text)');
+        root.style.setProperty('--muted-color', 'var(--muted)');
+        root.style.setProperty('--border-color', 'var(--border)');
+        root.style.setProperty('--danger-color', 'var(--danger)');
+        root.style.setProperty('--warning-color', 'var(--warning)');
+        root.style.setProperty('--success-color', 'var(--success)');
+        root.style.setProperty('--link-color', 'var(--link)');
+
+        // Apply button colors from theme (can be overridden by button scheme)
+        root.style.setProperty('--btn-bg', theme.buttons.bg);
+        root.style.setProperty('--btn-text', theme.buttons.text);
+        root.style.setProperty('--btn-shadow', theme.buttons.shadow);
+
+        // Cache to localStorage for flash prevention
+        try {
+            const cache = { theme: themeName, colors: { ...theme.colors } };
+            if (customOverrides) {
+                Object.assign(cache.colors, customOverrides);
+            }
+            cache.buttons = theme.buttons;
+            localStorage.setItem('site_theme_cache', JSON.stringify(cache));
+        } catch (e) { /* storage full or unavailable */ }
+    }
+
+    static applyButtonScheme(scheme) {
+        if (scheme && scheme.startsWith('custom:')) {
+            // Custom single-color button
+            const hex = scheme.substring(7);
+            const contrast = this.getContrastText(hex);
+            const r = parseInt(hex.slice(1,3), 16);
+            const g = parseInt(hex.slice(3,5), 16);
+            const b = parseInt(hex.slice(5,7), 16);
+            document.documentElement.style.setProperty('--btn-bg', hex);
+            document.documentElement.style.setProperty('--btn-text', contrast);
+            document.documentElement.style.setProperty('--btn-shadow', `rgba(${r}, ${g}, ${b}, 0.3)`);
+        } else {
+            const s = this.BUTTON_COLOR_SCHEMES[scheme] || this.BUTTON_COLOR_SCHEMES.ocean;
+            document.documentElement.style.setProperty('--btn-bg', s.bg);
+            document.documentElement.style.setProperty('--btn-text', s.text);
+            document.documentElement.style.setProperty('--btn-shadow', s.shadow);
+        }
+        try {
+            localStorage.setItem('btn_scheme_cache', scheme || 'ocean');
+        } catch (e) { /* */ }
+    }
+
+    static getContrastText(hex) {
+        const r = parseInt(hex.slice(1,3), 16);
+        const g = parseInt(hex.slice(3,5), 16);
+        const b = parseInt(hex.slice(5,7), 16);
+        // Relative luminance formula
+        const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+        return luminance > 0.5 ? '#0b0f14' : '#f0f0f0';
+    }
+
+    static loadThemeFromProfile(profile) {
+        if (!profile) {
+            this.applySiteTheme('default-dark');
+            return;
+        }
+
+        const themeName = profile.site_theme || 'default-dark';
+        const customOverrides = profile.site_theme_custom || null;
+
+        this.applySiteTheme(themeName, customOverrides);
+
+        // Apply button color scheme override (if user has one that differs from theme default)
+        const btnScheme = profile.button_color_scheme;
+        if (btnScheme) {
+            this.applyButtonScheme(btnScheme);
+        }
+    }
+
     static addNavigationStyles() {
         if (document.getElementById('unified-nav-styles')) return;
         
@@ -716,18 +895,40 @@ class PortalUI {
 window.portalAuth = new PortalAuth();
 window.PortalUI = PortalUI;
 
+// Flash prevention — apply cached theme before DOM load
+(function() {
+    try {
+        const cached = localStorage.getItem('site_theme_cache');
+        if (cached) {
+            const data = JSON.parse(cached);
+            const root = document.documentElement;
+            if (data.colors) {
+                Object.entries(data.colors).forEach(([prop, value]) => {
+                    root.style.setProperty(prop, value);
+                });
+            }
+            if (data.buttons) {
+                root.style.setProperty('--btn-bg', data.buttons.bg);
+                root.style.setProperty('--btn-text', data.buttons.text);
+                root.style.setProperty('--btn-shadow', data.buttons.shadow);
+            }
+        }
+        const btnCache = localStorage.getItem('btn_scheme_cache');
+        if (btnCache) {
+            PortalUI.applyButtonScheme(btnCache);
+        }
+    } catch (e) { /* ignore parse errors */ }
+})();
+
 // Auto-initialize when DOM is ready
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {
         window.portalAuth.initialize();
         PortalUI.addNavigationStyles();
-        PortalUI.applyTheme(window.portalAuth.config.theme);
     });
 } else {
     window.portalAuth.initialize();
     PortalUI.addNavigationStyles();
-    PortalUI.applyTheme(window.portalAuth.config.theme);
-
 }
 
 
