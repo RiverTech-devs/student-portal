@@ -2860,14 +2860,33 @@
 
                         // Assignments
                         const assignmentQuery = sb.from('assignments')
-                            .select('id, title, due_date, class_id')
+                            .select('id, title, due_date, class_id, assigned_to_all')
                             .in('class_id', classIds)
                             .gte('due_date', monthStart).lte('due_date', monthEnd);
                         if (userType === 'student' || userType === 'parent') {
                             assignmentQuery.eq('is_published', true);
                         }
                         const { data: assignments } = await assignmentQuery;
-                        (assignments || []).forEach(a => {
+
+                        // Filter out selective assignments not assigned to this student/child
+                        let visibleAssignments = assignments || [];
+                        if ((userType === 'student' || userType === 'parent') && visibleAssignments.length > 0) {
+                            const selectiveIds = visibleAssignments.filter(a => !a.assigned_to_all).map(a => a.id);
+                            let assignedSet = new Set();
+                            if (selectiveIds.length > 0) {
+                                const profileLookupId = userType === 'parent' ? this.selectedChildId : (userInfo.profile?.id || userId);
+                                const { data: studentAssignments } = await sb.from('assignment_students')
+                                    .select('assignment_id')
+                                    .in('assignment_id', selectiveIds)
+                                    .eq('student_id', profileLookupId);
+                                if (studentAssignments) {
+                                    assignedSet = new Set(studentAssignments.map(sa => sa.assignment_id));
+                                }
+                            }
+                            visibleAssignments = visibleAssignments.filter(a => a.assigned_to_all || assignedSet.has(a.id));
+                        }
+
+                        visibleAssignments.forEach(a => {
                             events.push({ type: 'assignment', date: this.toLocalDate(a.due_date), title: a.title, className: classNameMap[a.class_id] || '', id: a.id });
                         });
 
