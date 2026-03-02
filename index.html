@@ -2797,7 +2797,7 @@
                 this.calendarYear = now.getFullYear();
                 this.calendarMonth = now.getMonth();
                 this.calendarEvents = [];
-                this.calendarFilters = { assignments: true, tests: true, classes: true, quarters: true, school_events: true, attendance: true };
+                this.calendarFilters = { assignments: true, tests: true, classes: true, quarters: true, school_events: true, attendance: true, bookings: true };
                 this.loadCalendarEvents(this.calendarYear, this.calendarMonth).then(() => {
                     this.renderCalendar(this.calendarYear, this.calendarMonth);
                 });
@@ -2848,9 +2848,18 @@
                     if (classIds.length > 0) {
                         // Build class name lookup map
                         const { data: classRows } = await sb.from('classes')
-                            .select('id, name').in('id', classIds);
+                            .select('id, name, facility_id').in('id', classIds);
                         const classNameMap = {};
-                        (classRows || []).forEach(c => { classNameMap[c.id] = c.name; });
+                        const classFacilityMap = {};
+                        (classRows || []).forEach(c => { classNameMap[c.id] = c.name; if (c.facility_id) classFacilityMap[c.id] = c.facility_id; });
+
+                        // Fetch facility names for classes that have a facility_id
+                        const facilityNameMap = {};
+                        const facilityIds = [...new Set(Object.values(classFacilityMap))];
+                        if (facilityIds.length > 0) {
+                            const { data: facilities } = await sb.from('facilities').select('id, name').in('id', facilityIds);
+                            (facilities || []).forEach(f => { facilityNameMap[f.id] = f.name; });
+                        }
 
                         // Assignments
                         const assignmentQuery = sb.from('assignments')
@@ -2899,7 +2908,9 @@
                             .in('class_id', classIds);
                         (schedule || []).forEach(s => {
                             const name = classNameMap[s.class_id] || 'Class';
-                            events.push({ type: 'class', recurring: true, dayOfWeek: s.day_of_week, title: name, period: s.period, className: name });
+                            const facId = classFacilityMap[s.class_id];
+                            const room = facId ? facilityNameMap[facId] : null;
+                            events.push({ type: 'class', recurring: true, dayOfWeek: s.day_of_week, title: name, period: s.period, className: name, room });
                         });
 
                         // Attendance (teacher/admin only)
@@ -2912,6 +2923,28 @@
                                 events.push({ type: 'attendance', date: a.date, title: 'Attendance', period: a.period, status: a.status });
                             });
                         }
+                    }
+
+                    // Facility bookings (teacher/admin only — own bookings)
+                    if (userType === 'teacher' || userType === 'admin') {
+                        const { data: bookings } = await sb.from('facility_bookings')
+                            .select('id, facility_id, title, booking_date, start_time, end_time, status, facilities(name)')
+                            .eq('booked_by', userId)
+                            .in('status', ['approved', 'pending'])
+                            .gte('booking_date', monthStart)
+                            .lte('booking_date', monthEnd);
+                        (bookings || []).forEach(b => {
+                            events.push({
+                                type: 'booking',
+                                date: b.booking_date,
+                                title: b.title || 'Room Booking',
+                                room: b.facilities?.name || 'Unknown Room',
+                                startTime: b.start_time,
+                                endTime: b.end_time,
+                                status: b.status,
+                                id: b.id
+                            });
+                        });
                     }
 
                     // Quarters (all users)
@@ -2960,13 +2993,14 @@
                     class: 'var(--muted)',
                     quarter: 'var(--warning)',
                     school_event: '#e879f9',
-                    attendance: 'var(--accent-2)'
+                    attendance: 'var(--accent-2)',
+                    booking: '#22d3ee'
                 };
                 return colors[type] || 'var(--muted)';
             }
 
             getFilterKey(type) {
-                const map = { assignment: 'assignments', test: 'tests', class: 'classes', quarter: 'quarters', school_event: 'school_events', attendance: 'attendance' };
+                const map = { assignment: 'assignments', test: 'tests', class: 'classes', quarter: 'quarters', school_event: 'school_events', attendance: 'attendance', booking: 'bookings' };
                 return map[type] || type;
             }
 
@@ -2995,6 +3029,7 @@
                 ];
                 if (userType === 'teacher' || userType === 'admin') {
                     filterTypes.push({ key: 'attendance', label: 'Attendance', color: 'var(--accent-2)' });
+                    filterTypes.push({ key: 'bookings', label: 'Bookings', color: '#22d3ee' });
                 }
 
                 const filtersHTML = filterTypes.map(f => {
@@ -3110,7 +3145,7 @@
                     grouped[key].push(ev);
                 });
 
-                const typeLabels = { assignments: 'Assignments', tests: 'Tests', classes: 'Class Schedule', quarters: 'Quarter Boundaries', school_events: 'School Events', attendance: 'Attendance' };
+                const typeLabels = { assignments: 'Assignments', tests: 'Tests', classes: 'Class Schedule', quarters: 'Quarter Boundaries', school_events: 'School Events', attendance: 'Attendance', bookings: 'Room Bookings' };
 
                 let listHTML = '';
                 if (dayEvents.length === 0) {
@@ -3123,7 +3158,14 @@
                             const detail = ev.className ? `<span style="color:var(--muted);font-size:12px;"> - ${ev.className}</span>` : '';
                             const period = ev.period ? `<span style="color:var(--muted);font-size:12px;"> (Period ${ev.period})</span>` : '';
                             const eventTypeBadge = ev.eventType ? `<span style="color:var(--muted);font-size:12px;"> (${ev.eventType})</span>` : '';
-                            listHTML += `<li><span class="day-event-dot" style="background:${this.getEventColor(ev.type)}"></span>${ev.title}${detail}${period}${eventTypeBadge}</li>`;
+                            const roomInfo = ev.room ? `<span style="color:var(--muted);font-size:12px;"> - ${ev.room}</span>` : '';
+                            if (ev.type === 'booking') {
+                                const timeRange = ev.startTime && ev.endTime ? `<span style="color:var(--muted);font-size:12px;"> ${ev.startTime.slice(0,5)}–${ev.endTime.slice(0,5)}</span>` : '';
+                                const statusBadge = ev.status ? `<span style="display:inline-block;font-size:11px;padding:1px 6px;border-radius:8px;margin-left:6px;background:${ev.status === 'approved' ? 'var(--success)' : 'var(--warning)'};color:#000;">${ev.status}</span>` : '';
+                                listHTML += `<li><span class="day-event-dot" style="background:${this.getEventColor(ev.type)}"></span>${ev.title}<span style="color:var(--muted);font-size:12px;"> - ${ev.room}</span>${timeRange}${statusBadge}</li>`;
+                            } else {
+                                listHTML += `<li><span class="day-event-dot" style="background:${this.getEventColor(ev.type)}"></span>${ev.title}${detail}${period}${roomInfo}${eventTypeBadge}</li>`;
+                            }
                         });
                         listHTML += '</ul>';
                     }
