@@ -5461,6 +5461,12 @@
                 <button class="btn btn-secondary" onclick="app.showSection('activities')">
                   🏆 Browse Activities
                 </button>
+                <button class="btn btn-secondary" onclick="app.generateReportCard(app.userInfo.user.id)">
+                  📄 Report Card
+                </button>
+                <button class="btn btn-secondary" onclick="app.generateTranscript(app.userInfo.user.id)">
+                  📋 View Transcript
+                </button>
               </div>
             </div>
 
@@ -5780,6 +5786,9 @@
               <button class="btn btn-secondary" onclick="app.startReEnrollment()">
                 📋 Re-Enroll for Next Year
               </button>
+              <button class="btn btn-secondary" onclick="app.showTranscriptChildPicker()">
+                📋 View Transcript
+              </button>
             </div>
           </div>
         `;
@@ -5969,7 +5978,9 @@
             `}
           </div>
 
-          <div style="text-align: right;">
+          <div style="display: flex; gap: 10px; justify-content: flex-end;">
+            <button class="btn btn-secondary" onclick="app.generateReportCard('${childId}')">📄 Report Card</button>
+            <button class="btn btn-secondary" onclick="app.generateTranscript('${childId}')">📋 Transcript</button>
             <button class="btn btn-secondary" onclick="app.closeModal('child-details')">Close</button>
           </div>
         `;
@@ -22934,6 +22945,9 @@
                       <button class="btn btn-secondary small" onclick="app.viewQuarterAssignments('${quarter.id}')">
                         📝 View Assignments
                       </button>
+                      <button class="btn btn-secondary small" onclick="app.generateReportCard('${this.userInfo.user.id}', '${quarter.id}')">
+                        📄 Report Card
+                      </button>
                     </div>
                   </div>
                 `).join('')}
@@ -24543,6 +24557,289 @@
           console.error('Error generating report card:', error);
           this.showNotification('Error generating report card: ' + error.message, 'error');
         }
+      }
+
+      async generateTranscript(studentId) {
+        this.showNotification('Generating transcript...', 'info');
+
+        try {
+          // Load student profile
+          const { data: student, error: studentError } = await this.supabaseQuery(() =>
+            this.auth.supabase
+              .from('user_profiles')
+              .select('*')
+              .eq('id', studentId)
+              .single());
+          if (studentError) throw studentError;
+
+          // Load ALL quarters ordered by start_date
+          const { data: allQuarters, error: quartersError } = await this.supabaseQuery(() =>
+            this.auth.supabase
+              .from('quarters')
+              .select('*')
+              .order('start_date', { ascending: true }));
+          if (quartersError) throw quartersError;
+          if (!allQuarters || allQuarters.length === 0) {
+            this.showNotification('No quarters found', 'error');
+            return;
+          }
+
+          // Group quarters by school_year
+          const quartersByYear = {};
+          for (const q of allQuarters) {
+            const year = q.school_year || this.determineSchoolYear(new Date(q.start_date));
+            if (!quartersByYear[year]) quartersByYear[year] = [];
+            quartersByYear[year].push(q);
+          }
+
+          // Load ALL enrollments (active + archived) with class info
+          const { data: enrollments, error: enrollError } = await this.supabaseQuery(() =>
+            this.auth.supabase
+              .from('class_enrollments')
+              .select('*, classes(*)')
+              .eq('student_id', studentId)
+              .in('status', ['active', 'archived']));
+          if (enrollError) throw enrollError;
+
+          // Load ALL quarter_grade_snapshots for these enrollments
+          const enrollmentIds = (enrollments || []).map(e => e.id);
+          let snapshots = [];
+          if (enrollmentIds.length > 0) {
+            const { data: snapshotData } = await this.supabaseQuery(() =>
+              this.auth.supabase
+                .from('quarter_grade_snapshots')
+                .select('*')
+                .in('enrollment_id', enrollmentIds));
+            snapshots = snapshotData || [];
+          }
+
+          // Build snapshot lookup: enrollment_id -> quarter_id -> snapshot
+          const snapshotMap = {};
+          for (const s of snapshots) {
+            if (!snapshotMap[s.enrollment_id]) snapshotMap[s.enrollment_id] = {};
+            snapshotMap[s.enrollment_id][s.quarter_id] = s;
+          }
+
+          // Build quarter_id -> school_year lookup
+          const quarterYearMap = {};
+          for (const [year, quarters] of Object.entries(quartersByYear)) {
+            for (const q of quarters) {
+              quarterYearMap[q.id] = year;
+            }
+          }
+
+          // For each enrollment, determine which school year(s) it belongs to via snapshots
+          // enrollment -> school_year mapping
+          const enrollmentYears = {};
+          for (const enrollment of (enrollments || [])) {
+            const years = new Set();
+            // Check snapshots
+            if (snapshotMap[enrollment.id]) {
+              for (const qId of Object.keys(snapshotMap[enrollment.id])) {
+                if (quarterYearMap[qId]) years.add(quarterYearMap[qId]);
+              }
+            }
+            // Also check current_quarter_id
+            if (enrollment.current_quarter_id && quarterYearMap[enrollment.current_quarter_id]) {
+              years.add(quarterYearMap[enrollment.current_quarter_id]);
+            }
+            // Fallback: if no year found, use the latest year
+            if (years.size === 0) {
+              const sortedYears = Object.keys(quartersByYear).sort();
+              if (sortedYears.length > 0) years.add(sortedYears[sortedYears.length - 1]);
+            }
+            enrollmentYears[enrollment.id] = [...years];
+          }
+
+          // Build transcript data per school year
+          const schoolYears = Object.keys(quartersByYear).sort();
+          const transcriptYears = [];
+          let cumulativeGPASum = 0;
+          let cumulativeWtGPASum = 0;
+          let cumulativeCourseCount = 0;
+          let totalCreditsEarned = 0;
+
+          for (const year of schoolYears) {
+            const yearQuarters = quartersByYear[year];
+            const quarterIdSet = new Set(yearQuarters.map(q => q.id));
+
+            // Find enrollments belonging to this year
+            const yearEnrollments = (enrollments || []).filter(e =>
+              enrollmentYears[e.id]?.includes(year)
+            );
+
+            if (yearEnrollments.length === 0) continue;
+
+            const courses = [];
+
+            for (const enrollment of yearEnrollments) {
+              const cls = enrollment.classes;
+              if (!cls) continue;
+
+              // Collect quarter grades for this year
+              const quarterGrades = {};
+              for (const q of yearQuarters) {
+                const qNum = this.getQuarterNumber(q);
+                if (!qNum) continue;
+
+                const snapshot = snapshotMap[enrollment.id]?.[q.id];
+                if (snapshot) {
+                  const effectiveGrade = snapshot.class_grade === 0 ? null : snapshot.class_grade;
+                  quarterGrades[qNum] = effectiveGrade;
+                }
+              }
+
+              // Fallback: use live enrollment data for current quarter
+              const currentQ = yearQuarters.find(q => q.is_current);
+              if (currentQ) {
+                const cqNum = this.getQuarterNumber(currentQ);
+                if (cqNum && !quarterGrades[cqNum]) {
+                  const liveGrade = enrollment.class_grade === 0 ? null : enrollment.class_grade;
+                  if (liveGrade !== null) quarterGrades[cqNum] = liveGrade;
+                }
+              }
+
+              // Compute final grade as weighted average across quarters
+              let weightedSum = 0;
+              let totalWeight = 0;
+              for (const [qNum, grade] of Object.entries(quarterGrades)) {
+                if (grade !== null && grade !== undefined) {
+                  const weight = this.quarterWeights[parseInt(qNum)] || 0.25;
+                  weightedSum += grade * weight;
+                  totalWeight += weight;
+                }
+              }
+
+              const finalPercentage = totalWeight > 0 ? weightedSum / totalWeight : null;
+
+              // GPA: weighted average of per-quarter GPAs (same method as report card)
+              let gpaWeightedSum = 0;
+              let gpaTotalWeight = 0;
+              for (const [qNum, grade] of Object.entries(quarterGrades)) {
+                if (grade !== null && grade !== undefined) {
+                  const weight = this.quarterWeights[parseInt(qNum)] || 0.25;
+                  const qGPA = this.percentageToGPA(grade);
+                  if (qGPA !== null) {
+                    gpaWeightedSum += qGPA * weight;
+                    gpaTotalWeight += weight;
+                  }
+                }
+              }
+              const baseGPA = gpaTotalWeight > 0 ? gpaWeightedSum / gpaTotalWeight : null;
+              const modifier = this.getCourseWeightModifier(cls.course_weight);
+              const weightedGPA = baseGPA !== null ? Math.min(baseGPA + modifier, 5.0) : null;
+
+              const letterGrade = this.percentageToLetter(finalPercentage);
+
+              let hcLabel = 'N/A';
+              if (cls.course_weight === 'honors') hcLabel = 'H';
+              else if (cls.course_weight === 'ap') hcLabel = 'AP';
+              else if (cls.course_weight === 'dual_credit') hcLabel = 'C';
+
+              const credits = cls.credits || 1;
+              const passed = finalPercentage !== null && finalPercentage >= 60;
+
+              courses.push({
+                courseName: cls.name,
+                credits: credits,
+                finalPercentage: finalPercentage,
+                letterGrade: letterGrade,
+                hc: hcLabel,
+                baseGPA: baseGPA,
+                weightedGPA: weightedGPA,
+                creditsEarned: passed ? credits : 0
+              });
+            }
+
+            if (courses.length === 0) continue;
+
+            // Year GPA
+            let yearGPASum = 0;
+            let yearWtGPASum = 0;
+            let yearCourseCount = 0;
+            let yearCreditsEarned = 0;
+
+            for (const c of courses) {
+              if (c.weightedGPA !== null) {
+                yearGPASum += c.baseGPA;
+                yearWtGPASum += c.weightedGPA;
+                yearCourseCount++;
+              }
+              yearCreditsEarned += c.creditsEarned;
+            }
+
+            const yearGPA = yearCourseCount > 0 ? yearGPASum / yearCourseCount : null;
+            const yearWtGPA = yearCourseCount > 0 ? yearWtGPASum / yearCourseCount : null;
+
+            cumulativeGPASum += yearGPASum;
+            cumulativeWtGPASum += yearWtGPASum;
+            cumulativeCourseCount += yearCourseCount;
+            totalCreditsEarned += yearCreditsEarned;
+
+            transcriptYears.push({
+              schoolYear: year,
+              courses: courses,
+              yearGPA: yearGPA,
+              yearWeightedGPA: yearWtGPA,
+              creditsEarned: yearCreditsEarned
+            });
+          }
+
+          const cumulativeGPA = cumulativeCourseCount > 0 ? cumulativeGPASum / cumulativeCourseCount : null;
+          const cumulativeWtGPA = cumulativeCourseCount > 0 ? cumulativeWtGPASum / cumulativeCourseCount : null;
+
+          const transcriptData = {
+            student: {
+              first_name: student.first_name,
+              last_name: student.last_name,
+              dob: student.dob || student.date_of_birth,
+              grade_level: student.grade_level
+            },
+            years: transcriptYears,
+            cumulativeGPA: cumulativeGPA,
+            cumulativeWeightedGPA: cumulativeWtGPA,
+            totalCreditsEarned: totalCreditsEarned,
+            generatedDate: new Date().toISOString()
+          };
+
+          sessionStorage.setItem('transcriptData', JSON.stringify(transcriptData));
+          window.open('transcript.html', '_blank');
+
+        } catch (error) {
+          console.error('Error generating transcript:', error);
+          this.showNotification('Error generating transcript: ' + error.message, 'error');
+        }
+      }
+
+      showTranscriptChildPicker() {
+        const children = this.children || [];
+        if (children.length === 0) {
+          this.showNotification('No linked children found', 'error');
+          return;
+        }
+        if (children.length === 1) {
+          this.generateTranscript(children[0].id);
+          return;
+        }
+        // Multiple children - show picker
+        const modalContent = `
+          <p style="color: var(--muted); margin-bottom: 15px;">Select a child to generate their transcript:</p>
+          <div class="list">
+            ${children.map(child => `
+              <div class="list-item" style="cursor: pointer;" onclick="app.closeModal('transcript-picker'); app.generateTranscript('${child.id}');">
+                <div class="list-item-content">
+                  <div class="list-item-title">${this.escapeHtml(child.first_name)} ${this.escapeHtml(child.last_name)}</div>
+                  <div class="list-item-meta">Grade ${child.grade_level || 'N/A'}</div>
+                </div>
+                <span style="color: var(--accent);">📋</span>
+              </div>
+            `).join('')}
+          </div>
+          <div style="text-align: right; margin-top: 15px;">
+            <button class="btn btn-secondary" onclick="app.closeModal('transcript-picker')">Cancel</button>
+          </div>
+        `;
+        this.showModal('transcript-picker', '📋 View Transcript', modalContent);
       }
 
       // Helper to convert percentage to letter grade
