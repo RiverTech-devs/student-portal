@@ -82,13 +82,14 @@ BEGIN
         v_app.student_dob
       );
     ELSE
-      -- Homeschool student or no auth user: profile only, no login
+      -- No email student: profile only, no login
       INSERT INTO public.user_profiles (
-        id, first_name, last_name, user_type,
+        id, username, first_name, last_name, user_type,
         grade_level, enrollment_type, account_status, can_login,
         address_line1, city, state, date_of_birth
       ) VALUES (
         v_student_id,
+        LOWER(v_app.student_first_name || '.' || v_app.student_last_name || '.' || substr(v_student_id::text, 1, 4)),
         v_app.student_first_name,
         v_app.student_last_name,
         'student',
@@ -166,11 +167,12 @@ BEGIN
     v_parent_id := gen_random_uuid();
 
     INSERT INTO public.user_profiles (
-      id, email, first_name, last_name, user_type,
+      id, email, username, first_name, last_name, user_type,
       phone, account_status, can_login
     ) VALUES (
       v_parent_id,
       v_app.parent1_email,
+      LOWER(v_app.parent1_first_name || '.' || v_app.parent1_last_name || '.' || substr(v_parent_id::text, 1, 4)),
       v_app.parent1_first_name,
       v_app.parent1_last_name,
       'parent',
@@ -199,11 +201,12 @@ BEGIN
       IF v_parent2_id IS NULL THEN
         v_parent2_id := gen_random_uuid();
         INSERT INTO public.user_profiles (
-          id, email, first_name, last_name, user_type,
+          id, email, username, first_name, last_name, user_type,
           phone, account_status, can_login
         ) VALUES (
           v_parent2_id,
           v_app.parent2_email,
+          LOWER(v_app.parent2_first_name || '.' || v_app.parent2_last_name || '.' || substr(v_parent2_id::text, 1, 4)),
           v_app.parent2_first_name,
           v_app.parent2_last_name,
           'parent',
