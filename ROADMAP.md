@@ -2,7 +2,7 @@
 
 ## Priority 1 - Core Missing Features
 - [x] Online Enrollment & Registration (IN PROGRESS)
-- [ ] Report Cards & Transcript Generation
+- [x] Report Cards & Transcript Generation
 - [ ] Payment System (tuition, fees, cafeteria)
 - [ ] SMS + Mass Email Notifications
 - [ ] SSO (Google/Microsoft Login)
