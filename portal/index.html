@@ -1789,6 +1789,11 @@
               <!-- Will be populated by renderAdminStudentRecords() -->
             </section>
 
+            <!-- Admin Enrollment Section (Admin only) -->
+            <section id="admin-enrollment-section" class="hidden">
+              <!-- Will be populated by renderAdminEnrollment() -->
+            </section>
+
             <!-- Admin Strikes Section (Admin only) -->
             <section id="admin-strikes-section" class="hidden">
               <!-- Will be populated by renderAdminStrikes() -->
@@ -2229,7 +2234,7 @@
 
         // Navigate to hash section if present, otherwise show home
         const hash = window.location.hash.substring(1);
-        const validSections = ['home', 'classes', 'messaging', 'profile', 'my-students', 'materials-requests', 'testing-center', 'admin-dashboard', 'admin-classes', 'admin-users', 'admin-settings', 'admin-reports', 'admin-attendance', 'admin-student-records'];
+        const validSections = ['home', 'classes', 'messaging', 'profile', 'my-students', 'materials-requests', 'testing-center', 'admin-dashboard', 'admin-classes', 'admin-users', 'admin-settings', 'admin-reports', 'admin-attendance', 'admin-student-records', 'admin-enrollment'];
         if (hash && validSections.includes(hash)) {
           this.showSection(hash);
         } else {
@@ -4394,7 +4399,7 @@
 
       handleHashNavigation() {
         const hash = window.location.hash.substring(1);
-        const validSections = ['home', 'classes', 'messaging', 'profile', 'my-students', 'materials-requests', 'testing-center', 'admin-dashboard', 'admin-classes', 'admin-users', 'admin-settings', 'admin-reports', 'admin-attendance', 'admin-student-records'];
+        const validSections = ['home', 'classes', 'messaging', 'profile', 'my-students', 'materials-requests', 'testing-center', 'admin-dashboard', 'admin-classes', 'admin-users', 'admin-settings', 'admin-reports', 'admin-attendance', 'admin-student-records', 'admin-enrollment'];
         
         if (hash && validSections.includes(hash)) {
           this.showSection(hash);
@@ -4485,6 +4490,9 @@
             break;
           case 'admin-student-records':
             this.renderAdminStudentRecords();
+            break;
+          case 'admin-enrollment':
+            this.renderAdminEnrollment();
             break;
           case 'materials-requests':
             this.renderMaterialsRequests();
@@ -5683,6 +5691,9 @@
               </button>
               <button class="btn btn-secondary" onclick="app.showSection('profile')">
                 ⚙️ Account Settings
+              </button>
+              <button class="btn btn-secondary" onclick="app.startReEnrollment()">
+                📋 Re-Enroll for Next Year
               </button>
             </div>
           </div>
@@ -25002,6 +25013,9 @@
                   <button class="btn btn-secondary" onclick="app.showAdminSection('student-management')">
                     👨‍🎓 Add Students
                   </button>
+                  <button class="btn btn-secondary" onclick="app.showAdminSection('enrollment')">
+                    📋 Review Enrollments
+                  </button>
                 </div>
               </div>
 
@@ -25200,6 +25214,25 @@
                     <span>✓ Max 3 per student</span>
                   </div>
                 </div>
+
+                <!-- Enrollment Management -->
+                <div class="card" style="cursor: pointer; border: 2px solid #27ae60; transition: all 0.2s;"
+                     onmouseover="this.style.background='rgba(39, 174, 96, 0.1)'"
+                     onmouseout="this.style.background='var(--card)'"
+                     onclick="app.showAdminSection('enrollment')">
+                  <div style="display: flex; align-items: center; gap: 15px; margin-bottom: 15px;">
+                    <div style="font-size: 48px;">📋</div>
+                    <div>
+                      <h3 style="margin: 0;">Enrollment Management</h3>
+                      <p style="color: var(--muted); margin: 5px 0 0 0; font-size: 13px;">Review and process enrollment applications</p>
+                    </div>
+                  </div>
+                  <div style="display: flex; gap: 10px; font-size: 12px; color: var(--muted);">
+                    <span>✓ Applications</span>
+                    <span>✓ Approve/Deny</span>
+                    <span>✓ Family Groups</span>
+                  </div>
+                </div>
               </div>
             </div>
           `;
@@ -25386,8 +25419,653 @@
             this.showSection('admin-strikes');
             this.renderAdminStrikes();
             break;
+          case 'enrollment':
+            this.showSection('admin-enrollment');
+            this.renderAdminEnrollment();
+            break;
           default:
             console.warn('Unknown admin section:', section);
+        }
+      }
+
+      // ==================== ENROLLMENT MANAGEMENT ====================
+
+      async renderAdminEnrollment() {
+        const section = document.getElementById('admin-enrollment-section');
+        if (!section) {
+          console.error('Admin enrollment section not found!');
+          return;
+        }
+
+        section.innerHTML = '<div style="text-align: center; padding: 40px;"><div class="loading-spinner"></div><p>Loading enrollment applications...</p></div>';
+
+        try {
+          const { data: applications, error } = await this.supabaseQuery(() =>
+            this.auth.supabase
+              .from('enrollment_applications')
+              .select('*')
+              .order('created_at', { ascending: false })
+          );
+
+          if (error) throw error;
+
+          this._enrollmentData = applications || [];
+          this._enrollmentFilters = this._enrollmentFilters || { status: 'all', schoolYear: 'all', search: '' };
+
+          this.renderEnrollmentDashboard();
+        } catch (error) {
+          console.error('Error loading enrollments:', error);
+          section.innerHTML = `<div style="padding: 20px; text-align: center; color: var(--danger);">Error loading enrollment data: ${error.message}</div>`;
+        }
+      }
+
+      renderEnrollmentDashboard() {
+        const section = document.getElementById('admin-enrollment-section');
+        const data = this._enrollmentData || [];
+        const filters = this._enrollmentFilters;
+
+        // Get unique school years
+        const schoolYears = [...new Set(data.map(a => a.school_year))].sort().reverse();
+
+        // Calculate stats
+        const totalFamilies = new Set(data.map(a => a.family_application_id)).size;
+        const totalStudents = data.length;
+        const pending = data.filter(a => a.status === 'submitted' || a.status === 'under_review').length;
+        const approved = data.filter(a => a.status === 'approved').length;
+        const denied = data.filter(a => a.status === 'denied').length;
+        const waitlisted = data.filter(a => a.status === 'waitlisted').length;
+
+        // Filter data
+        let filtered = [...data];
+        if (filters.status !== 'all') {
+          filtered = filtered.filter(a => a.status === filters.status);
+        }
+        if (filters.schoolYear !== 'all') {
+          filtered = filtered.filter(a => a.school_year === filters.schoolYear);
+        }
+        if (filters.search) {
+          const q = filters.search.toLowerCase();
+          filtered = filtered.filter(a =>
+            a.student_first_name.toLowerCase().includes(q) ||
+            a.student_last_name.toLowerCase().includes(q) ||
+            a.parent1_first_name.toLowerCase().includes(q) ||
+            a.parent1_last_name.toLowerCase().includes(q) ||
+            a.application_number.toLowerCase().includes(q)
+          );
+        }
+
+        // Group by family_application_id
+        const familyGroups = {};
+        filtered.forEach(app => {
+          const fid = app.family_application_id;
+          if (!familyGroups[fid]) familyGroups[fid] = [];
+          familyGroups[fid].push(app);
+        });
+
+        const statusColors = {
+          draft: 'var(--muted)', submitted: 'var(--accent)', under_review: 'var(--warning)',
+          approved: 'var(--success)', denied: 'var(--danger)', waitlisted: '#f0932b', withdrawn: 'var(--muted)'
+        };
+
+        // Build family rows
+        let tableHtml = '';
+        Object.entries(familyGroups).forEach(([fid, apps]) => {
+          const parent = `${apps[0].parent1_first_name} ${apps[0].parent1_last_name}`;
+          const childCount = apps.length;
+          const isReEnroll = apps[0].application_type === 're-enrollment';
+
+          tableHtml += `
+            <tr style="cursor: pointer; background: rgba(106, 169, 255, 0.03);" onclick="this.classList.toggle('expanded'); document.querySelectorAll('.family-${fid}').forEach(r => r.style.display = r.style.display === 'none' ? '' : 'none')">
+              <td colspan="7" style="padding: 12px 16px; font-weight: 600;">
+                <span style="margin-right: 8px;">&#9654;</span>
+                ${this.escapeHtml(parent)} Family — ${childCount} student${childCount > 1 ? 's' : ''}
+                ${isReEnroll ? '<span style="background: var(--accent); color: #fff; padding: 2px 8px; border-radius: 10px; font-size: 11px; margin-left: 8px;">Re-Enrollment</span>' : ''}
+                <span style="float: right; display: flex; gap: 6px;">
+                  ${childCount > 1 ? `
+                    <button class="btn btn-sm btn-success" style="font-size: 11px; padding: 2px 8px;" onclick="event.stopPropagation(); app.bulkEnrollmentAction('${fid}', 'approved')">Approve All</button>
+                    <button class="btn btn-sm btn-danger" style="font-size: 11px; padding: 2px 8px;" onclick="event.stopPropagation(); app.bulkEnrollmentAction('${fid}', 'denied')">Deny All</button>
+                  ` : ''}
+                </span>
+              </td>
+            </tr>
+          `;
+
+          apps.forEach(app => {
+            const statusColor = statusColors[app.status] || 'var(--muted)';
+            tableHtml += `
+              <tr class="family-${fid}" style="display: none;">
+                <td style="padding: 10px 16px; padding-left: 40px;">${this.escapeHtml(app.application_number)}</td>
+                <td>${this.escapeHtml(app.student_first_name)} ${this.escapeHtml(app.student_last_name)}</td>
+                <td>${this.escapeHtml(app.student_grade_applying)}</td>
+                <td><span style="font-size: 12px;">${app.student_enrollment_type === 'homeschool' ? 'Homeschool' : 'Full-Time'}</span></td>
+                <td>${new Date(app.created_at).toLocaleDateString()}</td>
+                <td><span style="background: ${statusColor}; color: ${app.status === 'approved' || app.status === 'waitlisted' ? '#0f1216' : '#fff'}; padding: 2px 10px; border-radius: 10px; font-size: 12px;">${app.status}</span></td>
+                <td>
+                  <button class="btn btn-sm" style="font-size: 12px; padding: 4px 10px;" onclick="app.showEnrollmentDetail('${app.id}')">View</button>
+                </td>
+              </tr>
+            `;
+          });
+        });
+
+        if (Object.keys(familyGroups).length === 0) {
+          tableHtml = `<tr><td colspan="7" style="text-align: center; padding: 40px; color: var(--muted);">No applications found matching your filters.</td></tr>`;
+        }
+
+        section.innerHTML = `
+          <div style="padding: 20px;">
+            <h2 style="margin-bottom: 5px;">📋 Enrollment Management</h2>
+            <p style="color: var(--muted); margin-bottom: 20px;">Review and process student enrollment applications</p>
+
+            <!-- Stats Cards -->
+            <div class="grid grid-4" style="margin-bottom: 24px; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));">
+              <div class="card" style="text-align: center; padding: 14px;">
+                <div style="font-size: 28px; font-weight: 700; color: var(--accent);">${totalFamilies}</div>
+                <div style="font-size: 12px; color: var(--muted);">Families</div>
+              </div>
+              <div class="card" style="text-align: center; padding: 14px;">
+                <div style="font-size: 28px; font-weight: 700; color: var(--text);">${totalStudents}</div>
+                <div style="font-size: 12px; color: var(--muted);">Students</div>
+              </div>
+              <div class="card" style="text-align: center; padding: 14px;">
+                <div style="font-size: 28px; font-weight: 700; color: var(--warning);">${pending}</div>
+                <div style="font-size: 12px; color: var(--muted);">Pending</div>
+              </div>
+              <div class="card" style="text-align: center; padding: 14px;">
+                <div style="font-size: 28px; font-weight: 700; color: var(--success);">${approved}</div>
+                <div style="font-size: 12px; color: var(--muted);">Approved</div>
+              </div>
+              <div class="card" style="text-align: center; padding: 14px;">
+                <div style="font-size: 28px; font-weight: 700; color: var(--danger);">${denied}</div>
+                <div style="font-size: 12px; color: var(--muted);">Denied</div>
+              </div>
+              <div class="card" style="text-align: center; padding: 14px;">
+                <div style="font-size: 28px; font-weight: 700; color: #f0932b;">${waitlisted}</div>
+                <div style="font-size: 12px; color: var(--muted);">Waitlisted</div>
+              </div>
+            </div>
+
+            <!-- Filter Bar -->
+            <div class="card" style="margin-bottom: 20px;">
+              <div style="display: flex; flex-wrap: wrap; gap: 12px; align-items: center;">
+                <select id="enrollment-status-filter" style="padding: 8px 12px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);"
+                        onchange="app._enrollmentFilters.status = this.value; app.renderEnrollmentDashboard();">
+                  <option value="all" ${filters.status === 'all' ? 'selected' : ''}>All Statuses</option>
+                  <option value="submitted" ${filters.status === 'submitted' ? 'selected' : ''}>Submitted</option>
+                  <option value="under_review" ${filters.status === 'under_review' ? 'selected' : ''}>Under Review</option>
+                  <option value="approved" ${filters.status === 'approved' ? 'selected' : ''}>Approved</option>
+                  <option value="denied" ${filters.status === 'denied' ? 'selected' : ''}>Denied</option>
+                  <option value="waitlisted" ${filters.status === 'waitlisted' ? 'selected' : ''}>Waitlisted</option>
+                  <option value="withdrawn" ${filters.status === 'withdrawn' ? 'selected' : ''}>Withdrawn</option>
+                </select>
+                <select id="enrollment-year-filter" style="padding: 8px 12px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);"
+                        onchange="app._enrollmentFilters.schoolYear = this.value; app.renderEnrollmentDashboard();">
+                  <option value="all">All Years</option>
+                  ${schoolYears.map(y => `<option value="${y}" ${filters.schoolYear === y ? 'selected' : ''}>${y}</option>`).join('')}
+                </select>
+                <input type="text" placeholder="Search student or parent name..." value="${this.escapeHtml(filters.search)}"
+                       style="padding: 8px 12px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text); flex: 1; min-width: 200px;"
+                       oninput="app._enrollmentFilters.search = this.value; app.renderEnrollmentDashboard();" />
+                <button class="btn btn-secondary" style="font-size: 13px;" onclick="app.exportEnrollmentCSV()">Export CSV</button>
+              </div>
+            </div>
+
+            <!-- Applications Table -->
+            <div class="card" style="overflow-x: auto;">
+              <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+                <thead>
+                  <tr style="border-bottom: 2px solid var(--border);">
+                    <th style="text-align: left; padding: 10px 16px; color: var(--muted); font-size: 12px;">APP #</th>
+                    <th style="text-align: left; padding: 10px 16px; color: var(--muted); font-size: 12px;">STUDENT</th>
+                    <th style="text-align: left; padding: 10px 16px; color: var(--muted); font-size: 12px;">GRADE</th>
+                    <th style="text-align: left; padding: 10px 16px; color: var(--muted); font-size: 12px;">TYPE</th>
+                    <th style="text-align: left; padding: 10px 16px; color: var(--muted); font-size: 12px;">SUBMITTED</th>
+                    <th style="text-align: left; padding: 10px 16px; color: var(--muted); font-size: 12px;">STATUS</th>
+                    <th style="text-align: left; padding: 10px 16px; color: var(--muted); font-size: 12px;">ACTIONS</th>
+                  </tr>
+                </thead>
+                <tbody>${tableHtml}</tbody>
+              </table>
+            </div>
+          </div>
+        `;
+      }
+
+      async showEnrollmentDetail(applicationId) {
+        const app = this._enrollmentData?.find(a => a.id === applicationId);
+        if (!app) return;
+
+        const emergencyContacts = app.emergency_contacts || [];
+        let contactsHtml = emergencyContacts.map((c, i) => `
+          <div style="margin-bottom: 8px; padding: 8px; background: var(--bg); border-radius: 6px;">
+            <strong>${this.escapeHtml(c.name || '')}</strong> (${this.escapeHtml(c.relationship || '')})
+            <br><span style="color: var(--muted);">Phone: ${this.escapeHtml(c.phone || '')}</span>
+            ${c.is_authorized_pickup ? '<br><span style="color: var(--success); font-size: 12px;">Authorized Pickup</span>' : ''}
+          </div>
+        `).join('') || '<p style="color: var(--muted);">No emergency contacts listed.</p>';
+
+        const statusOptions = ['submitted', 'under_review', 'approved', 'denied', 'waitlisted', 'withdrawn'];
+
+        const modal = document.createElement('div');
+        modal.id = 'enrollment-detail-modal';
+        modal.style.cssText = 'position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 10000; display: flex; align-items: center; justify-content: center; padding: 20px;';
+        modal.innerHTML = `
+          <div style="background: var(--card); border-radius: 12px; max-width: 700px; width: 100%; max-height: 90vh; overflow-y: auto; padding: 24px; position: relative;">
+            <button onclick="document.getElementById('enrollment-detail-modal').remove()" style="position: absolute; top: 12px; right: 16px; background: none; border: none; color: var(--muted); font-size: 24px; cursor: pointer;">&times;</button>
+            <h2 style="margin: 0 0 4px;">Application ${this.escapeHtml(app.application_number)}</h2>
+            <p style="color: var(--muted); margin: 0 0 20px; font-size: 13px;">${app.application_type === 're-enrollment' ? 'Re-Enrollment' : 'New Application'} &bull; ${app.school_year}</p>
+
+            <!-- Tabs -->
+            <div style="display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--border); padding-bottom: 8px;" id="enrollment-detail-tabs">
+              <button class="btn btn-sm" style="font-size: 13px;" onclick="app.switchEnrollmentTab('student', this)">Student</button>
+              <button class="btn btn-sm" style="font-size: 13px;" onclick="app.switchEnrollmentTab('family', this)">Family</button>
+              <button class="btn btn-sm" style="font-size: 13px;" onclick="app.switchEnrollmentTab('medical', this)">Medical</button>
+              <button class="btn btn-sm" style="font-size: 13px;" onclick="app.switchEnrollmentTab('review', this)">Review</button>
+            </div>
+
+            <!-- Tab: Student -->
+            <div id="enrollment-tab-student" class="enrollment-tab-content">
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                <div><span style="color: var(--muted); font-size: 12px;">Name</span><br>${this.escapeHtml(app.student_first_name)} ${this.escapeHtml(app.student_last_name)}</div>
+                <div><span style="color: var(--muted); font-size: 12px;">Date of Birth</span><br>${app.student_dob}</div>
+                <div><span style="color: var(--muted); font-size: 12px;">Gender</span><br>${this.escapeHtml(app.student_gender || 'Not specified')}</div>
+                <div><span style="color: var(--muted); font-size: 12px;">Grade Applying</span><br>${this.escapeHtml(app.student_grade_applying)}</div>
+                <div><span style="color: var(--muted); font-size: 12px;">Enrollment Type</span><br>${app.student_enrollment_type === 'homeschool' ? 'Homeschool' : 'Full-Time'}</div>
+                <div><span style="color: var(--muted); font-size: 12px;">Student Email</span><br>${this.escapeHtml(app.student_email || 'N/A')}</div>
+                <div><span style="color: var(--muted); font-size: 12px;">Previous School</span><br>${this.escapeHtml(app.student_previous_school || 'N/A')}</div>
+                <div><span style="color: var(--muted); font-size: 12px;">Address</span><br>${this.escapeHtml(app.student_address_line1 || '')}${app.student_address_line2 ? ', ' + this.escapeHtml(app.student_address_line2) : ''}<br>${this.escapeHtml(app.student_city || '')}, ${this.escapeHtml(app.student_state || '')} ${this.escapeHtml(app.student_zip || '')}</div>
+              </div>
+            </div>
+
+            <!-- Tab: Family -->
+            <div id="enrollment-tab-family" class="enrollment-tab-content" style="display: none;">
+              <h4 style="margin: 0 0 12px; color: var(--accent);">Parent/Guardian 1</h4>
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px;">
+                <div><span style="color: var(--muted); font-size: 12px;">Name</span><br>${this.escapeHtml(app.parent1_first_name)} ${this.escapeHtml(app.parent1_last_name)}</div>
+                <div><span style="color: var(--muted); font-size: 12px;">Email</span><br>${this.escapeHtml(app.parent1_email)}</div>
+                <div><span style="color: var(--muted); font-size: 12px;">Phone</span><br>${this.escapeHtml(app.parent1_phone)}</div>
+                <div><span style="color: var(--muted); font-size: 12px;">Relationship</span><br>${this.escapeHtml(app.parent1_relationship || 'N/A')}</div>
+              </div>
+              ${app.parent2_first_name ? `
+                <h4 style="margin: 0 0 12px; color: var(--accent);">Parent/Guardian 2</h4>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px;">
+                  <div><span style="color: var(--muted); font-size: 12px;">Name</span><br>${this.escapeHtml(app.parent2_first_name)} ${this.escapeHtml(app.parent2_last_name || '')}</div>
+                  <div><span style="color: var(--muted); font-size: 12px;">Email</span><br>${this.escapeHtml(app.parent2_email || 'N/A')}</div>
+                  <div><span style="color: var(--muted); font-size: 12px;">Phone</span><br>${this.escapeHtml(app.parent2_phone || 'N/A')}</div>
+                  <div><span style="color: var(--muted); font-size: 12px;">Relationship</span><br>${this.escapeHtml(app.parent2_relationship || 'N/A')}</div>
+                </div>
+              ` : ''}
+              <h4 style="margin: 0 0 12px; color: var(--accent);">Emergency Contacts</h4>
+              ${contactsHtml}
+            </div>
+
+            <!-- Tab: Medical -->
+            <div id="enrollment-tab-medical" class="enrollment-tab-content" style="display: none;">
+              <div style="display: grid; gap: 10px;">
+                <div><span style="color: var(--muted); font-size: 12px;">Allergies</span><br>${this.escapeHtml(app.medical_allergies || 'None')}</div>
+                <div><span style="color: var(--muted); font-size: 12px;">Medical Conditions</span><br>${this.escapeHtml(app.medical_conditions || 'None')}</div>
+                <div><span style="color: var(--muted); font-size: 12px;">Medications</span><br>${this.escapeHtml(app.medical_medications || 'None')}</div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                  <div><span style="color: var(--muted); font-size: 12px;">Doctor</span><br>${this.escapeHtml(app.medical_doctor_name || 'N/A')}</div>
+                  <div><span style="color: var(--muted); font-size: 12px;">Doctor Phone</span><br>${this.escapeHtml(app.medical_doctor_phone || 'N/A')}</div>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                  <div><span style="color: var(--muted); font-size: 12px;">Insurance</span><br>${this.escapeHtml(app.medical_insurance_provider || 'N/A')}</div>
+                  <div><span style="color: var(--muted); font-size: 12px;">Policy #</span><br>${this.escapeHtml(app.medical_insurance_policy || 'N/A')}</div>
+                </div>
+                <div><span style="color: var(--muted); font-size: 12px;">Notes</span><br>${this.escapeHtml(app.medical_notes || 'None')}</div>
+              </div>
+            </div>
+
+            <!-- Tab: Review -->
+            <div id="enrollment-tab-review" class="enrollment-tab-content" style="display: none;">
+              <div style="margin-bottom: 16px;">
+                <label style="color: var(--muted); font-size: 13px; display: block; margin-bottom: 4px;">Admin Notes</label>
+                <textarea id="enrollment-review-notes" rows="3" style="width: 100%; padding: 8px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 14px; resize: vertical;">${this.escapeHtml(app.review_notes || '')}</textarea>
+              </div>
+              ${app.status === 'denied' ? `
+                <div style="margin-bottom: 16px;">
+                  <label style="color: var(--muted); font-size: 13px; display: block; margin-bottom: 4px;">Denial Reason</label>
+                  <p style="background: rgba(255,106,106,0.1); padding: 8px 12px; border-radius: 6px; border: 1px solid var(--danger); font-size: 14px;">${this.escapeHtml(app.denial_reason || 'No reason provided')}</p>
+                </div>
+              ` : ''}
+              ${app.reviewed_at ? `<p style="color: var(--muted); font-size: 12px; margin-bottom: 16px;">Reviewed: ${new Date(app.reviewed_at).toLocaleString()}</p>` : ''}
+
+              <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px;">
+                ${app.status !== 'approved' ? `
+                  <button class="btn btn-success" onclick="app.approveEnrollment('${app.id}', false)">Approve (Active)</button>
+                  <button class="btn btn-secondary" onclick="app.approveEnrollment('${app.id}', true)">Approve (Inactive)</button>
+                ` : ''}
+                ${app.status !== 'denied' ? `
+                  <button class="btn btn-danger" onclick="app.denyEnrollment('${app.id}')">Deny</button>
+                ` : ''}
+                ${app.status !== 'waitlisted' ? `
+                  <button class="btn btn-warning" onclick="app.waitlistEnrollment('${app.id}')">Waitlist</button>
+                ` : ''}
+                ${app.status !== 'under_review' && (app.status === 'submitted') ? `
+                  <button class="btn" onclick="app.markEnrollmentUnderReview('${app.id}')">Mark Under Review</button>
+                ` : ''}
+              </div>
+
+              ${app.parent_signature ? `
+                <div style="margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border);">
+                  <span style="color: var(--muted); font-size: 12px;">Parent Signature</span>
+                  <p style="font-style: italic; font-size: 16px;">${this.escapeHtml(app.parent_signature)}</p>
+                  <span style="color: var(--muted); font-size: 12px;">Signed: ${app.signature_date}</span>
+                </div>
+              ` : ''}
+            </div>
+          </div>
+        `;
+
+        document.body.appendChild(modal);
+        modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+
+        // Activate first tab
+        this.switchEnrollmentTab('student', document.querySelector('#enrollment-detail-tabs button'));
+      }
+
+      switchEnrollmentTab(tabName, btn) {
+        document.querySelectorAll('.enrollment-tab-content').forEach(el => el.style.display = 'none');
+        const tab = document.getElementById(`enrollment-tab-${tabName}`);
+        if (tab) tab.style.display = '';
+
+        if (btn) {
+          document.querySelectorAll('#enrollment-detail-tabs button').forEach(b => {
+            b.style.background = '';
+            b.style.color = '';
+          });
+          btn.style.background = 'var(--accent)';
+          btn.style.color = '#fff';
+        }
+      }
+
+      async approveEnrollment(applicationId, asInactive = false) {
+        const app = this._enrollmentData?.find(a => a.id === applicationId);
+        if (!app) return;
+
+        const reviewNotes = document.getElementById('enrollment-review-notes')?.value || '';
+        const accountStatus = asInactive ? 'inactive' : 'active';
+        const createAuthUser = app.student_enrollment_type === 'full-time' && !!app.student_email;
+
+        if (!confirm(`Approve ${app.student_first_name} ${app.student_last_name} as ${accountStatus}? ${createAuthUser ? 'A student account will be created.' : 'Profile only (no login) will be created.'}`)) return;
+
+        try {
+          // Save review notes first
+          await this.supabaseQuery(() =>
+            this.auth.supabase
+              .from('enrollment_applications')
+              .update({ review_notes: reviewNotes })
+              .eq('id', applicationId)
+          );
+
+          // Call the RPC function
+          const { data, error } = await this.supabaseQuery(() =>
+            this.auth.supabase.rpc('create_enrollment_profile', {
+              p_application_id: applicationId,
+              p_create_auth_user: createAuthUser,
+              p_account_status: accountStatus,
+              p_admin_user_id: this.userInfo.user.id
+            })
+          );
+
+          if (error) throw error;
+          if (data?.error) throw new Error(data.error);
+
+          window.PortalUI?.showNotification(`${app.student_first_name} ${app.student_last_name} approved successfully!`, 'success');
+
+          // Close modal and refresh
+          document.getElementById('enrollment-detail-modal')?.remove();
+          this.renderAdminEnrollment();
+
+        } catch (err) {
+          console.error('Approval error:', err);
+          window.PortalUI?.showNotification(`Approval failed: ${err.message}`, 'error');
+        }
+      }
+
+      async denyEnrollment(applicationId) {
+        const app = this._enrollmentData?.find(a => a.id === applicationId);
+        if (!app) return;
+
+        const reason = prompt('Please provide a reason for denial:');
+        if (!reason) return;
+
+        const reviewNotes = document.getElementById('enrollment-review-notes')?.value || '';
+
+        try {
+          const { error } = await this.supabaseQuery(() =>
+            this.auth.supabase
+              .from('enrollment_applications')
+              .update({
+                status: 'denied',
+                denial_reason: reason,
+                review_notes: reviewNotes,
+                reviewed_by: this.userInfo.user.id,
+                reviewed_at: new Date().toISOString()
+              })
+              .eq('id', applicationId)
+          );
+
+          if (error) throw error;
+
+          window.PortalUI?.showNotification(`Application denied.`, 'success');
+          document.getElementById('enrollment-detail-modal')?.remove();
+          this.renderAdminEnrollment();
+
+        } catch (err) {
+          console.error('Denial error:', err);
+          window.PortalUI?.showNotification(`Error: ${err.message}`, 'error');
+        }
+      }
+
+      async waitlistEnrollment(applicationId) {
+        const reviewNotes = document.getElementById('enrollment-review-notes')?.value || '';
+
+        try {
+          const { error } = await this.supabaseQuery(() =>
+            this.auth.supabase
+              .from('enrollment_applications')
+              .update({
+                status: 'waitlisted',
+                review_notes: reviewNotes,
+                reviewed_by: this.userInfo.user.id,
+                reviewed_at: new Date().toISOString()
+              })
+              .eq('id', applicationId)
+          );
+
+          if (error) throw error;
+
+          window.PortalUI?.showNotification('Application waitlisted.', 'success');
+          document.getElementById('enrollment-detail-modal')?.remove();
+          this.renderAdminEnrollment();
+        } catch (err) {
+          window.PortalUI?.showNotification(`Error: ${err.message}`, 'error');
+        }
+      }
+
+      async markEnrollmentUnderReview(applicationId) {
+        try {
+          const { error } = await this.supabaseQuery(() =>
+            this.auth.supabase
+              .from('enrollment_applications')
+              .update({
+                status: 'under_review',
+                reviewed_by: this.userInfo.user.id,
+                reviewed_at: new Date().toISOString()
+              })
+              .eq('id', applicationId)
+          );
+
+          if (error) throw error;
+
+          window.PortalUI?.showNotification('Marked as under review.', 'success');
+          document.getElementById('enrollment-detail-modal')?.remove();
+          this.renderAdminEnrollment();
+        } catch (err) {
+          window.PortalUI?.showNotification(`Error: ${err.message}`, 'error');
+        }
+      }
+
+      async bulkEnrollmentAction(familyId, action) {
+        const apps = this._enrollmentData?.filter(a => a.family_application_id === familyId && a.status !== action) || [];
+        if (apps.length === 0) return;
+
+        if (action === 'denied') {
+          const reason = prompt('Please provide a reason for denying all students in this family:');
+          if (!reason) return;
+
+          for (const app of apps) {
+            try {
+              await this.supabaseQuery(() =>
+                this.auth.supabase
+                  .from('enrollment_applications')
+                  .update({
+                    status: 'denied',
+                    denial_reason: reason,
+                    reviewed_by: this.userInfo.user.id,
+                    reviewed_at: new Date().toISOString()
+                  })
+                  .eq('id', app.id)
+              );
+            } catch (err) {
+              console.error('Bulk deny error:', err);
+            }
+          }
+          window.PortalUI?.showNotification(`${apps.length} application(s) denied.`, 'success');
+        } else if (action === 'approved') {
+          if (!confirm(`Approve all ${apps.length} student(s) in this family?`)) return;
+
+          for (const app of apps) {
+            try {
+              const createAuthUser = app.student_enrollment_type === 'full-time' && !!app.student_email;
+              await this.supabaseQuery(() =>
+                this.auth.supabase.rpc('create_enrollment_profile', {
+                  p_application_id: app.id,
+                  p_create_auth_user: createAuthUser,
+                  p_account_status: 'active',
+                  p_admin_user_id: this.userInfo.user.id
+                })
+              );
+            } catch (err) {
+              console.error('Bulk approve error:', err);
+            }
+          }
+          window.PortalUI?.showNotification(`${apps.length} application(s) approved!`, 'success');
+        }
+
+        this.renderAdminEnrollment();
+      }
+
+      exportEnrollmentCSV() {
+        const data = this._enrollmentData || [];
+        if (data.length === 0) {
+          window.PortalUI?.showNotification('No data to export.', 'error');
+          return;
+        }
+
+        const headers = ['Application #', 'School Year', 'Status', 'Type', 'Student First', 'Student Last', 'DOB', 'Grade', 'Enrollment Type', 'Student Email', 'Parent1 First', 'Parent1 Last', 'Parent1 Email', 'Parent1 Phone', 'Submitted'];
+        const rows = data.map(a => [
+          a.application_number, a.school_year, a.status, a.application_type,
+          a.student_first_name, a.student_last_name, a.student_dob, a.student_grade_applying,
+          a.student_enrollment_type, a.student_email || '', a.parent1_first_name, a.parent1_last_name,
+          a.parent1_email, a.parent1_phone, new Date(a.created_at).toLocaleDateString()
+        ]);
+
+        const csv = [headers, ...rows].map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+        const blob = new Blob([csv], { type: 'text/csv' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `enrollment_applications_${new Date().toISOString().split('T')[0]}.csv`;
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+
+      // ==================== RE-ENROLLMENT ====================
+
+      async startReEnrollment() {
+        const children = this.children || [];
+        if (children.length === 0) {
+          window.PortalUI?.showNotification('No children linked to your account.', 'error');
+          return;
+        }
+
+        // Let parent choose which child to re-enroll (or all)
+        let childOptions = children.map(c => `<option value="${c.id}">${c.first_name} ${c.last_name} (Grade ${c.grade_level || 'N/A'})</option>`).join('');
+
+        const modal = document.createElement('div');
+        modal.id = 're-enrollment-modal';
+        modal.style.cssText = 'position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 10000; display: flex; align-items: center; justify-content: center; padding: 20px;';
+        modal.innerHTML = `
+          <div style="background: var(--card); border-radius: 12px; max-width: 500px; width: 100%; padding: 24px; position: relative;">
+            <button onclick="document.getElementById('re-enrollment-modal').remove()" style="position: absolute; top: 12px; right: 16px; background: none; border: none; color: var(--muted); font-size: 24px; cursor: pointer;">&times;</button>
+            <h2 style="margin: 0 0 8px;">Re-Enroll for Next School Year</h2>
+            <p style="color: var(--muted); margin: 0 0 20px; font-size: 14px;">Select the child you'd like to re-enroll. Their information will be pre-filled.</p>
+            <div style="margin-bottom: 16px;">
+              <label style="color: var(--muted); font-size: 13px; display: block; margin-bottom: 4px;">Select Child</label>
+              <select id="re-enroll-child" style="width: 100%; padding: 10px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                ${childOptions}
+              </select>
+            </div>
+            <button class="btn btn-primary" style="width: 100%;" onclick="app.submitReEnrollment()">Continue to Re-Enrollment Form</button>
+          </div>
+        `;
+        document.body.appendChild(modal);
+        modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+      }
+
+      async submitReEnrollment() {
+        const childId = document.getElementById('re-enroll-child')?.value;
+        if (!childId) return;
+
+        const child = this.children?.find(c => c.id === childId);
+        if (!child) return;
+
+        try {
+          // Fetch existing data for pre-fill
+          const { data: profile } = await this.supabaseQuery(() =>
+            this.auth.supabase.from('user_profiles').select('*').eq('id', childId).single()
+          );
+
+          const { data: contacts } = await this.supabaseQuery(() =>
+            this.auth.supabase.from('emergency_contacts').select('*').eq('student_id', childId)
+          );
+
+          const { data: medical } = await this.supabaseQuery(() =>
+            this.auth.supabase.from('student_medical_info').select('*').eq('student_id', childId).single()
+          );
+
+          // Build the enrollment URL with pre-fill data as query params
+          const parentProfile = this.userInfo.profile;
+          const preFillData = {
+            type: 're-enrollment',
+            existing_student_id: childId,
+            existing_parent_id: this.userInfo.user.id,
+            student_first_name: profile?.first_name || '',
+            student_last_name: profile?.last_name || '',
+            student_dob: profile?.date_of_birth || '',
+            student_grade: profile?.grade_level || '',
+            student_enrollment_type: profile?.enrollment_type || 'full-time',
+            student_email: profile?.email || '',
+            address_line1: profile?.address_line1 || '',
+            city: profile?.city || '',
+            state: profile?.state || '',
+            parent1_first_name: parentProfile?.first_name || '',
+            parent1_last_name: parentProfile?.last_name || '',
+            parent1_email: parentProfile?.email || '',
+            parent1_phone: parentProfile?.phone || ''
+          };
+
+          const params = new URLSearchParams(preFillData).toString();
+          window.open(`../enrollment/index.html?${params}`, '_blank');
+
+          document.getElementById('re-enrollment-modal')?.remove();
+
+        } catch (err) {
+          console.error('Re-enrollment error:', err);
+          window.PortalUI?.showNotification(`Error: ${err.message}`, 'error');
         }
       }
 
