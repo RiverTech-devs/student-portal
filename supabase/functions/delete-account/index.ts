@@ -81,11 +81,12 @@ serve(async (req) => {
     // Look up the target user's auth ID from user_profiles
     const { data: targetProfile, error: targetError } = await adminClient
       .from('user_profiles')
-      .select('id, auth_id')
+      .select('id, auth_user_id')
       .eq('id', targetUserId)
       .single()
 
     if (targetError || !targetProfile) {
+      console.error('Profile lookup error:', targetError)
       return new Response(JSON.stringify({ error: 'Target user not found' }), {
         status: 404,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -106,7 +107,7 @@ serve(async (req) => {
     }
 
     // Delete the auth.users record via Admin API
-    const authUserId = targetProfile.auth_id || targetUserId
+    const authUserId = targetProfile.auth_user_id || targetUserId
     const { error: deleteAuthError } = await adminClient.auth.admin.deleteUser(authUserId)
 
     if (deleteAuthError) {
