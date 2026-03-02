@@ -425,6 +425,128 @@ serve(async (req) => {
           </div>
         </div>
       `
+    } else if (payload.type === 'enrollment_approved') {
+      const data = payload.data || {}
+      subject = `✅ Enrollment Approved: ${data.studentName}`
+      html = `
+        <div style="font-family: Inter, system-ui, Segoe UI, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+            <h2 style="margin: 0;">✅ Enrollment Approved</h2>
+          </div>
+          <div style="padding: 20px; border: 1px solid #ddd; border-top: none; border-radius: 0 0 8px 8px;">
+            <p>Dear ${data.parentName || 'Parent/Guardian'},</p>
+            <p>We are pleased to inform you that <strong>${data.studentName}</strong>'s enrollment application has been <strong>approved</strong>!</p>
+
+            <div style="background: #f5f5f5; padding: 15px; border-radius: 8px; margin: 20px 0;">
+              <div style="margin-bottom: 10px;">
+                <strong>Student:</strong> ${data.studentName}
+              </div>
+              <div style="margin-bottom: 10px;">
+                <strong>Grade:</strong> ${data.grade}
+              </div>
+              <div style="margin-bottom: 10px;">
+                <strong>Enrollment Type:</strong> ${data.enrollmentType === 'homeschool' ? 'Homeschool' : 'Full-Time'}
+              </div>
+              <div style="margin-bottom: 10px;">
+                <strong>School Year:</strong> ${data.schoolYear}
+              </div>
+              <div>
+                <strong>Account Status:</strong>
+                <span style="background: ${data.accountStatus === 'active' ? '#38ef7d' : '#ffcb6b'}; color: #333; padding: 4px 12px; border-radius: 12px; font-weight: bold;">
+                  ${data.accountStatus === 'active' ? 'Active' : 'Inactive (pending activation)'}
+                </span>
+              </div>
+            </div>
+
+            ${data.hasLogin ? `
+              <div style="background: #e8f5e9; border: 1px solid #4caf50; padding: 15px; border-radius: 8px; margin: 20px 0;">
+                <strong style="color: #2e7d32;">🔑 Student Login</strong>
+                <p style="margin: 5px 0 0 0;">A student account has been created with the email <strong>${data.studentEmail}</strong>. The student can log in at the Student Portal to access their classes and assignments.</p>
+              </div>
+            ` : `
+              <div style="background: #f5f5f5; padding: 15px; border-radius: 8px; margin: 20px 0;">
+                <p style="margin: 0; color: #666;">No student login was created. You can view your child's information through your parent portal account.</p>
+              </div>
+            `}
+
+            <p><a href="https://rivertech.me/portal/" style="display: inline-block; background: #11998e; color: white; padding: 10px 20px; border-radius: 6px; text-decoration: none;">Go to Student Portal</a></p>
+
+            <p style="color: #999; font-size: 12px; margin-top: 30px;">
+              If you have any questions, please contact the school office.
+            </p>
+          </div>
+        </div>
+      `
+    } else if (payload.type === 'enrollment_denied') {
+      const data = payload.data || {}
+      subject = `Enrollment Application Update: ${data.studentName}`
+      html = `
+        <div style="font-family: Inter, system-ui, Segoe UI, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="background: #78909c; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+            <h2 style="margin: 0;">Enrollment Application Update</h2>
+          </div>
+          <div style="padding: 20px; border: 1px solid #ddd; border-top: none; border-radius: 0 0 8px 8px;">
+            <p>Dear ${data.parentName || 'Parent/Guardian'},</p>
+            <p>Thank you for your interest in enrolling <strong>${data.studentName}</strong>. After careful review, we are unable to approve this enrollment application at this time.</p>
+
+            <div style="background: #f5f5f5; padding: 15px; border-radius: 8px; margin: 20px 0;">
+              <div style="margin-bottom: 10px;">
+                <strong>Student:</strong> ${data.studentName}
+              </div>
+              <div style="margin-bottom: 10px;">
+                <strong>Application #:</strong> ${data.applicationNumber}
+              </div>
+              <div style="margin-bottom: 10px;">
+                <strong>School Year:</strong> ${data.schoolYear}
+              </div>
+              ${data.reason ? `
+                <div style="margin-top: 15px; padding-top: 10px; border-top: 1px solid #ddd;">
+                  <strong>Reason:</strong>
+                  <p style="margin: 5px 0 0 0;">${data.reason}</p>
+                </div>
+              ` : ''}
+            </div>
+
+            <p style="color: #666;">If you have questions or would like to discuss this decision, please contact the school office.</p>
+
+            <p style="color: #999; font-size: 12px; margin-top: 30px;">
+              This is an automated message from the Student Portal.
+            </p>
+          </div>
+        </div>
+      `
+    } else if (payload.type === 'enrollment_waitlisted') {
+      const data = payload.data || {}
+      subject = `📋 Enrollment Waitlisted: ${data.studentName}`
+      html = `
+        <div style="font-family: Inter, system-ui, Segoe UI, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="background: #f0932b; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+            <h2 style="margin: 0;">📋 Enrollment Waitlisted</h2>
+          </div>
+          <div style="padding: 20px; border: 1px solid #ddd; border-top: none; border-radius: 0 0 8px 8px;">
+            <p>Dear ${data.parentName || 'Parent/Guardian'},</p>
+            <p>Thank you for applying to enroll <strong>${data.studentName}</strong>. Your application has been placed on our <strong>waitlist</strong> for the ${data.schoolYear} school year.</p>
+
+            <div style="background: #fff8e1; border: 1px solid #f0932b; padding: 15px; border-radius: 8px; margin: 20px 0;">
+              <div style="margin-bottom: 10px;">
+                <strong>Student:</strong> ${data.studentName}
+              </div>
+              <div style="margin-bottom: 10px;">
+                <strong>Grade:</strong> ${data.grade}
+              </div>
+              <div>
+                <strong>Application #:</strong> ${data.applicationNumber}
+              </div>
+            </div>
+
+            <p style="color: #666;">We will notify you as soon as a spot becomes available. No further action is needed on your part at this time.</p>
+
+            <p style="color: #999; font-size: 12px; margin-top: 30px;">
+              If you have questions, please contact the school office.
+            </p>
+          </div>
+        </div>
+      `
     } else {
       subject = payload.subject
       html = payload.html
