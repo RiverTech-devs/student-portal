@@ -5310,6 +5310,9 @@
                   <button class="btn btn-secondary" onclick="app.showNewMaterialRequestModal()">
                     📦 Request Materials
                   </button>
+                  <button class="btn btn-secondary" onclick="app.showTeacherBookingView()">
+                    🏢 Book a Room
+                  </button>
                 </div>
               </div>
               
@@ -12785,7 +12788,7 @@
         `;
       }
 
-      createNewClass() {
+      async createNewClass() {
         if (!window.portalModal) {
           alert('Modal system not loaded');
           return;
@@ -12866,6 +12869,12 @@
               <label for="max-students">Maximum Students</label>
               <input type="number" id="max-students" min="1" max="100" value="30">
             </div>
+            <div class="form-group">
+              <label for="class-room">Room / Facility</label>
+              <select id="class-room" style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+                <option value="">— No Room —</option>
+              </select>
+            </div>
 
             <!-- Class Schedule Section -->
             <div class="form-group" style="margin-top: 20px; padding-top: 20px; border-top: 2px solid var(--border);">
@@ -12913,6 +12922,18 @@
             <button class="btn btn-primary" onclick="app.submitCreateClass()">Create Class</button>
           `
         });
+
+        // Populate room dropdown
+        const facilities = await this._loadFacilitiesForSelect();
+        const roomSelect = document.getElementById('class-room');
+        if (roomSelect && facilities.length) {
+          facilities.forEach(f => {
+            const opt = document.createElement('option');
+            opt.value = f.id;
+            opt.textContent = `${f.name} (${f.type}${f.capacity ? ', cap: ' + f.capacity : ''})`;
+            roomSelect.appendChild(opt);
+          });
+        }
       }
 
       addScheduleSlot() {
@@ -12988,7 +13009,8 @@
           description: document.getElementById('class-description').value || null,
           max_students: parseInt(document.getElementById('max-students').value) || 30,
           teacher_id: this.userInfo.user.id,
-          grading_weight: gradingWeight
+          grading_weight: gradingWeight,
+          facility_id: document.getElementById('class-room')?.value || null
         };
 
         if (!classData.name || !classData.subject) {
@@ -14926,6 +14948,12 @@
               <input type="number" id="edit-max-students" min="1" max="100" value="${classData.max_students || 30}">
             </div>
             <div class="form-group">
+              <label for="edit-class-room">Room / Facility</label>
+              <select id="edit-class-room" style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+                <option value="">— No Room —</option>
+              </select>
+            </div>
+            <div class="form-group">
               <label for="edit-secondary-teacher">Secondary Teacher</label>
               <select id="edit-secondary-teacher" style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
                 <option value="">None</option>
@@ -14995,6 +15023,19 @@
         `;
 
         this.showModal('edit-class', '✏️ Edit Class', modalContent, true);
+
+        // Populate room dropdown and pre-select current
+        const facilities = await this._loadFacilitiesForSelect();
+        const roomSelect = document.getElementById('edit-class-room');
+        if (roomSelect && facilities.length) {
+          facilities.forEach(f => {
+            const opt = document.createElement('option');
+            opt.value = f.id;
+            opt.textContent = `${f.name} (${f.type}${f.capacity ? ', cap: ' + f.capacity : ''})`;
+            if (classData.facility_id === f.id) opt.selected = true;
+            roomSelect.appendChild(opt);
+          });
+        }
       }
 
       async submitEditClass(classId) {
@@ -15009,7 +15050,8 @@
           description: document.getElementById('edit-class-description').value || null,
           max_students: parseInt(document.getElementById('edit-max-students').value) || 30,
           grading_weight: gradingWeight,
-          secondary_teacher_id: secondaryTeacherVal || null
+          secondary_teacher_id: secondaryTeacherVal || null,
+          facility_id: document.getElementById('edit-class-room')?.value || null
         };
 
         // Only admins can set course weight
@@ -32331,8 +32373,16 @@
 
         document.getElementById('booking-form-modal')?.remove();
         this.showNotification(status === 'approved' ? 'Booking approved automatically!' : 'Booking submitted for approval', 'success');
-        this._facilitiesActiveTab = 'bookings';
-        this.renderAdminFacilities();
+        // Refresh teacher booking view if open, otherwise refresh admin view
+        const teacherOverlay = document.getElementById('teacher-booking-overlay');
+        if (teacherOverlay) {
+          const bookings = await this.loadTeacherBookings();
+          const listEl = document.getElementById('teacher-bookings-list');
+          if (listEl) listEl.innerHTML = this.renderTeacherBookingsList(bookings);
+        } else {
+          this._facilitiesActiveTab = 'bookings';
+          this.renderAdminFacilities();
+        }
       } catch (error) {
         console.error('Error saving booking:', error);
         this.showNotification('Error: ' + error.message, 'error');
@@ -32379,6 +32429,155 @@
         this.renderAdminFacilities();
       } catch (error) {
         this.showNotification('Error: ' + error.message, 'error');
+      }
+    }
+
+    // ---- Facilities Select Cache for Class Forms ----
+
+    async _loadFacilitiesForSelect() {
+      if (this._facilitiesSelectCache) return this._facilitiesSelectCache;
+      try {
+        const { data, error } = await this.supabaseQuery(() => this.auth.supabase
+          .from('facilities')
+          .select('id, name, type, capacity')
+          .eq('is_active', true)
+          .order('name'));
+        if (error) throw error;
+        this._facilitiesSelectCache = data || [];
+        return this._facilitiesSelectCache;
+      } catch (err) {
+        console.error('Error loading facilities for select:', err);
+        return [];
+      }
+    }
+
+    // ---- Teacher Room Booking View ----
+
+    async showTeacherBookingView() {
+      // Load facilities data for the booking modal reuse
+      try {
+        const { data } = await this.supabaseQuery(() => this.auth.supabase
+          .from('facilities')
+          .select('*')
+          .eq('is_active', true)
+          .order('name'));
+        this._facilitiesData = data || [];
+      } catch (err) {
+        console.error('Error loading facilities:', err);
+        this._facilitiesData = [];
+      }
+
+      const rooms = this._facilitiesData || [];
+      const bookings = await this.loadTeacherBookings();
+
+      const overlay = document.createElement('div');
+      overlay.id = 'teacher-booking-overlay';
+      overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:var(--bg);z-index:9999;overflow-y:auto;padding:20px;';
+      overlay.innerHTML = `
+        <div style="max-width: 1000px; margin: 0 auto;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
+            <h2 style="margin: 0;">🏢 Room Booking</h2>
+            <button class="btn btn-secondary" onclick="document.getElementById('teacher-booking-overlay').remove()">✕ Close</button>
+          </div>
+
+          <div style="margin-bottom: 32px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+              <h3 style="margin: 0;">Available Rooms</h3>
+              <button class="btn btn-primary" onclick="app.showCreateBookingModal()">+ New Booking</button>
+            </div>
+            <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px;">
+              ${rooms.length ? rooms.map(r => `
+                <div style="background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px;">
+                  <div style="font-weight: 600; margin-bottom: 4px;">${this.escapeHtml(r.name)}</div>
+                  <div style="font-size: 12px; color: var(--muted); margin-bottom: 8px;">${this.escapeHtml(r.type || '')}${r.capacity ? ' · Cap: ' + r.capacity : ''}</div>
+                  ${r.requires_approval ? '<div style="font-size: 11px; color: var(--warning); margin-bottom: 8px;">Requires approval</div>' : '<div style="font-size: 11px; color: var(--accent-2); margin-bottom: 8px;">Auto-approved</div>'}
+                  <button class="btn btn-primary" style="width: 100%; padding: 6px 0; font-size: 12px;" onclick="app.showCreateBookingModal('${r.id}')">Book</button>
+                </div>
+              `).join('') : '<div style="color: var(--muted); padding: 20px;">No rooms available.</div>'}
+            </div>
+          </div>
+
+          <div>
+            <h3 style="margin: 0 0 16px 0;">My Bookings</h3>
+            <div id="teacher-bookings-list" style="background: var(--card); border: 1px solid var(--border); border-radius: 10px; overflow: hidden;">
+              ${this.renderTeacherBookingsList(bookings)}
+            </div>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(overlay);
+    }
+
+    async loadTeacherBookings() {
+      try {
+        const { data, error } = await this.supabaseQuery(() => this.auth.supabase
+          .from('facility_bookings')
+          .select('*, facilities(name)')
+          .eq('booked_by', this.userInfo.user.id)
+          .order('booking_date', { ascending: false }));
+        if (error) throw error;
+        return data || [];
+      } catch (err) {
+        console.error('Error loading teacher bookings:', err);
+        return [];
+      }
+    }
+
+    renderTeacherBookingsList(bookings) {
+      if (!bookings || !bookings.length) {
+        return '<div style="padding: 20px; text-align: center; color: var(--muted);">No bookings yet.</div>';
+      }
+
+      const statusBadge = (status) => {
+        const colors = { approved: 'var(--accent-2)', pending: 'var(--warning)', denied: 'var(--danger)', cancelled: 'var(--muted)' };
+        return `<span style="display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; background: ${colors[status] || 'var(--muted)'}22; color: ${colors[status] || 'var(--muted)'};">${status}</span>`;
+      };
+
+      return `
+        <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+          <thead>
+            <tr style="border-bottom: 1px solid var(--border); text-align: left;">
+              <th style="padding: 10px 12px;">Title</th>
+              <th style="padding: 10px 12px;">Room</th>
+              <th style="padding: 10px 12px;">Date</th>
+              <th style="padding: 10px 12px;">Time</th>
+              <th style="padding: 10px 12px;">Status</th>
+              <th style="padding: 10px 12px;"></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${bookings.map(b => `
+              <tr style="border-bottom: 1px solid var(--border);">
+                <td style="padding: 10px 12px;">${this.escapeHtml(b.title)}</td>
+                <td style="padding: 10px 12px;">${b.facilities ? this.escapeHtml(b.facilities.name) : '—'}</td>
+                <td style="padding: 10px 12px;">${b.booking_date}</td>
+                <td style="padding: 10px 12px;">${b.start_time?.slice(0,5)} – ${b.end_time?.slice(0,5)}</td>
+                <td style="padding: 10px 12px;">${statusBadge(b.status)}</td>
+                <td style="padding: 10px 12px;">
+                  ${b.status !== 'cancelled' && b.status !== 'denied' ? `<button class="btn btn-secondary" style="padding: 3px 8px; font-size: 11px;" onclick="app.cancelTeacherBooking('${b.id}')">Cancel</button>` : ''}
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      `;
+    }
+
+    async cancelTeacherBooking(id) {
+      if (!confirm('Cancel this booking?')) return;
+      try {
+        const { error } = await this.supabaseQuery(() => this.auth.supabase
+          .from('facility_bookings')
+          .update({ status: 'cancelled' })
+          .eq('id', id));
+        if (error) throw error;
+        this.showNotification('Booking cancelled', 'success');
+        // Refresh the teacher booking view
+        const bookings = await this.loadTeacherBookings();
+        const listEl = document.getElementById('teacher-bookings-list');
+        if (listEl) listEl.innerHTML = this.renderTeacherBookingsList(bookings);
+      } catch (err) {
+        this.showNotification('Error: ' + err.message, 'error');
       }
     }
 
