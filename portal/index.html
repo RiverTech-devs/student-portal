@@ -1518,6 +1518,13 @@
               </div>
             </section>
 
+            <!-- Documents Section -->
+            <section id="documents-section" class="hidden">
+              <div id="documents-content">
+                <!-- Documents will be loaded here -->
+              </div>
+            </section>
+
             <!-- Testing Center Section -->
             <section id="testing-center-section" class="hidden">
               <div id="testing-center-container" style="width: 100%; min-height: calc(100vh - 200px);">
@@ -3084,6 +3091,325 @@
         }
       }
 
+      // ==================== SCHOOL DOCUMENTS ====================
+
+      async renderDocuments() {
+        const container = document.getElementById('documents-content');
+        if (!container) return;
+
+        const userType = this.userInfo.profile.user_type;
+        const isAdmin = userType === 'admin';
+
+        container.innerHTML = '<div style="text-align: center; padding: 40px; color: var(--muted);">Loading documents...</div>';
+
+        try {
+          let query = this.auth.supabase
+            .from('school_documents')
+            .select('*')
+            .order('sort_order', { ascending: true })
+            .order('title', { ascending: true });
+
+          const { data: documents, error } = await query;
+          if (error) throw error;
+
+          // Group by category
+          const categories = {};
+          const categoryLabels = { handbook: 'Handbooks', policy: 'Policies', guide: 'Guides', general: 'General' };
+          (documents || []).forEach(doc => {
+            const cat = doc.category || 'general';
+            if (!categories[cat]) categories[cat] = [];
+            categories[cat].push(doc);
+          });
+
+          const categoryOrder = ['handbook', 'policy', 'guide', 'general'];
+          const sortedKeys = Object.keys(categories).sort((a, b) => {
+            const ai = categoryOrder.indexOf(a);
+            const bi = categoryOrder.indexOf(b);
+            return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+          });
+
+          let html = `
+            <div class="card">
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                  <h2>📄 School Documents</h2>
+                  <p style="color: var(--muted);">Handbooks, policies, and guides for our school community.</p>
+                </div>
+                ${isAdmin ? `<button class="btn btn-primary" onclick="app.createDocument()">➕ New Document</button>` : ''}
+              </div>
+            </div>
+          `;
+
+          if (sortedKeys.length === 0) {
+            html += `<div class="card" style="text-align: center; padding: 40px; color: var(--muted);">
+              <div style="font-size: 48px; margin-bottom: 16px;">📄</div>
+              <p>No documents available yet.</p>
+            </div>`;
+          } else {
+            sortedKeys.forEach(cat => {
+              const docs = categories[cat];
+              const label = categoryLabels[cat] || cat.charAt(0).toUpperCase() + cat.slice(1);
+              html += `<div style="margin-top: 16px;">
+                <h3 style="margin-bottom: 12px; color: var(--muted); font-size: var(--text-sm); text-transform: uppercase; letter-spacing: 1px;">${label}</h3>
+                <div class="doc-card-grid">`;
+              docs.forEach(doc => {
+                const excerpt = doc.content
+                  ? doc.content.replace(/<[^>]*>/g, '').substring(0, 100) + (doc.content.length > 100 ? '...' : '')
+                  : 'No content yet.';
+                const updatedDate = doc.updated_at ? new Date(doc.updated_at).toLocaleDateString() : '';
+                const draftBadge = !doc.is_published && isAdmin
+                  ? '<span style="background: var(--warning); color: #0b0f14; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;">DRAFT</span>'
+                  : '';
+                html += `
+                  <div class="doc-card" onclick="app.viewDocument('${doc.id}')" style="cursor: pointer;">
+                    <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 8px;">
+                      <h4 style="margin: 0; color: var(--text);">${doc.title}</h4>
+                      ${draftBadge}
+                    </div>
+                    <p style="color: var(--muted); font-size: var(--text-sm); margin: 0 0 12px 0; line-height: 1.5;">${excerpt}</p>
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                      <span style="color: var(--muted); font-size: var(--text-xs);">Updated ${updatedDate}</span>
+                      ${isAdmin ? `
+                        <div style="display: flex; gap: 6px;" onclick="event.stopPropagation()">
+                          <button class="btn btn-sm" onclick="app.editDocument('${doc.id}')" title="Edit" style="padding: 4px 8px; font-size: 12px;">✏️</button>
+                          <button class="btn btn-sm warn" onclick="app.deleteDocument('${doc.id}', '${doc.title.replace(/'/g, "\\'")}')" title="Delete" style="padding: 4px 8px; font-size: 12px;">🗑️</button>
+                        </div>
+                      ` : ''}
+                    </div>
+                  </div>`;
+              });
+              html += `</div></div>`;
+            });
+          }
+
+          container.innerHTML = html;
+        } catch (err) {
+          console.error('Error loading documents:', err);
+          container.innerHTML = `<div class="card" style="text-align: center; padding: 40px; color: var(--danger);">
+            <p>Failed to load documents. Please try again.</p>
+          </div>`;
+        }
+      }
+
+      async viewDocument(documentId) {
+        const container = document.getElementById('documents-content');
+        if (!container) return;
+
+        const isAdmin = this.userInfo.profile.user_type === 'admin';
+
+        container.innerHTML = '<div style="text-align: center; padding: 40px; color: var(--muted);">Loading document...</div>';
+
+        try {
+          const { data: doc, error } = await this.auth.supabase
+            .from('school_documents')
+            .select('*')
+            .eq('id', documentId)
+            .single();
+
+          if (error) throw error;
+
+          container.innerHTML = `
+            <div style="margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center;">
+              <button class="btn btn-secondary" onclick="app.renderDocuments()">← Back to Documents</button>
+              ${isAdmin ? `<button class="btn btn-primary" onclick="app.editDocument('${doc.id}')">✏️ Edit</button>` : ''}
+            </div>
+            <div class="doc-reader">
+              <div class="doc-reader-header">
+                <h1 style="margin: 0 0 8px 0; font-size: 28px;">${doc.title}</h1>
+                <p style="color: var(--muted); font-size: var(--text-sm); margin: 0;">
+                  Last updated ${doc.updated_at ? new Date(doc.updated_at).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) : 'N/A'}
+                  ${!doc.is_published ? ' &middot; <span style="color: var(--warning); font-weight: 600;">Draft</span>' : ''}
+                </p>
+              </div>
+              <div class="doc-reader-body ql-editor">
+                ${doc.content || '<p style="color: var(--muted);">This document has no content yet.</p>'}
+              </div>
+            </div>
+          `;
+        } catch (err) {
+          console.error('Error loading document:', err);
+          container.innerHTML = `
+            <button class="btn btn-secondary" onclick="app.renderDocuments()" style="margin-bottom: 16px;">← Back to Documents</button>
+            <div class="card" style="text-align: center; padding: 40px; color: var(--danger);">
+              <p>Failed to load document. Please try again.</p>
+            </div>`;
+        }
+      }
+
+      createDocument() {
+        this.openDocumentEditor(null);
+      }
+
+      async editDocument(documentId) {
+        try {
+          const { data: doc, error } = await this.auth.supabase
+            .from('school_documents')
+            .select('*')
+            .eq('id', documentId)
+            .single();
+
+          if (error) throw error;
+          this.openDocumentEditor(doc);
+        } catch (err) {
+          console.error('Error loading document for editing:', err);
+          alert('Failed to load document for editing.');
+        }
+      }
+
+      openDocumentEditor(doc) {
+        const isNew = !doc;
+        const title = isNew ? 'Create Document' : 'Edit Document';
+
+        const modalContent = `
+          <div style="max-height: 70vh; overflow-y: auto; padding-right: 8px;">
+            <div class="form-group">
+              <label class="form-label">Title</label>
+              <input type="text" id="doc-editor-title" class="form-input" placeholder="Document title" value="${isNew ? '' : (doc.title || '').replace(/"/g, '&quot;')}">
+            </div>
+            <div style="display: flex; gap: 12px;">
+              <div class="form-group" style="flex: 1;">
+                <label class="form-label">Category</label>
+                <select id="doc-editor-category" class="form-select">
+                  <option value="general" ${!isNew && doc.category === 'general' ? 'selected' : ''}>General</option>
+                  <option value="handbook" ${!isNew && doc.category === 'handbook' ? 'selected' : ''}>Handbook</option>
+                  <option value="policy" ${!isNew && doc.category === 'policy' ? 'selected' : ''}>Policy</option>
+                  <option value="guide" ${!isNew && doc.category === 'guide' ? 'selected' : ''}>Guide</option>
+                </select>
+              </div>
+              <div class="form-group" style="flex: 0 0 100px;">
+                <label class="form-label">Sort Order</label>
+                <input type="number" id="doc-editor-sort" class="form-input" value="${isNew ? '0' : (doc.sort_order || 0)}">
+              </div>
+            </div>
+            <div class="form-group">
+              <label class="form-label" style="display: flex; align-items: center; gap: 8px;">
+                <input type="checkbox" id="doc-editor-published" ${!isNew && doc.is_published ? 'checked' : ''}>
+                Published (visible to all users)
+              </label>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Content</label>
+              <div id="doc-editor-quill" style="min-height: 300px; background: #fff; color: #1a1a1a; border-radius: 0 0 8px 8px;"></div>
+            </div>
+          </div>
+          <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; border-top: 1px solid var(--border); padding-top: 16px;">
+            <button class="btn btn-secondary" onclick="app.closeModal('doc-editor')">Cancel</button>
+            <button class="btn btn-primary" onclick="app.saveDocument('${isNew ? '' : doc.id}')">💾 Save Document</button>
+          </div>
+        `;
+
+        this.showModal('doc-editor', `📄 ${title}`, modalContent);
+
+        // Initialize Quill editor
+        setTimeout(() => {
+          this.docQuillEditor = new Quill('#doc-editor-quill', {
+            theme: 'snow',
+            placeholder: 'Write your document content here...',
+            modules: {
+              toolbar: [
+                [{ 'header': [1, 2, 3, false] }],
+                ['bold', 'italic', 'underline', 'strike'],
+                [{ 'list': 'ordered' }, { 'list': 'bullet' }],
+                [{ 'indent': '-1' }, { 'indent': '+1' }],
+                ['blockquote', 'code-block'],
+                ['link', 'image'],
+                [{ 'align': [] }],
+                ['clean']
+              ]
+            }
+          });
+
+          if (!isNew && doc.content) {
+            this.docQuillEditor.root.innerHTML = doc.content;
+          }
+        }, 100);
+      }
+
+      async saveDocument(documentId) {
+        const title = document.getElementById('doc-editor-title')?.value?.trim();
+        const category = document.getElementById('doc-editor-category')?.value;
+        const sortOrder = parseInt(document.getElementById('doc-editor-sort')?.value) || 0;
+        const isPublished = document.getElementById('doc-editor-published')?.checked || false;
+
+        if (!title) {
+          alert('Please enter a document title.');
+          return;
+        }
+
+        let content = null;
+        if (this.docQuillEditor) {
+          const html = this.docQuillEditor.root.innerHTML;
+          if (html && html !== '<p><br></p>' && html.trim() !== '') {
+            content = html;
+          }
+        }
+
+        // Generate slug from title
+        const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+        const userId = this.userInfo.profile.id;
+        const isNew = !documentId;
+
+        try {
+          if (isNew) {
+            const { error } = await this.auth.supabase
+              .from('school_documents')
+              .insert({
+                title,
+                slug,
+                content,
+                category,
+                sort_order: sortOrder,
+                is_published: isPublished,
+                created_by: userId,
+                updated_by: userId
+              });
+            if (error) throw error;
+          } else {
+            const { error } = await this.auth.supabase
+              .from('school_documents')
+              .update({
+                title,
+                slug,
+                content,
+                category,
+                sort_order: sortOrder,
+                is_published: isPublished,
+                updated_by: userId,
+                updated_at: new Date().toISOString()
+              })
+              .eq('id', documentId);
+            if (error) throw error;
+          }
+
+          this.closeModal('doc-editor');
+          this.renderDocuments();
+        } catch (err) {
+          console.error('Error saving document:', err);
+          if (err.message?.includes('duplicate key') || err.message?.includes('unique')) {
+            alert('A document with a similar title already exists. Please choose a different title.');
+          } else {
+            alert('Failed to save document. Please try again.');
+          }
+        }
+      }
+
+      async deleteDocument(documentId, title) {
+        if (!confirm(`Are you sure you want to delete "${title}"? This cannot be undone.`)) return;
+
+        try {
+          const { error } = await this.auth.supabase
+            .from('school_documents')
+            .delete()
+            .eq('id', documentId);
+
+          if (error) throw error;
+          this.renderDocuments();
+        } catch (err) {
+          console.error('Error deleting document:', err);
+          alert('Failed to delete document. Please try again.');
+        }
+      }
+
       // ==================== TESTING CENTER METHODS ====================
 
       // Load the testing center iframe
@@ -4093,6 +4419,9 @@
             break;
           case 'classes':
             this.renderClasses();
+            break;
+          case 'documents':
+            this.renderDocuments();
             break;
           case 'messaging':
             this.renderMessages();
