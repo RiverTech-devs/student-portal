@@ -31467,7 +31467,7 @@
       try {
         const { data: activities, error } = await this.supabaseQuery(() => this.auth.supabase
           .from('activities')
-          .select('*, coach:user_profiles!activities_coach_id_fkey(id, first_name, last_name)')
+          .select('*, coach:user_profiles!activities_coach_id_fkey(id, first_name, last_name), facility:facilities(id, name, type)')
           .order('name'));
 
         if (error) throw error;
@@ -31558,6 +31558,7 @@
                 <th style="padding: 10px;">Type</th>
                 <th style="padding: 10px;">Season</th>
                 <th style="padding: 10px;">Coach</th>
+                <th style="padding: 10px;">Location</th>
                 <th style="padding: 10px;">Members</th>
                 <th style="padding: 10px;">Status</th>
                 <th style="padding: 10px;">Actions</th>
@@ -31570,6 +31571,7 @@
                   <td style="padding: 10px;">${typeBadge(a.type)}</td>
                   <td style="padding: 10px;">${seasonBadge(a.season)}</td>
                   <td style="padding: 10px;">${a.coach ? `${a.coach.first_name} ${a.coach.last_name}` : '<span style="color: var(--muted);">—</span>'}</td>
+                  <td style="padding: 10px;">${a.facility ? this.escapeHtml(a.facility.name) : (a.location ? this.escapeHtml(a.location) : '<span style="color: var(--muted);">—</span>')}</td>
                   <td style="padding: 10px;">${a.member_count}${a.max_capacity ? '/' + a.max_capacity : ''}</td>
                   <td style="padding: 10px;">${statusBadge(a.status)}</td>
                   <td style="padding: 10px;">
@@ -31600,19 +31602,27 @@
       document.getElementById('admin-activities-table').innerHTML = this.renderActivitiesTable(filtered);
     }
 
-    showCreateActivityModal() {
+    async showCreateActivityModal() {
       this._editingActivityId = null;
-      this._showActivityFormModal('Create Activity', {});
+      await this._showActivityFormModal('Create Activity', {});
     }
 
     async showEditActivityModal(id) {
       const activity = (this._activitiesData || []).find(a => a.id === id);
       if (!activity) { this.showNotification('Activity not found', 'error'); return; }
       this._editingActivityId = id;
-      this._showActivityFormModal('Edit Activity', activity);
+      try {
+        const { data: scheduleSlots } = await this.supabaseQuery(() => this.auth.supabase
+          .from('activity_schedule')
+          .select('day_of_week, period')
+          .eq('activity_id', id)
+          .order('day_of_week'));
+        activity._scheduleSlots = scheduleSlots || [];
+      } catch (e) { activity._scheduleSlots = []; }
+      await this._showActivityFormModal('Edit Activity', activity);
     }
 
-    _showActivityFormModal(title, data) {
+    async _showActivityFormModal(title, data) {
       const teachers = this._activityTeachers || [];
       const modal = document.createElement('div');
       modal.id = 'activity-form-modal';
@@ -31663,15 +31673,17 @@
                 <input type="number" id="activity-capacity" value="${data.max_capacity || ''}" min="1" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);box-sizing:border-box;">
               </div>
             </div>
-            <div style="display: flex; gap: 12px;">
-              <div style="flex:1;">
-                <label style="font-size: 12px; font-weight: 600;">Location</label>
-                <input type="text" id="activity-location" value="${this.escapeHtml(data.location || '')}" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);box-sizing:border-box;">
+            <div>
+              <label style="font-size: 12px; font-weight: 600;">Facility / Location</label>
+              <select id="activity-facility" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);">
+                <option value="">— None —</option>
+              </select>
+            </div>
+            <div>
+              <label style="font-size: 12px; font-weight: 600;">Schedule</label>
+              <div id="activity-schedule-slots" style="display: flex; flex-direction: column; gap: 8px;">
               </div>
-              <div style="flex:1;">
-                <label style="font-size: 12px; font-weight: 600;">Schedule</label>
-                <input type="text" id="activity-schedule" value="${this.escapeHtml(data.schedule || '')}" placeholder="e.g. MWF 3-5pm" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);box-sizing:border-box;">
-              </div>
+              <button type="button" onclick="app.addActivityScheduleSlot()" class="btn btn-secondary" style="margin-top: 10px;">+ Add Time Slot</button>
             </div>
             <div style="display: flex; gap: 12px;">
               <div style="flex:1;">
@@ -31706,6 +31718,74 @@
         </div>
       `;
       document.body.appendChild(modal);
+
+      // Populate facility dropdown
+      const facilities = await this._loadFacilitiesForSelect();
+      const facilitySelect = document.getElementById('activity-facility');
+      if (facilitySelect && facilities.length) {
+        facilities.forEach(f => {
+          const opt = document.createElement('option');
+          opt.value = f.id;
+          opt.textContent = `${f.name} (${f.type}${f.capacity ? ', cap: ' + f.capacity : ''})`;
+          if (data.facility_id === f.id) opt.selected = true;
+          facilitySelect.appendChild(opt);
+        });
+      }
+
+      // Populate schedule slots
+      const slots = data._scheduleSlots || [];
+      if (slots.length > 0) {
+        slots.forEach(s => this.addActivityScheduleSlot(s.day_of_week, s.period));
+      } else {
+        this.addActivityScheduleSlot();
+      }
+    }
+
+    addActivityScheduleSlot(dayValue, periodValue) {
+      const container = document.getElementById('activity-schedule-slots');
+      if (!container) return;
+
+      const slot = document.createElement('div');
+      slot.className = 'schedule-slot';
+      slot.style.cssText = 'display: flex; gap: 10px; align-items: center;';
+      slot.innerHTML = `
+        <select name="schedule-day" style="flex: 1; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+          <option value="">Select Day</option>
+          <option value="1" ${dayValue == 1 ? 'selected' : ''}>Monday</option>
+          <option value="2" ${dayValue == 2 ? 'selected' : ''}>Tuesday</option>
+          <option value="3" ${dayValue == 3 ? 'selected' : ''}>Wednesday</option>
+          <option value="4" ${dayValue == 4 ? 'selected' : ''}>Thursday</option>
+          <option value="5" ${dayValue == 5 ? 'selected' : ''}>Friday</option>
+        </select>
+        <select name="schedule-period" style="width: 100px; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+          <option value="">Period</option>
+          <option value="1" ${periodValue == 1 ? 'selected' : ''}>Period 1</option>
+          <option value="2" ${periodValue == 2 ? 'selected' : ''}>Period 2</option>
+          <option value="3" ${periodValue == 3 ? 'selected' : ''}>Period 3</option>
+          <option value="4" ${periodValue == 4 ? 'selected' : ''}>Period 4</option>
+          <option value="5" ${periodValue == 5 ? 'selected' : ''}>Period 5</option>
+          <option value="6" ${periodValue == 6 ? 'selected' : ''}>Period 6</option>
+          <option value="7" ${periodValue == 7 ? 'selected' : ''}>Period 7</option>
+          <option value="8" ${periodValue == 8 ? 'selected' : ''}>Period 8</option>
+        </select>
+        <button type="button" onclick="app.removeScheduleSlot(this)" class="btn btn-secondary" style="padding: 8px 12px;">✕</button>
+      `;
+      container.appendChild(slot);
+    }
+
+    getActivityScheduleSlotsData() {
+      const container = document.getElementById('activity-schedule-slots');
+      if (!container) return [];
+      const slots = container.querySelectorAll('.schedule-slot');
+      const scheduleData = [];
+      slots.forEach(slot => {
+        const day = slot.querySelector('select[name="schedule-day"]')?.value;
+        const period = slot.querySelector('select[name="schedule-period"]')?.value;
+        if (day && period) {
+          scheduleData.push({ day_of_week: parseInt(day), period: parseInt(period) });
+        }
+      });
+      return scheduleData;
     }
 
     async saveActivity() {
@@ -31719,22 +31799,35 @@
         description: document.getElementById('activity-description').value.trim() || null,
         coach_id: document.getElementById('activity-coach').value || null,
         max_capacity: document.getElementById('activity-capacity').value ? parseInt(document.getElementById('activity-capacity').value) : null,
-        location: document.getElementById('activity-location').value.trim() || null,
-        schedule: document.getElementById('activity-schedule').value.trim() || null,
+        facility_id: document.getElementById('activity-facility').value || null,
         status: document.getElementById('activity-status').value,
         tryout_required: document.getElementById('activity-tryout').checked,
         tryout_date: document.getElementById('activity-tryout-date').value || null,
         tryout_info: document.getElementById('activity-tryout-info').value.trim() || null
       };
 
+      const scheduleSlots = this.getActivityScheduleSlotsData();
+
       try {
-        let error;
+        let activityId = this._editingActivityId;
         if (this._editingActivityId) {
-          ({ error } = await this.supabaseQuery(() => this.auth.supabase.from('activities').update(payload).eq('id', this._editingActivityId)));
+          const { error } = await this.supabaseQuery(() => this.auth.supabase.from('activities').update(payload).eq('id', this._editingActivityId));
+          if (error) throw error;
         } else {
-          ({ error } = await this.supabaseQuery(() => this.auth.supabase.from('activities').insert(payload)));
+          const { data, error } = await this.supabaseQuery(() => this.auth.supabase.from('activities').insert(payload).select().single());
+          if (error) throw error;
+          activityId = data.id;
         }
-        if (error) throw error;
+
+        // Save schedule: delete old rows then insert new
+        if (activityId) {
+          await this.supabaseQuery(() => this.auth.supabase.from('activity_schedule').delete().eq('activity_id', activityId));
+          if (scheduleSlots.length > 0) {
+            const rows = scheduleSlots.map(s => ({ activity_id: activityId, ...s }));
+            const { error: schedError } = await this.supabaseQuery(() => this.auth.supabase.from('activity_schedule').insert(rows));
+            if (schedError) console.error('Error saving activity schedule:', schedError);
+          }
+        }
 
         document.getElementById('activity-form-modal')?.remove();
         this.showNotification(this._editingActivityId ? 'Activity updated' : 'Activity created', 'success');
