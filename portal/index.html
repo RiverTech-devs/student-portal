@@ -1804,6 +1804,9 @@
               <!-- Will be populated by renderAdminActivities() -->
             </section>
 
+            <!-- Activities Section (All roles) -->
+            <section id="activities-section" class="hidden"></section>
+
             <!-- Admin Facilities Section (Admin only) -->
             <section id="admin-facilities-section" class="hidden">
               <!-- Will be populated by renderAdminFacilities() -->
@@ -2244,7 +2247,7 @@
 
         // Navigate to hash section if present, otherwise show home
         const hash = window.location.hash.substring(1);
-        const validSections = ['home', 'classes', 'messaging', 'profile', 'my-students', 'materials-requests', 'testing-center', 'admin-dashboard', 'admin-classes', 'admin-users', 'admin-settings', 'admin-reports', 'admin-attendance', 'admin-student-records', 'admin-enrollment', 'admin-activities', 'admin-facilities'];
+        const validSections = ['home', 'classes', 'messaging', 'profile', 'my-students', 'materials-requests', 'testing-center', 'activities', 'admin-dashboard', 'admin-classes', 'admin-users', 'admin-settings', 'admin-reports', 'admin-attendance', 'admin-student-records', 'admin-enrollment', 'admin-activities', 'admin-facilities'];
         if (hash && validSections.includes(hash)) {
           this.showSection(hash);
         } else {
@@ -4409,7 +4412,7 @@
 
       handleHashNavigation() {
         const hash = window.location.hash.substring(1);
-        const validSections = ['home', 'classes', 'messaging', 'profile', 'my-students', 'materials-requests', 'testing-center', 'admin-dashboard', 'admin-classes', 'admin-users', 'admin-settings', 'admin-reports', 'admin-attendance', 'admin-student-records', 'admin-enrollment', 'admin-activities', 'admin-facilities'];
+        const validSections = ['home', 'classes', 'messaging', 'profile', 'my-students', 'materials-requests', 'testing-center', 'activities', 'admin-dashboard', 'admin-classes', 'admin-users', 'admin-settings', 'admin-reports', 'admin-attendance', 'admin-student-records', 'admin-enrollment', 'admin-activities', 'admin-facilities'];
 
         if (hash && validSections.includes(hash)) {
           this.showSection(hash);
@@ -4512,6 +4515,9 @@
             break;
           case 'testing-center':
             this.loadTestingCenter();
+            break;
+          case 'activities':
+            this.renderActivitiesSection();
             break;
           default:
             console.warn('Unknown section:', sectionName);
@@ -5313,6 +5319,9 @@
                   <button class="btn btn-secondary" onclick="app.showTeacherBookingView()">
                     🏢 Book a Room
                   </button>
+                  <button class="btn btn-secondary" onclick="app.showSection('activities')">
+                    🏆 My Teams
+                  </button>
                 </div>
               </div>
               
@@ -5419,6 +5428,9 @@
               <div style="display: grid; gap: 10px;">
                 <button class="btn btn-secondary" onclick="app.enrollInClass()">
                   ➕ Join Class
+                </button>
+                <button class="btn btn-secondary" onclick="app.showSection('activities')">
+                  🏆 Browse Activities
                 </button>
               </div>
             </div>
@@ -5698,6 +5710,9 @@
             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-top: 15px;">
               <button class="btn btn-primary" onclick="app.showSection('classes')">
                 📚 View Children's Classes
+              </button>
+              <button class="btn btn-primary" onclick="app.showSection('activities')">
+                🏆 View Activities
               </button>
               <button class="btn btn-primary" onclick="app.showSection('messaging')">
                 💬 Messages
@@ -31453,6 +31468,444 @@
       } catch (error) {
         console.error('Error updating material request:', error);
         this.showNotification('Error updating request: ' + error.message, 'error');
+      }
+    }
+
+    // ==================== ACTIVITIES — STUDENT / PARENT / COACH VIEWS ====================
+
+    formatActivitySchedule(scheduleSlots) {
+      if (!scheduleSlots || scheduleSlots.length === 0) return 'No schedule set';
+      const dayNames = { 0: 'Sun', 1: 'Mon', 2: 'Tue', 3: 'Wed', 4: 'Thu', 5: 'Fri', 6: 'Sat' };
+      return scheduleSlots
+        .sort((a, b) => a.day_of_week - b.day_of_week || a.period - b.period)
+        .map(s => `${dayNames[s.day_of_week] || 'Day' + s.day_of_week} P${s.period}`)
+        .join(', ');
+    }
+
+    renderActivitiesSection() {
+      const userType = this.userInfo.profile?.user_type;
+      if (userType === 'student') {
+        this.renderStudentActivities();
+      } else if (userType === 'parent') {
+        this.renderParentActivities();
+      } else {
+        this.renderCoachActivities();
+      }
+    }
+
+    async renderStudentActivities() {
+      const section = document.getElementById('activities-section');
+      if (!section) return;
+      section.innerHTML = '<div style="text-align: center; padding: 40px;"><div class="loading-spinner"></div><p>Loading activities...</p></div>';
+
+      try {
+        const studentId = this.userInfo.profile.id;
+
+        // Fetch all active activities with coach + facility
+        const { data: activities, error: actErr } = await this.supabaseQuery(() => this.auth.supabase
+          .from('activities')
+          .select('*, coach:user_profiles!activities_coach_id_fkey(id, first_name, last_name), facility:facilities(id, name)')
+          .eq('status', 'active')
+          .order('name'));
+        if (actErr) throw actErr;
+
+        // Fetch student's enrollments
+        const { data: myEnrollments } = await this.supabaseQuery(() => this.auth.supabase
+          .from('activity_enrollments')
+          .select('activity_id, status, id')
+          .eq('student_id', studentId));
+
+        // Fetch enrollment counts for all activities
+        const { data: allEnrollments } = await this.supabaseQuery(() => this.auth.supabase
+          .from('activity_enrollments')
+          .select('activity_id, status'));
+
+        // Fetch schedules for all active activities
+        const activityIds = (activities || []).map(a => a.id);
+        let schedules = [];
+        if (activityIds.length > 0) {
+          const { data: sched } = await this.supabaseQuery(() => this.auth.supabase
+            .from('activity_schedule')
+            .select('activity_id, day_of_week, period')
+            .in('activity_id', activityIds));
+          schedules = sched || [];
+        }
+
+        const enrollmentMap = {};
+        (myEnrollments || []).forEach(e => { enrollmentMap[e.activity_id] = e; });
+
+        const countMap = {};
+        (allEnrollments || []).forEach(e => {
+          if (e.status === 'active') countMap[e.activity_id] = (countMap[e.activity_id] || 0) + 1;
+        });
+
+        const scheduleMap = {};
+        schedules.forEach(s => {
+          if (!scheduleMap[s.activity_id]) scheduleMap[s.activity_id] = [];
+          scheduleMap[s.activity_id].push(s);
+        });
+
+        const myActivities = (activities || []).filter(a => enrollmentMap[a.id]);
+        const browseActivities = (activities || []).filter(a => !enrollmentMap[a.id]);
+
+        const typeBadge = (type) => type === 'sport'
+          ? '<span style="background: #3498db; color: white; padding: 2px 8px; border-radius: 10px; font-size: 11px;">Sport</span>'
+          : '<span style="background: #9b59b6; color: white; padding: 2px 8px; border-radius: 10px; font-size: 11px;">Club</span>';
+
+        const seasonBadge = (season) => {
+          const colors = { fall: '#e67e22', winter: '#3498db', spring: '#2ecc71', 'year-round': '#95a5a6' };
+          return `<span style="background: ${colors[season] || '#95a5a6'}; color: white; padding: 2px 8px; border-radius: 10px; font-size: 11px;">${season || 'year-round'}</span>`;
+        };
+
+        const enrollStatusBadge = (status) => {
+          const colors = { active: '#2ecc71', tryout: '#f39c12', waitlisted: '#e67e22', inactive: '#e74c3c' };
+          return `<span style="background: ${colors[status] || '#95a5a6'}; color: white; padding: 2px 8px; border-radius: 10px; font-size: 11px;">${status}</span>`;
+        };
+
+        const renderCard = (a, isMine) => {
+          const enrollment = enrollmentMap[a.id];
+          const memberCount = countMap[a.id] || 0;
+          const atCapacity = a.max_capacity && memberCount >= a.max_capacity;
+          const schedule = this.formatActivitySchedule(scheduleMap[a.id]);
+          const coachName = a.coach ? `${a.coach.first_name} ${a.coach.last_name}` : 'TBD';
+          const facilityName = a.facility ? this.escapeHtml(a.facility.name) : (a.location ? this.escapeHtml(a.location) : '—');
+
+          let actionBtn = '';
+          if (isMine) {
+            actionBtn = `<button class="btn btn-secondary" style="font-size: 12px; color: var(--danger);" onclick="app.leaveActivity('${enrollment.id}', '${a.id}')">Leave</button>`;
+          } else if (atCapacity) {
+            actionBtn = `<button class="btn btn-secondary" style="font-size: 12px;" disabled>Full</button>`;
+          } else if (a.type === 'sport' && a.tryout_required) {
+            actionBtn = `<button class="btn btn-primary" style="font-size: 12px;" onclick="app.joinActivity('${a.id}', 'tryout')">Tryout</button>`;
+          } else {
+            actionBtn = `<button class="btn btn-primary" style="font-size: 12px;" onclick="app.joinActivity('${a.id}', 'active')">Join</button>`;
+          }
+
+          return `
+            <div class="card" style="padding: 16px;">
+              <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px;">
+                <h4 style="margin: 0;">${this.escapeHtml(a.name)}</h4>
+                <div style="display: flex; gap: 4px; flex-shrink: 0;">
+                  ${typeBadge(a.type)} ${seasonBadge(a.season)}
+                  ${isMine ? enrollStatusBadge(enrollment.status) : ''}
+                </div>
+              </div>
+              <div style="font-size: 13px; color: var(--muted); display: grid; gap: 4px; margin-bottom: 12px;">
+                <div>👤 Coach: ${this.escapeHtml(coachName)}</div>
+                <div>📍 ${facilityName}</div>
+                <div>📅 ${this.escapeHtml(schedule)}</div>
+                <div>👥 ${memberCount}${a.max_capacity ? '/' + a.max_capacity : ''} members</div>
+              </div>
+              ${a.description ? `<div style="font-size: 12px; color: var(--muted); margin-bottom: 10px;">${this.escapeHtml(a.description)}</div>` : ''}
+              <div style="display: flex; justify-content: flex-end;">
+                ${actionBtn}
+              </div>
+            </div>
+          `;
+        };
+
+        section.innerHTML = `
+          <div style="padding: 20px;">
+            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 20px;">
+              <h2 style="margin: 0;">🏆 Activities</h2>
+            </div>
+            <div style="display: flex; gap: 10px; margin-bottom: 20px;">
+              <button class="btn btn-primary" id="activities-tab-mine" onclick="app._switchActivityTab('mine')">My Activities (${myActivities.length})</button>
+              <button class="btn btn-secondary" id="activities-tab-browse" onclick="app._switchActivityTab('browse')">Browse All (${browseActivities.length})</button>
+            </div>
+            <div id="activities-tab-mine-content">
+              ${myActivities.length === 0
+                ? '<div class="card" style="padding: 30px; text-align: center; color: var(--muted);">You haven\'t joined any activities yet. Browse available activities to get started!</div>'
+                : `<div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px;">${myActivities.map(a => renderCard(a, true)).join('')}</div>`
+              }
+            </div>
+            <div id="activities-tab-browse-content" style="display: none;">
+              ${browseActivities.length === 0
+                ? '<div class="card" style="padding: 30px; text-align: center; color: var(--muted);">No additional activities available right now.</div>'
+                : `<div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px;">${browseActivities.map(a => renderCard(a, false)).join('')}</div>`
+              }
+            </div>
+          </div>
+        `;
+      } catch (error) {
+        console.error('Error loading student activities:', error);
+        section.innerHTML = `<div style="padding: 20px; text-align: center; color: var(--danger);">Error loading activities: ${error.message}</div>`;
+      }
+    }
+
+    _switchActivityTab(tab) {
+      const mineContent = document.getElementById('activities-tab-mine-content');
+      const browseContent = document.getElementById('activities-tab-browse-content');
+      const mineBtn = document.getElementById('activities-tab-mine');
+      const browseBtn = document.getElementById('activities-tab-browse');
+      if (tab === 'mine') {
+        mineContent.style.display = '';
+        browseContent.style.display = 'none';
+        mineBtn.className = 'btn btn-primary';
+        browseBtn.className = 'btn btn-secondary';
+      } else {
+        mineContent.style.display = 'none';
+        browseContent.style.display = '';
+        mineBtn.className = 'btn btn-secondary';
+        browseBtn.className = 'btn btn-primary';
+      }
+    }
+
+    async joinActivity(activityId, status) {
+      try {
+        const { error } = await this.supabaseQuery(() => this.auth.supabase
+          .from('activity_enrollments')
+          .insert({ activity_id: activityId, student_id: this.userInfo.profile.id, status: status }));
+        if (error) throw error;
+        this.showNotification(status === 'tryout' ? 'Tryout request submitted!' : 'Successfully joined activity!', 'success');
+        this.renderStudentActivities();
+      } catch (error) {
+        console.error('Error joining activity:', error);
+        this.showNotification('Error joining activity: ' + error.message, 'error');
+      }
+    }
+
+    async leaveActivity(enrollmentId, activityId) {
+      if (!confirm('Are you sure you want to leave this activity?')) return;
+      try {
+        const { error } = await this.supabaseQuery(() => this.auth.supabase
+          .from('activity_enrollments')
+          .delete()
+          .eq('id', enrollmentId));
+        if (error) throw error;
+        this.showNotification('You have left the activity.', 'success');
+        this.renderStudentActivities();
+      } catch (error) {
+        console.error('Error leaving activity:', error);
+        this.showNotification('Error leaving activity: ' + error.message, 'error');
+      }
+    }
+
+    async renderParentActivities() {
+      const section = document.getElementById('activities-section');
+      if (!section) return;
+      section.innerHTML = '<div style="text-align: center; padding: 40px;"><div class="loading-spinner"></div><p>Loading activities...</p></div>';
+
+      try {
+        const children = this.children || [];
+        if (children.length === 0) {
+          section.innerHTML = `
+            <div style="padding: 20px;">
+              <h2 style="margin-bottom: 20px;">🏆 Activities</h2>
+              <div class="card" style="padding: 30px; text-align: center; color: var(--muted);">
+                No children linked to your account. Link a child to view their activities.
+              </div>
+            </div>`;
+          return;
+        }
+
+        let childrenHTML = '';
+        for (const child of children) {
+          const { data: enrollments } = await this.supabaseQuery(() => this.auth.supabase
+            .from('activity_enrollments')
+            .select('*, activity:activities(*, coach:user_profiles!activities_coach_id_fkey(id, first_name, last_name), facility:facilities(id, name))')
+            .eq('student_id', child.id));
+
+          // Get schedules for enrolled activities
+          const actIds = (enrollments || []).map(e => e.activity?.id).filter(Boolean);
+          let schedules = [];
+          if (actIds.length > 0) {
+            const { data: sched } = await this.supabaseQuery(() => this.auth.supabase
+              .from('activity_schedule')
+              .select('activity_id, day_of_week, period')
+              .in('activity_id', actIds));
+            schedules = sched || [];
+          }
+          const scheduleMap = {};
+          schedules.forEach(s => {
+            if (!scheduleMap[s.activity_id]) scheduleMap[s.activity_id] = [];
+            scheduleMap[s.activity_id].push(s);
+          });
+
+          const typeBadge = (type) => type === 'sport'
+            ? '<span style="background: #3498db; color: white; padding: 2px 8px; border-radius: 10px; font-size: 11px;">Sport</span>'
+            : '<span style="background: #9b59b6; color: white; padding: 2px 8px; border-radius: 10px; font-size: 11px;">Club</span>';
+
+          const enrollStatusBadge = (status) => {
+            const colors = { active: '#2ecc71', tryout: '#f39c12', waitlisted: '#e67e22', inactive: '#e74c3c' };
+            return `<span style="background: ${colors[status] || '#95a5a6'}; color: white; padding: 2px 8px; border-radius: 10px; font-size: 11px;">${status}</span>`;
+          };
+
+          const cards = (enrollments || []).filter(e => e.activity).map(e => {
+            const a = e.activity;
+            const coachName = a.coach ? `${a.coach.first_name} ${a.coach.last_name}` : 'TBD';
+            const facilityName = a.facility ? this.escapeHtml(a.facility.name) : (a.location ? this.escapeHtml(a.location) : '—');
+            const schedule = this.formatActivitySchedule(scheduleMap[a.id]);
+            return `
+              <div class="card" style="padding: 16px;">
+                <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px;">
+                  <h4 style="margin: 0;">${this.escapeHtml(a.name)}</h4>
+                  <div style="display: flex; gap: 4px;">${typeBadge(a.type)} ${enrollStatusBadge(e.status)}</div>
+                </div>
+                <div style="font-size: 13px; color: var(--muted); display: grid; gap: 4px;">
+                  <div>👤 Coach: ${this.escapeHtml(coachName)}</div>
+                  <div>📍 ${facilityName}</div>
+                  <div>📅 ${this.escapeHtml(schedule)}</div>
+                  <div>🏷️ ${a.season || 'year-round'}</div>
+                </div>
+              </div>
+            `;
+          });
+
+          childrenHTML += `
+            <div style="margin-bottom: 24px;">
+              <h3 style="margin-bottom: 12px;">👤 ${this.escapeHtml(child.first_name)} ${this.escapeHtml(child.last_name)}</h3>
+              ${cards.length === 0
+                ? '<div class="card" style="padding: 20px; text-align: center; color: var(--muted);">No activities enrolled.</div>'
+                : `<div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px;">${cards.join('')}</div>`
+              }
+            </div>
+          `;
+        }
+
+        section.innerHTML = `
+          <div style="padding: 20px;">
+            <h2 style="margin-bottom: 20px;">🏆 Children's Activities</h2>
+            ${childrenHTML}
+          </div>
+        `;
+      } catch (error) {
+        console.error('Error loading parent activities:', error);
+        section.innerHTML = `<div style="padding: 20px; text-align: center; color: var(--danger);">Error loading activities: ${error.message}</div>`;
+      }
+    }
+
+    async renderCoachActivities() {
+      const section = document.getElementById('activities-section');
+      if (!section) return;
+      section.innerHTML = '<div style="text-align: center; padding: 40px;"><div class="loading-spinner"></div><p>Loading your activities...</p></div>';
+
+      try {
+        const coachId = this.userInfo.profile.id;
+
+        const { data: activities, error: actErr } = await this.supabaseQuery(() => this.auth.supabase
+          .from('activities')
+          .select('*, facility:facilities(id, name)')
+          .eq('coach_id', coachId)
+          .order('name'));
+        if (actErr) throw actErr;
+
+        const activityIds = (activities || []).map(a => a.id);
+        let enrollments = [];
+        let schedules = [];
+        if (activityIds.length > 0) {
+          const { data: enr } = await this.supabaseQuery(() => this.auth.supabase
+            .from('activity_enrollments')
+            .select('*, student:user_profiles!activity_enrollments_student_id_fkey(id, first_name, last_name, grade_level)')
+            .in('activity_id', activityIds)
+            .order('enrolled_at'));
+          enrollments = enr || [];
+
+          const { data: sched } = await this.supabaseQuery(() => this.auth.supabase
+            .from('activity_schedule')
+            .select('activity_id, day_of_week, period')
+            .in('activity_id', activityIds));
+          schedules = sched || [];
+        }
+
+        const enrollmentMap = {};
+        enrollments.forEach(e => {
+          if (!enrollmentMap[e.activity_id]) enrollmentMap[e.activity_id] = [];
+          enrollmentMap[e.activity_id].push(e);
+        });
+
+        const scheduleMap = {};
+        schedules.forEach(s => {
+          if (!scheduleMap[s.activity_id]) scheduleMap[s.activity_id] = [];
+          scheduleMap[s.activity_id].push(s);
+        });
+
+        // Store for reuse by showActivityMembersModal
+        this._activitiesData = activities || [];
+
+        const typeBadge = (type) => type === 'sport'
+          ? '<span style="background: #3498db; color: white; padding: 2px 8px; border-radius: 10px; font-size: 11px;">Sport</span>'
+          : '<span style="background: #9b59b6; color: white; padding: 2px 8px; border-radius: 10px; font-size: 11px;">Club</span>';
+
+        const seasonBadge = (season) => {
+          const colors = { fall: '#e67e22', winter: '#3498db', spring: '#2ecc71', 'year-round': '#95a5a6' };
+          return `<span style="background: ${colors[season] || '#95a5a6'}; color: white; padding: 2px 8px; border-radius: 10px; font-size: 11px;">${season || 'year-round'}</span>`;
+        };
+
+        const statusColors = { active: '#2ecc71', tryout: '#f39c12', waitlisted: '#e67e22', inactive: '#e74c3c' };
+
+        const activityCards = (activities || []).map(a => {
+          const members = enrollmentMap[a.id] || [];
+          const activeMembers = members.filter(m => m.status === 'active');
+          const schedule = this.formatActivitySchedule(scheduleMap[a.id]);
+          const facilityName = a.facility ? this.escapeHtml(a.facility.name) : (a.location ? this.escapeHtml(a.location) : '—');
+          const cardId = `coach-activity-${a.id}`;
+
+          const rosterRows = members.map(e => `
+            <tr style="border-bottom: 1px solid var(--border);">
+              <td style="padding: 6px 8px;">${e.student ? e.student.first_name + ' ' + e.student.last_name : 'Unknown'}</td>
+              <td style="padding: 6px 8px;">${e.student?.grade_level || '—'}</td>
+              <td style="padding: 6px 8px;">
+                <span style="background: ${statusColors[e.status] || '#95a5a6'}; color: white; padding: 1px 6px; border-radius: 8px; font-size: 11px;">${e.status}</span>
+              </td>
+              <td style="padding: 6px 8px; font-size: 11px; color: var(--muted);">${new Date(e.enrolled_at).toLocaleDateString()}</td>
+            </tr>
+          `).join('');
+
+          return `
+            <div class="card" style="padding: 16px; margin-bottom: 16px;">
+              <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px;">
+                <div>
+                  <h4 style="margin: 0; display: inline;">${this.escapeHtml(a.name)}</h4>
+                  <span style="margin-left: 8px;">${typeBadge(a.type)} ${seasonBadge(a.season)}</span>
+                </div>
+                <div style="display: flex; gap: 6px;">
+                  <button class="btn btn-secondary" style="font-size: 12px; padding: 4px 10px;" onclick="document.getElementById('${cardId}-roster').style.display = document.getElementById('${cardId}-roster').style.display === 'none' ? '' : 'none'">
+                    ${members.length > 0 ? `Roster (${members.length})` : 'Roster'}
+                  </button>
+                  <button class="btn btn-primary" style="font-size: 12px; padding: 4px 10px;" onclick="app.showActivityMembersModal('${a.id}')">Manage</button>
+                </div>
+              </div>
+              <div style="font-size: 13px; color: var(--muted); display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 8px;">
+                <span>📍 ${facilityName}</span>
+                <span>📅 ${this.escapeHtml(schedule)}</span>
+                <span>👥 ${activeMembers.length}${a.max_capacity ? '/' + a.max_capacity : ''} active</span>
+              </div>
+              <div id="${cardId}-roster" style="display: none; margin-top: 12px;">
+                ${members.length === 0
+                  ? '<p style="color: var(--muted); font-size: 13px; text-align: center;">No members yet.</p>'
+                  : `<table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+                      <thead>
+                        <tr style="border-bottom: 2px solid var(--border); text-align: left;">
+                          <th style="padding: 6px 8px;">Student</th>
+                          <th style="padding: 6px 8px;">Grade</th>
+                          <th style="padding: 6px 8px;">Status</th>
+                          <th style="padding: 6px 8px;">Enrolled</th>
+                        </tr>
+                      </thead>
+                      <tbody>${rosterRows}</tbody>
+                    </table>`
+                }
+              </div>
+            </div>
+          `;
+        }).join('');
+
+        section.innerHTML = `
+          <div style="padding: 20px;">
+            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 20px;">
+              <h2 style="margin: 0;">🏆 My Activities</h2>
+              <span style="background: var(--accent); color: white; padding: 2px 8px; border-radius: 10px; font-size: 12px;">${(activities || []).length} total</span>
+            </div>
+            ${(activities || []).length === 0
+              ? '<div class="card" style="padding: 30px; text-align: center; color: var(--muted);">You are not assigned as coach for any activities yet.</div>'
+              : activityCards
+            }
+          </div>
+        `;
+      } catch (error) {
+        console.error('Error loading coach activities:', error);
+        section.innerHTML = `<div style="padding: 20px; text-align: center; color: var(--danger);">Error loading activities: ${error.message}</div>`;
       }
     }
 
