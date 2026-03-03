@@ -5,7 +5,14 @@
 
 -- 1A. Add rtc_balance column to user_profiles
 ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS rtc_balance INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE user_profiles ADD CONSTRAINT user_profiles_rtc_balance_check CHECK (rtc_balance >= 0);
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'user_profiles_rtc_balance_check'
+  ) THEN
+    ALTER TABLE user_profiles ADD CONSTRAINT user_profiles_rtc_balance_check CHECK (rtc_balance >= 0);
+  END IF;
+END $$;
 
 -- 1B. Create rtc_transactions table
 CREATE TABLE IF NOT EXISTS rtc_transactions (
