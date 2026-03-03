@@ -6663,7 +6663,7 @@
         const content = document.getElementById('student-details-content');
 
         try {
-          // Load student profile, parent links, emergency contacts, medical info, and notes in parallel
+          // Load student profile (including rtc_balance), parent links, emergency contacts, medical info, and notes in parallel
           const [
             { data: student },
             { data: parentLinks },
@@ -6673,7 +6673,7 @@
           ] = await Promise.all([
             this.auth.supabase
               .from('user_profiles')
-              .select('*')
+              .select('*, rtc_balance')
               .eq('id', studentId)
               .single(),
             this.auth.supabase
@@ -6833,6 +6833,55 @@
                 `).join('')}
               </div>
             ` : ''}
+          </div>
+
+          <!-- RTC Currency -->
+          <div style="background: var(--bg); border-radius: 8px; padding: 15px; margin-bottom: 15px;">
+            <h3 style="margin: 0 0 12px 0; color: var(--accent); font-size: 15px; border-bottom: 1px solid var(--border); padding-bottom: 8px;">💰 River Tech Currency (RTC)</h3>
+            <div style="display: flex; align-items: center; gap: 15px; margin-bottom: 12px;">
+              <div style="font-size: 28px; font-weight: bold; color: var(--accent);" id="rtc-student-balance">${student.rtc_balance || 0}</div>
+              <div style="font-size: 13px; color: var(--muted);">Current Balance</div>
+            </div>
+            <!-- Award RTC controls -->
+            <div style="background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-bottom: 10px;">
+              <div style="display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap;">
+                <div style="flex: 0 0 100px;">
+                  <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Amount</label>
+                  <input type="number" id="rtc-award-amount" min="1" value="10" style="width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text);">
+                </div>
+                <div style="flex: 1; min-width: 150px;">
+                  <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Reason</label>
+                  <input type="text" id="rtc-award-reason" placeholder="Great work today!" style="width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); box-sizing: border-box;">
+                </div>
+                <button class="btn btn-primary" style="padding: 6px 16px; white-space: nowrap;" onclick="app.awardRtc('${student.id}', false)">
+                  + Award RTC
+                </button>
+              </div>
+            </div>
+            ${this.userInfo?.profile?.user_type === 'admin' ? `
+              <!-- Admin override controls -->
+              <div style="background: rgba(239, 68, 68, 0.05); border: 1px solid rgba(239, 68, 68, 0.2); border-radius: 6px; padding: 12px;">
+                <div style="font-size: 12px; font-weight: 600; color: var(--danger); margin-bottom: 8px;">Admin Controls</div>
+                <div style="display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap;">
+                  <div style="flex: 0 0 120px;">
+                    <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Set Balance To</label>
+                    <input type="number" id="rtc-set-balance" min="0" value="${student.rtc_balance || 0}" style="width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text);">
+                  </div>
+                  <button class="btn" style="padding: 6px 12px; background: var(--danger); color: white; white-space: nowrap;" onclick="app.adminSetRtcBalance('${student.id}')">
+                    Override Balance
+                  </button>
+                  <button class="btn btn-secondary" style="padding: 6px 12px; white-space: nowrap;" onclick="app.awardRtc('${student.id}', true)">
+                    Adjust (+/-)
+                  </button>
+                </div>
+              </div>
+            ` : ''}
+            <!-- Transaction History -->
+            <div id="rtc-transaction-history" style="margin-top: 12px;">
+              <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px; width: 100%;" onclick="app.loadRtcTransactions('${student.id}')">
+                📜 View Transaction History
+              </button>
+            </div>
           </div>
 
           <!-- Parent/Guardian Info -->
@@ -7002,6 +7051,157 @@
         } catch (error) {
           console.error('Error adding note:', error);
           this.showNotification('Error adding note: ' + error.message, 'error');
+        }
+      }
+
+      // ==================== RTC CURRENCY ====================
+      async awardRtc(studentId, isAdminAdjust = false) {
+        const amount = parseInt(document.getElementById('rtc-award-amount')?.value);
+        const reason = document.getElementById('rtc-award-reason')?.value?.trim();
+
+        if (!amount || amount === 0) {
+          this.showNotification('Please enter a valid amount', 'error');
+          return;
+        }
+
+        if (!reason) {
+          this.showNotification('Please enter a reason', 'error');
+          return;
+        }
+
+        const txType = isAdminAdjust ? 'admin_adjustment' : 'earn_manual';
+
+        try {
+          const { data, error } = await this.auth.supabase.rpc('process_rtc_transaction', {
+            p_user_id: studentId,
+            p_amount: amount,
+            p_transaction_type: txType,
+            p_description: reason,
+            p_created_by: this.userInfo.user.id
+          });
+
+          if (error) throw error;
+          if (data && !data.success) throw new Error(data.error);
+
+          this.showNotification(`${amount > 0 ? '+' : ''}${amount} RTC ${isAdminAdjust ? 'adjusted' : 'awarded'} successfully!`, 'success');
+
+          // Update balance display
+          const balEl = document.getElementById('rtc-student-balance');
+          if (balEl && data?.new_balance !== undefined) {
+            balEl.textContent = data.new_balance;
+          }
+
+          // Clear inputs
+          document.getElementById('rtc-award-amount').value = '10';
+          document.getElementById('rtc-award-reason').value = '';
+
+        } catch (error) {
+          console.error('Error awarding RTC:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+        }
+      }
+
+      async adminSetRtcBalance(studentId) {
+        const newBalance = parseInt(document.getElementById('rtc-set-balance')?.value);
+
+        if (isNaN(newBalance) || newBalance < 0) {
+          this.showNotification('Please enter a valid balance (0 or higher)', 'error');
+          return;
+        }
+
+        if (!confirm(`Set this student's RTC balance to ${newBalance}? This cannot be undone.`)) return;
+
+        try {
+          const { data, error } = await this.auth.supabase.rpc('admin_set_rtc_balance', {
+            p_user_id: studentId,
+            p_new_balance: newBalance
+          });
+
+          if (error) throw error;
+          if (data && !data.success) throw new Error(data.error);
+
+          this.showNotification(`Balance set to ${newBalance} RTC (delta: ${data.delta > 0 ? '+' : ''}${data.delta})`, 'success');
+
+          const balEl = document.getElementById('rtc-student-balance');
+          if (balEl) balEl.textContent = newBalance;
+
+        } catch (error) {
+          console.error('Error setting RTC balance:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+        }
+      }
+
+      async loadRtcTransactions(studentId) {
+        const container = document.getElementById('rtc-transaction-history');
+        if (!container) return;
+
+        container.innerHTML = '<div style="text-align: center; padding: 10px; color: var(--muted);">Loading transactions...</div>';
+
+        try {
+          const { data: transactions, error } = await this.auth.supabase
+            .from('rtc_transactions')
+            .select('*, created_by_profile:user_profiles!rtc_transactions_created_by_fkey(first_name, last_name)')
+            .eq('user_id', studentId)
+            .order('created_at', { ascending: false })
+            .limit(50);
+
+          if (error) throw error;
+
+          if (!transactions || transactions.length === 0) {
+            container.innerHTML = '<p style="color: var(--muted); font-style: italic; font-size: 13px; text-align: center; padding: 10px;">No transactions yet.</p>';
+            return;
+          }
+
+          let html = `
+            <div style="max-height: 300px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px;">
+              <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+                <thead>
+                  <tr style="background: var(--bg); position: sticky; top: 0;">
+                    <th style="padding: 8px; text-align: left;">Date</th>
+                    <th style="padding: 8px; text-align: left;">Type</th>
+                    <th style="padding: 8px; text-align: right;">Amount</th>
+                    <th style="padding: 8px; text-align: left;">Description</th>
+                    <th style="padding: 8px; text-align: right;">Balance</th>
+                    <th style="padding: 8px; text-align: left;">By</th>
+                  </tr>
+                </thead>
+                <tbody>
+          `;
+
+          const typeLabels = {
+            'earn_manual': 'Manual Award',
+            'earn_skill': 'Skill Mastery',
+            'earn_assignment': 'Assignment',
+            'earn_arcade': 'Arcade Game',
+            'spend_cosmetic': 'Cosmetic',
+            'spend_reward': 'Reward',
+            'admin_adjustment': 'Admin Adjust'
+          };
+
+          transactions.forEach(tx => {
+            const date = new Date(tx.created_at).toLocaleDateString();
+            const isPositive = tx.amount > 0;
+            const amountColor = isPositive ? 'var(--success)' : 'var(--danger)';
+            const byName = tx.created_by_profile ? `${tx.created_by_profile.first_name} ${tx.created_by_profile.last_name}` : 'System';
+
+            html += `
+              <tr style="border-bottom: 1px solid var(--border);">
+                <td style="padding: 6px 8px; color: var(--muted);">${date}</td>
+                <td style="padding: 6px 8px;">${typeLabels[tx.transaction_type] || tx.transaction_type}</td>
+                <td style="padding: 6px 8px; text-align: right; font-weight: bold; color: ${amountColor};">${isPositive ? '+' : ''}${tx.amount}</td>
+                <td style="padding: 6px 8px; color: var(--muted); max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${tx.description || '-'}</td>
+                <td style="padding: 6px 8px; text-align: right;">${tx.balance_after}</td>
+                <td style="padding: 6px 8px; color: var(--muted);">${byName}</td>
+              </tr>
+            `;
+          });
+
+          html += '</tbody></table></div>';
+          container.innerHTML = html;
+
+        } catch (error) {
+          console.error('Error loading RTC transactions:', error);
+          container.innerHTML = `<p style="color: var(--danger); font-size: 13px;">Error loading transactions: ${error.message}</p>`;
         }
       }
 

@@ -534,6 +534,11 @@ class ArcadeManager {
         await this.updateStats(gameId, stats);
         await this.incrementGamesPlayed();
 
+        // Award RTC for playing arcade games (non-blocking)
+        this._awardRtcForGame(gameId, result).catch(err => {
+            console.warn('RTC award failed (non-blocking):', err);
+        });
+
         return stats;
     }
 
@@ -550,6 +555,41 @@ class ArcadeManager {
             last_rating_change: 0,
             last_played: null
         };
+    }
+
+    /**
+     * Award RTC currency for playing an arcade game
+     * 5 RTC for playing, 10 for winning, 15 for ranked win
+     */
+    async _awardRtcForGame(gameId, result) {
+        const supabase = window.portalAuth?.supabase;
+        if (!supabase) return;
+
+        const userId = this.firebase?.supabaseUserId;
+        if (!userId) return;
+
+        let amount = 5; // Base: played a game
+        let desc = `Played ${gameId}`;
+
+        if (result.won && result.ranked) {
+            amount = 15;
+            desc = `Ranked win in ${gameId}`;
+        } else if (result.won) {
+            amount = 10;
+            desc = `Won ${gameId}`;
+        }
+
+        // Use timestamp-based reference so each game session earns separately
+        const refId = `arcade_${gameId}_${Date.now()}`;
+
+        await supabase.rpc('process_rtc_transaction', {
+            p_user_id: userId,
+            p_amount: amount,
+            p_transaction_type: 'earn_arcade',
+            p_description: desc,
+            p_reference_id: refId,
+            p_reference_type: 'arcade_game'
+        });
     }
 
     // ==========================================
