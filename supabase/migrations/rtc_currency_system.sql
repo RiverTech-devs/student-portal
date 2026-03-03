@@ -347,5 +347,56 @@ CREATE TRIGGER trigger_rtc_assignment_reward
   EXECUTE FUNCTION public.rtc_assignment_reward();
 
 -- ============================================================
+-- 1G. RTC Spend Categories
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS rtc_spend_categories (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT NOT NULL UNIQUE,
+  description TEXT,
+  is_active BOOLEAN DEFAULT true,
+  created_by UUID REFERENCES user_profiles(id),
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+ALTER TABLE rtc_spend_categories ENABLE ROW LEVEL SECURITY;
+
+-- Admins: Full CRUD on categories
+CREATE POLICY "Admins have full access to spend categories"
+  ON rtc_spend_categories FOR ALL
+  USING (
+    EXISTS (
+      SELECT 1 FROM user_profiles up WHERE up.id = auth.uid() AND up.user_type = 'admin'
+    )
+  )
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM user_profiles up WHERE up.id = auth.uid() AND up.user_type = 'admin'
+    )
+  );
+
+-- Teachers and students: SELECT active categories only
+CREATE POLICY "Teachers can view active spend categories"
+  ON rtc_spend_categories FOR SELECT
+  USING (
+    is_active = true
+    AND EXISTS (
+      SELECT 1 FROM user_profiles up WHERE up.id = auth.uid() AND up.user_type = 'teacher'
+    )
+  );
+
+CREATE POLICY "Students can view active spend categories"
+  ON rtc_spend_categories FOR SELECT
+  USING (
+    is_active = true
+    AND EXISTS (
+      SELECT 1 FROM user_profiles up WHERE up.id = auth.uid() AND up.user_type = 'student'
+    )
+  );
+
+-- Add category_id column to rtc_transactions
+ALTER TABLE rtc_transactions ADD COLUMN IF NOT EXISTS category_id UUID REFERENCES rtc_spend_categories(id);
+
+-- ============================================================
 -- Done! RTC currency system is ready.
 -- ============================================================

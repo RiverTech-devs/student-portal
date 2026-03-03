@@ -1811,6 +1811,11 @@
             <section id="admin-facilities-section" class="hidden">
               <!-- Will be populated by renderAdminFacilities() -->
             </section>
+
+            <!-- Admin RTC Management Section (Admin only) -->
+            <section id="admin-rtc-management-section" class="hidden">
+              <!-- Will be populated by renderAdminRTCManagement() -->
+            </section>
           </div>
         </div>
       </div>
@@ -2247,7 +2252,7 @@
 
         // Navigate to hash section if present, otherwise show home
         const hash = window.location.hash.substring(1);
-        const validSections = ['home', 'classes', 'messaging', 'profile', 'my-students', 'materials-requests', 'testing-center', 'activities', 'admin-dashboard', 'admin-classes', 'admin-users', 'admin-settings', 'admin-reports', 'admin-attendance', 'admin-student-records', 'admin-enrollment', 'admin-activities', 'admin-facilities'];
+        const validSections = ['home', 'classes', 'messaging', 'profile', 'my-students', 'materials-requests', 'testing-center', 'activities', 'admin-dashboard', 'admin-classes', 'admin-users', 'admin-settings', 'admin-reports', 'admin-attendance', 'admin-student-records', 'admin-enrollment', 'admin-activities', 'admin-facilities', 'admin-rtc-management'];
         if (hash && validSections.includes(hash)) {
           this.showSection(hash);
         } else {
@@ -4412,7 +4417,7 @@
 
       handleHashNavigation() {
         const hash = window.location.hash.substring(1);
-        const validSections = ['home', 'classes', 'messaging', 'profile', 'my-students', 'materials-requests', 'testing-center', 'activities', 'admin-dashboard', 'admin-classes', 'admin-users', 'admin-settings', 'admin-reports', 'admin-attendance', 'admin-student-records', 'admin-enrollment', 'admin-activities', 'admin-facilities'];
+        const validSections = ['home', 'classes', 'messaging', 'profile', 'my-students', 'materials-requests', 'testing-center', 'activities', 'admin-dashboard', 'admin-classes', 'admin-users', 'admin-settings', 'admin-reports', 'admin-attendance', 'admin-student-records', 'admin-enrollment', 'admin-activities', 'admin-facilities', 'admin-rtc-management'];
 
         if (hash && validSections.includes(hash)) {
           this.showSection(hash);
@@ -4518,6 +4523,9 @@
             break;
           case 'activities':
             this.renderActivitiesSection();
+            break;
+          case 'admin-rtc-management':
+            this.renderAdminRTCManagement();
             break;
           default:
             console.warn('Unknown section:', sectionName);
@@ -26183,6 +26191,18 @@
                     </div>
                   </div>
                 </div>
+
+                <div class="card" style="cursor: pointer; padding: 14px; border-left: 3px solid #f39c12; transition: background 0.2s;"
+                     onmouseover="this.style.background='rgba(243, 156, 18, 0.1)'" onmouseout="this.style.background='var(--card)'"
+                     onclick="app.showAdminSection('rtc-management')">
+                  <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="font-size: 24px;">💰</span>
+                    <div>
+                      <div style="font-weight: 600; font-size: 14px;">RTC Management</div>
+                      <div style="color: var(--muted); font-size: 11px;">Currency balances & categories</div>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           `;
@@ -26385,6 +26405,10 @@
           case 'facilities':
             this.showSection('admin-facilities');
             this.renderAdminFacilities();
+            break;
+          case 'rtc-management':
+            this.showSection('admin-rtc-management');
+            this.renderAdminRTCManagement();
             break;
           default:
             console.warn('Unknown admin section:', section);
@@ -34079,6 +34103,738 @@
         if (listEl) listEl.innerHTML = this.renderTeacherBookingsList(bookings);
       } catch (err) {
         this.showNotification('Error: ' + err.message, 'error');
+      }
+    }
+
+    // ==================== ADMIN RTC MANAGEMENT ====================
+
+    async renderAdminRTCManagement() {
+      const section = document.getElementById('admin-rtc-management-section');
+      if (!section) { console.error('Admin RTC management section not found'); return; }
+
+      section.innerHTML = '<div style="text-align: center; padding: 40px;"><div class="loading-spinner"></div><p>Loading RTC Management...</p></div>';
+
+      try {
+        const [studentsRes, categoriesRes] = await Promise.all([
+          this.supabaseQuery(() => this.auth.supabase
+            .from('user_profiles')
+            .select('id, first_name, last_name, email, grade_level, rtc_balance')
+            .eq('user_type', 'student')
+            .neq('student_status', 'past')
+            .order('last_name', { ascending: true })),
+          this.supabaseQuery(() => this.auth.supabase
+            .from('rtc_spend_categories')
+            .select('*')
+            .order('name'))
+        ]);
+
+        if (studentsRes.error) throw studentsRes.error;
+
+        this._rtcStudents = studentsRes.data || [];
+        this._rtcCategories = categoriesRes.data || [];
+        this._rtcCurrentTab = this._rtcCurrentTab || 'balances';
+        this._rtcLogOffset = 0;
+        this._rtcLogData = [];
+
+        this._renderRTCManagementShell(section);
+        this.switchRTCTab(this._rtcCurrentTab);
+
+      } catch (error) {
+        console.error('Error loading RTC management:', error);
+        section.innerHTML = `<div class="card" style="margin: 20px;"><p style="color: var(--danger);">Error loading RTC management: ${error.message}</p></div>`;
+      }
+    }
+
+    _renderRTCManagementShell(section) {
+      const totalRTC = this._rtcStudents.reduce((sum, s) => sum + (s.rtc_balance || 0), 0);
+      const studentsWithBalance = this._rtcStudents.filter(s => (s.rtc_balance || 0) > 0).length;
+      const categoryOptions = (this._rtcCategories || []).filter(c => c.is_active).map(c =>
+        `<option value="${c.id}">${c.name}</option>`
+      ).join('');
+
+      section.innerHTML = `
+        <div style="max-width: 1200px; margin: 0 auto; padding: 20px;">
+          <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap;">
+            <button class="btn btn-secondary" onclick="app.showAdminSection('dashboard')" style="padding: 6px 12px;">← Back</button>
+            <h2 style="margin: 0;">💰 RTC Management</h2>
+          </div>
+
+          <div style="display: flex; gap: 15px; margin-bottom: 20px; flex-wrap: wrap;">
+            <div class="card" style="padding: 15px; flex: 1; min-width: 150px; text-align: center;">
+              <div style="font-size: 24px; font-weight: bold; color: #f39c12;">${totalRTC}</div>
+              <div style="color: var(--muted); font-size: 12px;">Total RTC in Circulation</div>
+            </div>
+            <div class="card" style="padding: 15px; flex: 1; min-width: 150px; text-align: center;">
+              <div style="font-size: 24px; font-weight: bold; color: var(--accent);">${studentsWithBalance}</div>
+              <div style="color: var(--muted); font-size: 12px;">Students with Balance > 0</div>
+            </div>
+            <div class="card" style="padding: 15px; flex: 1; min-width: 150px; text-align: center;">
+              <div style="font-size: 24px; font-weight: bold; color: var(--text);">${this._rtcStudents.length}</div>
+              <div style="color: var(--muted); font-size: 12px;">Total Active Students</div>
+            </div>
+          </div>
+
+          <div style="display: flex; gap: 0; margin-bottom: 20px; border-bottom: 2px solid var(--border);">
+            <button id="rtc-tab-balances" class="btn" style="border: none; border-radius: 6px 6px 0 0; padding: 10px 20px; cursor: pointer; font-weight: 600;"
+              onclick="app.switchRTCTab('balances')">Balances</button>
+            <button id="rtc-tab-log" class="btn" style="border: none; border-radius: 6px 6px 0 0; padding: 10px 20px; cursor: pointer; font-weight: 600;"
+              onclick="app.switchRTCTab('log')">Transaction Log</button>
+            <button id="rtc-tab-categories" class="btn" style="border: none; border-radius: 6px 6px 0 0; padding: 10px 20px; cursor: pointer; font-weight: 600;"
+              onclick="app.switchRTCTab('categories')">Categories</button>
+          </div>
+
+          <div id="rtc-tab-content"></div>
+        </div>
+      `;
+    }
+
+    switchRTCTab(tab) {
+      this._rtcCurrentTab = tab;
+      ['balances', 'log', 'categories'].forEach(t => {
+        const btn = document.getElementById('rtc-tab-' + t);
+        if (btn) {
+          btn.style.background = t === tab ? 'var(--accent)' : 'transparent';
+          btn.style.color = t === tab ? '#fff' : 'var(--text)';
+        }
+      });
+
+      const content = document.getElementById('rtc-tab-content');
+      if (!content) return;
+
+      switch (tab) {
+        case 'balances':
+          this._renderRTCBalancesTab(content);
+          break;
+        case 'log':
+          this._renderRTCLogTab(content);
+          this.loadAdminRTCLog();
+          break;
+        case 'categories':
+          this._renderRTCCategoriesTab(content);
+          break;
+      }
+    }
+
+    // ---- Balances Tab ----
+
+    _renderRTCBalancesTab(container) {
+      const categoryOptions = (this._rtcCategories || []).filter(c => c.is_active).map(c =>
+        `<option value="${c.id}">${c.name}</option>`
+      ).join('');
+
+      container.innerHTML = `
+        <div class="card" style="padding: 15px; margin-bottom: 15px;">
+          <div style="display: flex; gap: 10px; align-items: end; flex-wrap: wrap;">
+            <div style="flex: 1; min-width: 180px;">
+              <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Search Students</label>
+              <input type="text" id="rtc-search" placeholder="Search by name..." oninput="app.filterAdminRTC()"
+                style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+            </div>
+            <div>
+              <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Sort By</label>
+              <select id="rtc-sort" onchange="app.filterAdminRTC()"
+                style="padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+                <option value="name-asc">Name A-Z</option>
+                <option value="name-desc">Name Z-A</option>
+                <option value="balance-desc">Balance High→Low</option>
+                <option value="balance-asc">Balance Low→High</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="padding: 15px; margin-bottom: 15px; border-left: 3px solid #f39c12;">
+          <div style="font-weight: 600; margin-bottom: 10px;">Bulk Award to All Filtered Students</div>
+          <div style="display: flex; gap: 10px; align-items: end; flex-wrap: wrap;">
+            <div>
+              <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Amount</label>
+              <input type="number" id="rtc-bulk-amount" value="10" min="1" style="width: 80px; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+            </div>
+            <div style="flex: 1; min-width: 150px;">
+              <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Reason</label>
+              <input type="text" id="rtc-bulk-reason" placeholder="e.g. Class participation" style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+            </div>
+            <div>
+              <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Category</label>
+              <select id="rtc-bulk-category" style="padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+                <option value="">No category</option>
+                ${categoryOptions}
+              </select>
+            </div>
+            <button class="btn btn-primary" onclick="app.bulkAwardRTC()" style="white-space: nowrap;">Award to All Filtered</button>
+          </div>
+        </div>
+
+        <div id="rtc-balances-table"></div>
+      `;
+
+      this.filterAdminRTC();
+    }
+
+    filterAdminRTC() {
+      const search = (document.getElementById('rtc-search')?.value || '').toLowerCase();
+      const sort = document.getElementById('rtc-sort')?.value || 'name-asc';
+
+      let filtered = this._rtcStudents.filter(s => {
+        const name = `${s.first_name} ${s.last_name}`.toLowerCase();
+        return name.includes(search);
+      });
+
+      switch (sort) {
+        case 'name-asc':
+          filtered.sort((a, b) => (a.last_name + a.first_name).localeCompare(b.last_name + b.first_name));
+          break;
+        case 'name-desc':
+          filtered.sort((a, b) => (b.last_name + b.first_name).localeCompare(a.last_name + a.first_name));
+          break;
+        case 'balance-desc':
+          filtered.sort((a, b) => (b.rtc_balance || 0) - (a.rtc_balance || 0));
+          break;
+        case 'balance-asc':
+          filtered.sort((a, b) => (a.rtc_balance || 0) - (b.rtc_balance || 0));
+          break;
+      }
+
+      this._rtcFilteredStudents = filtered;
+      this.renderAdminRTCTable(filtered);
+    }
+
+    renderAdminRTCTable(students) {
+      const container = document.getElementById('rtc-balances-table');
+      if (!container) return;
+
+      const categoryOptions = (this._rtcCategories || []).filter(c => c.is_active).map(c =>
+        `<option value="${c.id}">${c.name}</option>`
+      ).join('');
+
+      if (students.length === 0) {
+        container.innerHTML = '<div class="card" style="padding: 20px; text-align: center; color: var(--muted);">No students match your search.</div>';
+        return;
+      }
+
+      let html = `
+        <div style="overflow-x: auto;">
+          <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+            <thead>
+              <tr style="background: var(--bg);">
+                <th style="padding: 10px; text-align: left;">Name</th>
+                <th style="padding: 10px; text-align: center;">Grade</th>
+                <th style="padding: 10px; text-align: center;">Balance</th>
+                <th style="padding: 10px; text-align: left;">Quick Award</th>
+                <th style="padding: 10px; text-align: center;">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+      `;
+
+      students.forEach(s => {
+        html += `
+          <tr id="rtc-row-${s.id}" style="border-bottom: 1px solid var(--border);">
+            <td style="padding: 8px 10px; font-weight: 500;">${s.first_name} ${s.last_name}</td>
+            <td style="padding: 8px 10px; text-align: center; color: var(--muted);">${s.grade_level || '-'}</td>
+            <td style="padding: 8px 10px; text-align: center;">
+              <span id="rtc-bal-${s.id}" style="font-weight: bold; color: #f39c12; font-size: 15px;">${s.rtc_balance || 0}</span>
+            </td>
+            <td style="padding: 6px 10px;">
+              <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+                <input type="number" id="rtc-amt-${s.id}" value="10" min="1" style="width: 60px; padding: 4px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); font-size: 12px;">
+                <input type="text" id="rtc-reason-${s.id}" placeholder="Reason" style="width: 120px; padding: 4px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); font-size: 12px;">
+                <select id="rtc-cat-${s.id}" style="padding: 4px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); font-size: 12px;">
+                  <option value="">No category</option>
+                  ${categoryOptions}
+                </select>
+              </div>
+            </td>
+            <td style="padding: 6px 10px; text-align: center;">
+              <div style="display: flex; gap: 4px; justify-content: center;">
+                <button class="btn btn-primary" style="padding: 4px 10px; font-size: 11px;" onclick="app.quickAwardRTC('${s.id}')">Award</button>
+                <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 11px;" onclick="app.quickSetRTC('${s.id}')">Set</button>
+              </div>
+            </td>
+          </tr>
+        `;
+      });
+
+      html += '</tbody></table></div>';
+      container.innerHTML = html;
+    }
+
+    async quickAwardRTC(studentId) {
+      const amount = parseInt(document.getElementById('rtc-amt-' + studentId)?.value);
+      const reason = document.getElementById('rtc-reason-' + studentId)?.value?.trim();
+      const categoryId = document.getElementById('rtc-cat-' + studentId)?.value || null;
+
+      if (!amount || amount === 0) {
+        this.showNotification('Enter a valid amount', 'error');
+        return;
+      }
+      if (!reason) {
+        this.showNotification('Enter a reason for the award', 'error');
+        return;
+      }
+
+      try {
+        const { data, error } = await this.auth.supabase.rpc('process_rtc_transaction', {
+          p_user_id: studentId,
+          p_amount: amount,
+          p_transaction_type: 'earn_manual',
+          p_description: reason,
+          p_created_by: this.userInfo.user.id
+        });
+
+        if (error) throw error;
+        if (data && !data.success) throw new Error(data.error);
+
+        // Update local data
+        const student = this._rtcStudents.find(s => s.id === studentId);
+        if (student) student.rtc_balance = data.new_balance;
+
+        // Flash green on the balance
+        const balEl = document.getElementById('rtc-bal-' + studentId);
+        if (balEl) {
+          balEl.textContent = data.new_balance;
+          balEl.style.background = 'rgba(39, 174, 96, 0.3)';
+          balEl.style.borderRadius = '4px';
+          balEl.style.padding = '2px 6px';
+          setTimeout(() => { balEl.style.background = 'transparent'; }, 1500);
+        }
+
+        // Update summary stats
+        this._updateRTCSummaryStats();
+
+        // Clear reason input
+        const reasonEl = document.getElementById('rtc-reason-' + studentId);
+        if (reasonEl) reasonEl.value = '';
+
+        this.showNotification(`+${amount} RTC awarded successfully!`, 'success');
+
+      } catch (error) {
+        console.error('Error awarding RTC:', error);
+        this.showNotification('Error: ' + error.message, 'error');
+      }
+    }
+
+    async quickSetRTC(studentId) {
+      const student = this._rtcStudents.find(s => s.id === studentId);
+      const currentBalance = student?.rtc_balance || 0;
+
+      const input = prompt(`Set new RTC balance for ${student?.first_name} ${student?.last_name}\nCurrent balance: ${currentBalance}\n\nEnter new balance:`);
+      if (input === null) return;
+
+      const newBalance = parseInt(input);
+      if (isNaN(newBalance) || newBalance < 0) {
+        this.showNotification('Please enter a valid balance (0 or higher)', 'error');
+        return;
+      }
+
+      if (!confirm(`Set ${student?.first_name} ${student?.last_name}'s balance from ${currentBalance} to ${newBalance}?`)) return;
+
+      try {
+        const { data, error } = await this.auth.supabase.rpc('admin_set_rtc_balance', {
+          p_user_id: studentId,
+          p_new_balance: newBalance
+        });
+
+        if (error) throw error;
+        if (data && !data.success) throw new Error(data.error);
+
+        // Update local data
+        if (student) student.rtc_balance = newBalance;
+
+        const balEl = document.getElementById('rtc-bal-' + studentId);
+        if (balEl) {
+          balEl.textContent = newBalance;
+          balEl.style.background = 'rgba(52, 152, 219, 0.3)';
+          balEl.style.borderRadius = '4px';
+          balEl.style.padding = '2px 6px';
+          setTimeout(() => { balEl.style.background = 'transparent'; }, 1500);
+        }
+
+        this._updateRTCSummaryStats();
+        this.showNotification(`Balance set to ${newBalance} RTC (delta: ${data.delta > 0 ? '+' : ''}${data.delta})`, 'success');
+
+      } catch (error) {
+        console.error('Error setting RTC balance:', error);
+        this.showNotification('Error: ' + error.message, 'error');
+      }
+    }
+
+    async bulkAwardRTC() {
+      const amount = parseInt(document.getElementById('rtc-bulk-amount')?.value);
+      const reason = document.getElementById('rtc-bulk-reason')?.value?.trim();
+
+      if (!amount || amount <= 0) {
+        this.showNotification('Enter a valid amount', 'error');
+        return;
+      }
+      if (!reason) {
+        this.showNotification('Enter a reason for the bulk award', 'error');
+        return;
+      }
+
+      const filtered = this._rtcFilteredStudents || [];
+      if (filtered.length === 0) {
+        this.showNotification('No students to award', 'error');
+        return;
+      }
+
+      if (!confirm(`Award ${amount} RTC to ${filtered.length} student(s) for "${reason}"?`)) return;
+
+      let success = 0;
+      let failed = 0;
+
+      for (const student of filtered) {
+        try {
+          const { data, error } = await this.auth.supabase.rpc('process_rtc_transaction', {
+            p_user_id: student.id,
+            p_amount: amount,
+            p_transaction_type: 'earn_manual',
+            p_description: reason,
+            p_created_by: this.userInfo.user.id
+          });
+
+          if (error) throw error;
+          if (data && !data.success) throw new Error(data.error);
+
+          student.rtc_balance = data.new_balance;
+          const balEl = document.getElementById('rtc-bal-' + student.id);
+          if (balEl) balEl.textContent = data.new_balance;
+          success++;
+        } catch (e) {
+          console.error(`Failed to award RTC to ${student.first_name} ${student.last_name}:`, e);
+          failed++;
+        }
+      }
+
+      this._updateRTCSummaryStats();
+      this.showNotification(`Bulk award complete: ${success} succeeded, ${failed} failed`, failed > 0 ? 'warning' : 'success');
+
+      // Clear bulk inputs
+      document.getElementById('rtc-bulk-reason').value = '';
+    }
+
+    _updateRTCSummaryStats() {
+      const section = document.getElementById('admin-rtc-management-section');
+      if (!section) return;
+      // Re-render the shell to update stats, preserving current tab
+      this._renderRTCManagementShell(section);
+      this.switchRTCTab(this._rtcCurrentTab);
+    }
+
+    // ---- Transaction Log Tab ----
+
+    _renderRTCLogTab(container) {
+      const typeOptions = ['earn_manual', 'earn_skill', 'earn_assignment', 'earn_arcade', 'spend_cosmetic', 'spend_reward', 'admin_adjustment'];
+
+      container.innerHTML = `
+        <div class="card" style="padding: 15px; margin-bottom: 15px;">
+          <div style="display: flex; gap: 10px; align-items: end; flex-wrap: wrap;">
+            <div>
+              <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">From</label>
+              <input type="date" id="rtc-log-from" style="padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+            </div>
+            <div>
+              <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">To</label>
+              <input type="date" id="rtc-log-to" style="padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+            </div>
+            <div>
+              <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Type</label>
+              <select id="rtc-log-type" style="padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+                <option value="">All Types</option>
+                ${typeOptions.map(t => `<option value="${t}">${t.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}</option>`).join('')}
+              </select>
+            </div>
+            <div style="flex: 1; min-width: 150px;">
+              <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Student</label>
+              <input type="text" id="rtc-log-search" placeholder="Search student name..." style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+            </div>
+            <button class="btn btn-primary" onclick="app.filterRTCLog()">Filter</button>
+          </div>
+        </div>
+
+        <div id="rtc-log-table">
+          <div style="text-align: center; padding: 20px; color: var(--muted);">Loading transactions...</div>
+        </div>
+      `;
+    }
+
+    async loadAdminRTCLog(append = false) {
+      const container = document.getElementById('rtc-log-table');
+      if (!container) return;
+
+      if (!append) {
+        this._rtcLogOffset = 0;
+        this._rtcLogData = [];
+        container.innerHTML = '<div style="text-align: center; padding: 20px; color: var(--muted);">Loading transactions...</div>';
+      }
+
+      try {
+        let query = this.auth.supabase
+          .from('rtc_transactions')
+          .select('*, student:user_profiles!rtc_transactions_user_id_fkey(first_name, last_name), adjuster:user_profiles!rtc_transactions_created_by_fkey(first_name, last_name), category:rtc_spend_categories(name)')
+          .order('created_at', { ascending: false })
+          .range(this._rtcLogOffset, this._rtcLogOffset + 99);
+
+        // Apply filters
+        const fromDate = document.getElementById('rtc-log-from')?.value;
+        const toDate = document.getElementById('rtc-log-to')?.value;
+        const txType = document.getElementById('rtc-log-type')?.value;
+        const studentSearch = document.getElementById('rtc-log-search')?.value?.toLowerCase()?.trim();
+
+        if (fromDate) query = query.gte('created_at', fromDate + 'T00:00:00');
+        if (toDate) query = query.lte('created_at', toDate + 'T23:59:59');
+        if (txType) query = query.eq('transaction_type', txType);
+
+        const { data, error } = await query;
+        if (error) throw error;
+
+        let transactions = data || [];
+
+        // Client-side student name filter
+        if (studentSearch) {
+          transactions = transactions.filter(tx => {
+            const name = tx.student ? `${tx.student.first_name} ${tx.student.last_name}`.toLowerCase() : '';
+            return name.includes(studentSearch);
+          });
+        }
+
+        if (append) {
+          this._rtcLogData = [...this._rtcLogData, ...transactions];
+        } else {
+          this._rtcLogData = transactions;
+        }
+
+        this._renderRTCLogTable(container, transactions.length >= 100);
+
+      } catch (error) {
+        console.error('Error loading RTC log:', error);
+        container.innerHTML = `<p style="color: var(--danger); padding: 10px;">Error loading transactions: ${error.message}</p>`;
+      }
+    }
+
+    filterRTCLog() {
+      this.loadAdminRTCLog(false);
+    }
+
+    _renderRTCLogTable(container, hasMore) {
+      const transactions = this._rtcLogData;
+
+      const typeLabels = {
+        'earn_manual': 'Manual Award',
+        'earn_skill': 'Skill Mastery',
+        'earn_assignment': 'Assignment',
+        'earn_arcade': 'Arcade Game',
+        'spend_cosmetic': 'Cosmetic',
+        'spend_reward': 'Reward',
+        'admin_adjustment': 'Admin Adjust'
+      };
+
+      if (transactions.length === 0) {
+        container.innerHTML = '<div class="card" style="padding: 20px; text-align: center; color: var(--muted);">No transactions found.</div>';
+        return;
+      }
+
+      let html = `
+        <div style="overflow-x: auto;">
+          <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+            <thead>
+              <tr style="background: var(--bg);">
+                <th style="padding: 10px; text-align: left;">Date</th>
+                <th style="padding: 10px; text-align: left;">Student</th>
+                <th style="padding: 10px; text-align: left;">Type</th>
+                <th style="padding: 10px; text-align: right;">Amount</th>
+                <th style="padding: 10px; text-align: left;">Category</th>
+                <th style="padding: 10px; text-align: left;">Description</th>
+                <th style="padding: 10px; text-align: right;">Balance After</th>
+                <th style="padding: 10px; text-align: left;">Adjusted By</th>
+              </tr>
+            </thead>
+            <tbody>
+      `;
+
+      transactions.forEach(tx => {
+        const date = new Date(tx.created_at).toLocaleString();
+        const studentName = tx.student ? `${tx.student.first_name} ${tx.student.last_name}` : 'Unknown';
+        const adjusterName = tx.adjuster ? `${tx.adjuster.first_name} ${tx.adjuster.last_name}` : 'System';
+        const isPositive = tx.amount > 0;
+        const amountColor = isPositive ? 'var(--success)' : 'var(--danger)';
+        const rowBg = isPositive ? 'rgba(39, 174, 96, 0.03)' : 'rgba(231, 76, 60, 0.03)';
+        const categoryName = tx.category?.name || '-';
+
+        html += `
+          <tr style="border-bottom: 1px solid var(--border); background: ${rowBg};">
+            <td style="padding: 8px 10px; color: var(--muted); white-space: nowrap; font-size: 12px;">${date}</td>
+            <td style="padding: 8px 10px; font-weight: 500;">${studentName}</td>
+            <td style="padding: 8px 10px;">${typeLabels[tx.transaction_type] || tx.transaction_type}</td>
+            <td style="padding: 8px 10px; text-align: right; font-weight: bold; color: ${amountColor};">${isPositive ? '+' : ''}${tx.amount}</td>
+            <td style="padding: 8px 10px; color: var(--muted);">${categoryName}</td>
+            <td style="padding: 8px 10px; color: var(--muted); max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${(tx.description || '').replace(/"/g, '&quot;')}">${tx.description || '-'}</td>
+            <td style="padding: 8px 10px; text-align: right;">${tx.balance_after}</td>
+            <td style="padding: 8px 10px; color: var(--muted);">${adjusterName}</td>
+          </tr>
+        `;
+      });
+
+      html += '</tbody></table></div>';
+
+      if (hasMore) {
+        html += `
+          <div style="text-align: center; margin-top: 15px;">
+            <button class="btn btn-secondary" onclick="app._rtcLogOffset += 100; app.loadAdminRTCLog(true);">Load More</button>
+          </div>
+        `;
+      }
+
+      container.innerHTML = html;
+    }
+
+    // ---- Categories Tab ----
+
+    _renderRTCCategoriesTab(container) {
+      const categories = this._rtcCategories || [];
+
+      let html = `
+        <div class="card" style="padding: 15px; margin-bottom: 15px; border-left: 3px solid #f39c12;">
+          <div style="font-weight: 600; margin-bottom: 10px;">Add New Category</div>
+          <div style="display: flex; gap: 10px; align-items: end; flex-wrap: wrap;">
+            <div style="flex: 1; min-width: 150px;">
+              <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Name</label>
+              <input type="text" id="rtc-cat-name" placeholder="e.g. Field Trip" style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+            </div>
+            <div style="flex: 2; min-width: 200px;">
+              <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Description</label>
+              <input type="text" id="rtc-cat-desc" placeholder="Optional description" style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+            </div>
+            <button class="btn btn-primary" onclick="app.addRTCCategory()">Add Category</button>
+          </div>
+        </div>
+      `;
+
+      if (categories.length === 0) {
+        html += '<div class="card" style="padding: 20px; text-align: center; color: var(--muted);">No categories yet. Create one above.</div>';
+      } else {
+        html += '<div style="display: grid; gap: 10px;">';
+        categories.forEach(cat => {
+          const statusColor = cat.is_active ? 'var(--success)' : 'var(--muted)';
+          const statusLabel = cat.is_active ? 'Active' : 'Inactive';
+          const toggleLabel = cat.is_active ? 'Deactivate' : 'Activate';
+          const toggleBtnClass = cat.is_active ? 'btn-secondary' : 'btn-primary';
+
+          html += `
+            <div class="card" style="padding: 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; opacity: ${cat.is_active ? '1' : '0.6'};">
+              <div style="flex: 1;">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span id="rtc-cat-name-display-${cat.id}" style="font-weight: 600; cursor: pointer;" onclick="app._editRTCCategoryName('${cat.id}')" title="Click to edit">${cat.name}</span>
+                  <span style="font-size: 11px; padding: 2px 8px; border-radius: 10px; background: ${statusColor}; color: white;">${statusLabel}</span>
+                </div>
+                <div style="color: var(--muted); font-size: 12px; margin-top: 4px;">${cat.description || 'No description'}</div>
+              </div>
+              <div style="display: flex; gap: 6px;">
+                <button class="btn ${toggleBtnClass}" style="padding: 4px 10px; font-size: 11px;" onclick="app.toggleRTCCategory('${cat.id}')">${toggleLabel}</button>
+              </div>
+            </div>
+          `;
+        });
+        html += '</div>';
+      }
+
+      container.innerHTML = html;
+    }
+
+    async addRTCCategory() {
+      const name = document.getElementById('rtc-cat-name')?.value?.trim();
+      const description = document.getElementById('rtc-cat-desc')?.value?.trim();
+
+      if (!name) {
+        this.showNotification('Please enter a category name', 'error');
+        return;
+      }
+
+      try {
+        const { data, error } = await this.supabaseQuery(() => this.auth.supabase
+          .from('rtc_spend_categories')
+          .insert({ name, description: description || null, created_by: this.userInfo.user.id })
+          .select()
+          .single());
+
+        if (error) throw error;
+
+        this._rtcCategories.push(data);
+        this.showNotification(`Category "${name}" created!`, 'success');
+
+        // Re-render categories tab
+        const content = document.getElementById('rtc-tab-content');
+        if (content) this._renderRTCCategoriesTab(content);
+
+      } catch (error) {
+        console.error('Error adding category:', error);
+        this.showNotification('Error: ' + error.message, 'error');
+      }
+    }
+
+    async toggleRTCCategory(id) {
+      const cat = this._rtcCategories.find(c => c.id === id);
+      if (!cat) return;
+
+      const newStatus = !cat.is_active;
+
+      try {
+        const { error } = await this.supabaseQuery(() => this.auth.supabase
+          .from('rtc_spend_categories')
+          .update({ is_active: newStatus })
+          .eq('id', id));
+
+        if (error) throw error;
+
+        cat.is_active = newStatus;
+        this.showNotification(`Category "${cat.name}" ${newStatus ? 'activated' : 'deactivated'}`, 'success');
+
+        const content = document.getElementById('rtc-tab-content');
+        if (content) this._renderRTCCategoriesTab(content);
+
+      } catch (error) {
+        console.error('Error toggling category:', error);
+        this.showNotification('Error: ' + error.message, 'error');
+      }
+    }
+
+    async _editRTCCategoryName(id) {
+      const cat = this._rtcCategories.find(c => c.id === id);
+      if (!cat) return;
+
+      const newName = prompt('Edit category name:', cat.name);
+      if (!newName || newName.trim() === '' || newName.trim() === cat.name) return;
+
+      try {
+        const { error } = await this.supabaseQuery(() => this.auth.supabase
+          .from('rtc_spend_categories')
+          .update({ name: newName.trim() })
+          .eq('id', id));
+
+        if (error) throw error;
+
+        cat.name = newName.trim();
+        this.showNotification('Category name updated', 'success');
+
+        const content = document.getElementById('rtc-tab-content');
+        if (content) this._renderRTCCategoriesTab(content);
+
+      } catch (error) {
+        console.error('Error editing category:', error);
+        this.showNotification('Error: ' + error.message, 'error');
+      }
+    }
+
+    async loadRTCCategories() {
+      try {
+        const { data, error } = await this.supabaseQuery(() => this.auth.supabase
+          .from('rtc_spend_categories')
+          .select('*')
+          .order('name'));
+        if (error) throw error;
+        this._rtcCategories = data || [];
+      } catch (error) {
+        console.error('Error loading RTC categories:', error);
       }
     }
 
