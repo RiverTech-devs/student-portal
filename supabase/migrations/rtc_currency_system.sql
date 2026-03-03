@@ -310,8 +310,11 @@ CREATE TRIGGER trigger_rtc_skill_mastery
   FOR EACH ROW
   EXECUTE FUNCTION public.rtc_skill_mastery_reward();
 
--- Assignment trigger: awards RTC based on score tiers
--- 90%+ = 30 RTC, 80%+ = 20 RTC, 70%+ = 10 RTC
+-- Add rtc_reward column for dynamic assignment rewards
+ALTER TABLE homework_assignments ADD COLUMN IF NOT EXISTS rtc_reward INTEGER DEFAULT 30;
+
+-- Assignment trigger: awards RTC based on score tiers (dynamic from rtc_reward column)
+-- 90%+ = max, 80%+ = floor(max*2/3/5)*5, 70%+ = floor(max/3/5)*5
 CREATE OR REPLACE FUNCTION public.rtc_assignment_reward()
 RETURNS TRIGGER
 LANGUAGE plpgsql
@@ -322,18 +325,31 @@ DECLARE
   v_result JSON;
   v_reward INTEGER;
   v_score INTEGER;
+  v_max INTEGER;
 BEGIN
+  v_max := COALESCE(NEW.rtc_reward, 30);
+
+  -- If teacher set rtc_reward to 0, skip awarding
+  IF v_max = 0 THEN
+    RETURN NEW;
+  END IF;
+
   v_score := COALESCE(NEW.final_score, 0);
 
-  -- Determine reward tier
+  -- Determine reward tier based on dynamic max
   IF v_score >= 90 THEN
-    v_reward := 30;
+    v_reward := v_max;
   ELSIF v_score >= 80 THEN
-    v_reward := 20;
+    v_reward := FLOOR(v_max * 2.0 / 3 / 5) * 5;
   ELSIF v_score >= 70 THEN
-    v_reward := 10;
+    v_reward := FLOOR(v_max * 1.0 / 3 / 5) * 5;
   ELSE
     RETURN NEW; -- No reward below 70%
+  END IF;
+
+  -- Skip if calculated reward is 0
+  IF v_reward <= 0 THEN
+    RETURN NEW;
   END IF;
 
   -- Award RTC (duplicate check via reference_id prevents double awards)
