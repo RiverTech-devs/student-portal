@@ -547,6 +547,47 @@ serve(async (req) => {
           </div>
         </div>
       `
+    } else if (payload.type === 'attendance_alert') {
+      const data = payload.data || {}
+      const statusText = data.status === 'late' ? 'arrived late' :
+                         data.status === 'left_early' ? 'left early' :
+                         'arrived late and left early'
+      subject = `⚠️ Attendance Alert: ${data.studentName}`
+      html = `
+        <div style="font-family: Inter, system-ui, Segoe UI, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="background: linear-gradient(135deg, #f5576c, #ff8a5c); color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+            <h2 style="margin: 0;">⚠️ Attendance Alert</h2>
+          </div>
+          <div style="padding: 20px; border: 1px solid #ddd; border-top: none; border-radius: 0 0 8px 8px;">
+            <p>An attendance issue has been recorded:</p>
+
+            <div style="background: #fff3e0; border: 1px solid #ff9800; padding: 15px; border-radius: 8px; margin: 20px 0;">
+              <div style="margin-bottom: 10px;">
+                <strong>Student:</strong> ${data.studentName}
+              </div>
+              <div style="margin-bottom: 10px;">
+                <strong>Status:</strong> ${statusText}
+              </div>
+              <div style="margin-bottom: 10px;">
+                <strong>Date:</strong> ${data.date}
+              </div>
+              <div>
+                <strong>Type:</strong> ${data.attendanceType === 'class' ? 'Class' : 'Daily'} Attendance
+              </div>
+            </div>
+
+            <div style="text-align: center; margin: 25px 0;">
+              <a href="https://portal.rivertech.me" style="background: linear-gradient(135deg, #f5576c, #ff8a5c); color: white; padding: 12px 30px; border-radius: 6px; text-decoration: none; font-weight: 600; display: inline-block;">
+                View in Portal
+              </a>
+            </div>
+
+            <p style="color: #999; font-size: 12px; margin-top: 30px;">
+              This is an automated attendance alert from the Student Portal. You can manage your notification preferences in your profile settings.
+            </p>
+          </div>
+        </div>
+      `
     } else {
       subject = payload.subject
       html = payload.html

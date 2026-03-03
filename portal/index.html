@@ -9724,11 +9724,16 @@
 
           const studentMap = new Map(students.map(s => [s.id, s]));
 
-          // Get all admins and teachers in parallel
+          // Get all admins and teachers in parallel (include email + prefs for email alerts)
           const [{ data: admins }, { data: teachers }] = await Promise.all([
-            this.auth.supabase.from('user_profiles').select('id').eq('user_type', 'admin'),
-            this.auth.supabase.from('user_profiles').select('id').eq('user_type', 'teacher')
+            this.auth.supabase.from('user_profiles').select('id, email, email_notifications').eq('user_type', 'admin'),
+            this.auth.supabase.from('user_profiles').select('id, email, email_notifications').eq('user_type', 'teacher')
           ]);
+
+          // Build a lookup map for email info
+          const recipientProfiles = new Map();
+          (admins || []).forEach(a => recipientProfiles.set(a.id, a));
+          (teachers || []).forEach(t => recipientProfiles.set(t.id, t));
 
           // Combine recipients (admins + teachers), exclude current user
           const recipientIds = new Set();
@@ -9780,6 +9785,28 @@
                   attendanceType: attendanceType
                 }
               );
+
+              // Send email if recipient has attendance_alerts preference enabled
+              const profile = recipientProfiles.get(recipientId);
+              if (profile?.email) {
+                const prefs = profile.email_notifications || {};
+                // Default: enabled for admins, disabled for teachers
+                const isAdmin = (admins || []).some(a => a.id === recipientId);
+                const alertEnabled = prefs.attendance_alerts !== undefined ? prefs.attendance_alerts : isAdmin;
+                if (alertEnabled) {
+                  await this.sendEmailWithTracking(
+                    profile.email,
+                    'attendance_alert',
+                    {
+                      studentName,
+                      status: record.status,
+                      date: record.date,
+                      attendanceType
+                    },
+                    { notificationType: 'attendance_alert', studentName }
+                  );
+                }
+              }
             }
           }
         } catch (error) {
@@ -9928,13 +9955,14 @@
         const teacherOptions = [
           { key: 'assignment_submitted', label: 'Assignment Submissions', description: 'Get notified when a student submits an assignment' },
           { key: 'late_submissions', label: 'Late Submissions', description: 'Get notified when a student submits late work' },
-          { key: 'strike_notifications', label: 'Disciplinary Strikes', description: 'Get notified when a student receives a disciplinary strike' }
+          { key: 'strike_notifications', label: 'Disciplinary Strikes', description: 'Get notified when a student receives a disciplinary strike' },
+          { key: 'attendance_alerts', label: 'Attendance Alerts', description: 'Get emailed when a student arrives late or leaves early' }
         ];
 
         const adminOptions = [
           { key: 'new_user_registration', label: 'New Registrations', description: 'Get notified when a new user registers' },
           { key: 'system_alerts', label: 'System Alerts', description: 'Get notified about important system events' }
-          // Note: strike_notifications is already included via teacherOptions for admins
+          // Note: attendance_alerts is already included via teacherOptions for admins
         ];
 
         switch (userType) {
@@ -11240,7 +11268,7 @@
         }
       }
 
-      // Send email with failure tracking - alerts admins on failure
+      // Send email with failure tracking - alerts admins on failure and logs to email_log
       async sendEmailWithTracking(to, type, data, context = {}) {
         try {
           const { data: result, error } = await this.auth.supabase.functions.invoke('send-notification-email', {
@@ -11249,6 +11277,15 @@
 
           if (error) {
             console.error('Email delivery failed:', error);
+            // Log failed email
+            await this.auth.supabase.from('email_log').insert({
+              recipient_email: to,
+              email_type: type,
+              subject: this.getEmailSubjectForType(type, data),
+              status: 'failed',
+              error_message: error.message || 'Unknown error',
+              metadata: context
+            });
             // Alert admins about email failure
             await this.sendSystemAlert(
               'email_failure',
@@ -11265,9 +11302,27 @@
             return { success: false, error };
           }
 
+          // Log successful email
+          await this.auth.supabase.from('email_log').insert({
+            recipient_email: to,
+            email_type: type,
+            subject: this.getEmailSubjectForType(type, data),
+            status: 'success',
+            metadata: context
+          });
+
           return { success: true, data: result };
         } catch (err) {
           console.error('Email sending error:', err);
+          // Log failed email
+          await this.auth.supabase.from('email_log').insert({
+            recipient_email: to,
+            email_type: type,
+            subject: this.getEmailSubjectForType(type, data),
+            status: 'failed',
+            error_message: err.message || 'Unknown error',
+            metadata: context
+          });
           await this.sendSystemAlert(
             'email_failure',
             'Email Delivery Failed',
@@ -11284,16 +11339,55 @@
         }
       }
 
+      // Helper to derive a human-readable subject from email type
+      getEmailSubjectForType(type, data) {
+        const subjects = {
+          'broadcast_announcement': data?.title || 'Announcement',
+          'attendance_alert': `Attendance Alert: ${data?.studentName || 'Student'}`,
+          'enrollment_approved': `Enrollment Approved: ${data?.studentName || 'Student'}`,
+          'enrollment_denied': `Enrollment Update: ${data?.studentName || 'Student'}`,
+          'enrollment_waitlisted': `Enrollment Waitlisted: ${data?.studentName || 'Student'}`,
+          'assignment_graded': `Assignment Graded: ${data?.assignmentTitle || 'Assignment'}`,
+          'welcome': 'Welcome to Student Portal',
+          'password_reset': 'Password Reset Request',
+          'strike_notification': `Disciplinary Strike: ${data?.studentName || 'Student'}`,
+        };
+        return subjects[type] || type;
+      }
+
       // Admin broadcast announcement
-      showBroadcastModal() {
+      async showBroadcastModal() {
+        // Load grade levels and classes for filters
+        const [{ data: gradeData }, { data: classData }] = await Promise.all([
+          this.auth.supabase.from('user_profiles').select('grade_level').eq('user_type', 'student').not('grade_level', 'is', null),
+          this.auth.supabase.from('classes').select('id, name').order('name')
+        ]);
+
+        const grades = [...new Set((gradeData || []).map(g => g.grade_level).filter(Boolean))].sort((a, b) => a - b);
+        const classes = classData || [];
+
+        const gradeCheckboxes = grades.map(g =>
+          `<label style="display: flex; align-items: center; gap: 6px; cursor: pointer; padding: 2px 0;">
+            <input type="checkbox" class="broadcast-grade-filter" value="${g}" style="width: 16px; height: 16px;">
+            <span>Grade ${g}</span>
+          </label>`
+        ).join('');
+
+        const classCheckboxes = classes.map(c =>
+          `<label style="display: flex; align-items: center; gap: 6px; cursor: pointer; padding: 2px 0;">
+            <input type="checkbox" class="broadcast-class-filter" value="${c.id}" style="width: 16px; height: 16px;">
+            <span>${this.escapeHtml(c.name)}</span>
+          </label>`
+        ).join('');
+
         const modal = document.createElement('div');
         modal.className = 'modal-backdrop';
         modal.id = 'broadcast-modal';
         modal.innerHTML = `
-          <div class="modal-content" style="max-width: 500px;">
+          <div class="modal-content" style="max-width: 550px;">
             <h3 style="margin-bottom: 20px;">📢 Send Announcement</h3>
             <p style="color: var(--muted); margin-bottom: 20px;">
-              Send a notification to all users. They'll see it in their notification bell.
+              Send a notification to users. They'll see it in their notification bell.
             </p>
 
             <div class="form-group">
@@ -11305,6 +11399,24 @@
                 <option value="teacher">All Teachers</option>
               </select>
             </div>
+
+            ${grades.length > 0 ? `
+            <div class="form-group" id="broadcast-grade-group">
+              <label>Filter by Grade Level: <span style="color: var(--muted); font-size: 12px;">(optional)</span></label>
+              <div style="max-height: 120px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; background: var(--bg);">
+                ${gradeCheckboxes}
+              </div>
+            </div>
+            ` : ''}
+
+            ${classes.length > 0 ? `
+            <div class="form-group" id="broadcast-class-group">
+              <label>Filter by Class: <span style="color: var(--muted); font-size: 12px;">(optional)</span></label>
+              <div style="max-height: 150px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; background: var(--bg);">
+                ${classCheckboxes}
+              </div>
+            </div>
+            ` : ''}
 
             <div class="form-group">
               <label>Title:</label>
@@ -11331,7 +11443,7 @@
             <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px;">
               <button class="btn btn-secondary" onclick="app.closeModal('broadcast-modal')">Cancel</button>
               <button class="btn btn-primary" onclick="app.sendBroadcast()" id="send-broadcast-btn">
-                📢 Send to All
+                📢 Send Announcement
               </button>
             </div>
           </div>
@@ -11345,6 +11457,10 @@
         const message = document.getElementById('broadcast-message').value.trim();
         const sendEmail = document.getElementById('broadcast-send-email')?.checked || false;
 
+        // Collect selected grade and class filters
+        const selectedGrades = [...document.querySelectorAll('.broadcast-grade-filter:checked')].map(cb => cb.value);
+        const selectedClassIds = [...document.querySelectorAll('.broadcast-class-filter:checked')].map(cb => cb.value);
+
         if (!title || !message) {
           window.PortalUI?.showNotification('Please enter a title and message', 'error');
           return;
@@ -11355,8 +11471,64 @@
         btn.textContent = sendEmail ? 'Sending emails...' : 'Sending...';
 
         try {
-          // Get users to notify (direct call, no wrapper)
-          // Only active users - exclude inactive student records
+          let targetUserIds = null; // null means no filtering beyond audience
+
+          // Apply grade-level filtering
+          if (selectedGrades.length > 0) {
+            // Get students in selected grades
+            const { data: gradeStudents } = await this.auth.supabase
+              .from('user_profiles')
+              .select('id')
+              .eq('user_type', 'student')
+              .in('grade_level', selectedGrades);
+
+            const studentIds = new Set((gradeStudents || []).map(s => s.id));
+
+            if (audience === 'parent') {
+              // Find parents linked to these students
+              const { data: links } = await this.auth.supabase
+                .from('parent_student_links')
+                .select('parent_id')
+                .in('student_id', [...studentIds]);
+              targetUserIds = new Set((links || []).map(l => l.parent_id));
+            } else {
+              targetUserIds = studentIds;
+            }
+          }
+
+          // Apply class filtering
+          if (selectedClassIds.length > 0) {
+            // Get students enrolled in selected classes
+            const { data: enrollments } = await this.auth.supabase
+              .from('class_enrollments')
+              .select('student_id')
+              .in('class_id', selectedClassIds);
+
+            const classStudentIds = new Set((enrollments || []).map(e => e.student_id));
+
+            if (audience === 'parent') {
+              const { data: links } = await this.auth.supabase
+                .from('parent_student_links')
+                .select('parent_id')
+                .in('student_id', [...classStudentIds]);
+              const classParentIds = new Set((links || []).map(l => l.parent_id));
+
+              // Intersect with grade filter if both are set
+              if (targetUserIds) {
+                targetUserIds = new Set([...targetUserIds].filter(id => classParentIds.has(id)));
+              } else {
+                targetUserIds = classParentIds;
+              }
+            } else {
+              if (targetUserIds) {
+                targetUserIds = new Set([...targetUserIds].filter(id => classStudentIds.has(id)));
+              } else {
+                targetUserIds = classStudentIds;
+              }
+            }
+          }
+
+          // Get users to notify
           let query = this.auth.supabase
             .from('user_profiles')
             .select('id, email, first_name, user_type, account_status')
@@ -11364,6 +11536,15 @@
 
           if (audience !== 'all') {
             query = query.eq('user_type', audience);
+          }
+
+          // If we have targeted user IDs, filter to only those
+          if (targetUserIds) {
+            if (targetUserIds.size === 0) {
+              window.PortalUI?.showNotification('No users match the selected filters', 'warning');
+              return;
+            }
+            query = query.in('id', [...targetUserIds]);
           }
 
           const { data: users, error } = await query;
@@ -11374,7 +11555,7 @@
             return;
           }
 
-          // Create notifications for all users (direct call, no wrapper)
+          // Create notifications for all users
           const notifications = users.map(user => ({
             user_id: user.id,
             type: 'system',
@@ -11428,8 +11609,146 @@
           // Always reset button state
           if (btn) {
             btn.disabled = false;
-            btn.textContent = '📢 Send to All';
+            btn.textContent = '📢 Send Announcement';
           }
+        }
+      }
+
+      // ==================== EMAIL LOG ====================
+      async showEmailLog(page = 1) {
+        const perPage = 50;
+        const offset = (page - 1) * perPage;
+
+        // Show modal with loading state
+        const existingModal = document.getElementById('email-log-modal');
+        if (!existingModal) {
+          const modal = document.createElement('div');
+          modal.className = 'modal-backdrop';
+          modal.id = 'email-log-modal';
+          modal.innerHTML = `
+            <div class="modal-content" style="max-width: 900px; max-height: 85vh; overflow-y: auto;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                <h3>📧 Email Log</h3>
+                <button class="btn btn-secondary" onclick="app.closeModal('email-log-modal')" style="padding: 5px 12px;">✕</button>
+              </div>
+
+              <div style="display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 15px; align-items: flex-end;">
+                <div>
+                  <label style="font-size: 12px; color: var(--muted);">From:</label>
+                  <input type="date" id="email-log-from" style="padding: 6px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                </div>
+                <div>
+                  <label style="font-size: 12px; color: var(--muted);">To:</label>
+                  <input type="date" id="email-log-to" style="padding: 6px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                </div>
+                <div>
+                  <label style="font-size: 12px; color: var(--muted);">Type:</label>
+                  <select id="email-log-type" style="padding: 6px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                    <option value="">All Types</option>
+                    <option value="broadcast_announcement">Broadcast</option>
+                    <option value="attendance_alert">Attendance Alert</option>
+                    <option value="enrollment_approved">Enrollment Approved</option>
+                    <option value="enrollment_denied">Enrollment Denied</option>
+                    <option value="enrollment_waitlisted">Enrollment Waitlisted</option>
+                    <option value="assignment_graded">Assignment Graded</option>
+                    <option value="welcome">Welcome</option>
+                    <option value="strike_notification">Strike Notification</option>
+                  </select>
+                </div>
+                <div>
+                  <label style="font-size: 12px; color: var(--muted);">Recipient:</label>
+                  <input type="text" id="email-log-search" placeholder="Search email..." style="padding: 6px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); width: 180px;">
+                </div>
+                <button class="btn btn-primary" onclick="app.showEmailLog(1)" style="padding: 6px 14px;">Filter</button>
+              </div>
+
+              <div id="email-log-content">
+                <p style="color: var(--muted); text-align: center; padding: 30px;">Loading...</p>
+              </div>
+            </div>
+          `;
+          document.body.appendChild(modal);
+        }
+
+        const contentEl = document.getElementById('email-log-content');
+        contentEl.innerHTML = '<p style="color: var(--muted); text-align: center; padding: 30px;">Loading...</p>';
+
+        try {
+          // Build query with filters
+          let query = this.auth.supabase
+            .from('email_log')
+            .select('*', { count: 'exact' })
+            .order('sent_at', { ascending: false })
+            .range(offset, offset + perPage - 1);
+
+          const typeFilter = document.getElementById('email-log-type')?.value;
+          const fromDate = document.getElementById('email-log-from')?.value;
+          const toDate = document.getElementById('email-log-to')?.value;
+          const searchQuery = document.getElementById('email-log-search')?.value?.trim();
+
+          if (typeFilter) query = query.eq('email_type', typeFilter);
+          if (fromDate) query = query.gte('sent_at', fromDate);
+          if (toDate) query = query.lte('sent_at', toDate + 'T23:59:59');
+          if (searchQuery) query = query.ilike('recipient_email', `%${searchQuery}%`);
+
+          const { data: logs, count, error } = await query;
+          if (error) throw error;
+
+          if (!logs || logs.length === 0) {
+            contentEl.innerHTML = `
+              <div style="text-align: center; padding: 30px; color: var(--muted);">
+                <p>No email logs found.</p>
+              </div>`;
+            return;
+          }
+
+          const totalPages = Math.ceil((count || 0) / perPage);
+
+          const rows = logs.map(log => {
+            const date = new Date(log.sent_at).toLocaleString();
+            const statusColor = log.status === 'success' ? '#43e97b' : '#f5576c';
+            const statusIcon = log.status === 'success' ? '✓' : '✗';
+            const typeLabel = log.email_type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+            return `
+              <tr style="border-bottom: 1px solid var(--border);">
+                <td style="padding: 8px; font-size: 13px; white-space: nowrap;">${this.escapeHtml(date)}</td>
+                <td style="padding: 8px; font-size: 13px;">${this.escapeHtml(log.recipient_email)}</td>
+                <td style="padding: 8px; font-size: 13px;">${this.escapeHtml(typeLabel)}</td>
+                <td style="padding: 8px; font-size: 13px;">${this.escapeHtml(log.subject || '-')}</td>
+                <td style="padding: 8px; font-size: 13px;">
+                  <span style="color: ${statusColor}; font-weight: 600;" title="${log.error_message || ''}">${statusIcon} ${log.status}</span>
+                </td>
+              </tr>`;
+          }).join('');
+
+          const pagination = totalPages > 1 ? `
+            <div style="display: flex; justify-content: center; gap: 8px; margin-top: 15px;">
+              ${page > 1 ? `<button class="btn btn-secondary" onclick="app.showEmailLog(${page - 1})" style="padding: 4px 12px;">← Prev</button>` : ''}
+              <span style="padding: 6px 12px; color: var(--muted);">Page ${page} of ${totalPages}</span>
+              ${page < totalPages ? `<button class="btn btn-secondary" onclick="app.showEmailLog(${page + 1})" style="padding: 4px 12px;">Next →</button>` : ''}
+            </div>` : '';
+
+          contentEl.innerHTML = `
+            <div style="overflow-x: auto;">
+              <table style="width: 100%; border-collapse: collapse;">
+                <thead>
+                  <tr style="border-bottom: 2px solid var(--border); text-align: left;">
+                    <th style="padding: 8px; font-size: 12px; color: var(--muted); text-transform: uppercase;">Date</th>
+                    <th style="padding: 8px; font-size: 12px; color: var(--muted); text-transform: uppercase;">Recipient</th>
+                    <th style="padding: 8px; font-size: 12px; color: var(--muted); text-transform: uppercase;">Type</th>
+                    <th style="padding: 8px; font-size: 12px; color: var(--muted); text-transform: uppercase;">Subject</th>
+                    <th style="padding: 8px; font-size: 12px; color: var(--muted); text-transform: uppercase;">Status</th>
+                  </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+              </table>
+            </div>
+            ${pagination}
+            <p style="text-align: center; color: var(--muted); font-size: 12px; margin-top: 10px;">${count} total record${count !== 1 ? 's' : ''}</p>
+          `;
+        } catch (error) {
+          console.error('Error loading email log:', error);
+          contentEl.innerHTML = `<p style="color: var(--error); text-align: center; padding: 20px;">Failed to load email log: ${error.message}</p>`;
         }
       }
 
@@ -25447,6 +25766,7 @@
                 <button class="btn btn-primary" onclick="app.showDailyAttendanceRoster()">📋 Take Attendance</button>
                 <button class="btn btn-primary" onclick="app.showBroadcastModal()">📢 Send Announcement</button>
                 <button class="btn btn-primary" onclick="app.showInviteTeacherModal()">✉️ Invite Teacher</button>
+                <button class="btn btn-secondary" onclick="app.showEmailLog()">📧 Email Log</button>
               </div>
 
               <!-- Management Tools - compact grid -->
