@@ -5511,6 +5511,13 @@
                   </div>
                   <div id="student-strikes-count" style="font-size: 20px; font-weight: 700; color: var(--accent-2);">-</div>
                 </div>
+                <div class="list-item" style="cursor: pointer; border-left: 3px solid #f39c12;" onclick="app.openBankModal()">
+                  <div class="list-item-content">
+                    <div class="list-item-title" style="color: #f39c12;">RTC Balance</div>
+                    <div class="list-item-meta">Click to open bank</div>
+                  </div>
+                  <div id="student-rtc-overview" style="font-size: 20px; font-weight: 700; color: #f39c12;">${this.currentUser?.rtc_balance || 0}</div>
+                </div>
               </div>
             </div>
           </div>
@@ -34147,7 +34154,7 @@
       section.innerHTML = '<div style="text-align: center; padding: 40px;"><div class="loading-spinner"></div><p>Loading RTC Management...</p></div>';
 
       try {
-        const [studentsRes, categoriesRes] = await Promise.all([
+        const [studentsRes, categoriesRes, rateRes] = await Promise.all([
           this.supabaseQuery(() => this.auth.supabase
             .from('user_profiles')
             .select('id, first_name, last_name, email, grade_level, rtc_balance')
@@ -34157,13 +34164,19 @@
           this.supabaseQuery(() => this.auth.supabase
             .from('rtc_spend_categories')
             .select('*')
-            .order('name'))
+            .order('name')),
+          this.supabaseQuery(() => this.auth.supabase
+            .from('school_settings')
+            .select('value')
+            .eq('key', 'bank_interest_rate')
+            .single())
         ]);
 
         if (studentsRes.error) throw studentsRes.error;
 
         this._rtcStudents = studentsRes.data || [];
         this._rtcCategories = categoriesRes.data || [];
+        this._bankInterestRate = parseInt(rateRes.data?.value) || 10;
         this._rtcCurrentTab = this._rtcCurrentTab || 'balances';
         this._rtcLogOffset = 0;
         this._rtcLogData = [];
@@ -34203,6 +34216,14 @@
             <div class="card" style="padding: 15px; flex: 1; min-width: 150px; text-align: center;">
               <div style="font-size: 24px; font-weight: bold; color: var(--text);">${this._rtcStudents.length}</div>
               <div style="color: var(--muted); font-size: 12px;">Total Active Students</div>
+            </div>
+            <div class="card" style="padding: 15px; flex: 1.5; min-width: 220px; text-align: center; border: 2px solid #f39c12;">
+              <div style="font-size: 18px; font-weight: bold; color: #f39c12; margin-bottom: 6px;">Bank Interest: ${this._bankInterestRate || 10}%</div>
+              <div style="display: flex; gap: 6px; justify-content: center; align-items: center; flex-wrap: wrap;">
+                <input type="number" id="bank-interest-rate-input" min="0" max="100" value="${this._bankInterestRate || 10}" style="width: 60px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); text-align: center;">
+                <button class="btn btn-primary" onclick="app.setInterestRate()" style="padding: 4px 10px; font-size: 12px;">Set</button>
+                <button class="btn btn-secondary" onclick="app.adminTriggerInterest()" style="padding: 4px 10px; font-size: 12px;">Trigger Interest</button>
+              </div>
             </div>
           </div>
 
@@ -34556,7 +34577,7 @@
     // ---- Transaction Log Tab ----
 
     _renderRTCLogTab(container) {
-      const typeOptions = ['earn_manual', 'earn_skill', 'earn_assignment', 'earn_arcade', 'spend_cosmetic', 'spend_reward', 'admin_adjustment'];
+      const typeOptions = ['earn_manual', 'earn_skill', 'earn_assignment', 'earn_arcade', 'spend_cosmetic', 'spend_reward', 'admin_adjustment', 'bank_deposit', 'bank_withdraw', 'bank_interest', 'bank_tax'];
 
       container.innerHTML = `
         <div class="card" style="padding: 15px; margin-bottom: 15px;">
@@ -34658,7 +34679,11 @@
         'earn_arcade': 'Arcade Game',
         'spend_cosmetic': 'Cosmetic',
         'spend_reward': 'Reward',
-        'admin_adjustment': 'Admin Adjust'
+        'admin_adjustment': 'Admin Adjust',
+        'bank_deposit': 'Bank Deposit',
+        'bank_withdraw': 'Bank Withdraw',
+        'bank_interest': 'Bank Interest',
+        'bank_tax': 'Bank Tax'
       };
 
       if (transactions.length === 0) {
@@ -34867,6 +34892,244 @@
         this._rtcCategories = data || [];
       } catch (error) {
         console.error('Error loading RTC categories:', error);
+      }
+    }
+
+    // ==================== STUDENT BANK MODAL ====================
+
+    async openBankModal() {
+      try {
+        const { data, error } = await this.auth.supabase.rpc('rtc_bank_get_info');
+        if (error) throw error;
+        if (!data.success) throw new Error(data.error);
+        this._bankInfo = data;
+        this._renderBankModal(data);
+      } catch (error) {
+        console.error('Error opening bank:', error);
+        this.showNotification('Error opening bank: ' + error.message, 'error');
+      }
+    }
+
+    _renderBankModal(info) {
+      const taxFreeStatus = info.is_tax_free
+        ? '<span style="color: var(--success); font-weight: 600;">Tax-Free Window Active!</span>'
+        : `<span style="color: var(--muted);">Tax-free withdrawals start day ${info.tax_free_starts_day} (currently day ${info.current_day}/${info.days_in_month})</span>`;
+
+      let txRows = '';
+      if (info.transactions && info.transactions.length > 0) {
+        info.transactions.forEach(tx => {
+          const date = new Date(tx.created_at).toLocaleDateString();
+          const isPositive = tx.amount > 0;
+          const color = isPositive ? 'var(--success)' : 'var(--danger)';
+          const typeLabel = {
+            'bank_deposit': 'Deposit',
+            'bank_withdraw': 'Withdraw',
+            'bank_interest': 'Interest',
+            'bank_tax': 'Tax'
+          }[tx.transaction_type] || tx.transaction_type;
+          txRows += `<tr style="border-bottom: 1px solid var(--border);">
+            <td style="padding: 6px 8px; font-size: 12px; color: var(--muted);">${date}</td>
+            <td style="padding: 6px 8px;">${typeLabel}</td>
+            <td style="padding: 6px 8px; text-align: right; font-weight: bold; color: ${color};">${isPositive ? '+' : ''}${tx.amount}</td>
+            <td style="padding: 6px 8px; color: var(--muted); font-size: 12px; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${tx.description || '-'}</td>
+          </tr>`;
+        });
+      } else {
+        txRows = '<tr><td colspan="4" style="padding: 15px; text-align: center; color: var(--muted);">No bank transactions yet</td></tr>';
+      }
+
+      const modalHtml = `
+        <div id="bank-modal-overlay" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 10000; display: flex; align-items: center; justify-content: center;" onclick="if(event.target===this)this.remove()">
+          <div style="background: var(--card-bg); border-radius: 12px; padding: 24px; max-width: 520px; width: 95%; max-height: 85vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.3);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+              <h2 style="margin: 0; color: #f39c12;">RTC Bank</h2>
+              <button onclick="document.getElementById('bank-modal-overlay').remove()" style="background: none; border: none; font-size: 24px; cursor: pointer; color: var(--muted);">&times;</button>
+            </div>
+
+            <div style="display: flex; gap: 12px; margin-bottom: 16px;">
+              <div style="flex: 1; background: var(--bg); border-radius: 8px; padding: 14px; text-align: center; border: 1px solid var(--border);">
+                <div style="font-size: 28px; font-weight: bold; color: var(--text);">${info.wallet_balance}</div>
+                <div style="font-size: 12px; color: var(--muted);">Wallet</div>
+              </div>
+              <div style="flex: 1; background: var(--bg); border-radius: 8px; padding: 14px; text-align: center; border: 2px solid #f39c12;">
+                <div style="font-size: 28px; font-weight: bold; color: #f39c12;">${info.bank_balance}</div>
+                <div style="font-size: 12px; color: var(--muted);">Bank</div>
+              </div>
+            </div>
+
+            <div style="background: var(--bg); border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; font-size: 13px;">
+              <div>Interest Rate: <strong>${info.interest_rate}%</strong> monthly</div>
+              <div>${taxFreeStatus}</div>
+            </div>
+
+            <div style="display: flex; gap: 12px; margin-bottom: 16px;">
+              <div style="flex: 1;">
+                <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Deposit to Bank</label>
+                <div style="display: flex; gap: 6px;">
+                  <input type="number" id="bank-deposit-amount" min="1" placeholder="Amount" style="flex: 1; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+                  <button class="btn btn-primary" onclick="app.executeBankDeposit()" style="padding: 8px 14px; white-space: nowrap;">Deposit</button>
+                </div>
+              </div>
+            </div>
+
+            <div style="margin-bottom: 16px;">
+              <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Withdraw from Bank</label>
+              <div style="display: flex; gap: 6px; margin-bottom: 6px;">
+                <input type="number" id="bank-withdraw-amount" min="1" placeholder="Amount" oninput="app.updateWithdrawPreview()" style="flex: 1; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+                <button class="btn" onclick="app.executeBankWithdraw()" style="padding: 8px 14px; background: #e74c3c; color: #fff; border: none; border-radius: 6px; white-space: nowrap;">Withdraw</button>
+              </div>
+              <div id="bank-withdraw-preview" style="font-size: 12px; min-height: 18px;"></div>
+            </div>
+
+            <div style="margin-top: 16px;">
+              <div style="font-weight: 600; margin-bottom: 8px; font-size: 14px;">Recent Bank Transactions</div>
+              <div style="overflow-x: auto; max-height: 200px; overflow-y: auto;">
+                <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+                  <thead>
+                    <tr style="background: var(--bg);">
+                      <th style="padding: 6px 8px; text-align: left;">Date</th>
+                      <th style="padding: 6px 8px; text-align: left;">Type</th>
+                      <th style="padding: 6px 8px; text-align: right;">Amount</th>
+                      <th style="padding: 6px 8px; text-align: left;">Description</th>
+                    </tr>
+                  </thead>
+                  <tbody>${txRows}</tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+
+      // Remove existing modal if any
+      const existing = document.getElementById('bank-modal-overlay');
+      if (existing) existing.remove();
+
+      document.body.insertAdjacentHTML('beforeend', modalHtml);
+    }
+
+    updateWithdrawPreview() {
+      const preview = document.getElementById('bank-withdraw-preview');
+      if (!preview || !this._bankInfo) return;
+
+      const amount = parseInt(document.getElementById('bank-withdraw-amount')?.value) || 0;
+      if (amount <= 0) {
+        preview.innerHTML = '';
+        return;
+      }
+
+      const info = this._bankInfo;
+
+      if (info.is_tax_free) {
+        preview.innerHTML = `<span style="color: var(--success);">Tax-free! Total from bank: ${amount} RTC</span>`;
+        if (amount > info.bank_balance) {
+          preview.innerHTML += `<br><span style="color: var(--danger);">Insufficient bank balance (have ${info.bank_balance})</span>`;
+        }
+        return;
+      }
+
+      const tax = Math.max(10, Math.floor(amount * info.interest_rate / 100));
+      const total = amount + tax;
+      preview.innerHTML = `<span style="color: #e67e22;">Tax: ${tax} RTC | Total from bank: ${total} RTC</span>`;
+      if (total > info.bank_balance) {
+        preview.innerHTML += `<br><span style="color: var(--danger);">Insufficient bank balance (have ${info.bank_balance}, need ${total})</span>`;
+      }
+    }
+
+    async executeBankDeposit() {
+      const amountInput = document.getElementById('bank-deposit-amount');
+      const amount = parseInt(amountInput?.value) || 0;
+      if (amount <= 0) {
+        this.showNotification('Enter a valid deposit amount', 'error');
+        return;
+      }
+
+      try {
+        const { data, error } = await this.auth.supabase.rpc('rtc_bank_deposit', { p_amount: amount });
+        if (error) throw error;
+        if (!data.success) throw new Error(data.error);
+
+        // Update local balance
+        if (this.currentUser) this.currentUser.rtc_balance = data.new_wallet_balance;
+        const rtcOverview = document.getElementById('student-rtc-overview');
+        if (rtcOverview) rtcOverview.textContent = data.new_wallet_balance;
+
+        this.showNotification(`Deposited ${amount} RTC to bank`, 'success');
+
+        // Refresh modal
+        this.openBankModal();
+      } catch (error) {
+        console.error('Deposit error:', error);
+        this.showNotification('Deposit failed: ' + error.message, 'error');
+      }
+    }
+
+    async executeBankWithdraw() {
+      const amountInput = document.getElementById('bank-withdraw-amount');
+      const amount = parseInt(amountInput?.value) || 0;
+      if (amount <= 0) {
+        this.showNotification('Enter a valid withdrawal amount', 'error');
+        return;
+      }
+
+      try {
+        const { data, error } = await this.auth.supabase.rpc('rtc_bank_withdraw', { p_amount: amount });
+        if (error) throw error;
+        if (!data.success) throw new Error(data.error);
+
+        // Update local balance
+        if (this.currentUser) this.currentUser.rtc_balance = data.new_wallet_balance;
+        const rtcOverview = document.getElementById('student-rtc-overview');
+        if (rtcOverview) rtcOverview.textContent = data.new_wallet_balance;
+
+        const taxMsg = data.tax > 0 ? ` (Tax: ${data.tax} RTC)` : ' (Tax-free!)';
+        this.showNotification(`Withdrew ${amount} RTC from bank${taxMsg}`, 'success');
+
+        // Refresh modal
+        this.openBankModal();
+      } catch (error) {
+        console.error('Withdraw error:', error);
+        this.showNotification('Withdrawal failed: ' + error.message, 'error');
+      }
+    }
+
+    // ==================== ADMIN BANK SETTINGS ====================
+
+    async setInterestRate() {
+      const input = document.getElementById('bank-interest-rate-input');
+      const rate = parseInt(input?.value);
+      if (isNaN(rate) || rate < 0 || rate > 100) {
+        this.showNotification('Interest rate must be 0-100', 'error');
+        return;
+      }
+
+      try {
+        const { error } = await this.auth.supabase
+          .from('school_settings')
+          .upsert({ key: 'bank_interest_rate', value: String(rate) }, { onConflict: 'key' });
+        if (error) throw error;
+
+        this._bankInterestRate = rate;
+        this.showNotification(`Interest rate set to ${rate}%`, 'success');
+        this._updateRTCSummaryStats();
+      } catch (error) {
+        console.error('Error setting interest rate:', error);
+        this.showNotification('Error: ' + error.message, 'error');
+      }
+    }
+
+    async adminTriggerInterest() {
+      if (!confirm('Apply monthly interest to all bank accounts now?')) return;
+
+      try {
+        const { data, error } = await this.auth.supabase.rpc('admin_trigger_bank_interest');
+        if (error) throw error;
+        if (!data.success) throw new Error(data.error);
+
+        this.showNotification(`Interest applied to ${data.accounts_credited} accounts at ${data.interest_rate}%`, 'success');
+      } catch (error) {
+        console.error('Error triggering interest:', error);
+        this.showNotification('Error: ' + error.message, 'error');
       }
     }
 
