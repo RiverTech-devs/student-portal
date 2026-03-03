@@ -47,6 +47,7 @@ ALTER TABLE rtc_transactions ENABLE ROW LEVEL SECURITY;
 -- Students: NO access to rtc_transactions (they see balance via user_profiles only)
 
 -- Teachers: SELECT + INSERT for their students (via class_enrollments)
+DROP POLICY IF EXISTS "Teachers can view their students transactions" ON rtc_transactions;
 CREATE POLICY "Teachers can view their students transactions"
   ON rtc_transactions FOR SELECT
   USING (
@@ -62,6 +63,7 @@ CREATE POLICY "Teachers can view their students transactions"
     )
   );
 
+DROP POLICY IF EXISTS "Teachers can insert transactions for their students" ON rtc_transactions;
 CREATE POLICY "Teachers can insert transactions for their students"
   ON rtc_transactions FOR INSERT
   WITH CHECK (
@@ -78,6 +80,7 @@ CREATE POLICY "Teachers can insert transactions for their students"
   );
 
 -- Admins: Full CRUD on all transactions
+DROP POLICY IF EXISTS "Admins have full access to transactions" ON rtc_transactions;
 CREATE POLICY "Admins have full access to transactions"
   ON rtc_transactions FOR ALL
   USING (
@@ -92,6 +95,7 @@ CREATE POLICY "Admins have full access to transactions"
   );
 
 -- Parents: SELECT on their linked children's transactions
+DROP POLICY IF EXISTS "Parents can view their childrens transactions" ON rtc_transactions;
 CREATE POLICY "Parents can view their childrens transactions"
   ON rtc_transactions FOR SELECT
   USING (
@@ -369,6 +373,7 @@ CREATE TABLE IF NOT EXISTS rtc_spend_categories (
 ALTER TABLE rtc_spend_categories ENABLE ROW LEVEL SECURITY;
 
 -- Admins: Full CRUD on categories
+DROP POLICY IF EXISTS "Admins have full access to spend categories" ON rtc_spend_categories;
 CREATE POLICY "Admins have full access to spend categories"
   ON rtc_spend_categories FOR ALL
   USING (
@@ -383,6 +388,7 @@ CREATE POLICY "Admins have full access to spend categories"
   );
 
 -- Teachers and students: SELECT active categories only
+DROP POLICY IF EXISTS "Teachers can view active spend categories" ON rtc_spend_categories;
 CREATE POLICY "Teachers can view active spend categories"
   ON rtc_spend_categories FOR SELECT
   USING (
@@ -392,6 +398,7 @@ CREATE POLICY "Teachers can view active spend categories"
     )
   );
 
+DROP POLICY IF EXISTS "Students can view active spend categories" ON rtc_spend_categories;
 CREATE POLICY "Students can view active spend categories"
   ON rtc_spend_categories FOR SELECT
   USING (
