@@ -1595,6 +1595,18 @@
                 <p>Manage your account settings and preferences.</p>
               </div>
   
+              <div id="profile-cosmetics-display" class="card hidden" style="margin-bottom: 20px; padding: 20px; text-align: center;">
+                <div style="display: flex; align-items: center; justify-content: center; gap: 16px; flex-wrap: wrap;">
+                  <div id="profile-equipped-avatar" style="font-size: 48px;">👤</div>
+                  <div>
+                    <div id="profile-equipped-title" style="font-size: 12px; color: #9b59b6; font-weight: 600; margin-bottom: 4px;"></div>
+                    <div id="profile-display-name" style="font-size: 18px; font-weight: 700;"></div>
+                    <div id="profile-equipped-badges" style="display: flex; gap: 8px; justify-content: center; margin-top: 8px;"></div>
+                  </div>
+                </div>
+                <button class="btn btn-secondary" style="margin-top: 12px; padding: 6px 14px; font-size: 12px;" onclick="app.openRTCStore(); setTimeout(() => app.switchStoreTab('cosmetics'), 300);">Manage Cosmetics</button>
+              </div>
+
               <div class="grid grid-2">
                 <div class="card">
                   <h3>📋 Personal Information</h3>
@@ -5521,7 +5533,7 @@
                 <div class="list-item" style="cursor: pointer; border-left: 3px solid #9b59b6;" onclick="app.openRTCStore()">
                   <div class="list-item-content">
                     <div class="list-item-title" style="color: #9b59b6;">RTC Store</div>
-                    <div class="list-item-meta">Spend RTC on privileges</div>
+                    <div class="list-item-meta">Spend RTC on privileges & cosmetics</div>
                   </div>
                   <div style="font-size: 20px;">🛍️</div>
                 </div>
@@ -10194,6 +10206,62 @@
 
         // Initialize color scheme picker
         this.initThemePicker();
+
+        // Load equipped cosmetics for students
+        if (profile.user_type === 'student') {
+          this._loadEquippedCosmetics();
+        }
+      }
+
+      async _loadEquippedCosmetics() {
+        const display = document.getElementById('profile-cosmetics-display');
+        if (!display) return;
+
+        try {
+          const { data, error } = await this.auth.supabase.rpc('rtc_get_cosmetics_data');
+          if (error) throw error;
+          if (!data.success) return;
+
+          const equipped = data.equipped || {};
+          const profile = this.userInfo?.profile;
+
+          // Show the card for students
+          display.classList.remove('hidden');
+
+          // Display name
+          const nameEl = document.getElementById('profile-display-name');
+          if (nameEl && profile) nameEl.textContent = `${profile.first_name} ${profile.last_name}`;
+
+          // Equipped avatar
+          const avatarEl = document.getElementById('profile-equipped-avatar');
+          if (avatarEl) {
+            if (equipped.avatar) {
+              avatarEl.innerHTML = this.renderCosmeticIcon(equipped.avatar.icon, 'avatar', 48);
+            } else {
+              avatarEl.innerHTML = '<span style="font-size:48px">👤</span>';
+            }
+          }
+
+          // Equipped title
+          const titleEl = document.getElementById('profile-equipped-title');
+          if (titleEl) {
+            titleEl.textContent = equipped.title ? equipped.title.name : '';
+          }
+
+          // Equipped badges
+          const badgesEl = document.getElementById('profile-equipped-badges');
+          if (badgesEl) {
+            let badgesHtml = '';
+            ['badge1', 'badge2', 'badge3'].forEach(slot => {
+              if (equipped[slot]) {
+                badgesHtml += `<span style="font-size: 24px;" title="${equipped[slot].name}">${this.renderCosmeticIcon(equipped[slot].icon, 'badge', 24)}</span>`;
+              }
+            });
+            badgesEl.innerHTML = badgesHtml;
+          }
+        } catch (error) {
+          console.error('Error loading equipped cosmetics:', error);
+        }
       }
 
       async loadNotificationPreferences() {
@@ -34354,7 +34422,7 @@
       section.innerHTML = '<div style="text-align: center; padding: 40px;"><div class="loading-spinner"></div><p>Loading RTC Management...</p></div>';
 
       try {
-        const [studentsRes, categoriesRes, rateRes, privilegesRes] = await Promise.all([
+        const [studentsRes, categoriesRes, rateRes, privilegesRes, cosmeticsRes] = await Promise.all([
           this.supabaseQuery(() => this.auth.supabase
             .from('user_profiles')
             .select('id, first_name, last_name, email, grade_level, rtc_balance')
@@ -34374,6 +34442,12 @@
             .from('rtc_privileges')
             .select('*')
             .order('sort_order', { ascending: true })
+            .order('name', { ascending: true })),
+          this.supabaseQuery(() => this.auth.supabase
+            .from('rtc_cosmetics')
+            .select('*')
+            .order('category', { ascending: true })
+            .order('sort_order', { ascending: true })
             .order('name', { ascending: true }))
         ]);
 
@@ -34383,6 +34457,7 @@
         this._rtcCategories = categoriesRes.data || [];
         this._bankInterestRate = parseInt(rateRes.data?.value) || 10;
         this._rtcPrivileges = privilegesRes.data || [];
+        this._rtcCosmetics = cosmeticsRes.data || [];
         this._rtcCurrentTab = this._rtcCurrentTab || 'balances';
         this._rtcLogOffset = 0;
         this._rtcLogData = [];
@@ -34442,6 +34517,8 @@
               onclick="app.switchRTCTab('categories')">Categories</button>
             <button id="rtc-tab-privileges" class="btn" style="border: none; border-radius: 6px 6px 0 0; padding: 10px 20px; cursor: pointer; font-weight: 600;"
               onclick="app.switchRTCTab('privileges')">Privileges</button>
+            <button id="rtc-tab-cosmetics" class="btn" style="border: none; border-radius: 6px 6px 0 0; padding: 10px 20px; cursor: pointer; font-weight: 600;"
+              onclick="app.switchRTCTab('cosmetics')">Cosmetics</button>
           </div>
 
           <div id="rtc-tab-content"></div>
@@ -34451,7 +34528,7 @@
 
     switchRTCTab(tab) {
       this._rtcCurrentTab = tab;
-      ['balances', 'log', 'categories', 'privileges'].forEach(t => {
+      ['balances', 'log', 'categories', 'privileges', 'cosmetics'].forEach(t => {
         const btn = document.getElementById('rtc-tab-' + t);
         if (btn) {
           btn.style.background = t === tab ? 'var(--accent)' : 'transparent';
@@ -34475,6 +34552,9 @@
           break;
         case 'privileges':
           this._renderRTCPrivilegesTab(content);
+          break;
+        case 'cosmetics':
+          this._renderRTCCosmeticsTab(content);
           break;
       }
     }
@@ -35342,6 +35422,248 @@
       }
     }
 
+    // ==================== COSMETICS TAB (ADMIN) ====================
+
+    _renderRTCCosmeticsTab(container) {
+      const cosmetics = this._rtcCosmetics || [];
+
+      let cardsHtml = '';
+      if (cosmetics.length > 0) {
+        cardsHtml = cosmetics.map(c => {
+          const statusBadge = c.is_active
+            ? '<span style="background: var(--success); color: #fff; padding: 2px 8px; border-radius: 10px; font-size: 11px;">Active</span>'
+            : '<span style="background: #95a5a6; color: #fff; padding: 2px 8px; border-radius: 10px; font-size: 11px;">Inactive</span>';
+          const catBadge = `<span style="background: #9b59b6; color: #fff; padding: 2px 8px; border-radius: 10px; font-size: 11px;">${c.category}</span>`;
+          const toggleLabel = c.is_active ? 'Deactivate' : 'Activate';
+          const toggleColor = c.is_active ? 'var(--danger)' : 'var(--success)';
+
+          return `
+            <div class="card" style="padding: 15px; display: flex; align-items: center; gap: 12px;">
+              <div style="font-size: 32px;">${this.renderCosmeticIcon(c.icon, c.category, 32)}</div>
+              <div style="flex: 1;">
+                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+                  <strong>${c.name}</strong> ${catBadge} ${statusBadge}
+                </div>
+                <div style="font-size: 13px; color: var(--muted);">${c.description || 'No description'}</div>
+                <div style="font-size: 12px; color: var(--muted); margin-top: 4px;">
+                  Price: <strong>${c.price} RTC</strong> | Sort: ${c.sort_order}
+                </div>
+              </div>
+              <div style="display: flex; gap: 6px;">
+                <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="app.editRTCCosmetic('${c.id}')">Edit</button>
+                <button class="btn" style="padding: 6px 12px; font-size: 12px; background: ${toggleColor}; color: #fff; border: none; border-radius: 6px;" onclick="app.toggleRTCCosmetic('${c.id}')">${toggleLabel}</button>
+              </div>
+            </div>
+          `;
+        }).join('');
+      } else {
+        cardsHtml = '<div style="padding: 20px; text-align: center; color: var(--muted);">No cosmetics created yet.</div>';
+      }
+
+      container.innerHTML = `
+        <div class="card" style="padding: 15px; margin-bottom: 15px;">
+          <div style="font-weight: 600; margin-bottom: 10px;">Add New Cosmetic</div>
+          <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: end;">
+            <div style="flex: 0 0 60px;">
+              <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Icon</label>
+              <input type="text" id="cosm-new-icon" value="🎨" maxlength="20" style="width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); text-align: center; font-size: 18px; box-sizing: border-box;">
+            </div>
+            <div style="flex: 0 0 100px;">
+              <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Category</label>
+              <select id="cosm-new-category" style="width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); box-sizing: border-box;">
+                <option value="avatar">Avatar</option>
+                <option value="title">Title</option>
+                <option value="badge">Badge</option>
+              </select>
+            </div>
+            <div style="flex: 1; min-width: 120px;">
+              <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Name</label>
+              <input type="text" id="cosm-new-name" placeholder="Cool Fox" style="width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); box-sizing: border-box;">
+            </div>
+            <div style="flex: 0 0 80px;">
+              <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Price (RTC)</label>
+              <input type="number" id="cosm-new-price" min="1" value="100" style="width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); box-sizing: border-box;">
+            </div>
+            <div style="flex: 1; min-width: 120px;">
+              <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Description</label>
+              <input type="text" id="cosm-new-desc" placeholder="A cool fox avatar" style="width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); box-sizing: border-box;">
+            </div>
+            <button class="btn btn-primary" style="padding: 6px 16px; white-space: nowrap;" onclick="app.addRTCCosmetic()">+ Add</button>
+          </div>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 10px;">
+          ${cardsHtml}
+        </div>
+      `;
+    }
+
+    async addRTCCosmetic() {
+      const name = document.getElementById('cosm-new-name')?.value?.trim();
+      const icon = document.getElementById('cosm-new-icon')?.value?.trim() || '🎨';
+      const category = document.getElementById('cosm-new-category')?.value;
+      const price = parseInt(document.getElementById('cosm-new-price')?.value);
+      const description = document.getElementById('cosm-new-desc')?.value?.trim();
+
+      if (!name) { this.showNotification('Name is required', 'error'); return; }
+      if (!category) { this.showNotification('Category is required', 'error'); return; }
+      if (!price || price <= 0) { this.showNotification('Price must be greater than 0', 'error'); return; }
+
+      try {
+        const { error } = await this.auth.supabase
+          .from('rtc_cosmetics')
+          .insert({
+            name,
+            icon,
+            category,
+            price,
+            description: description || null,
+            created_by: this.userInfo?.profile?.id
+          });
+        if (error) throw error;
+
+        this.showNotification(`Cosmetic "${name}" created`, 'success');
+        await this._refreshRTCCosmetics();
+      } catch (error) {
+        console.error('Error adding cosmetic:', error);
+        this.showNotification('Error: ' + error.message, 'error');
+      }
+    }
+
+    async toggleRTCCosmetic(id) {
+      const cosm = (this._rtcCosmetics || []).find(c => c.id === id);
+      if (!cosm) return;
+
+      const newState = !cosm.is_active;
+      const action = newState ? 'activate' : 'deactivate';
+      if (!confirm(`Are you sure you want to ${action} "${cosm.name}"?`)) return;
+
+      try {
+        const { error } = await this.auth.supabase
+          .from('rtc_cosmetics')
+          .update({ is_active: newState, updated_at: new Date().toISOString() })
+          .eq('id', id);
+        if (error) throw error;
+
+        this.showNotification(`Cosmetic ${action}d`, 'success');
+        await this._refreshRTCCosmetics();
+      } catch (error) {
+        console.error('Error toggling cosmetic:', error);
+        this.showNotification('Error: ' + error.message, 'error');
+      }
+    }
+
+    editRTCCosmetic(id) {
+      const cosm = (this._rtcCosmetics || []).find(c => c.id === id);
+      if (!cosm) return;
+
+      const modalHtml = `
+        <div id="cosm-edit-modal-overlay" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 10000; display: flex; align-items: center; justify-content: center;" onclick="if(event.target===this)this.remove()">
+          <div style="background: var(--card-bg); border-radius: 12px; padding: 24px; max-width: 420px; width: 95%; box-shadow: 0 20px 60px rgba(0,0,0,0.3);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+              <h3 style="margin: 0;">Edit Cosmetic</h3>
+              <button onclick="document.getElementById('cosm-edit-modal-overlay').remove()" style="background: none; border: none; font-size: 24px; cursor: pointer; color: var(--muted);">&times;</button>
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 10px;">
+              <div style="display: flex; gap: 10px;">
+                <div style="flex: 0 0 70px;">
+                  <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Icon</label>
+                  <input type="text" id="cosm-edit-icon" value="${cosm.icon || '🎨'}" maxlength="20" style="width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); text-align: center; font-size: 18px; box-sizing: border-box;">
+                </div>
+                <div style="flex: 0 0 100px;">
+                  <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Category</label>
+                  <select id="cosm-edit-category" style="width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); box-sizing: border-box;">
+                    <option value="avatar" ${cosm.category === 'avatar' ? 'selected' : ''}>Avatar</option>
+                    <option value="title" ${cosm.category === 'title' ? 'selected' : ''}>Title</option>
+                    <option value="badge" ${cosm.category === 'badge' ? 'selected' : ''}>Badge</option>
+                  </select>
+                </div>
+                <div style="flex: 1;">
+                  <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Name</label>
+                  <input type="text" id="cosm-edit-name" value="${cosm.name}" style="width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); box-sizing: border-box;">
+                </div>
+              </div>
+              <div style="display: flex; gap: 10px;">
+                <div style="flex: 1;">
+                  <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Price (RTC)</label>
+                  <input type="number" id="cosm-edit-price" min="1" value="${cosm.price}" style="width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); box-sizing: border-box;">
+                </div>
+                <div style="flex: 1;">
+                  <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Sort Order</label>
+                  <input type="number" id="cosm-edit-sort" min="0" value="${cosm.sort_order || 0}" style="width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); box-sizing: border-box;">
+                </div>
+              </div>
+              <div>
+                <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Description</label>
+                <input type="text" id="cosm-edit-desc" value="${(cosm.description || '').replace(/"/g, '&quot;')}" style="width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); box-sizing: border-box;">
+              </div>
+              <button class="btn btn-primary" style="padding: 8px 16px; margin-top: 6px;" onclick="app.saveRTCCosmetic('${cosm.id}')">Save Changes</button>
+            </div>
+          </div>
+        </div>
+      `;
+
+      const existing = document.getElementById('cosm-edit-modal-overlay');
+      if (existing) existing.remove();
+      document.body.insertAdjacentHTML('beforeend', modalHtml);
+    }
+
+    async saveRTCCosmetic(id) {
+      const name = document.getElementById('cosm-edit-name')?.value?.trim();
+      const icon = document.getElementById('cosm-edit-icon')?.value?.trim() || '🎨';
+      const category = document.getElementById('cosm-edit-category')?.value;
+      const price = parseInt(document.getElementById('cosm-edit-price')?.value);
+      const sortOrder = parseInt(document.getElementById('cosm-edit-sort')?.value) || 0;
+      const description = document.getElementById('cosm-edit-desc')?.value?.trim();
+
+      if (!name) { this.showNotification('Name is required', 'error'); return; }
+      if (!price || price <= 0) { this.showNotification('Price must be greater than 0', 'error'); return; }
+
+      try {
+        const { error } = await this.auth.supabase
+          .from('rtc_cosmetics')
+          .update({
+            name,
+            icon,
+            category,
+            price,
+            sort_order: sortOrder,
+            description: description || null,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', id);
+        if (error) throw error;
+
+        const modal = document.getElementById('cosm-edit-modal-overlay');
+        if (modal) modal.remove();
+
+        this.showNotification('Cosmetic updated', 'success');
+        await this._refreshRTCCosmetics();
+      } catch (error) {
+        console.error('Error saving cosmetic:', error);
+        this.showNotification('Error: ' + error.message, 'error');
+      }
+    }
+
+    async _refreshRTCCosmetics() {
+      try {
+        const { data, error } = await this.auth.supabase
+          .from('rtc_cosmetics')
+          .select('*')
+          .order('category', { ascending: true })
+          .order('sort_order', { ascending: true })
+          .order('name', { ascending: true });
+        if (error) throw error;
+        this._rtcCosmetics = data || [];
+      } catch (error) {
+        console.error('Error loading cosmetics:', error);
+      }
+      if (this._rtcCurrentTab === 'cosmetics') {
+        const content = document.getElementById('rtc-tab-content');
+        if (content) this._renderRTCCosmeticsTab(content);
+      }
+    }
+
     // ==================== STUDENT BANK MODAL ====================
 
     async openBankModal() {
@@ -35679,21 +36001,37 @@
             </div>
 
             <div style="background: var(--bg); border-radius: 8px; padding: 14px; text-align: center; margin-bottom: 16px; border: 2px solid #9b59b6;">
-              <div style="font-size: 28px; font-weight: bold; color: #9b59b6;">${data.wallet_balance}</div>
+              <div style="font-size: 28px; font-weight: bold; color: #9b59b6;" id="store-balance-display">${data.wallet_balance}</div>
               <div style="font-size: 12px; color: var(--muted);">RTC Balance</div>
             </div>
 
-            <div style="margin-bottom: 16px;">
-              <div style="font-weight: 600; margin-bottom: 8px; font-size: 14px; color: #9b59b6;">Your Active Privileges</div>
-              <div style="display: flex; flex-direction: column; gap: 8px;">
-                ${grantsHtml}
+            <div style="display: flex; gap: 0; margin-bottom: 16px; border-bottom: 2px solid var(--border);">
+              <button id="store-tab-privileges" class="btn" style="border: none; border-radius: 6px 6px 0 0; padding: 8px 16px; cursor: pointer; font-weight: 600; background: #9b59b6; color: #fff;"
+                onclick="app.switchStoreTab('privileges')">Privileges</button>
+              <button id="store-tab-cosmetics" class="btn" style="border: none; border-radius: 6px 6px 0 0; padding: 8px 16px; cursor: pointer; font-weight: 600; background: transparent; color: var(--text);"
+                onclick="app.switchStoreTab('cosmetics')">Cosmetics</button>
+            </div>
+
+            <div id="store-tab-privileges-content">
+              <div style="margin-bottom: 16px;">
+                <div style="font-weight: 600; margin-bottom: 8px; font-size: 14px; color: #9b59b6;">Your Active Privileges</div>
+                <div style="display: flex; flex-direction: column; gap: 8px;">
+                  ${grantsHtml}
+                </div>
+              </div>
+
+              <div>
+                <div style="font-weight: 600; margin-bottom: 8px; font-size: 14px; color: #9b59b6;">Available Privileges</div>
+                <div style="display: flex; flex-direction: column; gap: 8px;">
+                  ${catalogHtml}
+                </div>
               </div>
             </div>
 
-            <div>
-              <div style="font-weight: 600; margin-bottom: 8px; font-size: 14px; color: #9b59b6;">Available Privileges</div>
-              <div style="display: flex; flex-direction: column; gap: 8px;">
-                ${catalogHtml}
+            <div id="store-tab-cosmetics-content" style="display: none;">
+              <div style="text-align: center; padding: 20px; color: var(--muted);">
+                <div class="loading-spinner"></div>
+                <p>Loading cosmetics...</p>
               </div>
             </div>
           </div>
@@ -35725,6 +36063,216 @@
       } catch (error) {
         console.error('Purchase error:', error);
         this.showNotification('Purchase failed: ' + error.message, 'error');
+      }
+    }
+
+    // ==================== COSMETICS STORE METHODS ====================
+
+    renderCosmeticIcon(icon, category, size = 24) {
+      if (!icon) return `<span style="font-size:${size}px">🎨</span>`;
+      // Detect emoji: check if first char is in emoji ranges (non-ASCII, typically > 0xFF)
+      const firstCode = icon.codePointAt(0);
+      if (firstCode > 0xFF || icon.length <= 2) {
+        return `<span style="font-size:${size}px">${icon}</span>`;
+      }
+      // Treat as filename
+      return `<img src="assets/cosmetics/${category}/${icon}.svg" style="width:${size}px;height:${size}px;object-fit:contain;" onerror="this.outerHTML='<span style=\\'font-size:${size}px\\'>🎨</span>'">`;
+    }
+
+    switchStoreTab(tab) {
+      const privTab = document.getElementById('store-tab-privileges');
+      const cosmTab = document.getElementById('store-tab-cosmetics');
+      const privContent = document.getElementById('store-tab-privileges-content');
+      const cosmContent = document.getElementById('store-tab-cosmetics-content');
+      if (!privTab || !cosmTab || !privContent || !cosmContent) return;
+
+      if (tab === 'privileges') {
+        privTab.style.background = '#9b59b6';
+        privTab.style.color = '#fff';
+        cosmTab.style.background = 'transparent';
+        cosmTab.style.color = 'var(--text)';
+        privContent.style.display = '';
+        cosmContent.style.display = 'none';
+      } else {
+        cosmTab.style.background = '#9b59b6';
+        cosmTab.style.color = '#fff';
+        privTab.style.background = 'transparent';
+        privTab.style.color = 'var(--text)';
+        privContent.style.display = 'none';
+        cosmContent.style.display = '';
+        if (!this._cosmeticsData) {
+          this._loadCosmeticsForStore();
+        }
+      }
+    }
+
+    async _loadCosmeticsForStore() {
+      try {
+        const { data, error } = await this.auth.supabase.rpc('rtc_get_cosmetics_data');
+        if (error) throw error;
+        if (!data.success) throw new Error(data.error);
+        this._cosmeticsData = data;
+        this._renderCosmeticsStoreContent(data);
+      } catch (error) {
+        console.error('Error loading cosmetics:', error);
+        const container = document.getElementById('store-tab-cosmetics-content');
+        if (container) container.innerHTML = `<div style="padding: 20px; text-align: center; color: var(--danger);">Error loading cosmetics: ${error.message}</div>`;
+      }
+    }
+
+    _renderCosmeticsStoreContent(data) {
+      const container = document.getElementById('store-tab-cosmetics-content');
+      if (!container) return;
+
+      const ownedIds = data.owned_ids || [];
+      const equipped = data.equipped || {};
+      const catalog = data.catalog || [];
+
+      const categories = [
+        { key: 'avatar', label: 'Avatars', emoji: '👤' },
+        { key: 'title', label: 'Titles', emoji: '🏷️' },
+        { key: 'badge', label: 'Badges', emoji: '🎖️' }
+      ];
+
+      let html = '';
+
+      categories.forEach(cat => {
+        const items = catalog.filter(c => c.category === cat.key);
+        if (items.length === 0) return;
+
+        let itemsHtml = items.map(item => {
+          const isOwned = ownedIds.includes(item.id);
+          const isEquippedAvatar = equipped.avatar && equipped.avatar.id === item.id;
+          const isEquippedTitle = equipped.title && equipped.title.id === item.id;
+          const isEquippedBadge1 = equipped.badge1 && equipped.badge1.id === item.id;
+          const isEquippedBadge2 = equipped.badge2 && equipped.badge2.id === item.id;
+          const isEquippedBadge3 = equipped.badge3 && equipped.badge3.id === item.id;
+          const isEquipped = isEquippedAvatar || isEquippedTitle || isEquippedBadge1 || isEquippedBadge2 || isEquippedBadge3;
+
+          let buttonHtml;
+          if (isOwned && isEquipped) {
+            let unequipSlot = cat.key;
+            if (isEquippedBadge1) unequipSlot = 'badge1';
+            else if (isEquippedBadge2) unequipSlot = 'badge2';
+            else if (isEquippedBadge3) unequipSlot = 'badge3';
+            buttonHtml = `
+              <span style="background: var(--success); color: #fff; padding: 2px 8px; border-radius: 10px; font-size: 11px; margin-right: 4px;">Equipped</span>
+              <button class="btn" style="padding: 4px 10px; background: #95a5a6; color: #fff; border: none; border-radius: 6px; font-size: 11px; cursor: pointer;" onclick="app.unequipCosmetic('${unequipSlot}')">Unequip</button>
+            `;
+          } else if (isOwned && !isEquipped) {
+            if (cat.key === 'badge') {
+              buttonHtml = `
+                <span style="background: var(--accent); color: #fff; padding: 2px 8px; border-radius: 10px; font-size: 11px; margin-right: 4px;">Owned</span>
+                <div style="display: inline-flex; gap: 3px; margin-top: 2px;">
+                  <button class="btn" style="padding: 3px 8px; background: #9b59b6; color: #fff; border: none; border-radius: 4px; font-size: 10px; cursor: pointer;" onclick="app.equipCosmetic('${item.id}', 'badge1')" title="Equip to slot 1">1</button>
+                  <button class="btn" style="padding: 3px 8px; background: #9b59b6; color: #fff; border: none; border-radius: 4px; font-size: 10px; cursor: pointer;" onclick="app.equipCosmetic('${item.id}', 'badge2')" title="Equip to slot 2">2</button>
+                  <button class="btn" style="padding: 3px 8px; background: #9b59b6; color: #fff; border: none; border-radius: 4px; font-size: 10px; cursor: pointer;" onclick="app.equipCosmetic('${item.id}', 'badge3')" title="Equip to slot 3">3</button>
+                </div>
+              `;
+            } else {
+              buttonHtml = `
+                <span style="background: var(--accent); color: #fff; padding: 2px 8px; border-radius: 10px; font-size: 11px; margin-right: 4px;">Owned</span>
+                <button class="btn" style="padding: 4px 10px; background: #9b59b6; color: #fff; border: none; border-radius: 6px; font-size: 11px; cursor: pointer;" onclick="app.equipCosmetic('${item.id}', '${cat.key}')">Equip</button>
+              `;
+            }
+          } else {
+            const canAfford = data.wallet_balance >= item.price;
+            if (canAfford) {
+              buttonHtml = `<button class="btn" style="padding: 6px 14px; background: #9b59b6; color: #fff; border: none; border-radius: 6px; font-size: 12px; cursor: pointer;" onclick="app.purchaseCosmetic('${item.id}')">Buy — ${item.price} RTC</button>`;
+            } else {
+              buttonHtml = `<button class="btn" style="padding: 6px 14px; background: var(--danger); color: #fff; border: none; border-radius: 6px; font-size: 12px; cursor: default; opacity: 0.7;" disabled>Need ${item.price - data.wallet_balance} more RTC</button>`;
+            }
+          }
+
+          return `
+            <div style="display: flex; align-items: center; gap: 10px; padding: 12px; background: var(--bg); border-radius: 8px; border: 1px solid var(--border);">
+              <div style="font-size: 32px; width: 40px; text-align: center;">${this.renderCosmeticIcon(item.icon, item.category, 32)}</div>
+              <div style="flex: 1;">
+                <div style="font-weight: 600;">${item.name}</div>
+                ${item.description ? `<div style="font-size: 12px; color: var(--muted); margin-top: 2px;">${item.description}</div>` : ''}
+              </div>
+              <div style="text-align: right;">
+                <div style="font-weight: bold; color: #9b59b6; margin-bottom: 4px;">${item.price} RTC</div>
+                ${buttonHtml}
+              </div>
+            </div>
+          `;
+        }).join('');
+
+        html += `
+          <div style="margin-bottom: 16px;">
+            <div style="font-weight: 600; margin-bottom: 8px; font-size: 14px; color: #9b59b6;">${cat.emoji} ${cat.label}</div>
+            <div style="display: flex; flex-direction: column; gap: 8px;">
+              ${itemsHtml}
+            </div>
+          </div>
+        `;
+      });
+
+      if (!html) {
+        html = '<div style="padding: 20px; text-align: center; color: var(--muted);">No cosmetics available yet</div>';
+      }
+
+      container.innerHTML = html;
+    }
+
+    async purchaseCosmetic(id) {
+      if (!confirm('Are you sure you want to purchase this cosmetic?')) return;
+
+      try {
+        const { data, error } = await this.auth.supabase.rpc('rtc_purchase_cosmetic', { p_cosmetic_id: id });
+        if (error) throw error;
+        if (!data.success) throw new Error(data.error);
+
+        // Update local balance
+        if (this.currentUser) this.currentUser.rtc_balance = data.new_balance;
+        const rtcOverview = document.getElementById('student-rtc-overview');
+        if (rtcOverview) rtcOverview.textContent = data.new_balance;
+        const storeBalance = document.getElementById('store-balance-display');
+        if (storeBalance) storeBalance.textContent = data.new_balance;
+
+        this.showNotification('Cosmetic purchased!', 'success');
+
+        // Refresh cosmetics tab
+        this._cosmeticsData = null;
+        this._loadCosmeticsForStore();
+      } catch (error) {
+        console.error('Purchase error:', error);
+        this.showNotification('Purchase failed: ' + error.message, 'error');
+      }
+    }
+
+    async equipCosmetic(id, slot) {
+      try {
+        const { data, error } = await this.auth.supabase.rpc('rtc_equip_cosmetic', { p_cosmetic_id: id, p_slot: slot });
+        if (error) throw error;
+        if (!data.success) throw new Error(data.error);
+
+        this.showNotification(`${data.name} equipped!`, 'success');
+
+        // Refresh cosmetics tab
+        this._cosmeticsData = null;
+        this._loadCosmeticsForStore();
+      } catch (error) {
+        console.error('Equip error:', error);
+        this.showNotification('Equip failed: ' + error.message, 'error');
+      }
+    }
+
+    async unequipCosmetic(slot) {
+      try {
+        const { data, error } = await this.auth.supabase.rpc('rtc_equip_cosmetic', { p_cosmetic_id: null, p_slot: slot });
+        if (error) throw error;
+        if (!data.success) throw new Error(data.error);
+
+        this.showNotification('Cosmetic unequipped', 'success');
+
+        // Refresh cosmetics tab
+        this._cosmeticsData = null;
+        this._loadCosmeticsForStore();
+      } catch (error) {
+        console.error('Unequip error:', error);
+        this.showNotification('Unequip failed: ' + error.message, 'error');
       }
     }
 
