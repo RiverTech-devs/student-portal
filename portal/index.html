@@ -13973,6 +13973,9 @@
                   <button class="btn btn-secondary" onclick="app.showClassNotes('${classId}')" title="Private class notes only visible to you">
                     🔒 Class Notes
                   </button>
+                  <button class="btn btn-secondary" onclick="app.showClassRTCAward('${classId}')">
+                    💰 Award RTC
+                  </button>
                 ` : isParent ? `
                   <button class="btn btn-secondary" onclick="app.viewChildrenGrades('${classId}')">
                     📊 Children's Grades
@@ -15298,6 +15301,184 @@
           console.error('Error deleting note:', error);
           this.showNotification('Error deleting note: ' + error.message, 'error');
         }
+      }
+
+      // ===== Bulk RTC Award =====
+      async showClassRTCAward(classId) {
+        try {
+          const classData = this.classes.find(c => c.id === classId);
+          const className = classData?.name || 'Class';
+
+          // Fetch active enrollments
+          const { data: enrollments, error: enrollError } = await this.supabaseQuery(() => this.auth.supabase
+            .from('class_enrollments')
+            .select('*')
+            .eq('class_id', classId)
+            .eq('status', 'active'));
+
+          if (enrollError) throw enrollError;
+
+          if (!enrollments || enrollments.length === 0) {
+            this.showNotification('No active students enrolled in this class', 'error');
+            return;
+          }
+
+          // Fetch student profiles with RTC balances
+          const studentIds = enrollments.map(e => e.student_id);
+          const { data: students, error: studentError } = await this.supabaseQuery(() => this.auth.supabase
+            .from('user_profiles')
+            .select('id, first_name, last_name, rtc_balance')
+            .in('id', studentIds));
+
+          if (studentError) throw studentError;
+
+          // Sort students alphabetically
+          const sortedStudents = (students || []).sort((a, b) =>
+            `${a.last_name} ${a.first_name}`.localeCompare(`${b.last_name} ${b.first_name}`)
+          );
+
+          const studentRows = sortedStudents.map(s => `
+            <tr data-student-id="${s.id}">
+              <td style="padding: 8px; white-space: nowrap;">${s.first_name} ${s.last_name}</td>
+              <td style="padding: 8px; text-align: center; color: var(--muted);">${s.rtc_balance || 0}</td>
+              <td style="padding: 8px; text-align: center;">
+                <input type="number" class="rtc-bulk-amount" value="0" style="width: 80px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); text-align: center;">
+              </td>
+            </tr>
+          `).join('');
+
+          const modalContent = `
+            <div>
+              <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 15px; flex-wrap: wrap;">
+                <label style="font-weight: 600; white-space: nowrap;">Set All:</label>
+                <input type="number" id="rtc-bulk-set-all" value="10" style="width: 80px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); text-align: center;">
+                <button class="btn btn-secondary small" onclick="app.setAllRTCAmounts()">Apply to All</button>
+              </div>
+              <div style="margin-bottom: 15px;">
+                <label style="font-weight: 600; display: block; margin-bottom: 5px;">Reason / Description *</label>
+                <input type="text" id="rtc-bulk-reason" placeholder="e.g. Class participation bonus" style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); box-sizing: border-box;">
+              </div>
+              <div style="max-height: 350px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px;">
+                <table style="width: 100%; border-collapse: collapse;">
+                  <thead>
+                    <tr style="background: var(--bg); position: sticky; top: 0;">
+                      <th style="padding: 8px; text-align: left;">Student</th>
+                      <th style="padding: 8px; text-align: center;">Balance</th>
+                      <th style="padding: 8px; text-align: center;">Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody id="rtc-bulk-students">
+                    ${studentRows}
+                  </tbody>
+                </table>
+              </div>
+              <div style="margin-top: 15px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                <span id="rtc-bulk-summary" style="color: var(--muted); font-size: 0.9rem;">${sortedStudents.length} students</span>
+                <button class="btn btn-primary" onclick="app.submitClassRTCAwards('${classId}')">Submit Awards</button>
+              </div>
+            </div>
+          `;
+
+          this.showModal('class-rtc-award', `💰 Award RTC — ${className}`, modalContent);
+
+          // Add live summary update
+          setTimeout(() => {
+            const tbody = document.getElementById('rtc-bulk-students');
+            if (tbody) {
+              tbody.addEventListener('input', () => this.updateRTCSummary());
+            }
+          }, 100);
+
+        } catch (error) {
+          console.error('Error loading class RTC award:', error);
+          this.showNotification('Error loading students: ' + error.message, 'error');
+        }
+      }
+
+      setAllRTCAmounts() {
+        const setAllValue = document.getElementById('rtc-bulk-set-all')?.value || '0';
+        document.querySelectorAll('.rtc-bulk-amount').forEach(input => {
+          input.value = setAllValue;
+        });
+        this.updateRTCSummary();
+      }
+
+      updateRTCSummary() {
+        const inputs = document.querySelectorAll('.rtc-bulk-amount');
+        let count = 0;
+        let total = 0;
+        inputs.forEach(input => {
+          const val = parseInt(input.value) || 0;
+          if (val !== 0) {
+            count++;
+            total += val;
+          }
+        });
+        const summaryEl = document.getElementById('rtc-bulk-summary');
+        if (summaryEl) {
+          summaryEl.textContent = `${count} student${count !== 1 ? 's' : ''} selected, total: ${total} RTC`;
+        }
+      }
+
+      async submitClassRTCAwards(classId) {
+        const reason = document.getElementById('rtc-bulk-reason')?.value?.trim();
+        if (!reason) {
+          this.showNotification('Please enter a reason for the awards', 'error');
+          return;
+        }
+
+        const rows = document.querySelectorAll('#rtc-bulk-students tr[data-student-id]');
+        const awards = [];
+        rows.forEach(row => {
+          const studentId = row.dataset.studentId;
+          const amount = parseInt(row.querySelector('.rtc-bulk-amount')?.value) || 0;
+          if (amount !== 0) {
+            awards.push({ studentId, amount });
+          }
+        });
+
+        if (awards.length === 0) {
+          this.showNotification('No students have a non-zero amount', 'error');
+          return;
+        }
+
+        if (!confirm(`Award RTC to ${awards.length} student${awards.length !== 1 ? 's' : ''}? Total: ${awards.reduce((s, a) => s + a.amount, 0)} RTC`)) return;
+
+        // Disable submit button
+        const submitBtn = document.querySelector('#modal-class-rtc-award .btn-primary');
+        if (submitBtn) {
+          submitBtn.disabled = true;
+          submitBtn.textContent = 'Processing...';
+        }
+
+        let successes = 0;
+        let failures = 0;
+
+        for (const award of awards) {
+          try {
+            const { data, error } = await this.auth.supabase.rpc('process_rtc_transaction', {
+              p_user_id: award.studentId,
+              p_amount: award.amount,
+              p_transaction_type: 'earn_manual',
+              p_description: reason,
+              p_created_by: this.userInfo.user.id
+            });
+            if (error) throw error;
+            if (data && !data.success) throw new Error(data.error);
+            successes++;
+          } catch (err) {
+            console.error(`RTC award failed for ${award.studentId}:`, err);
+            failures++;
+          }
+        }
+
+        if (failures === 0) {
+          this.showNotification(`Awarded RTC to ${successes} student${successes !== 1 ? 's' : ''} successfully!`, 'success');
+        } else {
+          this.showNotification(`Awarded RTC to ${successes} student${successes !== 1 ? 's' : ''}, ${failures} failed`, 'error');
+        }
+
+        this.closeModal('class-rtc-award');
       }
 
       // ===== Teacher Class Notes Functions =====
