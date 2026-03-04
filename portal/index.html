@@ -32787,13 +32787,25 @@
       try {
         const studentId = this.userInfo.profile.id;
 
-        // Fetch all active activities with coach + facility
+        // Fetch all active activities with facility
         const { data: activities, error: actErr } = await this.supabaseQuery(() => this.auth.supabase
           .from('activities')
-          .select('*, coach:user_profiles!coach_id(id, first_name, last_name), facility:facilities(id, name)')
+          .select('*, facility:facilities(id, name)')
           .eq('status', 'active')
           .order('name'));
         if (actErr) throw actErr;
+
+        // Fetch coach info separately (coach_id is an auth.users UUID)
+        const coachIds = [...new Set(activities.map(a => a.coach_id).filter(Boolean))];
+        if (coachIds.length > 0) {
+          const { data: coaches } = await this.supabaseQuery(() => this.auth.supabase
+            .from('user_profiles')
+            .select('auth_user_id, first_name, last_name')
+            .in('auth_user_id', coachIds));
+          const coachMap = {};
+          (coaches || []).forEach(c => { coachMap[c.auth_user_id] = c; });
+          activities.forEach(a => { a.coach = coachMap[a.coach_id] || null; });
+        }
 
         // Fetch student's enrollments
         const { data: myEnrollments } = await this.supabaseQuery(() => this.auth.supabase
@@ -32989,8 +33001,20 @@
         for (const child of children) {
           const { data: enrollments } = await this.supabaseQuery(() => this.auth.supabase
             .from('activity_enrollments')
-            .select('*, activity:activities(*, coach:user_profiles!coach_id(id, first_name, last_name), facility:facilities(id, name))')
+            .select('*, activity:activities(*, facility:facilities(id, name))')
             .eq('student_id', child.id));
+
+          // Resolve coach info for enrolled activities
+          const parentCoachIds = [...new Set((enrollments || []).map(e => e.activity?.coach_id).filter(Boolean))];
+          if (parentCoachIds.length > 0) {
+            const { data: pCoaches } = await this.supabaseQuery(() => this.auth.supabase
+              .from('user_profiles')
+              .select('auth_user_id, first_name, last_name')
+              .in('auth_user_id', parentCoachIds));
+            const pCoachMap = {};
+            (pCoaches || []).forEach(c => { pCoachMap[c.auth_user_id] = c; });
+            (enrollments || []).forEach(e => { if (e.activity) e.activity.coach = pCoachMap[e.activity.coach_id] || null; });
+          }
 
           // Get schedules for enrolled activities
           const actIds = (enrollments || []).map(e => e.activity?.id).filter(Boolean);
@@ -33206,10 +33230,22 @@
       try {
         const { data: activities, error } = await this.supabaseQuery(() => this.auth.supabase
           .from('activities')
-          .select('*, coach:user_profiles!coach_id(id, first_name, last_name), facility:facilities(id, name, type)')
+          .select('*, facility:facilities(id, name, type)')
           .order('name'));
 
         if (error) throw error;
+
+        // Resolve coach info separately
+        const adminCoachIds = [...new Set((activities || []).map(a => a.coach_id).filter(Boolean))];
+        if (adminCoachIds.length > 0) {
+          const { data: aCoaches } = await this.supabaseQuery(() => this.auth.supabase
+            .from('user_profiles')
+            .select('auth_user_id, first_name, last_name')
+            .in('auth_user_id', adminCoachIds));
+          const aCoachMap = {};
+          (aCoaches || []).forEach(c => { aCoachMap[c.auth_user_id] = c; });
+          (activities || []).forEach(a => { a.coach = aCoachMap[a.coach_id] || null; });
+        }
 
         // Get enrollment counts
         const { data: enrollments } = await this.supabaseQuery(() => this.auth.supabase
