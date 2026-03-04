@@ -3694,6 +3694,297 @@
                     }
                 }
             }
+
+            // ==================== BANK MODAL ====================
+
+            async openBankModal() {
+                try {
+                    const { data, error } = await this.auth.supabase.rpc('rtc_bank_get_info');
+                    if (error) throw error;
+                    if (!data.success) throw new Error(data.error);
+                    this._bankInfo = data;
+                    this._renderBankModal(data);
+                } catch (error) {
+                    console.error('Error opening bank:', error);
+                    window.PortalUI.showNotification('Error opening bank: ' + error.message, 'error');
+                }
+            }
+
+            _renderBankModal(info) {
+                const taxFreeStatus = info.is_tax_free
+                    ? '<span style="color: var(--success, #27ae60); font-weight: 600;">Tax-Free Window Active!</span>'
+                    : `<span style="color: var(--muted);">Tax-free withdrawals start day ${info.tax_free_starts_day} (currently day ${info.current_day}/${info.days_in_month})</span>`;
+
+                let txRows = '';
+                if (info.transactions && info.transactions.length > 0) {
+                    info.transactions.forEach(tx => {
+                        const date = new Date(tx.created_at).toLocaleDateString();
+                        const isPositive = tx.amount > 0;
+                        const color = isPositive ? 'var(--success, #27ae60)' : 'var(--danger, #e74c3c)';
+                        const typeLabel = {
+                            'bank_deposit': 'Deposit',
+                            'bank_withdraw': 'Withdraw',
+                            'bank_interest': 'Interest',
+                            'bank_tax': 'Tax'
+                        }[tx.transaction_type] || tx.transaction_type;
+                        txRows += `<tr style="border-bottom: 1px solid var(--border);">
+                            <td style="padding: 6px 8px; font-size: 12px; color: var(--muted);">${date}</td>
+                            <td style="padding: 6px 8px;">${typeLabel}</td>
+                            <td style="padding: 6px 8px; text-align: right; font-weight: bold; color: ${color};">${isPositive ? '+' : ''}${tx.amount}</td>
+                            <td style="padding: 6px 8px; color: var(--muted); font-size: 12px; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${tx.description || '-'}</td>
+                        </tr>`;
+                    });
+                } else {
+                    txRows = '<tr><td colspan="4" style="padding: 15px; text-align: center; color: var(--muted);">No bank transactions yet</td></tr>';
+                }
+
+                const existing = document.getElementById('bank-modal-overlay');
+                if (existing) existing.remove();
+
+                const modal = document.createElement('div');
+                modal.id = 'bank-modal-overlay';
+                modal.style.cssText = 'position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 10000; display: flex; align-items: center; justify-content: center;';
+                modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+
+                modal.innerHTML = `
+                    <div style="background: var(--card); border-radius: 12px; padding: 24px; max-width: 520px; width: 95%; max-height: 85vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.3);">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                            <h2 style="margin: 0; color: #f39c12;">🏦 RTC Bank</h2>
+                            <button onclick="document.getElementById('bank-modal-overlay').remove()" style="background: none; border: none; font-size: 24px; cursor: pointer; color: var(--muted);">&times;</button>
+                        </div>
+                        <div style="display: flex; gap: 12px; margin-bottom: 16px;">
+                            <div style="flex: 1; background: var(--bg); border-radius: 8px; padding: 14px; text-align: center; border: 1px solid var(--border);">
+                                <div style="font-size: 28px; font-weight: bold; color: var(--text);">${info.wallet_balance}</div>
+                                <div style="font-size: 12px; color: var(--muted);">Wallet</div>
+                            </div>
+                            <div style="flex: 1; background: var(--bg); border-radius: 8px; padding: 14px; text-align: center; border: 2px solid #f39c12;">
+                                <div style="font-size: 28px; font-weight: bold; color: #f39c12;">${info.bank_balance}</div>
+                                <div style="font-size: 12px; color: var(--muted);">Bank</div>
+                            </div>
+                        </div>
+                        <div style="background: var(--bg); border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; font-size: 13px;">
+                            <div>Interest Rate: <strong>${info.interest_rate}%</strong> monthly</div>
+                            <div>${taxFreeStatus}</div>
+                        </div>
+                        <div style="display: flex; gap: 12px; margin-bottom: 16px;">
+                            <div style="flex: 1;">
+                                <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Deposit to Bank</label>
+                                <div style="display: flex; gap: 6px;">
+                                    <input type="number" id="bank-deposit-amount" min="1" placeholder="Amount" style="flex: 1; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+                                    <button class="btn btn-primary" onclick="window.portal.executeBankDeposit()" style="padding: 8px 14px; white-space: nowrap;">Deposit</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div style="margin-bottom: 16px;">
+                            <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Withdraw from Bank</label>
+                            <div style="display: flex; gap: 6px; margin-bottom: 6px;">
+                                <input type="number" id="bank-withdraw-amount" min="1" placeholder="Amount" oninput="window.portal.updateWithdrawPreview()" style="flex: 1; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+                                <button class="btn" onclick="window.portal.executeBankWithdraw()" style="padding: 8px 14px; background: #e74c3c; color: #fff; border: none; border-radius: 6px; white-space: nowrap;">Withdraw</button>
+                            </div>
+                            <div id="bank-withdraw-preview" style="font-size: 12px; min-height: 18px;"></div>
+                        </div>
+                        <div style="margin-top: 16px;">
+                            <div style="font-weight: 600; margin-bottom: 8px; font-size: 14px;">Recent Bank Transactions</div>
+                            <div style="overflow-x: auto; max-height: 200px; overflow-y: auto;">
+                                <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+                                    <thead>
+                                        <tr style="background: var(--bg);">
+                                            <th style="padding: 6px 8px; text-align: left;">Date</th>
+                                            <th style="padding: 6px 8px; text-align: left;">Type</th>
+                                            <th style="padding: 6px 8px; text-align: right;">Amount</th>
+                                            <th style="padding: 6px 8px; text-align: left;">Description</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>${txRows}</tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                `;
+
+                document.body.appendChild(modal);
+            }
+
+            updateWithdrawPreview() {
+                const preview = document.getElementById('bank-withdraw-preview');
+                if (!preview || !this._bankInfo) return;
+                const amount = parseInt(document.getElementById('bank-withdraw-amount')?.value) || 0;
+                if (amount <= 0) { preview.innerHTML = ''; return; }
+                const info = this._bankInfo;
+                if (info.is_tax_free) {
+                    preview.innerHTML = `<span style="color: var(--success, #27ae60);">Tax-free! Total from bank: ${amount} RTC</span>`;
+                    if (amount > info.bank_balance) {
+                        preview.innerHTML += `<br><span style="color: var(--danger, #e74c3c);">Insufficient bank balance (have ${info.bank_balance})</span>`;
+                    }
+                    return;
+                }
+                const tax = Math.max(10, Math.floor(amount * info.interest_rate / 100));
+                const total = amount + tax;
+                preview.innerHTML = `<span style="color: #e67e22;">Tax: ${tax} RTC | Total from bank: ${total} RTC</span>`;
+                if (total > info.bank_balance) {
+                    preview.innerHTML += `<br><span style="color: var(--danger, #e74c3c);">Insufficient bank balance (have ${info.bank_balance}, need ${total})</span>`;
+                }
+            }
+
+            async executeBankDeposit() {
+                const amount = parseInt(document.getElementById('bank-deposit-amount')?.value) || 0;
+                if (amount <= 0) { window.PortalUI.showNotification('Enter a valid deposit amount', 'error'); return; }
+                try {
+                    const { data, error } = await this.auth.supabase.rpc('rtc_bank_deposit', { p_amount: amount });
+                    if (error) throw error;
+                    if (!data.success) throw new Error(data.error);
+                    const rtcEl = document.getElementById('rtc-balance');
+                    if (rtcEl) rtcEl.textContent = data.new_wallet_balance.toLocaleString();
+                    window.PortalUI.showNotification(`Deposited ${amount} RTC to bank`, 'success');
+                    this.openBankModal();
+                } catch (error) {
+                    console.error('Deposit error:', error);
+                    window.PortalUI.showNotification('Deposit failed: ' + error.message, 'error');
+                }
+            }
+
+            async executeBankWithdraw() {
+                const amount = parseInt(document.getElementById('bank-withdraw-amount')?.value) || 0;
+                if (amount <= 0) { window.PortalUI.showNotification('Enter a valid withdrawal amount', 'error'); return; }
+                try {
+                    const { data, error } = await this.auth.supabase.rpc('rtc_bank_withdraw', { p_amount: amount });
+                    if (error) throw error;
+                    if (!data.success) throw new Error(data.error);
+                    const rtcEl = document.getElementById('rtc-balance');
+                    if (rtcEl) rtcEl.textContent = data.new_wallet_balance.toLocaleString();
+                    const taxMsg = data.tax > 0 ? ` (Tax: ${data.tax} RTC)` : ' (Tax-free!)';
+                    window.PortalUI.showNotification(`Withdrew ${amount} RTC from bank${taxMsg}`, 'success');
+                    this.openBankModal();
+                } catch (error) {
+                    console.error('Withdraw error:', error);
+                    window.PortalUI.showNotification('Withdrawal failed: ' + error.message, 'error');
+                }
+            }
+
+            // ==================== RTC STORE ====================
+
+            async openRTCStore() {
+                try {
+                    const { data, error } = await this.auth.supabase.rpc('rtc_get_store_data');
+                    if (error) throw error;
+                    if (!data.success) throw new Error(data.error);
+                    this._storeData = data;
+                    this._renderRTCStoreModal(data);
+                } catch (error) {
+                    console.error('Error opening store:', error);
+                    window.PortalUI.showNotification('Error opening store: ' + error.message, 'error');
+                }
+            }
+
+            _renderRTCStoreModal(data) {
+                let grantsHtml = '';
+                if (data.grants && data.grants.length > 0) {
+                    grantsHtml = data.grants.map(g => {
+                        const now = new Date();
+                        const expires = new Date(g.expires_at);
+                        const msLeft = expires - now;
+                        const daysLeft = Math.ceil(msLeft / (1000 * 60 * 60 * 24));
+                        const hoursLeft = Math.ceil(msLeft / (1000 * 60 * 60));
+                        let timeText, timeColor;
+                        if (daysLeft > 3) { timeText = daysLeft + ' days left'; timeColor = 'var(--success, #27ae60)'; }
+                        else if (daysLeft > 1) { timeText = daysLeft + ' days left'; timeColor = '#e67e22'; }
+                        else if (hoursLeft > 0) { timeText = hoursLeft + ' hours left'; timeColor = 'var(--danger, #e74c3c)'; }
+                        else { timeText = 'Expiring soon'; timeColor = 'var(--danger, #e74c3c)'; }
+                        return `
+                            <div style="display: flex; align-items: center; gap: 10px; padding: 10px; background: var(--bg); border-radius: 8px; border: 1px solid var(--border);">
+                                <div style="font-size: 28px;">${g.icon || '🎖️'}</div>
+                                <div style="flex: 1;">
+                                    <div style="font-weight: 600;">${g.name}</div>
+                                    <div style="font-size: 12px; color: ${timeColor}; font-weight: 600;">${timeText}</div>
+                                    <div style="font-size: 11px; color: var(--muted);">Expires ${expires.toLocaleDateString()}</div>
+                                </div>
+                            </div>
+                        `;
+                    }).join('');
+                } else {
+                    grantsHtml = '<div style="padding: 12px; text-align: center; color: var(--muted); font-size: 13px;">No active privileges</div>';
+                }
+
+                const activeGrantIds = (data.grants || []).map(g => g.privilege_id);
+                let catalogHtml = '';
+                if (data.catalog && data.catalog.length > 0) {
+                    catalogHtml = data.catalog.map(p => {
+                        const isOwned = activeGrantIds.includes(p.id);
+                        const canAfford = data.wallet_balance >= p.price;
+                        let buttonHtml;
+                        if (isOwned) {
+                            buttonHtml = '<button class="btn" style="padding: 6px 14px; background: #95a5a6; color: #fff; border: none; border-radius: 6px; font-size: 12px;" disabled>Active</button>';
+                        } else if (!canAfford) {
+                            buttonHtml = `<button class="btn" style="padding: 6px 14px; background: var(--danger, #e74c3c); color: #fff; border: none; border-radius: 6px; font-size: 12px; opacity: 0.7;" disabled>Need ${p.price - data.wallet_balance} more RTC</button>`;
+                        } else {
+                            buttonHtml = `<button class="btn" style="padding: 6px 14px; background: #9b59b6; color: #fff; border: none; border-radius: 6px; font-size: 12px; cursor: pointer;" onclick="window.portal.purchasePrivilege('${p.id}')">Buy — ${p.price} RTC</button>`;
+                        }
+                        return `
+                            <div style="display: flex; align-items: center; gap: 10px; padding: 12px; background: var(--bg); border-radius: 8px; border: 1px solid var(--border);">
+                                <div style="font-size: 32px;">${p.icon || '🎖️'}</div>
+                                <div style="flex: 1;">
+                                    <div style="font-weight: 600;">${p.name}</div>
+                                    ${p.description ? `<div style="font-size: 12px; color: var(--muted); margin-top: 2px;">${p.description}</div>` : ''}
+                                    <div style="font-size: 12px; color: var(--muted); margin-top: 2px;">Lasts ${p.duration_days} day${p.duration_days > 1 ? 's' : ''}</div>
+                                </div>
+                                <div style="text-align: right;">
+                                    <div style="font-weight: bold; color: #9b59b6; margin-bottom: 4px;">${p.price} RTC</div>
+                                    ${buttonHtml}
+                                </div>
+                            </div>
+                        `;
+                    }).join('');
+                } else {
+                    catalogHtml = '<div style="padding: 12px; text-align: center; color: var(--muted); font-size: 13px;">No privileges available yet</div>';
+                }
+
+                const existing = document.getElementById('rtc-store-modal-overlay');
+                if (existing) existing.remove();
+
+                const modal = document.createElement('div');
+                modal.id = 'rtc-store-modal-overlay';
+                modal.style.cssText = 'position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 10000; display: flex; align-items: center; justify-content: center;';
+                modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+
+                modal.innerHTML = `
+                    <div style="background: var(--card); border-radius: 12px; padding: 24px; max-width: 520px; width: 95%; max-height: 85vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.3);">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                            <h2 style="margin: 0; color: #9b59b6;">🛍️ RTC Store</h2>
+                            <button onclick="document.getElementById('rtc-store-modal-overlay').remove()" style="background: none; border: none; font-size: 24px; cursor: pointer; color: var(--muted);">&times;</button>
+                        </div>
+                        <div style="background: var(--bg); border-radius: 8px; padding: 14px; text-align: center; margin-bottom: 16px; border: 2px solid #9b59b6;">
+                            <div style="font-size: 28px; font-weight: bold; color: #9b59b6;">${data.wallet_balance}</div>
+                            <div style="font-size: 12px; color: var(--muted);">RTC Balance</div>
+                        </div>
+                        <div style="margin-bottom: 16px;">
+                            <div style="font-weight: 600; margin-bottom: 8px; font-size: 14px; color: #9b59b6;">Your Active Privileges</div>
+                            <div style="display: flex; flex-direction: column; gap: 8px;">${grantsHtml}</div>
+                        </div>
+                        <div>
+                            <div style="font-weight: 600; margin-bottom: 8px; font-size: 14px; color: #9b59b6;">Available Privileges</div>
+                            <div style="display: flex; flex-direction: column; gap: 8px;">${catalogHtml}</div>
+                        </div>
+                    </div>
+                `;
+
+                document.body.appendChild(modal);
+            }
+
+            async purchasePrivilege(privilegeId) {
+                if (!confirm('Are you sure you want to purchase this privilege?')) return;
+                try {
+                    const { data, error } = await this.auth.supabase.rpc('rtc_purchase_privilege', { p_privilege_id: privilegeId });
+                    if (error) throw error;
+                    if (!data.success) throw new Error(data.error);
+                    const rtcEl = document.getElementById('rtc-balance');
+                    if (rtcEl) rtcEl.textContent = data.new_balance.toLocaleString();
+                    window.PortalUI.showNotification('Privilege purchased!', 'success');
+                    this.openRTCStore();
+                } catch (error) {
+                    console.error('Purchase error:', error);
+                    window.PortalUI.showNotification('Purchase failed: ' + error.message, 'error');
+                }
+            }
         }
 
         // Real SkillTreeIntegration class that integrates with SkillTreeViewer.html
@@ -4333,297 +4624,6 @@
                         subject: subject,
                         progress: this.skillProgress[subject] || {}
                     }, '*');
-                }
-            }
-
-            // ==================== BANK MODAL ====================
-
-            async openBankModal() {
-                try {
-                    const { data, error } = await this.auth.supabase.rpc('rtc_bank_get_info');
-                    if (error) throw error;
-                    if (!data.success) throw new Error(data.error);
-                    this._bankInfo = data;
-                    this._renderBankModal(data);
-                } catch (error) {
-                    console.error('Error opening bank:', error);
-                    window.PortalUI.showNotification('Error opening bank: ' + error.message, 'error');
-                }
-            }
-
-            _renderBankModal(info) {
-                const taxFreeStatus = info.is_tax_free
-                    ? '<span style="color: var(--success, #27ae60); font-weight: 600;">Tax-Free Window Active!</span>'
-                    : `<span style="color: var(--muted);">Tax-free withdrawals start day ${info.tax_free_starts_day} (currently day ${info.current_day}/${info.days_in_month})</span>`;
-
-                let txRows = '';
-                if (info.transactions && info.transactions.length > 0) {
-                    info.transactions.forEach(tx => {
-                        const date = new Date(tx.created_at).toLocaleDateString();
-                        const isPositive = tx.amount > 0;
-                        const color = isPositive ? 'var(--success, #27ae60)' : 'var(--danger, #e74c3c)';
-                        const typeLabel = {
-                            'bank_deposit': 'Deposit',
-                            'bank_withdraw': 'Withdraw',
-                            'bank_interest': 'Interest',
-                            'bank_tax': 'Tax'
-                        }[tx.transaction_type] || tx.transaction_type;
-                        txRows += `<tr style="border-bottom: 1px solid var(--border);">
-                            <td style="padding: 6px 8px; font-size: 12px; color: var(--muted);">${date}</td>
-                            <td style="padding: 6px 8px;">${typeLabel}</td>
-                            <td style="padding: 6px 8px; text-align: right; font-weight: bold; color: ${color};">${isPositive ? '+' : ''}${tx.amount}</td>
-                            <td style="padding: 6px 8px; color: var(--muted); font-size: 12px; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${tx.description || '-'}</td>
-                        </tr>`;
-                    });
-                } else {
-                    txRows = '<tr><td colspan="4" style="padding: 15px; text-align: center; color: var(--muted);">No bank transactions yet</td></tr>';
-                }
-
-                const existing = document.getElementById('bank-modal-overlay');
-                if (existing) existing.remove();
-
-                const modal = document.createElement('div');
-                modal.id = 'bank-modal-overlay';
-                modal.style.cssText = 'position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 10000; display: flex; align-items: center; justify-content: center;';
-                modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
-
-                modal.innerHTML = `
-                    <div style="background: var(--card); border-radius: 12px; padding: 24px; max-width: 520px; width: 95%; max-height: 85vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.3);">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-                            <h2 style="margin: 0; color: #f39c12;">🏦 RTC Bank</h2>
-                            <button onclick="document.getElementById('bank-modal-overlay').remove()" style="background: none; border: none; font-size: 24px; cursor: pointer; color: var(--muted);">&times;</button>
-                        </div>
-                        <div style="display: flex; gap: 12px; margin-bottom: 16px;">
-                            <div style="flex: 1; background: var(--bg); border-radius: 8px; padding: 14px; text-align: center; border: 1px solid var(--border);">
-                                <div style="font-size: 28px; font-weight: bold; color: var(--text);">${info.wallet_balance}</div>
-                                <div style="font-size: 12px; color: var(--muted);">Wallet</div>
-                            </div>
-                            <div style="flex: 1; background: var(--bg); border-radius: 8px; padding: 14px; text-align: center; border: 2px solid #f39c12;">
-                                <div style="font-size: 28px; font-weight: bold; color: #f39c12;">${info.bank_balance}</div>
-                                <div style="font-size: 12px; color: var(--muted);">Bank</div>
-                            </div>
-                        </div>
-                        <div style="background: var(--bg); border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; font-size: 13px;">
-                            <div>Interest Rate: <strong>${info.interest_rate}%</strong> monthly</div>
-                            <div>${taxFreeStatus}</div>
-                        </div>
-                        <div style="display: flex; gap: 12px; margin-bottom: 16px;">
-                            <div style="flex: 1;">
-                                <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Deposit to Bank</label>
-                                <div style="display: flex; gap: 6px;">
-                                    <input type="number" id="bank-deposit-amount" min="1" placeholder="Amount" style="flex: 1; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
-                                    <button class="btn btn-primary" onclick="window.portal.executeBankDeposit()" style="padding: 8px 14px; white-space: nowrap;">Deposit</button>
-                                </div>
-                            </div>
-                        </div>
-                        <div style="margin-bottom: 16px;">
-                            <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Withdraw from Bank</label>
-                            <div style="display: flex; gap: 6px; margin-bottom: 6px;">
-                                <input type="number" id="bank-withdraw-amount" min="1" placeholder="Amount" oninput="window.portal.updateWithdrawPreview()" style="flex: 1; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
-                                <button class="btn" onclick="window.portal.executeBankWithdraw()" style="padding: 8px 14px; background: #e74c3c; color: #fff; border: none; border-radius: 6px; white-space: nowrap;">Withdraw</button>
-                            </div>
-                            <div id="bank-withdraw-preview" style="font-size: 12px; min-height: 18px;"></div>
-                        </div>
-                        <div style="margin-top: 16px;">
-                            <div style="font-weight: 600; margin-bottom: 8px; font-size: 14px;">Recent Bank Transactions</div>
-                            <div style="overflow-x: auto; max-height: 200px; overflow-y: auto;">
-                                <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
-                                    <thead>
-                                        <tr style="background: var(--bg);">
-                                            <th style="padding: 6px 8px; text-align: left;">Date</th>
-                                            <th style="padding: 6px 8px; text-align: left;">Type</th>
-                                            <th style="padding: 6px 8px; text-align: right;">Amount</th>
-                                            <th style="padding: 6px 8px; text-align: left;">Description</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>${txRows}</tbody>
-                                </table>
-                            </div>
-                        </div>
-                    </div>
-                `;
-
-                document.body.appendChild(modal);
-            }
-
-            updateWithdrawPreview() {
-                const preview = document.getElementById('bank-withdraw-preview');
-                if (!preview || !this._bankInfo) return;
-                const amount = parseInt(document.getElementById('bank-withdraw-amount')?.value) || 0;
-                if (amount <= 0) { preview.innerHTML = ''; return; }
-                const info = this._bankInfo;
-                if (info.is_tax_free) {
-                    preview.innerHTML = `<span style="color: var(--success, #27ae60);">Tax-free! Total from bank: ${amount} RTC</span>`;
-                    if (amount > info.bank_balance) {
-                        preview.innerHTML += `<br><span style="color: var(--danger, #e74c3c);">Insufficient bank balance (have ${info.bank_balance})</span>`;
-                    }
-                    return;
-                }
-                const tax = Math.max(10, Math.floor(amount * info.interest_rate / 100));
-                const total = amount + tax;
-                preview.innerHTML = `<span style="color: #e67e22;">Tax: ${tax} RTC | Total from bank: ${total} RTC</span>`;
-                if (total > info.bank_balance) {
-                    preview.innerHTML += `<br><span style="color: var(--danger, #e74c3c);">Insufficient bank balance (have ${info.bank_balance}, need ${total})</span>`;
-                }
-            }
-
-            async executeBankDeposit() {
-                const amount = parseInt(document.getElementById('bank-deposit-amount')?.value) || 0;
-                if (amount <= 0) { window.PortalUI.showNotification('Enter a valid deposit amount', 'error'); return; }
-                try {
-                    const { data, error } = await this.auth.supabase.rpc('rtc_bank_deposit', { p_amount: amount });
-                    if (error) throw error;
-                    if (!data.success) throw new Error(data.error);
-                    const rtcEl = document.getElementById('rtc-balance');
-                    if (rtcEl) rtcEl.textContent = data.new_wallet_balance.toLocaleString();
-                    window.PortalUI.showNotification(`Deposited ${amount} RTC to bank`, 'success');
-                    this.openBankModal();
-                } catch (error) {
-                    console.error('Deposit error:', error);
-                    window.PortalUI.showNotification('Deposit failed: ' + error.message, 'error');
-                }
-            }
-
-            async executeBankWithdraw() {
-                const amount = parseInt(document.getElementById('bank-withdraw-amount')?.value) || 0;
-                if (amount <= 0) { window.PortalUI.showNotification('Enter a valid withdrawal amount', 'error'); return; }
-                try {
-                    const { data, error } = await this.auth.supabase.rpc('rtc_bank_withdraw', { p_amount: amount });
-                    if (error) throw error;
-                    if (!data.success) throw new Error(data.error);
-                    const rtcEl = document.getElementById('rtc-balance');
-                    if (rtcEl) rtcEl.textContent = data.new_wallet_balance.toLocaleString();
-                    const taxMsg = data.tax > 0 ? ` (Tax: ${data.tax} RTC)` : ' (Tax-free!)';
-                    window.PortalUI.showNotification(`Withdrew ${amount} RTC from bank${taxMsg}`, 'success');
-                    this.openBankModal();
-                } catch (error) {
-                    console.error('Withdraw error:', error);
-                    window.PortalUI.showNotification('Withdrawal failed: ' + error.message, 'error');
-                }
-            }
-
-            // ==================== RTC STORE ====================
-
-            async openRTCStore() {
-                try {
-                    const { data, error } = await this.auth.supabase.rpc('rtc_get_store_data');
-                    if (error) throw error;
-                    if (!data.success) throw new Error(data.error);
-                    this._storeData = data;
-                    this._renderRTCStoreModal(data);
-                } catch (error) {
-                    console.error('Error opening store:', error);
-                    window.PortalUI.showNotification('Error opening store: ' + error.message, 'error');
-                }
-            }
-
-            _renderRTCStoreModal(data) {
-                let grantsHtml = '';
-                if (data.grants && data.grants.length > 0) {
-                    grantsHtml = data.grants.map(g => {
-                        const now = new Date();
-                        const expires = new Date(g.expires_at);
-                        const msLeft = expires - now;
-                        const daysLeft = Math.ceil(msLeft / (1000 * 60 * 60 * 24));
-                        const hoursLeft = Math.ceil(msLeft / (1000 * 60 * 60));
-                        let timeText, timeColor;
-                        if (daysLeft > 3) { timeText = daysLeft + ' days left'; timeColor = 'var(--success, #27ae60)'; }
-                        else if (daysLeft > 1) { timeText = daysLeft + ' days left'; timeColor = '#e67e22'; }
-                        else if (hoursLeft > 0) { timeText = hoursLeft + ' hours left'; timeColor = 'var(--danger, #e74c3c)'; }
-                        else { timeText = 'Expiring soon'; timeColor = 'var(--danger, #e74c3c)'; }
-                        return `
-                            <div style="display: flex; align-items: center; gap: 10px; padding: 10px; background: var(--bg); border-radius: 8px; border: 1px solid var(--border);">
-                                <div style="font-size: 28px;">${g.icon || '🎖️'}</div>
-                                <div style="flex: 1;">
-                                    <div style="font-weight: 600;">${g.name}</div>
-                                    <div style="font-size: 12px; color: ${timeColor}; font-weight: 600;">${timeText}</div>
-                                    <div style="font-size: 11px; color: var(--muted);">Expires ${expires.toLocaleDateString()}</div>
-                                </div>
-                            </div>
-                        `;
-                    }).join('');
-                } else {
-                    grantsHtml = '<div style="padding: 12px; text-align: center; color: var(--muted); font-size: 13px;">No active privileges</div>';
-                }
-
-                const activeGrantIds = (data.grants || []).map(g => g.privilege_id);
-                let catalogHtml = '';
-                if (data.catalog && data.catalog.length > 0) {
-                    catalogHtml = data.catalog.map(p => {
-                        const isOwned = activeGrantIds.includes(p.id);
-                        const canAfford = data.wallet_balance >= p.price;
-                        let buttonHtml;
-                        if (isOwned) {
-                            buttonHtml = '<button class="btn" style="padding: 6px 14px; background: #95a5a6; color: #fff; border: none; border-radius: 6px; font-size: 12px;" disabled>Active</button>';
-                        } else if (!canAfford) {
-                            buttonHtml = `<button class="btn" style="padding: 6px 14px; background: var(--danger, #e74c3c); color: #fff; border: none; border-radius: 6px; font-size: 12px; opacity: 0.7;" disabled>Need ${p.price - data.wallet_balance} more RTC</button>`;
-                        } else {
-                            buttonHtml = `<button class="btn" style="padding: 6px 14px; background: #9b59b6; color: #fff; border: none; border-radius: 6px; font-size: 12px; cursor: pointer;" onclick="window.portal.purchasePrivilege('${p.id}')">Buy — ${p.price} RTC</button>`;
-                        }
-                        return `
-                            <div style="display: flex; align-items: center; gap: 10px; padding: 12px; background: var(--bg); border-radius: 8px; border: 1px solid var(--border);">
-                                <div style="font-size: 32px;">${p.icon || '🎖️'}</div>
-                                <div style="flex: 1;">
-                                    <div style="font-weight: 600;">${p.name}</div>
-                                    ${p.description ? `<div style="font-size: 12px; color: var(--muted); margin-top: 2px;">${p.description}</div>` : ''}
-                                    <div style="font-size: 12px; color: var(--muted); margin-top: 2px;">Lasts ${p.duration_days} day${p.duration_days > 1 ? 's' : ''}</div>
-                                </div>
-                                <div style="text-align: right;">
-                                    <div style="font-weight: bold; color: #9b59b6; margin-bottom: 4px;">${p.price} RTC</div>
-                                    ${buttonHtml}
-                                </div>
-                            </div>
-                        `;
-                    }).join('');
-                } else {
-                    catalogHtml = '<div style="padding: 12px; text-align: center; color: var(--muted); font-size: 13px;">No privileges available yet</div>';
-                }
-
-                const existing = document.getElementById('rtc-store-modal-overlay');
-                if (existing) existing.remove();
-
-                const modal = document.createElement('div');
-                modal.id = 'rtc-store-modal-overlay';
-                modal.style.cssText = 'position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 10000; display: flex; align-items: center; justify-content: center;';
-                modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
-
-                modal.innerHTML = `
-                    <div style="background: var(--card); border-radius: 12px; padding: 24px; max-width: 520px; width: 95%; max-height: 85vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.3);">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-                            <h2 style="margin: 0; color: #9b59b6;">🛍️ RTC Store</h2>
-                            <button onclick="document.getElementById('rtc-store-modal-overlay').remove()" style="background: none; border: none; font-size: 24px; cursor: pointer; color: var(--muted);">&times;</button>
-                        </div>
-                        <div style="background: var(--bg); border-radius: 8px; padding: 14px; text-align: center; margin-bottom: 16px; border: 2px solid #9b59b6;">
-                            <div style="font-size: 28px; font-weight: bold; color: #9b59b6;">${data.wallet_balance}</div>
-                            <div style="font-size: 12px; color: var(--muted);">RTC Balance</div>
-                        </div>
-                        <div style="margin-bottom: 16px;">
-                            <div style="font-weight: 600; margin-bottom: 8px; font-size: 14px; color: #9b59b6;">Your Active Privileges</div>
-                            <div style="display: flex; flex-direction: column; gap: 8px;">${grantsHtml}</div>
-                        </div>
-                        <div>
-                            <div style="font-weight: 600; margin-bottom: 8px; font-size: 14px; color: #9b59b6;">Available Privileges</div>
-                            <div style="display: flex; flex-direction: column; gap: 8px;">${catalogHtml}</div>
-                        </div>
-                    </div>
-                `;
-
-                document.body.appendChild(modal);
-            }
-
-            async purchasePrivilege(privilegeId) {
-                if (!confirm('Are you sure you want to purchase this privilege?')) return;
-                try {
-                    const { data, error } = await this.auth.supabase.rpc('rtc_purchase_privilege', { p_privilege_id: privilegeId });
-                    if (error) throw error;
-                    if (!data.success) throw new Error(data.error);
-                    const rtcEl = document.getElementById('rtc-balance');
-                    if (rtcEl) rtcEl.textContent = data.new_balance.toLocaleString();
-                    window.PortalUI.showNotification('Privilege purchased!', 'success');
-                    this.openRTCStore();
-                } catch (error) {
-                    console.error('Purchase error:', error);
-                    window.PortalUI.showNotification('Purchase failed: ' + error.message, 'error');
                 }
             }
         }
