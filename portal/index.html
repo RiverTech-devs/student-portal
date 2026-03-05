@@ -1828,6 +1828,11 @@
             <section id="admin-rtc-management-section" class="hidden">
               <!-- Will be populated by renderAdminRTCManagement() -->
             </section>
+
+            <!-- IRL Purchases Section (Teachers & Admins) -->
+            <section id="irl-purchases-section" class="hidden">
+              <!-- Will be populated by renderIRLPurchases() -->
+            </section>
           </div>
         </div>
       </div>
@@ -2264,7 +2269,7 @@
 
         // Navigate to hash section if present, otherwise show home
         const hash = window.location.hash.substring(1);
-        const validSections = ['home', 'classes', 'messaging', 'profile', 'my-students', 'materials-requests', 'testing-center', 'activities', 'admin-dashboard', 'admin-classes', 'admin-users', 'admin-settings', 'admin-reports', 'admin-attendance', 'admin-student-records', 'admin-enrollment', 'admin-activities', 'admin-facilities', 'admin-rtc-management'];
+        const validSections = ['home', 'classes', 'messaging', 'profile', 'my-students', 'materials-requests', 'testing-center', 'activities', 'admin-dashboard', 'admin-classes', 'admin-users', 'admin-settings', 'admin-reports', 'admin-attendance', 'admin-student-records', 'admin-enrollment', 'admin-activities', 'admin-facilities', 'admin-rtc-management', 'irl-purchases'];
         if (hash && validSections.includes(hash)) {
           this.showSection(hash);
         } else {
@@ -4429,7 +4434,7 @@
 
       handleHashNavigation() {
         const hash = window.location.hash.substring(1);
-        const validSections = ['home', 'classes', 'messaging', 'profile', 'my-students', 'materials-requests', 'testing-center', 'activities', 'admin-dashboard', 'admin-classes', 'admin-users', 'admin-settings', 'admin-reports', 'admin-attendance', 'admin-student-records', 'admin-enrollment', 'admin-activities', 'admin-facilities', 'admin-rtc-management'];
+        const validSections = ['home', 'classes', 'messaging', 'profile', 'my-students', 'materials-requests', 'testing-center', 'activities', 'admin-dashboard', 'admin-classes', 'admin-users', 'admin-settings', 'admin-reports', 'admin-attendance', 'admin-student-records', 'admin-enrollment', 'admin-activities', 'admin-facilities', 'admin-rtc-management', 'irl-purchases'];
 
         if (hash && validSections.includes(hash)) {
           this.showSection(hash);
@@ -4538,6 +4543,9 @@
             break;
           case 'admin-rtc-management':
             this.renderAdminRTCManagement();
+            break;
+          case 'irl-purchases':
+            this.renderIRLPurchases();
             break;
           default:
             console.warn('Unknown section:', sectionName);
@@ -36327,6 +36335,529 @@
       } catch (error) {
         console.error('Unequip error:', error);
         this.showNotification('Unequip failed: ' + error.message, 'error');
+      }
+    }
+
+    // ==================== IRL PURCHASES SYSTEM ====================
+
+    async renderIRLPurchases() {
+      const section = document.getElementById('irl-purchases-section');
+      if (!section) { console.error('IRL purchases section not found'); return; }
+
+      section.innerHTML = '<div style="text-align: center; padding: 40px;"><div class="loading-spinner"></div><p>Loading IRL Store...</p></div>';
+
+      try {
+        const [studentsRes, itemsRes, purchasesRes] = await Promise.all([
+          this.supabaseQuery(() => this.auth.supabase
+            .from('user_profiles')
+            .select('id, first_name, last_name, grade_level, rtc_balance')
+            .eq('user_type', 'student')
+            .neq('student_status', 'past')
+            .order('last_name', { ascending: true })),
+          this.supabaseQuery(() => this.auth.supabase
+            .from('irl_store_items')
+            .select('*')
+            .order('sort_order', { ascending: true })
+            .order('name', { ascending: true })),
+          this.supabaseQuery(() => this.auth.supabase
+            .from('irl_purchases')
+            .select('*, student:user_profiles!irl_purchases_student_id_fkey(first_name, last_name), processor:user_profiles!irl_purchases_processed_by_fkey(first_name, last_name)')
+            .order('created_at', { ascending: false })
+            .limit(100))
+        ]);
+
+        if (studentsRes.error) throw studentsRes.error;
+
+        this._irlStudents = studentsRes.data || [];
+        this._irlStoreItems = (itemsRes.data || []).filter(i => i.is_active);
+        this._irlAllItems = itemsRes.data || [];
+        this._irlPurchases = purchasesRes.data || [];
+        this._irlCurrentTab = this._irlCurrentTab || 'new-purchase';
+        this._irlSelectedStudent = null;
+
+        this._renderIRLShell(section);
+        this._switchIRLTab(this._irlCurrentTab);
+
+      } catch (error) {
+        console.error('Error loading IRL purchases:', error);
+        section.innerHTML = `<div class="card" style="margin: 20px;"><p style="color: var(--danger);">Error loading IRL Store: ${error.message}</p></div>`;
+      }
+    }
+
+    _renderIRLShell(section) {
+      const isAdmin = this.userInfo?.profile?.user_type === 'admin';
+      section.innerHTML = `
+        <div style="max-width: 1200px; margin: 0 auto; padding: 20px;">
+          <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap;">
+            <h2 style="margin: 0;">🛒 IRL Store</h2>
+          </div>
+
+          <div style="display: flex; gap: 0; margin-bottom: 20px; border-bottom: 2px solid var(--border);">
+            <button id="irl-tab-new-purchase" class="btn" style="border: none; border-radius: 6px 6px 0 0; padding: 10px 20px; cursor: pointer; font-weight: 600;"
+              onclick="app._switchIRLTab('new-purchase')">New Purchase</button>
+            <button id="irl-tab-history" class="btn" style="border: none; border-radius: 6px 6px 0 0; padding: 10px 20px; cursor: pointer; font-weight: 600;"
+              onclick="app._switchIRLTab('history')">Purchase History</button>
+            ${isAdmin ? `<button id="irl-tab-manage" class="btn" style="border: none; border-radius: 6px 6px 0 0; padding: 10px 20px; cursor: pointer; font-weight: 600;"
+              onclick="app._switchIRLTab('manage')">Manage Items</button>` : ''}
+          </div>
+
+          <div id="irl-tab-content"></div>
+        </div>
+      `;
+    }
+
+    _switchIRLTab(tab) {
+      this._irlCurrentTab = tab;
+      const tabs = ['new-purchase', 'history', 'manage'];
+      tabs.forEach(t => {
+        const btn = document.getElementById('irl-tab-' + t);
+        if (btn) {
+          btn.style.background = t === tab ? 'var(--accent)' : 'transparent';
+          btn.style.color = t === tab ? '#fff' : 'var(--text)';
+        }
+      });
+
+      const content = document.getElementById('irl-tab-content');
+      if (!content) return;
+
+      switch (tab) {
+        case 'new-purchase': this._renderIRLNewPurchase(content); break;
+        case 'history': this._renderIRLHistory(content); break;
+        case 'manage': this._renderIRLManageItems(content); break;
+      }
+    }
+
+    // ===== New Purchase Tab =====
+    _renderIRLNewPurchase(container) {
+      this._irlSelectedStudent = null;
+      container.innerHTML = `
+        <div class="card" style="padding: 20px; margin-bottom: 20px;">
+          <h3 style="margin: 0 0 15px 0;">Select Student</h3>
+          <input type="text" id="irl-student-search" placeholder="Search by name..."
+            oninput="app._filterIRLStudents()"
+            style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); margin-bottom: 15px; box-sizing: border-box;">
+          <div id="irl-student-list" style="max-height: 300px; overflow-y: auto;">
+            ${this._renderIRLStudentList(this._irlStudents)}
+          </div>
+        </div>
+        <div id="irl-purchase-form-area"></div>
+      `;
+    }
+
+    _renderIRLStudentList(students) {
+      if (!students.length) return '<p style="color: var(--muted); text-align: center;">No students found</p>';
+      return `<table style="width: 100%; border-collapse: collapse;">
+        <thead><tr style="border-bottom: 2px solid var(--border);">
+          <th style="text-align: left; padding: 8px;">Name</th>
+          <th style="text-align: left; padding: 8px;">Grade</th>
+          <th style="text-align: right; padding: 8px;">RTC Balance</th>
+          <th style="text-align: center; padding: 8px;">Action</th>
+        </tr></thead>
+        <tbody>${students.map(s => `
+          <tr style="border-bottom: 1px solid var(--border);">
+            <td style="padding: 8px;">${s.first_name} ${s.last_name}</td>
+            <td style="padding: 8px;">${s.grade_level || '—'}</td>
+            <td style="padding: 8px; text-align: right; font-weight: 600; color: #f39c12;">${s.rtc_balance || 0} RTC</td>
+            <td style="padding: 8px; text-align: center;">
+              <button class="btn btn-primary" style="padding: 4px 12px; font-size: 12px;" onclick="app._selectIRLStudent('${s.id}')">Select</button>
+            </td>
+          </tr>
+        `).join('')}</tbody>
+      </table>`;
+    }
+
+    _filterIRLStudents() {
+      const q = (document.getElementById('irl-student-search')?.value || '').toLowerCase();
+      const filtered = this._irlStudents.filter(s =>
+        `${s.first_name} ${s.last_name}`.toLowerCase().includes(q)
+      );
+      const list = document.getElementById('irl-student-list');
+      if (list) list.innerHTML = this._renderIRLStudentList(filtered);
+    }
+
+    _selectIRLStudent(studentId) {
+      const student = this._irlStudents.find(s => s.id === studentId);
+      if (!student) return;
+      this._irlSelectedStudent = student;
+
+      const formArea = document.getElementById('irl-purchase-form-area');
+      if (!formArea) return;
+
+      const itemOptions = this._irlStoreItems.map(i =>
+        `<option value="${i.id}" data-price="${i.price}">${i.icon || '🛒'} ${i.name} — ${i.price} RTC</option>`
+      ).join('');
+
+      formArea.innerHTML = `
+        <div class="card" style="padding: 20px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px;">
+            <div>
+              <h3 style="margin: 0;">${student.first_name} ${student.last_name}</h3>
+              <span style="color: var(--muted);">Grade ${student.grade_level || '—'}</span>
+            </div>
+            <div style="text-align: right;">
+              <div style="font-size: 24px; font-weight: bold; color: #f39c12;">${student.rtc_balance || 0} RTC</div>
+              <div style="color: var(--muted); font-size: 12px;">Current Balance</div>
+            </div>
+          </div>
+
+          <div style="margin-bottom: 15px;">
+            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; margin-bottom: 10px;">
+              <input type="checkbox" id="irl-custom-toggle" onchange="app._toggleIRLCustom()">
+              <span>Custom Item (not from catalog)</span>
+            </label>
+          </div>
+
+          <div id="irl-catalog-fields">
+            <div style="margin-bottom: 15px;">
+              <label style="font-weight: 600; display: block; margin-bottom: 5px;">Select Item</label>
+              <select id="irl-item-select" onchange="app._updateIRLTotal()" style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+                <option value="">-- Choose an item --</option>
+                ${itemOptions}
+              </select>
+            </div>
+          </div>
+
+          <div id="irl-custom-fields" style="display: none;">
+            <div style="display: flex; gap: 15px; margin-bottom: 15px; flex-wrap: wrap;">
+              <div style="flex: 2; min-width: 200px;">
+                <label style="font-weight: 600; display: block; margin-bottom: 5px;">Item Name</label>
+                <input type="text" id="irl-custom-name" placeholder="e.g. Snack, Pencil..." oninput="app._updateIRLTotal()"
+                  style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); box-sizing: border-box;">
+              </div>
+              <div style="flex: 1; min-width: 120px;">
+                <label style="font-weight: 600; display: block; margin-bottom: 5px;">Price (RTC)</label>
+                <input type="number" id="irl-custom-price" min="1" placeholder="0" oninput="app._updateIRLTotal()"
+                  style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); box-sizing: border-box;">
+              </div>
+            </div>
+          </div>
+
+          <div style="display: flex; gap: 15px; margin-bottom: 15px; flex-wrap: wrap; align-items: end;">
+            <div style="min-width: 100px;">
+              <label style="font-weight: 600; display: block; margin-bottom: 5px;">Quantity</label>
+              <input type="number" id="irl-quantity" min="1" value="1" oninput="app._updateIRLTotal()"
+                style="width: 80px; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); text-align: center;">
+            </div>
+            <div style="flex: 1;">
+              <label style="font-weight: 600; display: block; margin-bottom: 5px;">Notes (optional)</label>
+              <input type="text" id="irl-description" placeholder="Optional notes..."
+                style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); box-sizing: border-box;">
+            </div>
+          </div>
+
+          <div style="display: flex; justify-content: space-between; align-items: center; padding: 15px; background: var(--bg-secondary, var(--bg)); border-radius: 8px; margin-bottom: 15px;">
+            <div>
+              <span style="font-weight: 600;">Total:</span>
+              <span id="irl-total-display" style="font-size: 20px; font-weight: bold; color: #e74c3c; margin-left: 8px;">0 RTC</span>
+            </div>
+            <div id="irl-balance-warning" style="color: #e74c3c; font-weight: 600; display: none;">Insufficient balance!</div>
+          </div>
+
+          <div style="display: flex; gap: 10px; justify-content: flex-end;">
+            <button class="btn btn-secondary" onclick="app._cancelIRLPurchase()">Cancel</button>
+            <button class="btn btn-primary" id="irl-process-btn" onclick="app._processIRLPurchase()" disabled>Process Purchase</button>
+          </div>
+        </div>
+      `;
+      this._updateIRLTotal();
+    }
+
+    _toggleIRLCustom() {
+      const isCustom = document.getElementById('irl-custom-toggle')?.checked;
+      document.getElementById('irl-catalog-fields').style.display = isCustom ? 'none' : 'block';
+      document.getElementById('irl-custom-fields').style.display = isCustom ? 'block' : 'none';
+      this._updateIRLTotal();
+    }
+
+    _updateIRLTotal() {
+      const isCustom = document.getElementById('irl-custom-toggle')?.checked;
+      let price = 0;
+
+      if (isCustom) {
+        price = parseInt(document.getElementById('irl-custom-price')?.value) || 0;
+      } else {
+        const sel = document.getElementById('irl-item-select');
+        if (sel && sel.value) {
+          const opt = sel.options[sel.selectedIndex];
+          price = parseInt(opt?.dataset?.price) || 0;
+        }
+      }
+
+      const qty = parseInt(document.getElementById('irl-quantity')?.value) || 1;
+      const total = price * qty;
+      const balance = this._irlSelectedStudent?.rtc_balance || 0;
+
+      const totalEl = document.getElementById('irl-total-display');
+      const warnEl = document.getElementById('irl-balance-warning');
+      const btn = document.getElementById('irl-process-btn');
+
+      if (totalEl) totalEl.textContent = total + ' RTC';
+      if (warnEl) warnEl.style.display = total > balance ? 'block' : 'none';
+      if (btn) btn.disabled = total <= 0 || total > balance;
+    }
+
+    _cancelIRLPurchase() {
+      this._irlSelectedStudent = null;
+      const formArea = document.getElementById('irl-purchase-form-area');
+      if (formArea) formArea.innerHTML = '';
+    }
+
+    async _processIRLPurchase() {
+      const student = this._irlSelectedStudent;
+      if (!student) return;
+
+      const isCustom = document.getElementById('irl-custom-toggle')?.checked;
+      const qty = parseInt(document.getElementById('irl-quantity')?.value) || 1;
+      const desc = document.getElementById('irl-description')?.value || null;
+
+      let itemId = null, customName = null, customPrice = null;
+
+      if (isCustom) {
+        customName = document.getElementById('irl-custom-name')?.value?.trim();
+        customPrice = parseInt(document.getElementById('irl-custom-price')?.value) || 0;
+        if (!customName || customPrice < 1) {
+          this.showNotification('Please enter item name and price', 'error');
+          return;
+        }
+      } else {
+        itemId = document.getElementById('irl-item-select')?.value;
+        if (!itemId) {
+          this.showNotification('Please select an item', 'error');
+          return;
+        }
+      }
+
+      // Calculate total for confirmation
+      let price = isCustom ? customPrice : parseInt(document.getElementById('irl-item-select')?.options[document.getElementById('irl-item-select').selectedIndex]?.dataset?.price) || 0;
+      const total = price * qty;
+
+      if (!confirm(`Deduct ${total} RTC from ${student.first_name} ${student.last_name}?`)) return;
+
+      const btn = document.getElementById('irl-process-btn');
+      if (btn) { btn.disabled = true; btn.textContent = 'Processing...'; }
+
+      try {
+        const { data, error } = await this.auth.supabase.rpc('process_irl_purchase', {
+          p_student_id: student.id,
+          p_item_id: itemId,
+          p_custom_name: customName,
+          p_custom_price: customPrice,
+          p_quantity: qty,
+          p_description: desc
+        });
+
+        if (error) throw error;
+        if (data && !data.success) throw new Error(data.error);
+
+        // Update local student balance
+        const s = this._irlStudents.find(st => st.id === student.id);
+        if (s) s.rtc_balance = data.new_balance;
+
+        this.showNotification(`Purchase complete! ${data.total_deducted} RTC deducted. New balance: ${data.new_balance} RTC`, 'success');
+
+        // Reset form — go back to student selection
+        this._irlSelectedStudent = null;
+        const content = document.getElementById('irl-tab-content');
+        if (content) this._renderIRLNewPurchase(content);
+
+        // Refresh purchases in background
+        this._refreshIRLPurchases();
+
+      } catch (error) {
+        console.error('IRL purchase error:', error);
+        this.showNotification('Purchase failed: ' + error.message, 'error');
+        if (btn) { btn.disabled = false; btn.textContent = 'Process Purchase'; }
+      }
+    }
+
+    async _refreshIRLPurchases() {
+      try {
+        const { data } = await this.supabaseQuery(() => this.auth.supabase
+          .from('irl_purchases')
+          .select('*, student:user_profiles!irl_purchases_student_id_fkey(first_name, last_name), processor:user_profiles!irl_purchases_processed_by_fkey(first_name, last_name)')
+          .order('created_at', { ascending: false })
+          .limit(100));
+        if (data) this._irlPurchases = data;
+      } catch (e) { /* silent refresh */ }
+    }
+
+    // ===== Purchase History Tab =====
+    _renderIRLHistory(container) {
+      container.innerHTML = `
+        <div class="card" style="padding: 20px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; flex-wrap: wrap; gap: 10px;">
+            <h3 style="margin: 0;">Purchase History</h3>
+            <input type="text" id="irl-history-search" placeholder="Filter by student or item..." oninput="app._filterIRLHistory()"
+              style="padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); min-width: 250px;">
+          </div>
+          <div id="irl-history-table" style="overflow-x: auto;">
+            ${this._renderIRLHistoryTable(this._irlPurchases)}
+          </div>
+        </div>
+      `;
+    }
+
+    _renderIRLHistoryTable(purchases) {
+      if (!purchases.length) return '<p style="color: var(--muted); text-align: center; padding: 20px;">No purchases yet</p>';
+      return `<table style="width: 100%; border-collapse: collapse;">
+        <thead><tr style="border-bottom: 2px solid var(--border);">
+          <th style="text-align: left; padding: 8px;">Date</th>
+          <th style="text-align: left; padding: 8px;">Student</th>
+          <th style="text-align: left; padding: 8px;">Item</th>
+          <th style="text-align: center; padding: 8px;">Qty</th>
+          <th style="text-align: right; padding: 8px;">Total</th>
+          <th style="text-align: left; padding: 8px;">Processed By</th>
+        </tr></thead>
+        <tbody>${purchases.map(p => `
+          <tr style="border-bottom: 1px solid var(--border);">
+            <td style="padding: 8px; white-space: nowrap;">${new Date(p.created_at).toLocaleDateString()} ${new Date(p.created_at).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}</td>
+            <td style="padding: 8px;">${p.student?.first_name || ''} ${p.student?.last_name || ''}</td>
+            <td style="padding: 8px;">${p.item_name}${p.description ? ` <span style="color: var(--muted); font-size: 11px;">(${p.description})</span>` : ''}</td>
+            <td style="padding: 8px; text-align: center;">${p.quantity}</td>
+            <td style="padding: 8px; text-align: right; font-weight: 600; color: #e74c3c;">-${p.total_deducted} RTC</td>
+            <td style="padding: 8px;">${p.processor?.first_name || ''} ${p.processor?.last_name || ''}</td>
+          </tr>
+        `).join('')}</tbody>
+      </table>`;
+    }
+
+    _filterIRLHistory() {
+      const q = (document.getElementById('irl-history-search')?.value || '').toLowerCase();
+      const filtered = this._irlPurchases.filter(p => {
+        const studentName = `${p.student?.first_name || ''} ${p.student?.last_name || ''}`.toLowerCase();
+        const itemName = (p.item_name || '').toLowerCase();
+        return studentName.includes(q) || itemName.includes(q);
+      });
+      const table = document.getElementById('irl-history-table');
+      if (table) table.innerHTML = this._renderIRLHistoryTable(filtered);
+    }
+
+    // ===== Manage Items Tab (Admin Only) =====
+    _renderIRLManageItems(container) {
+      const items = this._irlAllItems || [];
+      container.innerHTML = `
+        <div class="card" style="padding: 20px; margin-bottom: 20px;">
+          <h3 style="margin: 0 0 15px 0;">Add New Item</h3>
+          <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: end;">
+            <div style="width: 60px;">
+              <label style="font-weight: 600; display: block; margin-bottom: 5px; font-size: 12px;">Icon</label>
+              <input type="text" id="irl-new-icon" value="🛒" maxlength="4"
+                style="width: 50px; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); text-align: center; font-size: 18px;">
+            </div>
+            <div style="flex: 2; min-width: 150px;">
+              <label style="font-weight: 600; display: block; margin-bottom: 5px; font-size: 12px;">Name</label>
+              <input type="text" id="irl-new-name" placeholder="Item name"
+                style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); box-sizing: border-box;">
+            </div>
+            <div style="width: 100px;">
+              <label style="font-weight: 600; display: block; margin-bottom: 5px; font-size: 12px;">Price (RTC)</label>
+              <input type="number" id="irl-new-price" min="1" placeholder="0"
+                style="width: 90px; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+            </div>
+            <div style="flex: 1; min-width: 120px;">
+              <label style="font-weight: 600; display: block; margin-bottom: 5px; font-size: 12px;">Category</label>
+              <input type="text" id="irl-new-category" placeholder="General"
+                style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); box-sizing: border-box;">
+            </div>
+            <div>
+              <button class="btn btn-primary" onclick="app._addIRLItem()" style="padding: 8px 16px;">Add Item</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="padding: 20px;">
+          <h3 style="margin: 0 0 15px 0;">Catalog Items (${items.length})</h3>
+          <div id="irl-items-list">
+            ${this._renderIRLItemsList(items)}
+          </div>
+        </div>
+      `;
+    }
+
+    _renderIRLItemsList(items) {
+      if (!items.length) return '<p style="color: var(--muted); text-align: center;">No items in catalog</p>';
+      return `<table style="width: 100%; border-collapse: collapse;">
+        <thead><tr style="border-bottom: 2px solid var(--border);">
+          <th style="text-align: center; padding: 8px; width: 50px;">Icon</th>
+          <th style="text-align: left; padding: 8px;">Name</th>
+          <th style="text-align: left; padding: 8px;">Category</th>
+          <th style="text-align: right; padding: 8px;">Price</th>
+          <th style="text-align: center; padding: 8px;">Status</th>
+          <th style="text-align: center; padding: 8px;">Actions</th>
+        </tr></thead>
+        <tbody>${items.map(i => `
+          <tr style="border-bottom: 1px solid var(--border); opacity: ${i.is_active ? 1 : 0.5};">
+            <td style="padding: 8px; text-align: center; font-size: 20px;">${i.icon || '🛒'}</td>
+            <td style="padding: 8px; font-weight: 600;">${i.name}${i.description ? `<br><span style="font-weight: normal; color: var(--muted); font-size: 12px;">${i.description}</span>` : ''}</td>
+            <td style="padding: 8px;">${i.category || 'General'}</td>
+            <td style="padding: 8px; text-align: right; font-weight: 600; color: #f39c12;">${i.price} RTC</td>
+            <td style="padding: 8px; text-align: center;">
+              <span style="padding: 2px 8px; border-radius: 12px; font-size: 11px; background: ${i.is_active ? '#2ecc7133' : '#e74c3c33'}; color: ${i.is_active ? '#2ecc71' : '#e74c3c'};">
+                ${i.is_active ? 'Active' : 'Inactive'}
+              </span>
+            </td>
+            <td style="padding: 8px; text-align: center;">
+              <button class="btn btn-secondary" style="padding: 3px 10px; font-size: 11px;" onclick="app._toggleIRLItem('${i.id}', ${!i.is_active})">${i.is_active ? 'Deactivate' : 'Activate'}</button>
+            </td>
+          </tr>
+        `).join('')}</tbody>
+      </table>`;
+    }
+
+    async _addIRLItem() {
+      const name = document.getElementById('irl-new-name')?.value?.trim();
+      const price = parseInt(document.getElementById('irl-new-price')?.value) || 0;
+      const icon = document.getElementById('irl-new-icon')?.value?.trim() || '🛒';
+      const category = document.getElementById('irl-new-category')?.value?.trim() || 'General';
+
+      if (!name) { this.showNotification('Item name is required', 'error'); return; }
+      if (price < 1) { this.showNotification('Price must be at least 1', 'error'); return; }
+
+      try {
+        const { error } = await this.auth.supabase
+          .from('irl_store_items')
+          .insert({ name, price, icon, category, created_by: this.userInfo.user.id });
+
+        if (error) throw error;
+
+        this.showNotification('Item added!', 'success');
+
+        // Refresh items
+        const { data } = await this.supabaseQuery(() => this.auth.supabase
+          .from('irl_store_items')
+          .select('*')
+          .order('sort_order', { ascending: true })
+          .order('name', { ascending: true }));
+        this._irlAllItems = data || [];
+        this._irlStoreItems = (data || []).filter(i => i.is_active);
+
+        const content = document.getElementById('irl-tab-content');
+        if (content) this._renderIRLManageItems(content);
+      } catch (error) {
+        this.showNotification('Failed to add item: ' + error.message, 'error');
+      }
+    }
+
+    async _toggleIRLItem(itemId, newActive) {
+      try {
+        const { error } = await this.auth.supabase
+          .from('irl_store_items')
+          .update({ is_active: newActive, updated_at: new Date().toISOString() })
+          .eq('id', itemId);
+
+        if (error) throw error;
+
+        this.showNotification(`Item ${newActive ? 'activated' : 'deactivated'}`, 'success');
+
+        // Update local data
+        const item = this._irlAllItems.find(i => i.id === itemId);
+        if (item) item.is_active = newActive;
+        this._irlStoreItems = this._irlAllItems.filter(i => i.is_active);
+
+        const list = document.getElementById('irl-items-list');
+        if (list) list.innerHTML = this._renderIRLItemsList(this._irlAllItems);
+      } catch (error) {
+        this.showNotification('Failed to update item: ' + error.message, 'error');
       }
     }
 
