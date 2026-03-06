@@ -214,6 +214,22 @@ class FriendsManager {
             }
         }
 
+        // Batch-fetch RTC cosmetics from Supabase
+        try {
+            const supabase = window.portalAuth?.supabase;
+            const friendIds = friendsList.map(f => f.id);
+            if (supabase && friendIds.length > 0) {
+                const { data } = await supabase.rpc('rtc_get_player_cosmetics', { p_user_ids: friendIds });
+                if (data) {
+                    friendsList.forEach(f => {
+                        f.cosmetics = data[f.id] || {};
+                    });
+                }
+            }
+        } catch (err) {
+            console.warn('Could not fetch friend cosmetics:', err);
+        }
+
         // Sort: online first, then in_game, then by name
         return friendsList.sort((a, b) => {
             const statusOrder = { 'online': 0, 'in_game': 1, 'offline': 2 };

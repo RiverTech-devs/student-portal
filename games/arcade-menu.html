@@ -1181,23 +1181,22 @@
   </main>
 
   <!-- Scripts -->
+  <script src="../shared/supabase.min.js"></script>
+  <script src="../shared/config.js"></script>
   <script src="../firebase/firebase-config.js"></script>
   <script src="../shared/arcade/FirebaseManager.js"></script>
   <script src="../shared/arcade/ArcadeManager.js"></script>
   <script src="../shared/arcade/FriendsManager.js"></script>
   <script src="../shared/arcade/RatingManager.js"></script>
   <script src="../shared/arcade/LeaderboardManager.js"></script>
-  <script src="../shared/arcade/ProfileCustomization.js"></script>
+  <script src="../shared/CosmeticRenderer.js"></script>
 
   <script>
     let leaderboard = null;
     let friendsManager = null;
     let currentFriendsTab = 'friends';
     let searchTimeout = null;
-    let playerStats = null;
-    let selectedAvatar = 'default';
-    let selectedTitle = 'none';
-    let selectedFrame = 'none';
+    let myCosmetics = {};  // Cached own RTC cosmetics
 
     async function init() {
       try {
@@ -1211,35 +1210,25 @@
           // Load user info
           const profile = window.arcade.player;
           if (profile) {
-            // Load avatar and title customization
-            selectedAvatar = profile.avatar_id || 'default';
-            selectedTitle = profile.title_id || 'none';
-            selectedFrame = profile.frame_id || 'none';
+            const displayName = profile.display_name || 'Player';
+
+            // Load own RTC cosmetics from Supabase
+            await loadMyCosmetics();
 
             // Display name with title
-            const displayName = profile.display_name || 'Player';
-            if (window.profileCustomization && selectedTitle !== 'none') {
-              document.getElementById('user-name').textContent = window.profileCustomization.formatDisplayName(displayName, selectedTitle);
+            const CR = window.CosmeticRenderer;
+            if (CR && myCosmetics.title) {
+              document.getElementById('user-name').textContent = CR.formatDisplayName(displayName, myCosmetics.title.name);
             } else {
               document.getElementById('user-name').textContent = displayName;
             }
 
-            // Display avatar with frame
-            if (window.profileCustomization) {
-              const avatar = window.profileCustomization.getAvatar(selectedAvatar);
-              const frame = window.profileCustomization.getFrame(selectedFrame);
-              const headerAvatar = document.getElementById('user-avatar');
-
-              headerAvatar.innerHTML = avatar.icon;
-
-              if (frame.style === 'solid') {
-                headerAvatar.style.border = `3px solid ${frame.color}`;
-              } else if (frame.style === 'gradient') {
-                headerAvatar.style.border = `3px solid transparent`;
-                headerAvatar.style.background = frame.color;
-              }
+            // Display avatar
+            const headerAvatar = document.getElementById('user-avatar');
+            if (CR && myCosmetics.avatar) {
+              headerAvatar.innerHTML = CR.renderIcon(myCosmetics.avatar.icon, 'avatar', 20);
             } else {
-              document.getElementById('user-avatar').textContent = displayName.charAt(0).toUpperCase() || '?';
+              headerAvatar.textContent = displayName.charAt(0).toUpperCase() || '?';
             }
           }
 
@@ -1408,31 +1397,23 @@
         actions = `<button class="friend-action-btn invite" onclick="inviteFriend('${friend.id}')">Invite</button>`;
       }
 
-      // Get avatar display
+      // Get avatar display from RTC cosmetics
+      const cos = friend.cosmetics || {};
+      const CR = window.CosmeticRenderer;
       let avatarDisplay = friend.display_name?.charAt(0) || '?';
-      let avatarStyle = '';
-      if (window.profileCustomization && friend.avatar_id) {
-        const avatar = window.profileCustomization.getAvatar(friend.avatar_id);
-        avatarDisplay = avatar.icon;
-        if (friend.frame_id) {
-          const frame = window.profileCustomization.getFrame(friend.frame_id);
-          if (frame.style === 'solid') {
-            avatarStyle = `border: 2px solid ${frame.color};`;
-          } else if (frame.style === 'gradient') {
-            avatarStyle = `border: 2px solid transparent; background: ${frame.color};`;
-          }
-        }
+      if (CR && cos.avatar) {
+        avatarDisplay = CR.renderIcon(cos.avatar.icon, 'avatar', 20);
       }
 
       // Get display name with title
       let displayName = friend.display_name || 'Player';
-      if (window.profileCustomization && friend.title_id && friend.title_id !== 'none') {
-        displayName = window.profileCustomization.formatDisplayName(displayName, friend.title_id);
+      if (CR && cos.title) {
+        displayName = CR.formatDisplayName(displayName, cos.title.name);
       }
 
       return `
         <div class="friend-item">
-          <div class="friend-avatar" style="${avatarStyle}">
+          <div class="friend-avatar">
             ${avatarDisplay}
             <div class="friend-status-dot ${friend.status}"></div>
           </div>
@@ -1468,32 +1449,33 @@
           return;
         }
 
+        // Batch-fetch cosmetics for search results
+        const searchIds = results.map(p => p.id);
+        let searchCosmeticsMap = {};
+        try {
+          const supabase = window.portalAuth?.supabase;
+          if (supabase && searchIds.length > 0) {
+            const { data } = await supabase.rpc('rtc_get_player_cosmetics', { p_user_ids: searchIds });
+            if (data) searchCosmeticsMap = data;
+          }
+        } catch (e) { /* graceful fallback */ }
+
         content.innerHTML = results.map(player => {
-          // Get avatar display
+          const cos = searchCosmeticsMap[player.id] || {};
+          const CR = window.CosmeticRenderer;
           let avatarDisplay = player.display_name?.charAt(0) || '?';
-          let avatarStyle = '';
-          if (window.profileCustomization && player.avatar_id) {
-            const avatar = window.profileCustomization.getAvatar(player.avatar_id);
-            avatarDisplay = avatar.icon;
-            if (player.frame_id) {
-              const frame = window.profileCustomization.getFrame(player.frame_id);
-              if (frame.style === 'solid') {
-                avatarStyle = `border: 2px solid ${frame.color};`;
-              } else if (frame.style === 'gradient') {
-                avatarStyle = `border: 2px solid transparent; background: ${frame.color};`;
-              }
-            }
+          if (CR && cos.avatar) {
+            avatarDisplay = CR.renderIcon(cos.avatar.icon, 'avatar', 20);
           }
 
-          // Get display name with title
           let displayName = player.display_name || 'Player';
-          if (window.profileCustomization && player.title_id && player.title_id !== 'none') {
-            displayName = window.profileCustomization.formatDisplayName(displayName, player.title_id);
+          if (CR && cos.title) {
+            displayName = CR.formatDisplayName(displayName, cos.title.name);
           }
 
           return `
             <div class="search-result-item">
-              <div class="friend-avatar" style="${avatarStyle}">
+              <div class="friend-avatar">
                 ${avatarDisplay}
                 <div class="friend-status-dot ${player.status}"></div>
               </div>
@@ -1623,27 +1605,31 @@
     // Profile Customization
     // ==========================================
 
+    // Cached RTC cosmetics data for the profile modal
+    let rtcCosmeticsData = null;
+
+    async function loadMyCosmetics() {
+      try {
+        const supabase = window.portalAuth?.supabase;
+        if (!supabase) return;
+        const { data, error } = await supabase.rpc('rtc_get_cosmetics_data');
+        if (error || !data?.success) return;
+        rtcCosmeticsData = data;
+        myCosmetics = data.equipped || {};
+      } catch (err) {
+        console.warn('Could not load RTC cosmetics:', err);
+      }
+    }
+
     async function openProfileModal() {
-      if (!window.arcade || !window.profileCustomization) return;
+      if (!window.arcade) return;
 
       const overlay = document.getElementById('profile-modal-overlay');
       overlay.classList.add('open');
 
-      // Get current player settings
-      const player = window.arcade.player;
-      if (player) {
-        selectedAvatar = player.avatar_id || 'default';
-        selectedTitle = player.title_id || 'none';
-        selectedFrame = player.frame_id || 'none';
-      }
-
-      // Load stats for unlock checking
-      playerStats = await window.arcade.getAggregatedStats();
-
-      // Render customization options
-      renderAvatars();
-      renderFrames();
-      renderTitles();
+      // Refresh cosmetics data
+      await loadMyCosmetics();
+      renderRtcCosmetics();
       updateProfilePreview();
     }
 
@@ -1652,223 +1638,188 @@
       document.getElementById('profile-modal-overlay').classList.remove('open');
     }
 
-    function renderAvatars() {
-      const container = document.getElementById('avatars-container');
-      const pc = window.profileCustomization;
-      const categories = {};
+    function renderRtcCosmetics() {
+      if (!rtcCosmeticsData) return;
+      const CR = window.CosmeticRenderer;
+      const catalog = rtcCosmeticsData.catalog || [];
+      const ownedIds = rtcCosmeticsData.owned_ids || [];
+      const equipped = rtcCosmeticsData.equipped || {};
 
-      // Group by category
-      pc.AVATARS.forEach(avatar => {
-        if (!categories[avatar.category]) {
-          categories[avatar.category] = [];
-        }
-        categories[avatar.category].push(avatar);
-      });
+      // Build HTML for each category
+      const categories = { avatar: 'Avatars', title: 'Titles', badge: 'Badges' };
 
-      let html = '';
-      for (const [category, avatars] of Object.entries(categories)) {
-        html += `<div class="customization-category">`;
-        html += `<div class="customization-category-title">${pc.CATEGORIES[category] || category}</div>`;
-        html += `<div class="customization-grid">`;
+      // Render into avatars-container (reusing the existing DOM containers)
+      const avatarsContainer = document.getElementById('avatars-container');
+      const titlesContainer = document.getElementById('titles-container');
+      const framesContainer = document.getElementById('frames-container');
 
-        avatars.forEach(avatar => {
-          const isUnlocked = pc.isUnlocked(avatar, playerStats);
-          const isSelected = avatar.id === selectedAvatar;
-          const progress = pc.getUnlockProgress(avatar, playerStats);
-
-          html += `
-            <div class="customization-item ${isSelected ? 'selected' : ''} ${!isUnlocked ? 'locked' : ''}"
-                 onclick="${isUnlocked ? `selectAvatar('${avatar.id}')` : ''}"
-                 onmouseenter="${!isUnlocked ? `showUnlockTooltip(event, '${avatar.id}', 'avatar')` : ''}"
-                 onmouseleave="hideUnlockTooltip()">
-              <div class="customization-item-icon">${avatar.icon}</div>
-              <div class="customization-item-name">${avatar.name}</div>
-              ${!isUnlocked ? `<div class="customization-item-lock">${progress.current}/${progress.required}</div>` : ''}
-            </div>
-          `;
-        });
-
-        html += `</div></div>`;
+      // Avatars
+      if (avatarsContainer) {
+        const avatars = catalog.filter(c => c.category === 'avatar');
+        avatarsContainer.innerHTML = renderCosmeticCategory(avatars, ownedIds, equipped.avatar?.id, 'avatar', CR);
       }
 
-      container.innerHTML = html;
+      // Titles
+      if (titlesContainer) {
+        const titles = catalog.filter(c => c.category === 'title');
+        titlesContainer.innerHTML = renderCosmeticCategory(titles, ownedIds, equipped.title?.id, 'title', CR);
+      }
+
+      // Badges (show in frames container, repurposed)
+      if (framesContainer) {
+        const badges = catalog.filter(c => c.category === 'badge');
+        const equippedBadgeIds = [equipped.badge1?.id, equipped.badge2?.id, equipped.badge3?.id].filter(Boolean);
+        framesContainer.innerHTML = renderBadgeCategory(badges, ownedIds, equippedBadgeIds, CR);
+      }
     }
 
-    function renderFrames() {
-      const container = document.getElementById('frames-container');
-      const pc = window.profileCustomization;
+    function renderCosmeticCategory(items, ownedIds, equippedId, category, CR) {
+      if (items.length === 0) {
+        return '<div style="color:var(--muted);padding:1rem;text-align:center;">No items available. Visit the RTC Store to browse!</div>';
+      }
 
+      const slot = category; // 'avatar' or 'title'
       let html = '<div class="customization-grid">';
 
-      pc.FRAMES.forEach(frame => {
-        const isUnlocked = pc.isUnlocked(frame, playerStats);
-        const isSelected = frame.id === selectedFrame;
-        const progress = pc.getUnlockProgress(frame, playerStats);
-
-        let borderStyle = '';
-        if (frame.style === 'solid') {
-          borderStyle = `border: 3px solid ${frame.color}`;
-        } else if (frame.style === 'gradient') {
-          borderStyle = `border: 3px solid transparent; background: ${frame.color}; background-clip: padding-box`;
-        } else {
-          borderStyle = 'border: 2px dashed #3f3f46';
-        }
+      items.forEach(item => {
+        const owned = ownedIds.includes(item.id);
+        const isEquipped = item.id === equippedId;
 
         html += `
-          <div class="customization-item ${isSelected ? 'selected' : ''} ${!isUnlocked ? 'locked' : ''}"
-               onclick="${isUnlocked ? `selectFrame('${frame.id}')` : ''}"
-               onmouseenter="${!isUnlocked ? `showUnlockTooltip(event, '${frame.id}', 'frame')` : ''}"
-               onmouseleave="hideUnlockTooltip()">
-            <div class="frame-preview" style="${borderStyle}">😊</div>
-            <div class="customization-item-name">${frame.name}</div>
-            ${!isUnlocked ? `<div class="customization-item-lock">${progress.current}/${progress.required}</div>` : ''}
+          <div class="customization-item ${isEquipped ? 'selected' : ''} ${!owned ? 'locked' : ''}"
+               ${owned ? `onclick="equipCosmetic('${item.id}', '${slot}', ${isEquipped})"` : ''}>
+            <div class="customization-item-icon">${CR ? CR.renderIcon(item.icon, category, 28) : item.icon}</div>
+            <div class="customization-item-name">${item.name}</div>
+            ${isEquipped ? '<div style="font-size:0.6rem;color:#22c55e;">Equipped</div>' : ''}
+            ${!owned ? `<div class="customization-item-lock">${item.price} RTC</div>` : ''}
           </div>
         `;
       });
 
       html += '</div>';
-      container.innerHTML = html;
+      return html;
     }
 
-    function renderTitles() {
-      const container = document.getElementById('titles-container');
-      const pc = window.profileCustomization;
-      const categories = {};
-
-      // Group by category
-      pc.TITLES.forEach(title => {
-        if (!categories[title.category]) {
-          categories[title.category] = [];
-        }
-        categories[title.category].push(title);
-      });
-
-      let html = '';
-      for (const [category, titles] of Object.entries(categories)) {
-        html += `<div class="customization-category">`;
-        html += `<div class="customization-category-title">${pc.CATEGORIES[category] || category}</div>`;
-        html += `<div class="customization-grid" style="grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));">`;
-
-        titles.forEach(title => {
-          const isUnlocked = pc.isUnlocked(title, playerStats);
-          const isSelected = title.id === selectedTitle;
-          const displayText = title.prefix ? title.prefix : '(No Title)';
-
-          html += `
-            <div class="customization-item title-item ${isSelected ? 'selected' : ''} ${!isUnlocked ? 'locked' : ''}"
-                 onclick="${isUnlocked ? `selectTitle('${title.id}')` : ''}"
-                 onmouseenter="${!isUnlocked ? `showUnlockTooltip(event, '${title.id}', 'title')` : ''}"
-                 onmouseleave="hideUnlockTooltip()">
-              <div class="customization-item-name">${displayText}</div>
-              ${!isUnlocked ? '<span style="font-size:0.6rem;color:#71717a;">🔒</span>' : ''}
-            </div>
-          `;
-        });
-
-        html += `</div></div>`;
+    function renderBadgeCategory(items, ownedIds, equippedBadgeIds, CR) {
+      if (items.length === 0) {
+        return '<div style="color:var(--muted);padding:1rem;text-align:center;">No badges available. Visit the RTC Store to browse!</div>';
       }
 
-      container.innerHTML = html;
+      let html = '<div class="customization-grid">';
+
+      items.forEach(item => {
+        const owned = ownedIds.includes(item.id);
+        const equippedSlotIndex = equippedBadgeIds.indexOf(item.id);
+        const isEquipped = equippedSlotIndex !== -1;
+
+        html += `
+          <div class="customization-item ${isEquipped ? 'selected' : ''} ${!owned ? 'locked' : ''}"
+               ${owned ? `onclick="equipBadge('${item.id}', ${isEquipped})"` : ''}>
+            <div class="customization-item-icon">${CR ? CR.renderIcon(item.icon, 'badge', 28) : item.icon}</div>
+            <div class="customization-item-name">${item.name}</div>
+            ${isEquipped ? `<div style="font-size:0.6rem;color:#22c55e;">Badge ${equippedSlotIndex + 1}</div>` : ''}
+            ${!owned ? `<div class="customization-item-lock">${item.price} RTC</div>` : ''}
+          </div>
+        `;
+      });
+
+      html += '</div>';
+      return html;
     }
 
-    async function selectAvatar(avatarId) {
-      selectedAvatar = avatarId;
-      await window.arcade.setAvatar(avatarId);
-      renderAvatars();
-      updateProfilePreview();
-      updateHeaderAvatar();
+    async function equipCosmetic(cosmeticId, slot, alreadyEquipped) {
+      try {
+        const supabase = window.portalAuth?.supabase;
+        if (!supabase) return;
+
+        const id = alreadyEquipped ? null : cosmeticId;
+        const { data, error } = await supabase.rpc('rtc_equip_cosmetic', { p_cosmetic_id: id, p_slot: slot });
+        if (error) throw error;
+        if (!data?.success) throw new Error(data?.error || 'Equip failed');
+
+        // Refresh
+        await loadMyCosmetics();
+        renderRtcCosmetics();
+        updateProfilePreview();
+        updateHeaderFromRtc();
+      } catch (err) {
+        console.error('Equip error:', err);
+        alert('Failed to equip: ' + err.message);
+      }
     }
 
-    async function selectFrame(frameId) {
-      selectedFrame = frameId;
-      await window.arcade.setFrame(frameId);
-      renderFrames();
-      updateProfilePreview();
-      updateHeaderAvatar();
-    }
+    async function equipBadge(cosmeticId, alreadyEquipped) {
+      try {
+        const supabase = window.portalAuth?.supabase;
+        if (!supabase) return;
 
-    async function selectTitle(titleId) {
-      selectedTitle = titleId;
-      await window.arcade.setTitle(titleId);
-      renderTitles();
-      updateProfilePreview();
-      updateHeaderName();
+        if (alreadyEquipped) {
+          // Find which slot it's in and unequip
+          const eq = myCosmetics;
+          const slot = ['badge1', 'badge2', 'badge3'].find(s => eq[s]?.id === cosmeticId);
+          if (slot) {
+            const { data, error } = await supabase.rpc('rtc_equip_cosmetic', { p_cosmetic_id: null, p_slot: slot });
+            if (error) throw error;
+          }
+        } else {
+          // Find first empty badge slot
+          const eq = myCosmetics;
+          const slot = ['badge1', 'badge2', 'badge3'].find(s => !eq[s]);
+          if (!slot) {
+            alert('All 3 badge slots are full. Unequip one first.');
+            return;
+          }
+          const { data, error } = await supabase.rpc('rtc_equip_cosmetic', { p_cosmetic_id: cosmeticId, p_slot: slot });
+          if (error) throw error;
+          if (!data?.success) throw new Error(data?.error || 'Equip failed');
+        }
+
+        await loadMyCosmetics();
+        renderRtcCosmetics();
+        updateProfilePreview();
+      } catch (err) {
+        console.error('Badge equip error:', err);
+        alert('Failed: ' + err.message);
+      }
     }
 
     function updateProfilePreview() {
-      const pc = window.profileCustomization;
-      const avatar = pc.getAvatar(selectedAvatar);
-      const frame = pc.getFrame(selectedFrame);
-      const title = pc.getTitle(selectedTitle);
+      const CR = window.CosmeticRenderer;
+      const eq = myCosmetics;
       const displayName = window.arcade?.player?.display_name || 'Player';
 
-      // Update preview avatar
       const previewAvatar = document.getElementById('preview-avatar');
-      let borderStyle = '';
-      if (frame.style === 'solid') {
-        borderStyle = `border: 4px solid ${frame.color}`;
-      } else if (frame.style === 'gradient') {
-        borderStyle = `border: 4px solid transparent; background: ${frame.color}; background-clip: padding-box`;
+      if (previewAvatar) {
+        previewAvatar.style.cssText = '';
+        previewAvatar.innerHTML = (CR && eq.avatar) ? CR.renderIcon(eq.avatar.icon, 'avatar', 28) : '👤';
       }
-      previewAvatar.style.cssText = borderStyle;
-      previewAvatar.innerHTML = avatar.icon;
 
-      // Update preview name
       const previewName = document.getElementById('preview-name');
-      previewName.textContent = pc.formatDisplayName(displayName, selectedTitle);
+      if (previewName) {
+        previewName.textContent = (CR && eq.title) ? CR.formatDisplayName(displayName, eq.title.name) : displayName;
+      }
     }
 
-    function updateHeaderAvatar() {
-      const pc = window.profileCustomization;
-      const avatar = pc.getAvatar(selectedAvatar);
-      const frame = pc.getFrame(selectedFrame);
+    function updateHeaderFromRtc() {
+      const CR = window.CosmeticRenderer;
+      const eq = myCosmetics;
+      const displayName = window.arcade?.player?.display_name || 'Player';
 
       const headerAvatar = document.getElementById('user-avatar');
-      let borderStyle = '';
-      if (frame.style === 'solid') {
-        borderStyle = `border: 3px solid ${frame.color}`;
-      } else if (frame.style === 'gradient') {
-        borderStyle = `border: 3px solid transparent; background: ${frame.color}`;
+      if (headerAvatar) {
+        headerAvatar.style.cssText = '';
+        headerAvatar.innerHTML = (CR && eq.avatar) ? CR.renderIcon(eq.avatar.icon, 'avatar', 20) : (displayName.charAt(0) || '?');
       }
-      headerAvatar.style.cssText = borderStyle;
-      headerAvatar.innerHTML = avatar.icon;
-    }
 
-    function updateHeaderName() {
-      const pc = window.profileCustomization;
-      const displayName = window.arcade?.player?.display_name || 'Player';
-      document.getElementById('user-name').textContent = pc.formatDisplayName(displayName, selectedTitle);
-    }
-
-    function showUnlockTooltip(event, itemId, type) {
-      const pc = window.profileCustomization;
-      let item;
-
-      if (type === 'avatar') item = pc.getAvatar(itemId);
-      else if (type === 'frame') item = pc.getFrame(itemId);
-      else if (type === 'title') item = pc.getTitle(itemId);
-
-      if (!item) return;
-
-      const requirement = pc.getUnlockRequirement(item);
-      const progress = pc.getUnlockProgress(item, playerStats);
-
-      const tooltip = document.getElementById('unlock-tooltip');
-      tooltip.innerHTML = `
-        <div>${requirement}</div>
-        <div class="unlock-progress-bar">
-          <div class="unlock-progress-fill" style="width: ${progress.progress}%"></div>
-        </div>
-      `;
-      tooltip.classList.remove('hidden');
-
-      const rect = event.target.getBoundingClientRect();
-      tooltip.style.left = rect.left + 'px';
-      tooltip.style.top = (rect.bottom + 5) + 'px';
+      const headerName = document.getElementById('user-name');
+      if (headerName) {
+        headerName.textContent = (CR && eq.title) ? CR.formatDisplayName(displayName, eq.title.name) : displayName;
+      }
     }
 
     function hideUnlockTooltip() {
-      document.getElementById('unlock-tooltip').classList.add('hidden');
+      const tooltip = document.getElementById('unlock-tooltip');
+      if (tooltip) tooltip.classList.add('hidden');
     }
 
     function showNotification(message, type = 'info') {
@@ -1954,6 +1905,7 @@
           return;
         }
 
+        const CR = window.CosmeticRenderer;
         list.innerHTML = entries.map((entry, i) => {
           const rank = i + 1;
           const rankClass = rank === 1 ? 'gold' : rank === 2 ? 'silver' : rank === 3 ? 'bronze' : '';
@@ -1961,33 +1913,24 @@
           const rating = entry.ranked_rating || 1000;
           const tier = window.ratingManager ? window.ratingManager.getTier(rating) : { icon: '', color: 'var(--orange)' };
 
-          // Get avatar
+          // Get avatar from RTC cosmetics
+          const cos = entry.cosmetics || {};
           let avatarDisplay = entry.display_name?.charAt(0) || '?';
-          let avatarStyle = '';
-          if (window.profileCustomization && entry.avatar_id) {
-            const avatar = window.profileCustomization.getAvatar(entry.avatar_id);
-            avatarDisplay = avatar.icon;
-            if (entry.frame_id) {
-              const frame = window.profileCustomization.getFrame(entry.frame_id);
-              if (frame.style === 'solid') {
-                avatarStyle = `border: 2px solid ${frame.color};`;
-              } else if (frame.style === 'gradient') {
-                avatarStyle = `border: 2px solid transparent; background: ${frame.color};`;
-              }
-            }
+          if (CR && cos.avatar) {
+            avatarDisplay = CR.renderIcon(cos.avatar.icon, 'avatar', 20);
           }
 
           // Get display name with title
           let displayName = entry.display_name || 'Player';
-          if (window.profileCustomization && entry.title_id && entry.title_id !== 'none') {
-            displayName = window.profileCustomization.formatDisplayName(displayName, entry.title_id);
+          if (CR && cos.title) {
+            displayName = CR.formatDisplayName(displayName, cos.title.name);
           }
 
           return `
             <div class="leaderboard-row ${isSelf ? 'self' : ''}">
               <span class="leaderboard-rank ${rankClass}">#${rank}</span>
               <div class="leaderboard-player">
-                <div class="leaderboard-avatar" style="${avatarStyle}">${avatarDisplay}</div>
+                <div class="leaderboard-avatar">${avatarDisplay}</div>
                 <span class="leaderboard-name">${displayName}</span>
               </div>
               <span class="leaderboard-rating" style="color: ${tier.color}">${tier.icon} ${rating}</span>
@@ -2000,27 +1943,17 @@
           const myRating = myRank.ranked_rating || 1000;
           const myTier = window.ratingManager ? window.ratingManager.getTier(myRating) : { icon: '', color: 'var(--orange)' };
 
-          // Get player's avatar
+          const myCos = myCosmetics;
           let myAvatarDisplay = window.arcade?.player?.display_name?.charAt(0) || '?';
-          let myAvatarStyle = '';
-          if (window.profileCustomization && selectedAvatar) {
-            const avatar = window.profileCustomization.getAvatar(selectedAvatar);
-            myAvatarDisplay = avatar.icon;
-            if (selectedFrame && selectedFrame !== 'none') {
-              const frame = window.profileCustomization.getFrame(selectedFrame);
-              if (frame.style === 'solid') {
-                myAvatarStyle = `border: 2px solid ${frame.color};`;
-              } else if (frame.style === 'gradient') {
-                myAvatarStyle = `border: 2px solid transparent; background: ${frame.color};`;
-              }
-            }
+          if (CR && myCos.avatar) {
+            myAvatarDisplay = CR.renderIcon(myCos.avatar.icon, 'avatar', 20);
           }
 
           list.innerHTML += `
             <div class="leaderboard-row self" style="margin-top: 0.5rem; border-top: 1px dashed #3f3f46; padding-top: 0.75rem;">
               <span class="leaderboard-rank">#${myRank.rank}</span>
               <div class="leaderboard-player">
-                <div class="leaderboard-avatar" style="${myAvatarStyle}">${myAvatarDisplay}</div>
+                <div class="leaderboard-avatar">${myAvatarDisplay}</div>
                 <span class="leaderboard-name">You</span>
               </div>
               <span class="leaderboard-rating" style="color: ${myTier.color}">${myTier.icon} ${myRating}</span>

@@ -89,9 +89,6 @@ class ArcadeManager {
             const newPlayer = {
                 supabase_user_id: userId,
                 display_name: this.firebase.displayName,
-                avatar_id: 'default',
-                title_id: 'none',
-                frame_id: 'none',
                 created_at: this.firebase.serverTimestamp,
                 last_seen: this.firebase.serverTimestamp,
                 status: 'online',
@@ -118,9 +115,6 @@ class ArcadeManager {
         return {
             supabase_user_id: 'local_' + Date.now(),
             display_name: this.firebase?.displayName || 'Player',
-            avatar_id: 'default',
-            title_id: 'none',
-            frame_id: 'none',
             created_at: Date.now(),
             last_seen: Date.now(),
             status: 'offline',
@@ -173,137 +167,6 @@ class ArcadeManager {
             current_match: matchId,
             status: matchId ? 'in_game' : 'online'
         });
-    }
-
-    // ==========================================
-    // Profile Customization
-    // ==========================================
-
-    /**
-     * Set player's avatar
-     * @param {string} avatarId - Avatar ID
-     */
-    async setAvatar(avatarId) {
-        await this.updatePlayer({ avatar_id: avatarId });
-    }
-
-    /**
-     * Set player's title
-     * @param {string} titleId - Title ID
-     */
-    async setTitle(titleId) {
-        await this.updatePlayer({ title_id: titleId });
-    }
-
-    /**
-     * Set player's avatar frame
-     * @param {string} frameId - Frame ID
-     */
-    async setFrame(frameId) {
-        await this.updatePlayer({ frame_id: frameId });
-    }
-
-    /**
-     * Get player's formatted display name with title
-     */
-    getFormattedDisplayName() {
-        if (!this.player) return 'Player';
-
-        if (window.profileCustomization && this.player.title_id) {
-            return window.profileCustomization.formatDisplayName(
-                this.player.display_name,
-                this.player.title_id
-            );
-        }
-        return this.player.display_name;
-    }
-
-    /**
-     * Get player's avatar HTML
-     * @param {string} size - CSS size value
-     */
-    getAvatarHTML(size = '2.5rem') {
-        if (!this.player) return '';
-
-        if (window.profileCustomization) {
-            return window.profileCustomization.renderAvatar(
-                this.player.avatar_id || 'default',
-                this.player.frame_id || 'none',
-                size
-            );
-        }
-        return `<div class="player-avatar-display" style="width:${size};height:${size};border-radius:50%;background:#27272a;display:flex;align-items:center;justify-content:center;">😊</div>`;
-    }
-
-    /**
-     * Get aggregated stats for profile customization unlocks
-     * Combines stats from all games plus global stats
-     */
-    async getAggregatedStats() {
-        const globalStats = {
-            total_games: this.player?.total_games_played || 0,
-            friends_count: 0
-        };
-
-        // Try to get RIUTIZ stats
-        try {
-            const riutizStats = await this.getStats('riutiz');
-            Object.assign(globalStats, {
-                wins: riutizStats.wins || 0,
-                losses: riutizStats.losses || 0,
-                best_streak: riutizStats.best_streak || 0,
-                current_streak: riutizStats.current_streak || 0,
-                ranked_rating: riutizStats.ranked_rating || 1000,
-                peak_rating: riutizStats.peak_rating || 1000,
-                ranked_games: riutizStats.ranked_games || 0,
-                color_wins: riutizStats.color_wins || {},
-                perfect_wins: riutizStats.perfect_wins || 0,
-                comebacks: riutizStats.comebacks || 0,
-                ai_wins: riutizStats.ai_wins || 0,
-                spells_played: riutizStats.spells_played || 0
-            });
-        } catch (e) {
-            console.warn('Could not load riutiz stats:', e);
-        }
-
-        // Try to get friends count
-        try {
-            if (window.friendsManager) {
-                const friends = await window.friendsManager.getFriends();
-                globalStats.friends_count = friends.length;
-            }
-        } catch (e) {
-            console.warn('Could not load friends count:', e);
-        }
-
-        // Try to get decks count
-        try {
-            const decks = await this.getDecks('riutiz');
-            globalStats.decks_created = Object.keys(decks).length;
-        } catch (e) {
-            console.warn('Could not load decks count:', e);
-        }
-
-        // Try to get collection size
-        try {
-            const collection = await this.getCollection('riutiz');
-            globalStats.cards_owned = Object.keys(collection.cards || {}).length;
-        } catch (e) {
-            console.warn('Could not load collection size:', e);
-        }
-
-        return globalStats;
-    }
-
-    /**
-     * Check for new unlocks after a game and show notification
-     * @param {Object} oldStats - Stats before game
-     * @param {Object} newStats - Stats after game
-     */
-    checkForNewUnlocks(oldStats, newStats) {
-        if (!window.profileCustomization) return { avatars: [], titles: [], frames: [] };
-
-        return window.profileCustomization.getNewUnlocks(oldStats, newStats);
     }
 
     /**

@@ -173,6 +173,21 @@ class LeaderboardManager {
         entries.forEach(entry => {
             entry.display_name = nameMap[entry.user_id] || 'Unknown';
         });
+
+        // Batch-fetch RTC cosmetics from Supabase
+        try {
+            const supabase = window.portalAuth?.supabase;
+            if (supabase && uniqueIds.length > 0) {
+                const { data } = await supabase.rpc('rtc_get_player_cosmetics', { p_user_ids: uniqueIds });
+                if (data) {
+                    entries.forEach(entry => {
+                        entry.cosmetics = data[entry.user_id] || {};
+                    });
+                }
+            }
+        } catch (err) {
+            console.warn('Could not fetch player cosmetics:', err);
+        }
     }
 
     // ==========================================
