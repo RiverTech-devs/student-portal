@@ -58,4 +58,9 @@ DROP POLICY IF EXISTS "Anon can insert enrollment applications" ON enrollment_ap
 CREATE POLICY "Anon can insert enrollment applications"
   ON enrollment_applications FOR INSERT
   TO anon
-  WITH CHECK (true);
+  WITH CHECK (
+    status = 'submitted'
+    AND application_type IN ('new', 're-enrollment')
+    AND reviewed_by IS NULL
+    AND reviewed_at IS NULL
+  );
