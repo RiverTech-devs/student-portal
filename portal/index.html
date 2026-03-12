@@ -17396,6 +17396,12 @@
               <input type="number" id="assignment-max-points" min="1" max="1000" value="100">
             </div>
 
+            <div id="submit-size-section" class="form-group">
+              <label for="assignment-max-submit-size">Max Submission File Size (MB)</label>
+              <input type="number" id="assignment-max-submit-size" min="1" max="100" value="10">
+              <small style="color: var(--muted); display: block; margin-top: 5px;">Maximum file upload size for student submissions (1-100 MB)</small>
+            </div>
+
             <div id="rtc-reward-section" class="form-group">
               <label for="assignment-rtc-reward">Max RTC Reward</label>
               <input type="number" id="assignment-rtc-reward" min="0" max="500" value="0" oninput="app.updateRtcTierPreview('assignment')">
@@ -17642,7 +17648,8 @@
           graded_offline: isInfoType ? true : document.getElementById('graded-offline').checked, // Info is effectively "offline" (no submission)
           category_id: isInfoType ? null : (document.getElementById('assignment-category')?.value || null),
           assignment_type: isInfoType ? 'info' : 'regular',
-          rtc_reward: isInfoType ? 0 : (parseInt(document.getElementById('assignment-rtc-reward')?.value) || 0)
+          rtc_reward: isInfoType ? 0 : (parseInt(document.getElementById('assignment-rtc-reward')?.value) || 0),
+          max_submit_size_mb: isInfoType ? 10 : (parseInt(document.getElementById('assignment-max-submit-size')?.value) || 10)
         };
 
       if (!assignmentData.title) {
@@ -17973,6 +17980,12 @@
               </div>
       
               <div class="form-group">
+                <label for="edit-assignment-max-submit-size">Max Submission File Size (MB)</label>
+                <input type="number" id="edit-assignment-max-submit-size" min="1" max="100" value="${assignment.max_submit_size_mb || 10}">
+                <small style="color: var(--muted); display: block; margin-top: 5px;">Maximum file upload size for student submissions (1-100 MB)</small>
+              </div>
+
+              <div class="form-group">
                 <label for="edit-assignment-category">Category</label>
                 <select id="edit-assignment-category">
                   ${categories && categories.length > 0 ? categories.map(cat => `
@@ -17982,7 +17995,7 @@
                   `).join('') : '<option value="">No categories</option>'}
                 </select>
               </div>
-      
+
               <!-- Grading Type Section -->
               <div class="card" style="background: var(--card); margin: 20px 0; padding: 15px;">
                 <label style="font-weight: 600; margin-bottom: 10px; display: block;">Grading Method</label>
@@ -18136,6 +18149,8 @@
       
           const description = this.assignmentDescriptionEditor?.root.innerHTML || '';
       
+          const maxSubmitSizeMb = parseInt(document.getElementById('edit-assignment-max-submit-size')?.value) || 10;
+
           // Update assignment
           const { error } = await this.supabaseQuery(() => this.auth.supabase
             .from('assignments')
@@ -18144,6 +18159,7 @@
               description,
               due_date: dueDate,
               max_points: maxPoints,
+              max_submit_size_mb: maxSubmitSizeMb,
               category_id: categoryId || null,
               is_published: isPublished,
               assigned_to_all: !assignToSpecific,
@@ -20017,7 +20033,7 @@
                       style="width: 100%; padding: 10px; border: 2px dashed var(--border); border-radius: 8px; background: var(--card);"
                     />
                     <small style="color: var(--muted); display: block; margin-top: 5px;">
-                      Optionally attach: PDF, Word, images, Excel, PowerPoint, text files, ZIP (max 50MB)
+                      Optionally attach: PDF, Word, images, Excel, PowerPoint, text files, ZIP (max ${assignment.max_submit_size_mb || 10}MB)
                     </small>
                     <div id="file-upload-progress" style="display: none; margin-top: 10px;">
                       <div style="background: rgba(0,0,0,0.3); border-radius: 8px; overflow: hidden; height: 24px;">
@@ -20085,29 +20101,30 @@
           // Handle file upload if present - Upload to teacher's Drive via Edge Function
           if (fileInput?.files?.length > 0) {
             const file = fileInput.files[0];
-            
-            // Validate file size
-            const maxSize = 50 * 1024 * 1024; // 50MB
+
+            // Get assignment and class info (needed for size limit and upload path)
+            const { data: assignment } = await this.supabaseQuery(() => this.auth.supabase
+              .from('assignments')
+              .select('class_id, title, max_submit_size_mb')
+              .eq('id', assignmentId)
+              .single());
+
+            // Validate file size using per-assignment limit
+            const maxSizeMb = assignment?.max_submit_size_mb || 10;
+            const maxSize = maxSizeMb * 1024 * 1024;
             if (file.size > maxSize) {
-              throw new Error('File too large. Maximum size is 50MB.');
+              throw new Error(`File too large. Maximum size is ${maxSizeMb}MB.`);
             }
-      
+
             // Show progress
             const progressDiv = document.getElementById('file-upload-progress');
             const progressBar = document.getElementById('progress-bar');
             const progressText = document.getElementById('progress-text');
-            
+
             if (progressDiv) {
               progressDiv.style.display = 'block';
               progressText.textContent = 'Uploading file to teacher\'s Google Drive...';
             }
-      
-            // Get assignment and class info
-            const { data: assignment } = await this.supabaseQuery(() => this.auth.supabase
-              .from('assignments')
-              .select('class_id, title')
-              .eq('id', assignmentId)
-              .single());
       
             const { data: classData } = await this.supabaseQuery(() => this.auth.supabase
               .from('classes')
@@ -20291,7 +20308,7 @@
                     style="width: 100%; padding: 10px; border: 2px dashed var(--border); border-radius: 8px; background: var(--card);"
                   />
                   <small style="color: var(--muted); display: block; margin-top: 5px;">
-                    ${submission.file_name ? 'Upload a new file to replace the existing one, or leave blank to keep current file.' : 'Optionally attach: PDF, Word, images, Excel, PowerPoint, text files, ZIP (max 50MB)'}
+                    ${submission.file_name ? 'Upload a new file to replace the existing one, or leave blank to keep current file.' : `Optionally attach: PDF, Word, images, Excel, PowerPoint, text files, ZIP (max ${assignment.max_submit_size_mb || 10}MB)`}
                   </small>
                   <div id="resubmit-file-upload-progress" style="display: none; margin-top: 10px;">
                     <div style="background: rgba(0,0,0,0.3); border-radius: 8px; overflow: hidden; height: 24px;">
@@ -20364,28 +20381,29 @@
       
           // If new file is uploaded, upload to teacher's Drive via Edge Function
           if (newFile) {
-            // Validate file size
-            const maxSize = 50 * 1024 * 1024; // 50MB
+            // Get assignment and class info (needed for size limit and upload path)
+            const { data: assignment } = await this.supabaseQuery(() => this.auth.supabase
+              .from('assignments')
+              .select('class_id, title, max_submit_size_mb')
+              .eq('id', assignmentId)
+              .single());
+
+            // Validate file size using per-assignment limit
+            const maxSizeMb = assignment?.max_submit_size_mb || 10;
+            const maxSize = maxSizeMb * 1024 * 1024;
             if (newFile.size > maxSize) {
-              throw new Error('File too large. Maximum size is 50MB.');
+              throw new Error(`File too large. Maximum size is ${maxSizeMb}MB.`);
             }
-      
+
             // Show progress
             const progressDiv = document.getElementById('resubmit-file-upload-progress');
             const progressBar = document.getElementById('resubmit-progress-bar');
             const progressText = document.getElementById('resubmit-progress-text');
-            
+
             if (progressDiv) {
               progressDiv.style.display = 'block';
               progressText.textContent = 'Uploading file to teacher\'s Google Drive...';
             }
-      
-            // Get assignment and class info
-            const { data: assignment } = await this.supabaseQuery(() => this.auth.supabase
-              .from('assignments')
-              .select('class_id, title')
-              .eq('id', assignmentId)
-              .single());
       
             const { data: classData } = await this.supabaseQuery(() => this.auth.supabase
               .from('classes')
@@ -20516,19 +20534,20 @@
           // Handle file upload if present - DRIVE ONLY
           if (fileInput?.files?.length > 0) {
             const file = fileInput.files[0];
-            
-            // Validate file
-            const maxSize = 10 * 1024 * 1024; // 10MB
-            if (file.size > maxSize) {
-              throw new Error('File too large. Maximum size is 10MB.');
-            }
-      
-            // Get assignment and class info
+
+            // Get assignment and class info (needed for size limit and upload path)
             const { data: assignment } = await this.supabaseQuery(() => this.auth.supabase
               .from('assignments')
-              .select('class_id, title')
+              .select('class_id, title, max_submit_size_mb')
               .eq('id', assignmentId)
               .single());
+
+            // Validate file size using per-assignment limit
+            const maxSizeMb = assignment?.max_submit_size_mb || 10;
+            const maxSize = maxSizeMb * 1024 * 1024;
+            if (file.size > maxSize) {
+              throw new Error(`File too large. Maximum size is ${maxSizeMb}MB.`);
+            }
       
             const { data: classData } = await this.supabaseQuery(() => this.auth.supabase
               .from('classes')
@@ -21668,6 +21687,7 @@
         const regularSection = document.getElementById('regular-assignment-section');
         const pointsSection = document.getElementById('points-section');
         const rtcRewardSection = document.getElementById('rtc-reward-section');
+        const submitSizeSection = document.getElementById('submit-size-section');
         const gradingSection = document.getElementById('grading-method-section');
         const rubricSection = document.getElementById('rubric-selection');
         const offlineSection = document.querySelector('#graded-offline')?.closest('.form-group');
@@ -21685,6 +21705,7 @@
           if (regularSection) regularSection.style.display = 'none';
           if (pointsSection) pointsSection.style.display = 'none';
           if (rtcRewardSection) rtcRewardSection.style.display = 'none';
+          if (submitSizeSection) submitSizeSection.style.display = 'none';
           if (gradingSection) gradingSection.style.display = 'none';
           if (rubricSection) rubricSection.style.display = 'none';
           if (offlineSection) offlineSection.style.display = 'none';
@@ -21703,6 +21724,7 @@
           if (regularSection) regularSection.style.display = 'none';
           if (pointsSection) pointsSection.style.display = 'none';
           if (rtcRewardSection) rtcRewardSection.style.display = 'none';
+          if (submitSizeSection) submitSizeSection.style.display = 'none';
           if (gradingSection) gradingSection.style.display = 'none';
           if (rubricSection) rubricSection.style.display = 'none';
           if (offlineSection) offlineSection.style.display = 'none';
@@ -21719,6 +21741,7 @@
           if (regularSection) regularSection.style.display = 'block';
           if (pointsSection) pointsSection.style.display = 'none';
           if (rtcRewardSection) rtcRewardSection.style.display = 'none';
+          if (submitSizeSection) submitSizeSection.style.display = 'none';
           if (gradingSection) gradingSection.style.display = 'none';
           if (rubricSection) rubricSection.style.display = 'none';
           if (offlineSection) offlineSection.style.display = 'none';
@@ -21730,6 +21753,7 @@
           if (regularSection) regularSection.style.display = 'block';
           if (pointsSection) pointsSection.style.display = 'block';
           if (rtcRewardSection) rtcRewardSection.style.display = 'block';
+          if (submitSizeSection) submitSizeSection.style.display = 'block';
           if (gradingSection) gradingSection.style.display = 'block';
           if (offlineSection) offlineSection.style.display = 'block';
           if (categorySection) categorySection.style.display = 'block';
@@ -22564,11 +22588,13 @@
         return submission.file_url;
       }
 
-      setupDragAndDrop() {
+      setupDragAndDrop(maxSubmitSizeMb) {
         const dropZone = document.getElementById('drop-zone');
         const fileInput = document.getElementById('submission-file');
-        
+
         if (!dropZone || !fileInput) return;
+
+        const maxFileSizeMb = maxSubmitSizeMb || 10;
       
         // Prevent default drag behaviors
         ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
@@ -22621,8 +22647,8 @@
       
         // Handle file
         const handleFile = (file) => {
-         // Validate file
-          const maxSize = 10 * 1024 * 1024; // 10MB
+         // Validate file using per-assignment limit
+          const maxSize = maxFileSizeMb * 1024 * 1024;
           const allowedTypes = [
             'application/pdf',
             'application/msword',
@@ -22636,7 +22662,7 @@
           ];
       
           if (file.size > maxSize) {
-            app.showNotification('File too large. Maximum size is 10MB.', 'error');
+            app.showNotification(`File too large. Maximum size is ${maxFileSizeMb}MB.`, 'error');
             return;
           }
       
