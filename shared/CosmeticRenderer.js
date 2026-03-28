@@ -17,7 +17,7 @@ window.CosmeticRenderer = {
       return `<span style="font-size:${size}px">${icon}</span>`;
     }
     const folder = category.endsWith('s') ? category : category + 's';
-    return `<img src="assets/cosmetics/${folder}/${icon}.svg" style="width:${size}px;height:${size}px;object-fit:contain;" onerror="this.onerror=function(){this.outerHTML='<span style=\\'font-size:${size}px\\'>🎨</span>'};this.src='assets/cosmetics/${folder}/${icon}.png'">`;
+    return `<img src="assets/cosmetics/${folder}/${icon}.svg" alt="${category} icon" style="width:${size}px;height:${size}px;object-fit:contain;" onerror="this.onerror=function(){this.outerHTML='<span style=\\'font-size:${size}px\\'>🎨</span>'};this.src='assets/cosmetics/${folder}/${icon}.png'">`;
   },
 
   /**
@@ -31,19 +31,19 @@ window.CosmeticRenderer = {
     const { avatarSize = 40, badgeSize = 18, showBadges = true } = opts;
     const cos = cosmetics || {};
 
-    const avatarIcon = cos.avatar
+    const avatarIcon = cos.avatar?.icon
       ? this.renderIcon(cos.avatar.icon, 'avatar', avatarSize)
       : `<span style="font-size:${avatarSize}px">👤</span>`;
 
-    const titleHtml = cos.title
+    const titleHtml = cos.title?.name
       ? `<span style="font-size:11px;color:#9b59b6;font-weight:600;">${cos.title.name}</span>`
       : '';
 
     let badgesHtml = '';
     if (showBadges) {
       ['badge1', 'badge2', 'badge3'].forEach(slot => {
-        if (cos[slot]) {
-          badgesHtml += `<span title="${cos[slot].name}">${this.renderIcon(cos[slot].icon, 'badge', badgeSize)}</span>`;
+        if (cos[slot]?.icon) {
+          badgesHtml += `<span title="${cos[slot].name || ''}">${this.renderIcon(cos[slot].icon, 'badge', badgeSize)}</span>`;
         }
       });
     }

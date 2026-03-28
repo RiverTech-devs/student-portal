@@ -171,14 +171,14 @@ class ModalManager {
             }
         }
 
-        // ESC key support
+        // ESC key support — store handler reference for cleanup
         const escHandler = (e) => {
             if (e.key === 'Escape' && config.closable) {
                 this.close(id);
             }
         };
         document.addEventListener('keydown', escHandler);
-        modal.dataset.escHandler = 'true';
+        modal._escHandler = escHandler;
 
         // Show with animation
         requestAnimationFrame(() => {
@@ -192,8 +192,14 @@ class ModalManager {
         const modal = this.activeModals.get(id) || document.getElementById(`modal-${id}`);
         if (!modal) return;
 
+        // Remove ESC key handler
+        if (modal._escHandler) {
+            document.removeEventListener('keydown', modal._escHandler);
+            modal._escHandler = null;
+        }
+
         modal.classList.remove('modal-visible');
-        
+
         setTimeout(() => {
             if (modal.parentNode) {
                 modal.remove();

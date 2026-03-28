@@ -105,7 +105,7 @@ Deno.serve(async () => {
         name: studentName.get(b.student_id) || "Student",
         assignments: b.items.map(it => ({
           title: it.title || "Assignment",
-          due_date: new Date(it.due_at || "").toLocaleString()
+          due_date: it.due_at ? new Date(it.due_at).toLocaleString() : 'N/A'
         }))
       }));
 

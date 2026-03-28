@@ -4,16 +4,22 @@ import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+const ALLOWED_ORIGINS = ['https://rivertech.me', 'https://www.rivertech.me']
+
+function getCorsHeaders(req: Request) {
+  const origin = req.headers.get('Origin') || ''
+  const allowedOrigin = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0]
+  return {
+    'Access-Control-Allow-Origin': allowedOrigin,
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  }
 }
 
 serve(async (req) => {
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders })
+    return new Response('ok', { headers: getCorsHeaders(req) })
   }
 
   try {
@@ -22,7 +28,7 @@ serve(async (req) => {
     if (!authHeader) {
       return new Response(JSON.stringify({ error: 'Missing authorization header' }), {
         status: 401,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        headers: { ...getCorsHeaders(req), 'Content-Type': 'application/json' },
       })
     }
 
@@ -38,7 +44,7 @@ serve(async (req) => {
     if (authError || !callerAuth) {
       return new Response(JSON.stringify({ error: 'Invalid or expired token' }), {
         status: 401,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        headers: { ...getCorsHeaders(req), 'Content-Type': 'application/json' },
       })
     }
 
@@ -51,6 +57,14 @@ serve(async (req) => {
       try {
         const body = JSON.parse(text)
         if (body.user_id && body.user_id !== callerAuth.id) {
+          // Validate UUID format to prevent injection
+          const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+          if (!uuidRegex.test(body.user_id)) {
+            return new Response(JSON.stringify({ error: 'Invalid user_id format' }), {
+              status: 400,
+              headers: { ...getCorsHeaders(req), 'Content-Type': 'application/json' },
+            })
+          }
           isAdminDeletion = true
           targetUserId = body.user_id
         }
@@ -73,7 +87,7 @@ serve(async (req) => {
       if (profileError || !callerProfile || callerProfile.user_type !== 'admin') {
         return new Response(JSON.stringify({ error: 'Only admins can delete other users' }), {
           status: 403,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          headers: { ...getCorsHeaders(req), 'Content-Type': 'application/json' },
         })
       }
     }
@@ -89,7 +103,7 @@ serve(async (req) => {
       console.error('Profile lookup error:', targetError)
       return new Response(JSON.stringify({ error: 'Target user not found' }), {
         status: 404,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        headers: { ...getCorsHeaders(req), 'Content-Type': 'application/json' },
       })
     }
 
@@ -102,7 +116,7 @@ serve(async (req) => {
       console.error('RPC error:', rpcError)
       return new Response(JSON.stringify({ error: 'Failed to delete user data: ' + rpcError.message }), {
         status: 500,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        headers: { ...getCorsHeaders(req), 'Content-Type': 'application/json' },
       })
     }
 
@@ -118,20 +132,20 @@ serve(async (req) => {
         warning: 'User data deleted but auth record removal failed: ' + deleteAuthError.message,
       }), {
         status: 200,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        headers: { ...getCorsHeaders(req), 'Content-Type': 'application/json' },
       })
     }
 
     return new Response(JSON.stringify({ success: true }), {
       status: 200,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...getCorsHeaders(req), 'Content-Type': 'application/json' },
     })
 
   } catch (error) {
     console.error('Unexpected error:', error)
     return new Response(JSON.stringify({ error: error.message || 'Internal server error' }), {
       status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...getCorsHeaders(req), 'Content-Type': 'application/json' },
     })
   }
 })

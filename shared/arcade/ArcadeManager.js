@@ -468,15 +468,18 @@ class ArcadeManager {
         // Immediately call with current data
         if (this.player) callback(this.player);
 
-        // Set up Firebase listener if available
-        const playerRef = this.firebase?.playerRef();
-        if (playerRef) {
-            playerRef.on('value', (snapshot) => {
-                if (snapshot.exists()) {
-                    this.player = snapshot.val();
-                    this._notifyPlayerListeners();
-                }
-            });
+        // Set up Firebase listener once (not per subscriber)
+        if (!this._playerRefListener) {
+            const playerRef = this.firebase?.playerRef();
+            if (playerRef) {
+                this._playerRefListener = (snapshot) => {
+                    if (snapshot.exists()) {
+                        this.player = snapshot.val();
+                        this._notifyPlayerListeners();
+                    }
+                };
+                playerRef.on('value', this._playerRefListener);
+            }
         }
     }
 
@@ -520,6 +523,12 @@ class ArcadeManager {
      * Clean up resources
      */
     destroy() {
+        // Remove Firebase player listener
+        if (this._playerRefListener) {
+            const playerRef = this.firebase?.playerRef();
+            if (playerRef) playerRef.off('value', this._playerRefListener);
+            this._playerRefListener = null;
+        }
         this._playerListeners = [];
         this.firebase?.destroy();
     }
