@@ -2,6 +2,7 @@ CREATE OR REPLACE FUNCTION hard_delete_user_account(p_user_id UUID)
 RETURNS void
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = 'public'
 AS $$
 DECLARE
   v_enrollment_ids UUID[];
@@ -117,7 +118,35 @@ BEGIN
   -- 33. school_events — SET NULL on created_by
   UPDATE school_events SET created_by = NULL WHERE created_by = p_user_id;
 
-  -- 34. Finally delete the user profile itself
+  -- 34. RTC transactions
+  DELETE FROM rtc_transactions WHERE user_id = p_user_id;
+
+  -- 35. RTC cosmetic purchases
+  DELETE FROM rtc_cosmetic_purchases WHERE user_id = p_user_id;
+
+  -- 36. RTC student privileges
+  DELETE FROM rtc_student_privileges WHERE student_id = p_user_id;
+
+  -- 37. RTC bank accounts
+  DELETE FROM rtc_bank_accounts WHERE user_id = p_user_id;
+
+  -- 38. IRL purchases
+  DELETE FROM irl_purchases WHERE student_id = p_user_id;
+  UPDATE irl_purchases SET processed_by = NULL WHERE processed_by = p_user_id;
+
+  -- 39. Activity enrollments
+  DELETE FROM activity_enrollments WHERE student_id = p_user_id;
+
+  -- 40. Activities (coach)
+  UPDATE activities SET coach_id = NULL WHERE coach_id = p_user_id;
+
+  -- 41. Facility bookings
+  UPDATE facility_bookings SET booked_by = NULL WHERE booked_by = p_user_id;
+
+  -- 42. Teacher Drive config
+  DELETE FROM teacher_drive_config WHERE teacher_id = p_user_id;
+
+  -- 43. Finally delete the user profile itself
   DELETE FROM user_profiles WHERE id = p_user_id;
 END;
 $$;

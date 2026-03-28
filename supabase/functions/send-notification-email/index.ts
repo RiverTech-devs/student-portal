@@ -1,6 +1,6 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 
-const RESEND_API_KEY = Deno.env.get('RESEND_API_KEY')
+const RESEND_API_KEY = Deno.env.get('RESEND_API_KEY')!
 
 const ALLOWED_ORIGINS = ['https://rivertech.me', 'https://www.rivertech.me']
 
@@ -28,6 +28,16 @@ serve(async (req) => {
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: getCorsHeaders(req) })
+  }
+
+  // Verify caller is authenticated (internal service or authenticated user)
+  const authHeader = req.headers.get('Authorization')
+  const apiKey = req.headers.get('apikey')
+  if (!authHeader && !apiKey) {
+    return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+      status: 401,
+      headers: { ...getCorsHeaders(req), 'Content-Type': 'application/json' },
+    })
   }
 
   let payload
@@ -593,7 +603,7 @@ serve(async (req) => {
             </div>
 
             <div style="text-align: center; margin: 25px 0;">
-              <a href="https://portal.rivertech.me" style="background: linear-gradient(135deg, #f5576c, #ff8a5c); color: white; padding: 12px 30px; border-radius: 6px; text-decoration: none; font-weight: 600; display: inline-block;">
+              <a href="https://rivertech.me/portal/" style="background: linear-gradient(135deg, #f5576c, #ff8a5c); color: white; padding: 12px 30px; border-radius: 6px; text-decoration: none; font-weight: 600; display: inline-block;">
                 View in Portal
               </a>
             </div>
@@ -625,6 +635,15 @@ serve(async (req) => {
   })
 
   const data = await res.json()
+
+  if (!res.ok) {
+    console.error('Resend API error:', res.status, data)
+    return new Response(JSON.stringify({ error: 'Failed to send email', details: data }), {
+      status: res.status,
+      headers: { ...getCorsHeaders(req), 'Content-Type': 'application/json' },
+    })
+  }
+
   return new Response(JSON.stringify(data), {
     headers: { ...getCorsHeaders(req), 'Content-Type': 'application/json' },
   })

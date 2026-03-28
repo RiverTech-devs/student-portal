@@ -127,7 +127,10 @@ class PortalAuth {
                 color: #e6edf3;
                 font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             ">
-                <h2 style="margin: 0 0 10px 0; color: #6aa9ff;">🔐 Reset Your Password</h2>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                  <h2 style="margin: 0; color: #6aa9ff;">🔐 Reset Your Password</h2>
+                  <button onclick="document.getElementById('password-reset-modal')?.remove()" style="background: none; border: none; color: #97a2b0; font-size: 24px; cursor: pointer; padding: 4px;" aria-label="Close">&times;</button>
+                </div>
                 <p style="color: #97a2b0; margin-bottom: 20px;">Enter your new password below.</p>
 
                 <form id="password-reset-form" onsubmit="window.portalAuth.handlePasswordReset(event)">

@@ -4,6 +4,7 @@ CREATE OR REPLACE FUNCTION hard_delete_enrollment(p_enrollment_id UUID)
 RETURNS void
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = 'public'
 AS $$
 DECLARE
   v_student_id UUID;

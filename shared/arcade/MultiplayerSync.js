@@ -204,6 +204,13 @@ class MultiplayerSync {
      * @param {Object} finalState - Final game state
      */
     async endMatch(winner, finalState) {
+        // Cancel pending timers to prevent stale callbacks
+        if (this._reconnectTimeout) {
+            clearTimeout(this._reconnectTimeout);
+            this._reconnectTimeout = null;
+        }
+        this._resetTurnTimer();
+
         await this._matchRef.update({
             status: 'completed',
             winner: winner,
@@ -230,6 +237,13 @@ class MultiplayerSync {
      */
     async abandonMatch() {
         const winner = this.opponentPlayerNumber;
+
+        // Cancel any pending reconnect timeout to prevent race with timeout handler
+        if (this._reconnectTimeout) {
+            clearTimeout(this._reconnectTimeout);
+            this._reconnectTimeout = null;
+        }
+        this._resetTurnTimer();
 
         await this._matchRef.update({
             status: 'abandoned',

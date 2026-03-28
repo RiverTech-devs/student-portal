@@ -3418,6 +3418,22 @@ class RiutizGame extends EventTarget {
     }
 
     /**
+     * Check if either player has reached the win condition (25 points)
+     */
+    checkWinCondition() {
+        for (const playerNum of [1, 2]) {
+            const player = this.state.players[playerNum];
+            if (player && player.points >= this.winCondition) {
+                this.state.gameOver = true;
+                this.state.winner = playerNum;
+                this.emitEvent('gameOver', { winner: playerNum, points: player.points });
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * Roll attack dice with all bonuses
      */
     rollAttackDice(card) {

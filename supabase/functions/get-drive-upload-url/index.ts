@@ -126,6 +126,20 @@ serve(async (req) => {
       })
     }
 
+    // Validate inputs
+    if (fileName.includes('/') || fileName.includes('\\') || fileName.length > 255) {
+      return new Response(JSON.stringify({ error: 'Invalid file name' }), {
+        status: 400,
+        headers: { ...getCorsHeaders(req), 'Content-Type': 'application/json' },
+      })
+    }
+    if (fileSize && (fileSize < 0 || fileSize > 10 * 1024 * 1024 * 1024)) {
+      return new Response(JSON.stringify({ error: 'File size out of range' }), {
+        status: 400,
+        headers: { ...getCorsHeaders(req), 'Content-Type': 'application/json' },
+      })
+    }
+
     // Verify the caller is the teacher, an admin, or a student in one of the teacher's classes
     const { data: callerProfile } = await supabase
       .from('user_profiles')
@@ -139,6 +153,23 @@ serve(async (req) => {
         status: 403,
         headers: { ...getCorsHeaders(req), 'Content-Type': 'application/json' },
       })
+    }
+
+    // Students must be enrolled in a class taught by this teacher
+    if (callerType === 'student') {
+      const { data: enrollment } = await supabase
+        .from('class_enrollments')
+        .select('id, classes!inner(teacher_id, secondary_teacher_id)')
+        .eq('student_id', user.id)
+        .or(`teacher_id.eq.${teacherId},secondary_teacher_id.eq.${teacherId}`, { foreignTable: 'classes' })
+        .limit(1)
+
+      if (!enrollment || enrollment.length === 0) {
+        return new Response(JSON.stringify({ error: 'You are not enrolled in any class with this teacher' }), {
+          status: 403,
+          headers: { ...getCorsHeaders(req), 'Content-Type': 'application/json' },
+        })
+      }
     }
 
     // Get teacher's Drive config

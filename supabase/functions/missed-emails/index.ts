@@ -134,6 +134,22 @@ Deno.serve(async () => {
         console.error(`Failed to create in-app notification for ${parent_id}:`, notifErr);
       }
 
+      // Record sent notifications BEFORE sending to prevent duplicates on retry
+      const dedupRecords = buckets.flatMap(b =>
+        b.items.map(it => ({
+          assignment_id: it.assignment_id,
+          student_id: b.student_id,
+          parent_id
+        }))
+      );
+      const { error: dedupErr } = await sb
+        .from("missed_assignment_notifications")
+        .insert(dedupRecords);
+      if (dedupErr) {
+        console.error(`Failed to insert dedup records for ${parent_id}:`, dedupErr);
+        continue; // Skip this parent to avoid sending without dedup
+      }
+
       // Send email notification
       if (email) {
         const { error: invokeErr } = await sb.functions.invoke("send-notification-email", {
@@ -152,16 +168,6 @@ Deno.serve(async () => {
         }
       }
 
-      // Record sent notifications to prevent duplicates
-      for (const b of buckets) {
-        for (const it of b.items) {
-          await sb.from("missed_assignment_notifications").insert({
-            assignment_id: it.assignment_id,
-            student_id: b.student_id,
-            parent_id
-          });
-        }
-      }
     }
 
     return new Response("ok", { status: 200 });

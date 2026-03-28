@@ -64,14 +64,31 @@ Deno.serve(async () => {
 
     const classNameMap = new Map((classes || []).map(c => [c.id, c.name]));
 
+    // Filter out students who opted out of reminders
+    const eligibleRows = toNotify.filter(row => {
+      const studentPrefs = prefsMap.get(row.student_id) || {};
+      return studentPrefs.assignment_due_reminder !== false;
+    });
+
+    if (!eligibleRows.length) return new Response("all reminders opted out", { status: 200 });
+
+    // Record sent notifications BEFORE sending to prevent duplicates on retry
+    const dedupRecords = eligibleRows.map(row => ({
+      assignment_id: row.assignment_id,
+      student_id: row.student_id
+    }));
+    const { error: dedupErr } = await sb
+      .from("due_date_reminder_notifications")
+      .insert(dedupRecords);
+    if (dedupErr) {
+      console.error("Failed to insert dedup records:", dedupErr);
+      return new Response("dedup insert failed", { status: 500 });
+    }
+
     let notificationsSent = 0;
 
     // Send notifications
-    for (const row of toNotify) {
-      const studentPrefs = prefsMap.get(row.student_id) || {};
-      // Default to true if no preference set
-      if (studentPrefs.assignment_due_reminder === false) continue;
-
+    for (const row of eligibleRows) {
       const className = classNameMap.get(row.class_id) || "Class";
       const dueDate = new Date(row.due_at);
       const formattedDue = dueDate.toLocaleString('en-US', {
@@ -102,12 +119,6 @@ Deno.serve(async () => {
         console.error(`Failed to create notification for student ${row.student_id}:`, notifErr);
         continue;
       }
-
-      // Record that we sent this reminder
-      await sb.from("due_date_reminder_notifications").insert({
-        assignment_id: row.assignment_id,
-        student_id: row.student_id
-      });
 
       notificationsSent++;
     }
