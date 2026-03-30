@@ -13,8 +13,8 @@ function getCorsHeaders(req: Request) {
   const allowedOrigin = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0]
   return {
     'Access-Control-Allow-Origin': allowedOrigin,
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+    'Access-Control-Allow-Methods': 'POST, PUT, OPTIONS',
+    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-upload-url, x-content-range',
   }
 }
 
@@ -116,6 +116,54 @@ serve(async (req) => {
       })
     }
 
+    // === CHUNK PROXY MODE ===
+    // PUT requests proxy a chunk to Google Drive's resumable upload URL
+    if (req.method === 'PUT') {
+      const uploadUrl = req.headers.get('X-Upload-Url')
+      const contentRange = req.headers.get('X-Content-Range')
+
+      if (!uploadUrl) {
+        return new Response(JSON.stringify({ error: 'Missing X-Upload-Url header' }), {
+          status: 400,
+          headers: { ...getCorsHeaders(req), 'Content-Type': 'application/json' },
+        })
+      }
+
+      // Validate the upload URL points to Google Drive
+      if (!uploadUrl.startsWith('https://www.googleapis.com/upload/drive/')) {
+        return new Response(JSON.stringify({ error: 'Invalid upload URL' }), {
+          status: 400,
+          headers: { ...getCorsHeaders(req), 'Content-Type': 'application/json' },
+        })
+      }
+
+      // Forward the chunk to Google Drive
+      const chunkBody = await req.arrayBuffer()
+      const putHeaders: Record<string, string> = {
+        'Content-Length': String(chunkBody.byteLength),
+      }
+      if (contentRange) {
+        putHeaders['Content-Range'] = contentRange
+      }
+
+      const putResp = await fetch(uploadUrl, {
+        method: 'PUT',
+        headers: putHeaders,
+        body: chunkBody,
+      })
+
+      // Forward Google's response back to the client
+      const respBody = await putResp.text()
+      return new Response(respBody, {
+        status: putResp.status,
+        headers: {
+          ...getCorsHeaders(req),
+          'Content-Type': putResp.headers.get('Content-Type') || 'application/json',
+        },
+      })
+    }
+
+    // === INIT MODE (POST) ===
     // Parse request body
     const { teacherId, fileName, fileMimeType, fileSize, className, assignmentTitle, studentName } = await req.json()
 
@@ -202,9 +250,6 @@ serve(async (req) => {
     // Build file name with student name prefix
     const uploadFileName = studentName ? `${studentName}_${fileName}` : fileName
 
-    // Pass the caller's origin so Google enables CORS on the resumable URL
-    const origin = req.headers.get('Origin') || 'https://rivertech.me'
-
     // Initiate resumable upload session with Google Drive API
     const metadata = {
       name: uploadFileName,
@@ -212,7 +257,7 @@ serve(async (req) => {
     }
 
     const initResp = await fetch(
-      `https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,webViewLink&origin=${encodeURIComponent(origin)}`,
+      'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,webViewLink',
       {
         method: 'POST',
         headers: {

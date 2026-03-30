@@ -22429,16 +22429,19 @@
 
       // ==================== FILE UPLOAD & DOWNLOAD HELPERS ====================
 
-      // Direct resumable upload to Google Drive (bypasses edge function size limits)
+      // Resumable upload to Google Drive, proxied through edge function to avoid CORS
       async uploadFileToDrive(file, { assignmentId, teacherId, className, assignmentTitle, studentName, onProgress }) {
+        const EDGE_FN_URL = 'https://joxvhzxkrcigknsdrusr.supabase.co/functions/v1/get-drive-upload-url';
+
         // 1. Get a resumable upload URL from our edge function
         const sessionResult = await this.supabaseQuery(() => this.auth.supabase.auth.getSession());
         if (!sessionResult.data?.session) throw new Error('No active session');
+        const accessToken = sessionResult.data.session.access_token;
 
-        const initResp = await fetch('https://joxvhzxkrcigknsdrusr.supabase.co/functions/v1/get-drive-upload-url', {
+        const initResp = await fetch(EDGE_FN_URL, {
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${sessionResult.data.session.access_token}`,
+            'Authorization': `Bearer ${accessToken}`,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
@@ -22459,8 +22462,8 @@
 
         const uploadUrl = initData.uploadUrl;
 
-        // 2. Upload file directly to Google Drive in chunks (resumable upload)
-        const CHUNK_SIZE = 16 * 1024 * 1024; // 16MB chunks
+        // 2. Upload file in chunks, proxied through edge function (avoids CORS)
+        const CHUNK_SIZE = 4 * 1024 * 1024; // 4MB chunks (fits within edge function limits)
         const totalSize = file.size;
         let offset = 0;
 
@@ -22469,11 +22472,12 @@
           const chunk = file.slice(offset, end);
           const isLast = end === totalSize;
 
-          const putResp = await fetch(uploadUrl, {
+          const putResp = await fetch(EDGE_FN_URL, {
             method: 'PUT',
             headers: {
-              'Content-Length': String(end - offset),
-              'Content-Range': `bytes ${offset}-${end - 1}/${totalSize}`,
+              'Authorization': `Bearer ${accessToken}`,
+              'X-Upload-Url': uploadUrl,
+              'X-Content-Range': `bytes ${offset}-${end - 1}/${totalSize}`,
             },
             body: chunk,
           });
