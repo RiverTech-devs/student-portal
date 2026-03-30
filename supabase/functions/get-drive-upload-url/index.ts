@@ -212,7 +212,7 @@ serve(async (req) => {
     }
 
     const initResp = await fetch(
-      'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,webViewLink',
+      `https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,webViewLink&origin=${encodeURIComponent(origin)}`,
       {
         method: 'POST',
         headers: {
@@ -220,7 +220,6 @@ serve(async (req) => {
           'Content-Type': 'application/json; charset=UTF-8',
           'X-Upload-Content-Type': fileMimeType || 'application/octet-stream',
           ...(fileSize ? { 'X-Upload-Content-Length': String(fileSize) } : {}),
-          'Origin': origin || 'https://rivertech.me',
         },
         body: JSON.stringify(metadata),
       }
