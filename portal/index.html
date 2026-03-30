@@ -33944,15 +33944,25 @@
         const [roomsRes, bookingsRes] = await Promise.all([
           this.supabaseQuery(() => this.auth.supabase.from('facilities').select('*').order('name')),
           this.supabaseQuery(() => this.auth.supabase.from('facility_bookings')
-            .select('*, facility:facilities(name), booker:user_profiles!facility_bookings_booked_by_fkey(first_name, last_name), reviewer:user_profiles!facility_bookings_reviewed_by_fkey(first_name, last_name)')
+            .select('*, facility:facilities(name)')
             .order('booking_date', { ascending: false }))
         ]);
 
         if (roomsRes.error) throw roomsRes.error;
         if (bookingsRes.error) throw bookingsRes.error;
 
+        // Fetch booker names for bookings
+        const bookings = bookingsRes.data || [];
+        const bookerIds = [...new Set(bookings.map(b => b.booked_by).filter(Boolean))];
+        if (bookerIds.length > 0) {
+          const { data: profiles } = await this.supabaseQuery(() => this.auth.supabase
+            .from('user_profiles').select('id, first_name, last_name').in('id', bookerIds));
+          const profileMap = Object.fromEntries((profiles || []).map(p => [p.id, p]));
+          bookings.forEach(b => { b.booker = profileMap[b.booked_by] || null; });
+        }
+
         this._facilitiesData = roomsRes.data || [];
-        this._facilityBookingsData = bookingsRes.data || [];
+        this._facilityBookingsData = bookings;
         this._facilitiesActiveTab = this._facilitiesActiveTab || 'rooms';
 
         const pendingCount = this._facilityBookingsData.filter(b => b.status === 'pending').length;
