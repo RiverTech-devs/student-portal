@@ -6774,7 +6774,7 @@
               .single(),
             this.auth.supabase
               .from('student_notes')
-              .select('*, user_profiles!student_notes_teacher_id_fkey(first_name, last_name), classes(name)')
+              .select('*, classes(name)')
               .eq('student_id', studentId)
               .order('created_at', { ascending: false })
           ]);
@@ -6788,6 +6788,17 @@
               .select('id, first_name, last_name, email, phone')
               .in('id', parentIds);
             parents = parentProfiles || [];
+          }
+
+          // Attach teacher profiles to notes (FK points to profiles, not user_profiles)
+          if (studentNotes && studentNotes.length > 0) {
+            const teacherIds = [...new Set(studentNotes.map(n => n.teacher_id).filter(Boolean))];
+            if (teacherIds.length > 0) {
+              const { data: teacherProfiles } = await this.auth.supabase
+                .from('user_profiles').select('id, first_name, last_name').in('id', teacherIds);
+              const tMap = Object.fromEntries((teacherProfiles || []).map(p => [p.id, p]));
+              studentNotes.forEach(n => { n.user_profiles = tMap[n.teacher_id] || null; });
+            }
           }
 
           // Load strikes using the existing getStudentStrikes method
@@ -33243,10 +33254,19 @@
         if (activityIds.length > 0) {
           const { data: enr } = await this.supabaseQuery(() => this.auth.supabase
             .from('activity_enrollments')
-            .select('*, student:user_profiles!activity_enrollments_student_id_fkey(id, first_name, last_name, grade_level)')
+            .select('*')
             .in('activity_id', activityIds)
             .order('enrolled_at'));
           enrollments = enr || [];
+
+          // Fetch student profiles separately (FK points to auth.users, not user_profiles)
+          const studentIds = [...new Set(enrollments.map(e => e.student_id).filter(Boolean))];
+          if (studentIds.length > 0) {
+            const { data: profiles } = await this.supabaseQuery(() => this.auth.supabase
+              .from('user_profiles').select('id, first_name, last_name, grade_level').in('id', studentIds));
+            const profileMap = Object.fromEntries((profiles || []).map(p => [p.id, p]));
+            enrollments.forEach(e => { e.student = profileMap[e.student_id] || null; });
+          }
 
           const { data: sched } = await this.supabaseQuery(() => this.auth.supabase
             .from('activity_schedule')
@@ -33768,11 +33788,21 @@
       if (!activity) return;
 
       try {
-        const { data: enrollments, error } = await this.supabaseQuery(() => this.auth.supabase
+        const { data: rawEnrollments, error } = await this.supabaseQuery(() => this.auth.supabase
           .from('activity_enrollments')
-          .select('*, student:user_profiles!activity_enrollments_student_id_fkey(id, first_name, last_name, grade_level)')
+          .select('*')
           .eq('activity_id', id)
           .order('enrolled_at'));
+
+        // Fetch student profiles separately (FK points to auth.users, not user_profiles)
+        const enrollments = rawEnrollments || [];
+        const memberIds = [...new Set(enrollments.map(e => e.student_id).filter(Boolean))];
+        if (memberIds.length > 0) {
+          const { data: profiles } = await this.supabaseQuery(() => this.auth.supabase
+            .from('user_profiles').select('id, first_name, last_name, grade_level').in('id', memberIds));
+          const profileMap = Object.fromEntries((profiles || []).map(p => [p.id, p]));
+          enrollments.forEach(e => { e.student = profileMap[e.student_id] || null; });
+        }
 
         if (error) throw error;
 
