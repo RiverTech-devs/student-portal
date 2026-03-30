@@ -202,6 +202,9 @@ serve(async (req) => {
     // Build file name with student name prefix
     const uploadFileName = studentName ? `${studentName}_${fileName}` : fileName
 
+    // Pass the caller's origin so Google enables CORS on the resumable URL
+    const origin = req.headers.get('Origin') || 'https://rivertech.me'
+
     // Initiate resumable upload session with Google Drive API
     const metadata = {
       name: uploadFileName,
@@ -217,6 +220,7 @@ serve(async (req) => {
           'Content-Type': 'application/json; charset=UTF-8',
           'X-Upload-Content-Type': fileMimeType || 'application/octet-stream',
           ...(fileSize ? { 'X-Upload-Content-Length': String(fileSize) } : {}),
+          'Origin': origin || 'https://rivertech.me',
         },
         body: JSON.stringify(metadata),
       }
