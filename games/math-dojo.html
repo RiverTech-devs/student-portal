@@ -891,7 +891,11 @@
             <div class="learning-setup">
                 <h2 style="margin-bottom:1rem;color:var(--slate-200)">Select a Discipline</h2>
                 <div class="tier-select-row" id="learning-tier-select"></div>
-                <h2 style="margin:2rem 0 1rem;color:var(--slate-200)">Select a Technique to Learn</h2>
+                <div style="margin:1.5rem auto 0;max-width:400px;position:relative;">
+                    <input type="text" id="skill-search-input" placeholder="Search all skills..." oninput="searchLearningSkills(this.value)" style="width:100%;padding:10px 14px 10px 36px;border:2px solid var(--slate-600);border-radius:10px;background:var(--slate-800);color:var(--slate-200);font-size:0.95rem;box-sizing:border-box;outline:none;transition:border-color 0.2s;" onfocus="this.style.borderColor='var(--cyan-500)'" onblur="this.style.borderColor='var(--slate-600)'">
+                    <span style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--slate-400);font-size:1rem;pointer-events:none;">🔍</span>
+                </div>
+                <h2 style="margin:1.5rem 0 1rem;color:var(--slate-200)" id="skill-grid-heading">Select a Technique to Learn</h2>
                 <div class="skill-legend">
                     <div class="skill-legend-item"><span class="skill-legend-dot available"></span> Available</div>
                     <div class="skill-legend-item"><span class="skill-legend-dot in-progress"></span> In Progress</div>
@@ -3052,6 +3056,18 @@ function getUserId() {
 
 // Listen for skill tree updates from other tabs
 window.addEventListener('storage', (event) => {
+    // Tree lesson request - open skill lesson in Learning Center
+    if (event.key === 'tree_lesson_request' && event.newValue) {
+        try {
+            const data = JSON.parse(event.newValue);
+            if (Date.now() - data.timestamp < 5000) {
+                navigateToLesson(data.skill);
+            }
+        } catch (e) {
+            console.warn('Failed to parse tree lesson request:', e);
+        }
+    }
+
     // Tree practice request - open skill in Dojo
     if (event.key === 'tree_practice_request' && event.newValue) {
         try {
@@ -3648,6 +3664,18 @@ document.addEventListener('DOMContentLoaded', () => {
 // Check for and handle pending practice request from skill tree
 function checkPendingPracticeRequest() {
     try {
+        // Check for lesson request first
+        const lessonData = localStorage.getItem('tree_lesson_request');
+        if (lessonData) {
+            const data = JSON.parse(lessonData);
+            localStorage.removeItem('tree_lesson_request');
+            if (Date.now() - data.timestamp < 10000) {
+                console.log('Found pending lesson request:', data.skill);
+                setTimeout(() => navigateToLesson(data.skill), 500);
+                return;
+            }
+        }
+
         const requestData = localStorage.getItem('tree_practice_request');
         if (!requestData) return;
 
@@ -35228,8 +35256,120 @@ function selectLearningTier(tier) {
     document.querySelectorAll('.tier-select-btn').forEach((btn, i) => {
         btn.classList.toggle('selected', i + 1 === tier);
     });
+    // Clear search when switching tiers
+    const searchInput = document.getElementById('skill-search-input');
+    if (searchInput) searchInput.value = '';
+    const heading = document.getElementById('skill-grid-heading');
+    if (heading) heading.textContent = 'Select a Technique to Learn';
     updateSkillGrid();
     document.getElementById('start-learning-btn').disabled = true;
+}
+
+function searchLearningSkills(query) {
+    const grid = document.getElementById('skill-grid');
+    const heading = document.getElementById('skill-grid-heading');
+    query = query.trim().toLowerCase();
+
+    if (!query) {
+        // Restore normal tier view
+        if (heading) heading.textContent = 'Select a Technique to Learn';
+        updateSkillGrid();
+        return;
+    }
+
+    // Search across all tiers
+    const results = [];
+    for (let t = 1; t <= 10; t++) {
+        for (const domain of TIERS[t].domains) {
+            if (domain.toLowerCase().includes(query)) {
+                results.push({ tier: t, domain });
+            }
+        }
+    }
+
+    if (heading) heading.textContent = results.length > 0 ? `${results.length} result${results.length !== 1 ? 's' : ''} for "${query}"` : `No results for "${query}"`;
+    grid.innerHTML = '';
+
+    results.forEach(({ tier, domain }) => {
+        const card = document.createElement('div');
+        const skillState = getSkillState(domain);
+        const unlocked = isSkillUnlocked(domain);
+        const mastery = getSkillMastery(domain);
+
+        card.className = 'skill-card';
+        if (!unlocked) card.classList.add('locked');
+        if (skillState === 'mastered') card.classList.add('mastered');
+        else if (skillState === 'activated' || skillState === 'in_progress') card.classList.add('in-progress');
+        else if (skillState === 'needs_review') card.classList.add('needs-review');
+
+        let inner = `<div style="font-weight:600;font-size:0.95rem;">${domain}</div>`;
+        inner += `<div style="font-size:0.75rem;color:var(--slate-400);margin-top:2px;">T${tier}: ${TIERS[tier].name}</div>`;
+        if (unlocked && mastery > 0) {
+            inner += `<div style="margin-top:6px;height:4px;background:var(--slate-700);border-radius:2px;overflow:hidden;"><div style="width:${mastery}%;height:100%;background:${skillState === 'mastered' ? 'var(--amber-500)' : 'var(--cyan-500)'};border-radius:2px;"></div></div>`;
+        }
+        if (!unlocked) inner += `<div style="font-size:0.75rem;color:var(--slate-500);margin-top:4px;">🔒 Locked</div>`;
+
+        card.innerHTML = inner;
+        if (unlocked) {
+            card.onclick = () => {
+                // Switch to the correct tier, then select the skill
+                selectLearningTier(tier);
+                document.getElementById('skill-search-input').value = '';
+                if (heading) heading.textContent = 'Select a Technique to Learn';
+                updateSkillGrid();
+                selectSkill(domain);
+            };
+        }
+        grid.appendChild(card);
+    });
+}
+
+function navigateToLesson(treeSkillName) {
+    // Find which tier/domain this skill belongs to
+    let targetTier = null;
+    let targetDomain = null;
+
+    for (let t = 1; t <= 10; t++) {
+        for (const domain of TIERS[t].domains) {
+            const treeName = getTreeSkillName(domain);
+            if (treeName === treeSkillName || domain === treeSkillName) {
+                targetTier = t;
+                targetDomain = domain;
+                break;
+            }
+        }
+        if (targetTier) break;
+    }
+
+    if (!targetTier || !targetDomain) {
+        showNotification(`Could not find lesson for "${treeSkillName}"`);
+        return;
+    }
+
+    // Check if lesson exists
+    if (!lessons[targetTier] || !lessons[targetTier][targetDomain]) {
+        showNotification(`No lesson available for "${targetDomain}" yet`);
+        return;
+    }
+
+    // Navigate to learning mode
+    selectMode('learning');
+
+    setTimeout(() => {
+        // Select the tier
+        selectLearningTier(targetTier);
+
+        setTimeout(() => {
+            // Select the skill and start
+            if (isSkillUnlocked(targetDomain)) {
+                selectSkill(targetDomain);
+                startLearning();
+            } else {
+                selectSkill(targetDomain); // Will show locked info
+                showNotification(`"${targetDomain}" is locked — complete prerequisites first`);
+            }
+        }, 150);
+    }, 100);
 }
 
 function updateSkillGrid() {
