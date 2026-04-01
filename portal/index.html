@@ -6890,6 +6890,7 @@
             <button class="sd-tab" onclick="app.switchStudentTab(this, 'sd-medical')">Medical</button>
             <button class="sd-tab" onclick="app.switchStudentTab(this, 'sd-rtc')">RTC</button>
             <button class="sd-tab" onclick="app.switchStudentTab(this, 'sd-notes')">Notes (${studentNotes.length})</button>
+            <button class="sd-tab" onclick="app.switchStudentTab(this, 'sd-skills'); app.loadStudentSkillsTab('${student.id}')">Skill Trees</button>
           </div>
 
           <!-- Tab: Overview -->
@@ -7137,6 +7138,24 @@
               </div>
             </div>
           </div>
+
+          <!-- Tab: Skill Trees -->
+          <div class="sd-panel" id="sd-skills">
+            <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 12px;">
+              <select id="skill-subject-select" onchange="app.loadStudentSkillsTab('${student.id}')" style="padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font-size: 13px;">
+                <option value="Math" selected>Math</option>
+                <option value="Art">Art</option>
+                <option value="Science">Science</option>
+                <option value="Reading">Reading</option>
+                <option value="Programming">Programming</option>
+                <option value="Robotics">Robotics</option>
+              </select>
+              <button class="btn btn-primary" onclick="app.openStudentSkillTree('${student.id}')" style="padding: 6px 14px; font-size: 13px;">View Constellation</button>
+            </div>
+            <div id="skill-progress-content" style="font-size: 13px; color: var(--muted); text-align: center; padding: 20px;">
+              Select a subject and click the tab to load skill progress.
+            </div>
+          </div>
         `;
 
         return html;
@@ -7226,6 +7245,149 @@
         btn.classList.add('active');
         const panel = document.getElementById(panelId);
         if (panel) panel.classList.add('active');
+      }
+
+      // ==================== STUDENT SKILL TREES ====================
+      async loadStudentSkillsTab(studentId) {
+        const subject = document.getElementById('skill-subject-select')?.value || 'Math';
+        const container = document.getElementById('skill-progress-content');
+        if (!container) return;
+        container.innerHTML = '<div style="text-align:center;padding:20px;color:var(--muted);">Loading skill progress...</div>';
+
+        try {
+          const { data, error } = await this.auth.supabase
+            .from('skill_progress')
+            .select('skill_name, state, mastery_score, last_practiced, practice_count')
+            .eq('user_id', studentId)
+            .eq('subject', subject)
+            .order('mastery_score', { ascending: false });
+
+          if (error) throw error;
+          if (!data || data.length === 0) {
+            container.innerHTML = `<div style="text-align:center;padding:30px;color:var(--muted);font-style:italic;">No ${subject} skill progress recorded yet.</div>`;
+            return;
+          }
+
+          const mastered = data.filter(s => s.state === 'mastered');
+          const inProgress = data.filter(s => s.state === 'in_progress' || s.state === 'activated');
+          const total = data.length;
+
+          const stateColors = { mastered: '#10b981', activated: '#f59e0b', in_progress: '#3b82f6', available: '#6b7280', locked: '#374151' };
+          const stateLabels = { mastered: 'Mastered', activated: 'Activated', in_progress: 'In Progress', available: 'Available', locked: 'Locked' };
+
+          container.innerHTML = `
+            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px;">
+              <div style="background:var(--bg);border-radius:8px;padding:10px;text-align:center;">
+                <div style="font-size:20px;font-weight:700;color:#10b981;">${mastered.length}</div>
+                <div style="font-size:11px;color:var(--muted);">Mastered</div>
+              </div>
+              <div style="background:var(--bg);border-radius:8px;padding:10px;text-align:center;">
+                <div style="font-size:20px;font-weight:700;color:#3b82f6;">${inProgress.length}</div>
+                <div style="font-size:11px;color:var(--muted);">In Progress</div>
+              </div>
+              <div style="background:var(--bg);border-radius:8px;padding:10px;text-align:center;">
+                <div style="font-size:20px;font-weight:700;color:var(--text);">${total}</div>
+                <div style="font-size:11px;color:var(--muted);">Total Practiced</div>
+              </div>
+            </div>
+            <div style="max-height:350px;overflow-y:auto;">
+              <table style="width:100%;border-collapse:collapse;font-size:12px;">
+                <thead>
+                  <tr style="border-bottom:2px solid var(--border);text-align:left;">
+                    <th style="padding:6px 8px;">Skill</th>
+                    <th style="padding:6px 8px;">Status</th>
+                    <th style="padding:6px 8px;">Mastery</th>
+                    <th style="padding:6px 8px;">Practices</th>
+                    <th style="padding:6px 8px;">Last Practiced</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${data.map(s => `
+                    <tr style="border-bottom:1px solid var(--border);">
+                      <td style="padding:6px 8px;font-weight:500;">${s.skill_name}</td>
+                      <td style="padding:6px 8px;">
+                        <span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;background:${stateColors[s.state] || '#374151'}22;color:${stateColors[s.state] || '#6b7280'};">
+                          ${stateLabels[s.state] || s.state}
+                        </span>
+                      </td>
+                      <td style="padding:6px 8px;">
+                        <div style="display:flex;align-items:center;gap:6px;">
+                          <div style="width:50px;height:6px;background:var(--border);border-radius:3px;overflow:hidden;">
+                            <div style="width:${s.mastery_score || 0}%;height:100%;background:${stateColors[s.state] || '#6b7280'};border-radius:3px;"></div>
+                          </div>
+                          <span>${s.mastery_score || 0}%</span>
+                        </div>
+                      </td>
+                      <td style="padding:6px 8px;text-align:center;">${s.practice_count || 0}</td>
+                      <td style="padding:6px 8px;color:var(--muted);">${s.last_practiced ? new Date(s.last_practiced).toLocaleDateString() : '—'}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          `;
+        } catch (err) {
+          console.error('Error loading skill progress:', err);
+          container.innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);">Error loading skill progress.</div>`;
+        }
+      }
+
+      async openStudentSkillTree(studentId) {
+        const subject = document.getElementById('skill-subject-select')?.value || 'Math';
+
+        // Fetch student name
+        const { data: profile } = await this.auth.supabase
+          .from('user_profiles')
+          .select('first_name, last_name')
+          .eq('user_id', studentId)
+          .single();
+        const studentName = profile ? `${profile.first_name} ${profile.last_name}` : 'Student';
+
+        // Fetch skill progress from Supabase
+        const { data: skills } = await this.auth.supabase
+          .from('skill_progress')
+          .select('skill_name, state, mastery_score, last_practiced, practice_count')
+          .eq('user_id', studentId)
+          .eq('subject', subject);
+
+        // Build progress map
+        const progress = {};
+        if (skills) {
+          skills.forEach(s => {
+            progress[s.skill_name] = {
+              state: s.state === 'mastered' ? 'activated' : s.state,
+              mastery_score: s.mastery_score || 0,
+              last_practiced: s.last_practiced,
+              practice_count: s.practice_count || 0
+            };
+          });
+        }
+
+        // Create modal with iframe
+        const modal = document.createElement('div');
+        modal.id = 'skill-tree-modal';
+        modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);z-index:10000;display:flex;flex-direction:column;';
+        modal.innerHTML = `
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 16px;background:var(--card);border-bottom:1px solid var(--border);">
+            <div style="font-weight:600;color:var(--text);font-size:14px;">${studentName}'s ${subject} Skill Tree</div>
+            <button onclick="document.getElementById('skill-tree-modal').remove()" style="background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer;padding:4px 8px;">&times;</button>
+          </div>
+          <iframe id="skill-tree-iframe" src="../SkillTreeViewer.html?subject=${subject}&readonly=true" style="flex:1;border:none;width:100%;"></iframe>
+        `;
+        document.body.appendChild(modal);
+
+        // Wait for iframe to load, then send data
+        const iframe = document.getElementById('skill-tree-iframe');
+        iframe.onload = () => {
+          setTimeout(() => {
+            iframe.contentWindow.postMessage({
+              type: 'LOAD_SKILL_TREE',
+              subject: subject,
+              progress: progress,
+              studentName: studentName
+            }, '*');
+          }, 500);
+        };
       }
 
       // ==================== RTC CURRENCY ====================
