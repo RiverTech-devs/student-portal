@@ -458,6 +458,8 @@
         .guided-select-option.selected { border-color: var(--emerald-500); }
         .guided-select-option.correct { border-color: var(--emerald-500); background: rgba(16, 185, 129, 0.15); color: var(--emerald-400); }
         .guided-select-option.incorrect { border-color: var(--rose-500); background: rgba(244, 63, 94, 0.15); color: var(--rose-400); }
+        .guided-select-option.revealed-correct { border-color: var(--amber-500); background: rgba(251, 191, 36, 0.15); color: var(--amber-400); animation: pulse-hint 1.5s ease-in-out infinite; }
+        @keyframes pulse-hint { 0%, 100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.3); } 50% { box-shadow: 0 0 0 6px rgba(251, 191, 36, 0); } }
         
         .learning-actions { display: flex; justify-content: space-between; margin-top: 2rem; }
         .history-item .q-text { flex: 1; color: var(--slate-300); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -4369,8 +4371,8 @@ const generators = {
                     visual: { type: 'fraction', mode: 'display', data: { style, numerator: n, denominator: d } }
                 };
             } else if (type === "compare_same") {
-                // Compare fractions with same denominator
-                const d = pick([2, 3, 4, 5, 6, 8]);
+                // Compare fractions with same denominator (d must be >= 3 to have 2 distinct numerators)
+                const d = pick([3, 4, 5, 6, 8]);
                 const n1 = rand(1, d - 1);
                 let n2 = rand(1, d - 1);
                 while (n2 === n1) n2 = rand(1, d - 1);
@@ -35294,6 +35296,7 @@ function renderGuidedPhase(lesson) {
     state.guidedCurrentStep = 0;
     state.guidedSteps = guided.interactiveSteps || generateInteractiveSteps(guided, lesson);
     state.guidedAttempts = 0;
+    state.guidedAnswerRevealed = false;
 
     // Set problem text
     document.getElementById('guided-problem').innerHTML = guided.problem;
@@ -35493,6 +35496,7 @@ function selectGuidedOption(value, index) {
         setTimeout(() => {
             state.guidedCurrentStep++;
             state.guidedAttempts = 0;
+            state.guidedAnswerRevealed = false;
 
             if (state.guidedCurrentStep >= state.guidedSteps.length) {
                 showGuidedCompletion();
@@ -35513,21 +35517,17 @@ function selectGuidedOption(value, index) {
             fb.innerHTML = `✗ Not quite. Try again!`;
         }
 
-        // After 3 attempts, show the answer
-        if (state.guidedAttempts >= 3) {
-            fb.innerHTML += `<br><br>The correct answer is: <strong>${step.answer}</strong>`;
-
-            setTimeout(() => {
-                addCompletedStep(step, step.answer);
-                state.guidedCurrentStep++;
-                state.guidedAttempts = 0;
-
-                if (state.guidedCurrentStep >= state.guidedSteps.length) {
-                    showGuidedCompletion();
-                } else {
-                    renderGuidedStep();
+        // After 3 attempts, reveal answer and highlight the correct option
+        if (state.guidedAttempts >= 3 && !state.guidedAnswerRevealed) {
+            state.guidedAnswerRevealed = true;
+            fb.innerHTML += `<br><br>The correct answer is: <strong>${step.answer}</strong><br>Select it to continue.`;
+            // Highlight the correct option so student can find it
+            document.querySelectorAll('.guided-select-option').forEach(opt => {
+                const optResult = AnswerInterpreter.checkAnswer(opt.textContent.trim(), acceptableAnswers);
+                if (optResult.correct) {
+                    opt.classList.add('revealed-correct');
                 }
-            }, 2000);
+            });
         }
     }
 }
@@ -35562,6 +35562,7 @@ function checkGuidedStepAnswer() {
         setTimeout(() => {
             state.guidedCurrentStep++;
             state.guidedAttempts = 0;
+            state.guidedAnswerRevealed = false;
 
             if (state.guidedCurrentStep >= state.guidedSteps.length) {
                 // All steps complete
@@ -35587,21 +35588,10 @@ function checkGuidedStepAnswer() {
             fb.innerHTML = `✗ Not quite. Check your work and try again.`;
         }
 
-        // After 3 attempts, show the answer
-        if (state.guidedAttempts >= 3) {
-            fb.innerHTML += `<br><br>The correct answer is: <strong>${step.answer}</strong>`;
-
-            setTimeout(() => {
-                addCompletedStep(step, step.answer);
-                state.guidedCurrentStep++;
-                state.guidedAttempts = 0;
-
-                if (state.guidedCurrentStep >= state.guidedSteps.length) {
-                    showGuidedCompletion();
-                } else {
-                    renderGuidedStep();
-                }
-            }, 2000);
+        // After 3 attempts, reveal the answer but require them to type it correctly
+        if (state.guidedAttempts >= 3 && !state.guidedAnswerRevealed) {
+            state.guidedAnswerRevealed = true;
+            fb.innerHTML += `<br><br>The correct answer is: <strong>${step.answer}</strong><br>Type it in to continue.`;
         }
 
         // Select input for easy retry
