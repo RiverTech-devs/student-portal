@@ -1387,8 +1387,8 @@ const AnswerInterpreter = {
     // Parse radical: "3√2" -> { coefficient: 3, radicand: 2, index: 2 }
     parseRadical(str) {
         const s = String(str).trim();
-        // Format: 3√2, √5, ∛8
-        const sqrtMatch = s.match(/^(\d*)√(\d+)$/);
+        // Format: 3√2, √5, ∛8, sqrt(5), 3sqrt2, 3sqrt(2), cbrt(8), 3cbrt(8)
+        const sqrtMatch = s.match(/^(\d*)√(\d+)$/) || s.match(/^(\d*)\s*sqrt\(?(\d+)\)?$/i);
         if (sqrtMatch) {
             return {
                 coefficient: sqrtMatch[1] ? parseInt(sqrtMatch[1]) : 1,
@@ -1397,7 +1397,7 @@ const AnswerInterpreter = {
                 value: (sqrtMatch[1] ? parseInt(sqrtMatch[1]) : 1) * Math.sqrt(parseInt(sqrtMatch[2]))
             };
         }
-        const cbrtMatch = s.match(/^(\d*)∛(\d+)$/);
+        const cbrtMatch = s.match(/^(\d*)∛(\d+)$/) || s.match(/^(\d*)\s*cbrt\(?(\d+)\)?$/i);
         if (cbrtMatch) {
             return {
                 coefficient: cbrtMatch[1] ? parseInt(cbrtMatch[1]) : 1,
@@ -34896,14 +34896,34 @@ function renderQuestion() {
         // Show a text input for typed numeric answers
         const inputDiv = document.createElement('div');
         inputDiv.className = 'typed-answer-container';
-        inputDiv.style.cssText = 'display: flex; align-items: center; gap: 12px; padding: 16px 0;';
+        inputDiv.style.cssText = 'display: flex; flex-direction: column; gap: 8px; padding: 16px 0; align-items: center;';
+        // Detect if answer needs symbol buttons
+        const ansStr = String(q.answer) + ' ' + (q.acceptableAnswers || []).join(' ');
+        const qNeedsSqrt = /√|sqrt/i.test(ansStr);
+        const qNeedsCbrt = /∛|cbrt/i.test(ansStr);
+        const qNeedsPi = /π|pi/i.test(ansStr);
+        const qNeedsExp = /[²³⁴⁵⁶]|\^[2-9]/.test(ansStr);
+        const qNeedsDeg = /°|degree/i.test(ansStr);
+        const qHasSymbols = qNeedsSqrt || qNeedsCbrt || qNeedsPi || qNeedsExp || qNeedsDeg;
+        const sBtnStyle = 'padding: 2px 10px; font-size: 16px; min-width: 36px;';
+        const symRow = qHasSymbols ? `
+            <div style="display: flex; gap: 4px; flex-wrap: wrap; justify-content: center;">
+                ${qNeedsSqrt ? `<button type="button" class="btn btn-secondary" style="${sBtnStyle}" onclick="insertTestSymbol('√')" title="Square root">√</button>` : ''}
+                ${qNeedsCbrt ? `<button type="button" class="btn btn-secondary" style="${sBtnStyle}" onclick="insertTestSymbol('∛')" title="Cube root">∛</button>` : ''}
+                ${qNeedsPi ? `<button type="button" class="btn btn-secondary" style="${sBtnStyle}" onclick="insertTestSymbol('π')" title="Pi">π</button>` : ''}
+                ${qNeedsExp ? `<button type="button" class="btn btn-secondary" style="${sBtnStyle}" onclick="insertTestSymbol('²')" title="Squared">x²</button>` : ''}
+                ${qNeedsDeg ? `<button type="button" class="btn btn-secondary" style="${sBtnStyle}" onclick="insertTestSymbol('°')" title="Degree">°</button>` : ''}
+            </div>` : '';
         inputDiv.innerHTML = `
-            <label style="font-size: 1.1rem; color: var(--slate-300); white-space: nowrap;">Your answer:</label>
-            <input type="text" id="typed-answer-input" class="typed-answer-input"
-                   style="flex: 1; max-width: 200px; padding: 12px 16px; font-size: 1.2rem; background: var(--slate-700); border: 2px solid var(--slate-600); border-radius: 10px; color: white; outline: none; text-align: center;"
-                   placeholder="Type your answer"
-                   autocomplete="off"
-                   inputmode="text">
+            ${symRow}
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <label style="font-size: 1.1rem; color: var(--slate-300); white-space: nowrap;">Your answer:</label>
+                <input type="text" id="typed-answer-input" class="typed-answer-input"
+                       style="flex: 1; max-width: 200px; padding: 12px 16px; font-size: 1.2rem; background: var(--slate-700); border: 2px solid var(--slate-600); border-radius: 10px; color: white; outline: none; text-align: center;"
+                       placeholder="Type your answer"
+                       autocomplete="off"
+                       inputmode="text">
+            </div>
         `;
         opts.appendChild(inputDiv);
 
@@ -35945,11 +35965,29 @@ function renderGuidedStep() {
         const allAnswers = [step.answer, ...(step.acceptableAnswers || [])].join(' ');
         const needsPi = /π|pi/i.test(allAnswers);
         const needsExponent = /[²³⁴⁵⁶]|\^[2-9]/.test(allAnswers);
-        const symbolButtons = (needsPi || needsExponent) ? `
-            <div style="display: flex; gap: 4px; margin-bottom: 4px;">
-                ${needsPi ? '<button type="button" class="btn btn-secondary" style="padding: 2px 10px; font-size: 16px; min-width: 36px;" onclick="insertSymbol(\'π\')" title="Insert pi symbol">π</button>' : ''}
-                ${needsExponent ? '<button type="button" class="btn btn-secondary" style="padding: 2px 10px; font-size: 16px; min-width: 36px;" onclick="insertSymbol(\'²\')" title="Insert squared symbol">x²</button>' : ''}
-                <span style="font-size: 11px; color: var(--muted); align-self: center; margin-left: 4px;">${needsPi ? 'or type "pi"' : ''}${needsPi && needsExponent ? ' · ' : ''}${needsExponent ? 'or type "^2"' : ''}</span>
+        const needsSqrt = /√|sqrt/i.test(allAnswers);
+        const needsCbrt = /∛|cbrt/i.test(allAnswers);
+        const needsDegree = /°|degree/i.test(allAnswers);
+        const needsFraction = /\d+\/\d+/.test(allAnswers);
+        const hasAnySymbol = needsPi || needsExponent || needsSqrt || needsCbrt || needsDegree || needsFraction;
+        const symbolBtnStyle = 'padding: 2px 10px; font-size: 16px; min-width: 36px;';
+        const hints = [
+            needsSqrt ? 'or type "sqrt"' : '',
+            needsCbrt ? 'or type "cbrt"' : '',
+            needsPi ? 'or type "pi"' : '',
+            needsExponent ? 'or type "^2"' : '',
+            needsDegree ? 'or type "deg"' : '',
+            needsFraction ? 'use / for fractions' : ''
+        ].filter(Boolean).join(' · ');
+        const symbolButtons = hasAnySymbol ? `
+            <div style="display: flex; gap: 4px; margin-bottom: 4px; flex-wrap: wrap; align-items: center;">
+                ${needsSqrt ? `<button type="button" class="btn btn-secondary" style="${symbolBtnStyle}" onclick="insertSymbol('√')" title="Insert square root symbol">√</button>` : ''}
+                ${needsCbrt ? `<button type="button" class="btn btn-secondary" style="${symbolBtnStyle}" onclick="insertSymbol('∛')" title="Insert cube root symbol">∛</button>` : ''}
+                ${needsPi ? `<button type="button" class="btn btn-secondary" style="${symbolBtnStyle}" onclick="insertSymbol('π')" title="Insert pi symbol">π</button>` : ''}
+                ${needsExponent ? `<button type="button" class="btn btn-secondary" style="${symbolBtnStyle}" onclick="insertSymbol('²')" title="Insert squared symbol">x²</button>` : ''}
+                ${needsDegree ? `<button type="button" class="btn btn-secondary" style="${symbolBtnStyle}" onclick="insertSymbol('°')" title="Insert degree symbol">°</button>` : ''}
+                ${needsFraction ? `<button type="button" class="btn btn-secondary" style="${symbolBtnStyle}" onclick="insertSymbol('/')" title="Insert fraction slash">/</button>` : ''}
+                ${hints ? `<span style="font-size: 11px; color: var(--muted); align-self: center; margin-left: 4px;">${hints}</span>` : ''}
             </div>` : '';
         document.getElementById('guided-input-area').innerHTML = `
             ${symbolButtons}
@@ -36040,6 +36078,17 @@ function insertSymbol(symbol) {
     input.value = input.value.substring(0, start) + symbol + input.value.substring(end);
     input.focus();
     input.selectionStart = input.selectionEnd = start + symbol.length;
+}
+
+function insertTestSymbol(symbol) {
+    const input = document.getElementById('typed-answer-input');
+    if (!input) return;
+    const start = input.selectionStart;
+    const end = input.selectionEnd;
+    input.value = input.value.substring(0, start) + symbol + input.value.substring(end);
+    input.focus();
+    input.selectionStart = input.selectionEnd = start + symbol.length;
+    document.getElementById('submit-btn').disabled = input.value.trim() === '';
 }
 
 function checkGuidedStepAnswer() {
