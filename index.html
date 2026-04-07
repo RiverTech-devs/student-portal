@@ -4136,8 +4136,28 @@
                         break;
 
                     case 'DOJO_SKILL_DATA_UPDATED':
-                        // Dojo has updated skill data - refresh local state
+                        // Dojo has updated skill data - save to Supabase
                         this.handleDojoSkillUpdate(event.data);
+                        break;
+
+                    case 'DOGO_REQUEST_SKILL_DATA':
+                        // Dojo requesting skill data on startup - send from Supabase
+                        this.sendSkillDataToDojo(event.source);
+                        break;
+
+                    case 'DOGO_SKILL_PROGRESS':
+                        // Individual skill progress update from Dojo
+                        this.saveSkillToSupabase(event.data);
+                        break;
+
+                    case 'DOGO_SESSION_COMPLETE':
+                        // Batch session results from Dojo
+                        this.handleDojoSessionComplete(event.data);
+                        break;
+
+                    case 'DOGO_LESSON_COMPLETE':
+                        // Lesson mastery from Dojo learning center
+                        this.handleDojoLessonComplete(event.data);
                         break;
 
                     case 'SKILL_TREE_STATES_UPDATED':
@@ -4270,7 +4290,17 @@
 
                 // Update local skill progress for Math
                 if (data.skills) {
-                    this.skillProgress['Math'] = data.skills;
+                    // Merge into local progress (don't overwrite, merge per-skill)
+                    if (!this.skillProgress['Math']) this.skillProgress['Math'] = {};
+                    Object.entries(data.skills).forEach(([name, skill]) => {
+                        this.skillProgress['Math'][name] = {
+                            ...this.skillProgress['Math'][name],
+                            ...skill
+                        };
+                    });
+
+                    // Save all updated skills to Supabase
+                    this.bulkSaveSkillsToSupabase('Math', data.skills);
                 }
 
                 // Update skills counter
@@ -4286,6 +4316,170 @@
                         skillTreeData: {}
                     }, '*');
                     console.log('📤 Forwarded skill update to skill tree');
+                }
+            }
+
+            sendSkillDataToDojo(source) {
+                // Send stored skill progress from Supabase back to Dojo
+                const progress = this.skillProgress['Math'] || {};
+                console.log('📤 Sending skill data to Dojo:', Object.keys(progress).length, 'skills');
+
+                if (source) {
+                    source.postMessage({
+                        type: 'SKILL_DATA_FOR_DOGO',
+                        subject: 'Math',
+                        skills: progress
+                    }, '*');
+                }
+            }
+
+            async saveSkillToSupabase(data) {
+                if (!this.portal.auth.isAuthenticated()) return;
+                try {
+                    const userId = this.portal.auth.getUserInfo().profile.id;
+                    const now = new Date().toISOString();
+                    const skillName = data.skill || data.domain;
+                    if (!skillName) return;
+
+                    // Update local
+                    if (!this.skillProgress['Math']) this.skillProgress['Math'] = {};
+                    this.skillProgress['Math'][skillName] = {
+                        ...this.skillProgress['Math'][skillName],
+                        state: data.skillState || 'activated',
+                        mastery_score: data.masteryScore || 0,
+                        last_practiced: now,
+                        practice_count: (this.skillProgress['Math'][skillName]?.practice_count || 0) + 1
+                    };
+
+                    const { error } = await this.portal.auth.supabase
+                        .from('skill_progress')
+                        .upsert({
+                            user_id: userId,
+                            subject: 'Math',
+                            skill_name: skillName,
+                            state: data.skillState || 'activated',
+                            mastery_score: data.masteryScore || 0,
+                            last_practiced: now,
+                            practice_count: this.skillProgress['Math'][skillName].practice_count,
+                            updated_at: now
+                        });
+                    if (error) console.error('Failed to save skill progress:', error);
+                } catch (e) {
+                    console.error('Error saving skill to Supabase:', e);
+                }
+            }
+
+            async handleDojoSessionComplete(data) {
+                if (!this.portal.auth.isAuthenticated() || !data.skillProgress) return;
+                try {
+                    const userId = this.portal.auth.getUserInfo().profile.id;
+                    const now = new Date().toISOString();
+                    const rows = [];
+
+                    Object.entries(data.skillProgress).forEach(([skillName, progress]) => {
+                        // Update local
+                        if (!this.skillProgress['Math']) this.skillProgress['Math'] = {};
+                        this.skillProgress['Math'][skillName] = {
+                            ...this.skillProgress['Math'][skillName],
+                            state: progress.skillState || 'activated',
+                            mastery_score: progress.masteryScore || 0,
+                            last_practiced: now,
+                            practice_count: (this.skillProgress['Math'][skillName]?.practice_count || 0) + (progress.total || 1)
+                        };
+
+                        rows.push({
+                            user_id: userId,
+                            subject: 'Math',
+                            skill_name: skillName,
+                            state: progress.skillState || 'activated',
+                            mastery_score: progress.masteryScore || 0,
+                            last_practiced: now,
+                            practice_count: this.skillProgress['Math'][skillName].practice_count,
+                            updated_at: now
+                        });
+                    });
+
+                    if (rows.length > 0) {
+                        const { error } = await this.portal.auth.supabase
+                            .from('skill_progress')
+                            .upsert(rows);
+                        if (error) console.error('Failed to save session skills:', error);
+                        else console.log(`✅ Saved ${rows.length} skills from Dojo session`);
+                    }
+                } catch (e) {
+                    console.error('Error saving Dojo session:', e);
+                }
+            }
+
+            async handleDojoLessonComplete(data) {
+                if (!this.portal.auth.isAuthenticated()) return;
+                try {
+                    const userId = this.portal.auth.getUserInfo().profile.id;
+                    const now = new Date().toISOString();
+                    const skillName = data.skill || data.domain;
+                    if (!skillName) return;
+
+                    // Update local
+                    if (!this.skillProgress['Math']) this.skillProgress['Math'] = {};
+                    this.skillProgress['Math'][skillName] = {
+                        state: 'mastered',
+                        mastery_score: 100,
+                        last_practiced: now,
+                        practice_count: (this.skillProgress['Math'][skillName]?.practice_count || 0) + 1,
+                        mastered_at: now
+                    };
+
+                    const { error } = await this.portal.auth.supabase
+                        .from('skill_progress')
+                        .upsert({
+                            user_id: userId,
+                            subject: 'Math',
+                            skill_name: skillName,
+                            state: 'mastered',
+                            mastery_score: 100,
+                            last_practiced: now,
+                            practice_count: this.skillProgress['Math'][skillName].practice_count,
+                            mastered_at: now,
+                            updated_at: now
+                        });
+                    if (error) console.error('Failed to save lesson completion:', error);
+                    else console.log(`✅ Saved lesson mastery for ${skillName}`);
+                } catch (e) {
+                    console.error('Error saving lesson completion:', e);
+                }
+            }
+
+            async bulkSaveSkillsToSupabase(subject, skills) {
+                if (!this.portal.auth.isAuthenticated()) return;
+                try {
+                    const userId = this.portal.auth.getUserInfo().profile.id;
+                    const now = new Date().toISOString();
+                    const rows = [];
+
+                    Object.entries(skills).forEach(([name, skill]) => {
+                        if (!skill || !skill.state) return;
+                        rows.push({
+                            user_id: userId,
+                            subject: subject,
+                            skill_name: name,
+                            state: skill.state,
+                            mastery_score: skill.mastery_score || 0,
+                            last_practiced: skill.last_practiced || now,
+                            practice_count: skill.practice_count || 0,
+                            mastered_at: skill.mastered_at || null,
+                            updated_at: now
+                        });
+                    });
+
+                    if (rows.length > 0) {
+                        const { error } = await this.portal.auth.supabase
+                            .from('skill_progress')
+                            .upsert(rows);
+                        if (error) console.error('Failed to bulk save skills:', error);
+                        else console.log(`✅ Bulk saved ${rows.length} skills to Supabase`);
+                    }
+                } catch (e) {
+                    console.error('Error bulk saving skills:', e);
                 }
             }
 
