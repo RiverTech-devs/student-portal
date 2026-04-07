@@ -1831,6 +1831,12 @@
             </section>
 
             <!-- IRL Purchases Section (Teachers & Admins) -->
+            <section id="spreadsheet-section" class="hidden">
+              <div id="spreadsheet-content">
+                <!-- Will be populated by renderSpreadsheet() -->
+              </div>
+            </section>
+
             <section id="irl-purchases-section" class="hidden">
               <!-- Will be populated by renderIRLPurchases() -->
             </section>
@@ -4561,6 +4567,9 @@
             break;
           case 'admin-rtc-management':
             this.renderAdminRTCManagement();
+            break;
+          case 'spreadsheet':
+            this.renderSpreadsheet();
             break;
           case 'irl-purchases':
             this.renderIRLPurchases();
@@ -36781,6 +36790,689 @@
     }
 
     // ==================== IRL PURCHASES SYSTEM ====================
+
+    // ==================== SPREADSHEET / SHEETS ====================
+
+    async renderSpreadsheet() {
+      const container = document.getElementById('spreadsheet-content');
+      if (!container) return;
+
+      // Initialize state
+      if (!this._sheets) {
+        this._sheets = [];
+        this._activeSheetId = null;
+        this._sheetData = [];
+        this._selectedCell = null;
+        this._clipboard = null;
+        this._undoStack = [];
+        this._redoStack = [];
+        this._colWidths = {};
+      }
+
+      container.innerHTML = '<div style="text-align:center;padding:40px;"><div class="loading-spinner"></div><p>Loading Sheets...</p></div>';
+
+      await this.loadSheetsList();
+      this.renderSheetsUI(container);
+    }
+
+    async loadSheetsList() {
+      try {
+        const { data, error } = await this.supabaseQuery(() =>
+          this.auth.supabase.from('teacher_sheets')
+            .select('id, name, updated_at')
+            .eq('user_id', this.userInfo.user.id)
+            .order('updated_at', { ascending: false })
+        );
+        if (error) throw error;
+        this._sheets = data || [];
+      } catch (e) {
+        console.error('Error loading sheets:', e);
+        this._sheets = [];
+      }
+    }
+
+    renderSheetsUI(container) {
+      const sheetListHTML = this._sheets.map(s => `
+        <div class="sheet-list-item" data-id="${s.id}" style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:var(--card);border:1px solid var(--surface-border, rgba(255,255,255,0.06));border-radius:var(--radius-md, 8px);cursor:pointer;transition:var(--transition-fast, 0.15s);" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--surface-border, rgba(255,255,255,0.06))'">
+          <div>
+            <div style="font-weight:600;color:var(--text);">${this.escapeHtml(s.name)}</div>
+            <div style="font-size:12px;color:var(--muted);margin-top:2px;">Updated ${new Date(s.updated_at).toLocaleDateString()}</div>
+          </div>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-sm btn-primary" onclick="event.stopPropagation();app.openSheet('${s.id}')" style="padding:6px 14px;font-size:13px;">Open</button>
+            <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();app.exportSheetCSV('${s.id}','${this.escapeHtml(s.name)}')" style="padding:6px 14px;font-size:13px;">Export</button>
+            <button class="btn btn-sm" onclick="event.stopPropagation();app.deleteSheet('${s.id}')" style="padding:6px 14px;font-size:13px;background:var(--danger);color:#fff;">Delete</button>
+          </div>
+        </div>
+      `).join('');
+
+      container.innerHTML = `
+        <div style="max-width:1400px;margin:0 auto;padding:20px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px;">
+            <h2 style="margin:0;color:var(--text);">📋 My Sheets</h2>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;">
+              <button class="btn btn-primary" onclick="app.createNewSheet()" style="padding:8px 18px;">+ New Sheet</button>
+              <label class="btn btn-secondary" style="padding:8px 18px;cursor:pointer;margin:0;">
+                Import CSV
+                <input type="file" accept=".csv,.tsv,.txt" style="display:none;" onchange="app.importCSVFile(event)">
+              </label>
+            </div>
+          </div>
+          ${this._sheets.length === 0 ? `
+            <div style="text-align:center;padding:60px 20px;color:var(--muted);">
+              <div style="font-size:48px;margin-bottom:16px;">📋</div>
+              <p style="font-size:16px;">No sheets yet. Create one or import a CSV to get started.</p>
+            </div>
+          ` : `
+            <div style="display:flex;flex-direction:column;gap:10px;">
+              ${sheetListHTML}
+            </div>
+          `}
+        </div>
+      `;
+    }
+
+    async createNewSheet() {
+      const name = prompt('Sheet name:');
+      if (!name || !name.trim()) return;
+
+      // Default 10 rows x 8 cols
+      const rows = 10, cols = 8;
+      const data = Array.from({ length: rows }, () => Array(cols).fill(''));
+      const csvData = data.map(r => r.join(',')).join('\n');
+
+      try {
+        const { data: inserted, error } = await this.supabaseQuery(() =>
+          this.auth.supabase.from('teacher_sheets').insert({
+            user_id: this.userInfo.user.id,
+            name: name.trim(),
+            csv_data: csvData
+          }).select().single()
+        );
+        if (error) throw error;
+        await this.openSheet(inserted.id);
+      } catch (e) {
+        console.error('Error creating sheet:', e);
+        if (window.portalUI) portalUI.showNotification('Failed to create sheet', 'error');
+      }
+    }
+
+    async importCSVFile(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      event.target.value = '';
+
+      const text = await file.text();
+      const name = file.name.replace(/\.(csv|tsv|txt)$/i, '').trim() || 'Imported Sheet';
+
+      try {
+        const { data: inserted, error } = await this.supabaseQuery(() =>
+          this.auth.supabase.from('teacher_sheets').insert({
+            user_id: this.userInfo.user.id,
+            name: name,
+            csv_data: text
+          }).select().single()
+        );
+        if (error) throw error;
+        await this.openSheet(inserted.id);
+      } catch (e) {
+        console.error('Error importing CSV:', e);
+        if (window.portalUI) portalUI.showNotification('Failed to import CSV', 'error');
+      }
+    }
+
+    async deleteSheet(sheetId) {
+      if (!confirm('Delete this sheet? This cannot be undone.')) return;
+      try {
+        const { error } = await this.supabaseQuery(() =>
+          this.auth.supabase.from('teacher_sheets').delete().eq('id', sheetId).eq('user_id', this.userInfo.user.id)
+        );
+        if (error) throw error;
+        this._sheets = this._sheets.filter(s => s.id !== sheetId);
+        if (this._activeSheetId === sheetId) this._activeSheetId = null;
+        const container = document.getElementById('spreadsheet-content');
+        this.renderSheetsUI(container);
+        if (window.portalUI) portalUI.showNotification('Sheet deleted', 'success');
+      } catch (e) {
+        console.error('Error deleting sheet:', e);
+      }
+    }
+
+    async openSheet(sheetId) {
+      const container = document.getElementById('spreadsheet-content');
+      container.innerHTML = '<div style="text-align:center;padding:40px;"><div class="loading-spinner"></div><p>Loading sheet...</p></div>';
+
+      try {
+        const { data, error } = await this.supabaseQuery(() =>
+          this.auth.supabase.from('teacher_sheets')
+            .select('*')
+            .eq('id', sheetId)
+            .eq('user_id', this.userInfo.user.id)
+            .single()
+        );
+        if (error) throw error;
+
+        this._activeSheetId = sheetId;
+        this._activeSheetName = data.name;
+        this._sheetData = this.parseCSV(data.csv_data || '');
+        this._selectedCell = null;
+        this._undoStack = [];
+        this._redoStack = [];
+        this._colWidths = {};
+
+        // Ensure minimum grid size
+        if (this._sheetData.length === 0) this._sheetData = [['']];
+        this.normalizeSheetData();
+
+        this.renderSheetEditor(container);
+      } catch (e) {
+        console.error('Error opening sheet:', e);
+        container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger);">Failed to load sheet.</div>';
+      }
+    }
+
+    parseCSV(csvText) {
+      if (!csvText.trim()) return [['']];
+      const rows = [];
+      let current = '';
+      let inQuotes = false;
+      let row = [];
+
+      for (let i = 0; i < csvText.length; i++) {
+        const ch = csvText[i];
+        if (inQuotes) {
+          if (ch === '"' && csvText[i + 1] === '"') {
+            current += '"';
+            i++;
+          } else if (ch === '"') {
+            inQuotes = false;
+          } else {
+            current += ch;
+          }
+        } else {
+          if (ch === '"') {
+            inQuotes = true;
+          } else if (ch === ',') {
+            row.push(current);
+            current = '';
+          } else if (ch === '\n' || (ch === '\r' && csvText[i + 1] === '\n')) {
+            row.push(current);
+            current = '';
+            rows.push(row);
+            row = [];
+            if (ch === '\r') i++;
+          } else if (ch === '\r') {
+            row.push(current);
+            current = '';
+            rows.push(row);
+            row = [];
+          } else {
+            current += ch;
+          }
+        }
+      }
+      row.push(current);
+      if (row.length > 0) rows.push(row);
+      return rows;
+    }
+
+    normalizeSheetData() {
+      const maxCols = Math.max(1, ...this._sheetData.map(r => r.length));
+      this._sheetData = this._sheetData.map(r => {
+        while (r.length < maxCols) r.push('');
+        return r;
+      });
+    }
+
+    sheetDataToCSV() {
+      return this._sheetData.map(row =>
+        row.map(cell => {
+          const val = (cell || '').toString();
+          if (val.includes(',') || val.includes('"') || val.includes('\n')) {
+            return '"' + val.replace(/"/g, '""') + '"';
+          }
+          return val;
+        }).join(',')
+      ).join('\n');
+    }
+
+    getColLabel(index) {
+      let label = '';
+      let n = index;
+      do {
+        label = String.fromCharCode(65 + (n % 26)) + label;
+        n = Math.floor(n / 26) - 1;
+      } while (n >= 0);
+      return label;
+    }
+
+    renderSheetEditor(container) {
+      const rows = this._sheetData.length;
+      const cols = this._sheetData[0].length;
+
+      container.innerHTML = `
+        <div style="display:flex;flex-direction:column;height:calc(100vh - 140px);max-width:100%;overflow:hidden;">
+          <!-- Toolbar -->
+          <div style="display:flex;align-items:center;gap:10px;padding:10px 16px;background:var(--card);border-bottom:1px solid var(--surface-border, rgba(255,255,255,0.06));flex-wrap:wrap;">
+            <button class="btn btn-secondary" onclick="app.backToSheetsList()" style="padding:6px 14px;font-size:13px;">← Back</button>
+            <input type="text" id="sheet-name-input" value="${this.escapeHtml(this._activeSheetName)}" style="background:var(--input-bg, rgba(255,255,255,0.05));border:1px solid var(--surface-border, rgba(255,255,255,0.1));border-radius:var(--radius-sm, 4px);padding:6px 12px;color:var(--text);font-size:14px;font-weight:600;width:200px;" onchange="app.renameSheet(this.value)">
+            <div style="flex:1;"></div>
+            <div id="sheet-cell-ref" style="font-size:13px;color:var(--muted);min-width:50px;"></div>
+            <input type="text" id="sheet-formula-bar" placeholder="Cell value" style="flex:1;max-width:400px;background:var(--input-bg, rgba(255,255,255,0.05));border:1px solid var(--surface-border, rgba(255,255,255,0.1));border-radius:var(--radius-sm, 4px);padding:6px 12px;color:var(--text);font-size:13px;" onkeydown="app.handleFormulaBarKey(event)" onchange="app.applyFormulaBar()">
+            <div style="display:flex;gap:6px;">
+              <button class="btn btn-secondary" onclick="app.sheetUndo()" title="Undo (Ctrl+Z)" style="padding:6px 10px;font-size:13px;">↩</button>
+              <button class="btn btn-secondary" onclick="app.sheetRedo()" title="Redo (Ctrl+Y)" style="padding:6px 10px;font-size:13px;">↪</button>
+            </div>
+            <div style="display:flex;gap:6px;">
+              <button class="btn btn-secondary" onclick="app.addSheetRow()" title="Add Row" style="padding:6px 10px;font-size:13px;">+ Row</button>
+              <button class="btn btn-secondary" onclick="app.addSheetCol()" title="Add Column" style="padding:6px 10px;font-size:13px;">+ Col</button>
+              <button class="btn btn-secondary" onclick="app.removeSheetRow()" title="Remove Row" style="padding:6px 10px;font-size:13px;">− Row</button>
+              <button class="btn btn-secondary" onclick="app.removeSheetCol()" title="Remove Column" style="padding:6px 10px;font-size:13px;">− Col</button>
+            </div>
+            <button class="btn btn-primary" onclick="app.saveSheet()" style="padding:6px 18px;font-size:13px;">Save</button>
+            <button class="btn btn-secondary" onclick="app.exportCurrentSheetCSV()" style="padding:6px 14px;font-size:13px;">Export CSV</button>
+          </div>
+
+          <!-- Grid -->
+          <div id="sheet-grid-wrapper" style="flex:1;overflow:auto;position:relative;">
+            <table id="sheet-grid" style="border-collapse:collapse;table-layout:fixed;min-width:100%;">
+              <thead>
+                <tr>
+                  <th style="position:sticky;top:0;left:0;z-index:3;background:var(--nav-bg, #1a1f27);border:1px solid var(--surface-border, rgba(255,255,255,0.1));padding:6px 10px;font-size:12px;color:var(--muted);min-width:50px;text-align:center;user-select:none;">#</th>
+                  ${Array.from({ length: cols }, (_, c) => `
+                    <th style="position:sticky;top:0;z-index:2;background:var(--nav-bg, #1a1f27);border:1px solid var(--surface-border, rgba(255,255,255,0.1));padding:6px 10px;font-size:12px;color:var(--muted);min-width:${this._colWidths[c] || 100}px;width:${this._colWidths[c] || 100}px;text-align:center;user-select:none;cursor:pointer;" onclick="app.selectSheetCol(${c})" oncontextmenu="event.preventDefault();app.showColContextMenu(event,${c})">${this.getColLabel(c)}</th>
+                  `).join('')}
+                </tr>
+              </thead>
+              <tbody>
+                ${this._sheetData.map((row, r) => `
+                  <tr>
+                    <td style="position:sticky;left:0;z-index:1;background:var(--nav-bg, #1a1f27);border:1px solid var(--surface-border, rgba(255,255,255,0.1));padding:6px 10px;font-size:12px;color:var(--muted);text-align:center;user-select:none;cursor:pointer;" onclick="app.selectSheetRow(${r})" oncontextmenu="event.preventDefault();app.showRowContextMenu(event,${r})">${r + 1}</td>
+                    ${row.map((cell, c) => `
+                      <td class="sheet-cell" data-r="${r}" data-c="${c}" onclick="app.selectCell(${r},${c})" ondblclick="app.editCell(${r},${c})" style="border:1px solid var(--surface-border, rgba(255,255,255,0.1));padding:4px 8px;font-size:13px;color:var(--text);cursor:cell;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:${this._colWidths[c] || 100}px;min-height:28px;">${this.escapeHtml(cell)}</td>
+                    `).join('')}
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Status bar -->
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 16px;background:var(--card);border-top:1px solid var(--surface-border, rgba(255,255,255,0.06));font-size:12px;color:var(--muted);">
+            <span>${rows} rows × ${cols} columns</span>
+            <span id="sheet-status">Ready</span>
+          </div>
+        </div>
+      `;
+
+      // Attach keyboard listener
+      this._sheetKeyHandler = (e) => this.handleSheetKeydown(e);
+      document.addEventListener('keydown', this._sheetKeyHandler);
+    }
+
+    selectCell(r, c) {
+      // Deselect previous
+      if (this._selectedCell) {
+        const prev = document.querySelector(`.sheet-cell[data-r="${this._selectedCell.r}"][data-c="${this._selectedCell.c}"]`);
+        if (prev) prev.style.outline = '';
+      }
+
+      this._selectedCell = { r, c };
+      const cell = document.querySelector(`.sheet-cell[data-r="${r}"][data-c="${c}"]`);
+      if (cell) {
+        cell.style.outline = '2px solid var(--accent)';
+        cell.style.outlineOffset = '-1px';
+      }
+
+      // Update refs
+      const refEl = document.getElementById('sheet-cell-ref');
+      const barEl = document.getElementById('sheet-formula-bar');
+      if (refEl) refEl.textContent = `${this.getColLabel(c)}${r + 1}`;
+      if (barEl) barEl.value = this._sheetData[r][c] || '';
+    }
+
+    editCell(r, c) {
+      this.selectCell(r, c);
+      const cell = document.querySelector(`.sheet-cell[data-r="${r}"][data-c="${c}"]`);
+      if (!cell) return;
+
+      const val = this._sheetData[r][c] || '';
+      cell.innerHTML = '';
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.value = val;
+      input.style.cssText = 'width:100%;height:100%;border:none;outline:none;background:transparent;color:var(--text);font-size:13px;padding:0;margin:0;';
+      input.dataset.r = r;
+      input.dataset.c = c;
+
+      input.addEventListener('blur', () => this.commitCellEdit(input));
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); input.blur(); this.moveSelection(1, 0); }
+        else if (e.key === 'Tab') { e.preventDefault(); input.blur(); this.moveSelection(0, e.shiftKey ? -1 : 1); }
+        else if (e.key === 'Escape') { input.value = val; input.blur(); }
+        e.stopPropagation();
+      });
+
+      cell.appendChild(input);
+      input.focus();
+      input.select();
+    }
+
+    commitCellEdit(input) {
+      const r = parseInt(input.dataset.r);
+      const c = parseInt(input.dataset.c);
+      const newVal = input.value;
+      const oldVal = this._sheetData[r][c];
+
+      if (newVal !== oldVal) {
+        this._undoStack.push({ type: 'cell', r, c, oldVal, newVal });
+        this._redoStack = [];
+        this._sheetData[r][c] = newVal;
+      }
+
+      const cell = input.parentElement;
+      if (cell) cell.textContent = newVal;
+
+      const barEl = document.getElementById('sheet-formula-bar');
+      if (barEl && this._selectedCell && this._selectedCell.r === r && this._selectedCell.c === c) {
+        barEl.value = newVal;
+      }
+    }
+
+    handleFormulaBarKey(e) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        this.applyFormulaBar();
+      }
+    }
+
+    applyFormulaBar() {
+      if (!this._selectedCell) return;
+      const { r, c } = this._selectedCell;
+      const barEl = document.getElementById('sheet-formula-bar');
+      if (!barEl) return;
+
+      const newVal = barEl.value;
+      const oldVal = this._sheetData[r][c];
+      if (newVal !== oldVal) {
+        this._undoStack.push({ type: 'cell', r, c, oldVal, newVal });
+        this._redoStack = [];
+        this._sheetData[r][c] = newVal;
+        const cell = document.querySelector(`.sheet-cell[data-r="${r}"][data-c="${c}"]`);
+        if (cell) cell.textContent = newVal;
+      }
+    }
+
+    moveSelection(dr, dc) {
+      if (!this._selectedCell) return;
+      const newR = Math.max(0, Math.min(this._sheetData.length - 1, this._selectedCell.r + dr));
+      const newC = Math.max(0, Math.min(this._sheetData[0].length - 1, this._selectedCell.c + dc));
+      this.selectCell(newR, newC);
+    }
+
+    handleSheetKeydown(e) {
+      if (this.currentSection !== 'spreadsheet') return;
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+      if (e.key === 'ArrowUp') { e.preventDefault(); this.moveSelection(-1, 0); }
+      else if (e.key === 'ArrowDown') { e.preventDefault(); this.moveSelection(1, 0); }
+      else if (e.key === 'ArrowLeft') { e.preventDefault(); this.moveSelection(0, -1); }
+      else if (e.key === 'ArrowRight') { e.preventDefault(); this.moveSelection(0, 1); }
+      else if (e.key === 'Tab') { e.preventDefault(); this.moveSelection(0, e.shiftKey ? -1 : 1); }
+      else if (e.key === 'Enter') { e.preventDefault(); if (this._selectedCell) this.editCell(this._selectedCell.r, this._selectedCell.c); }
+      else if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (this._selectedCell) {
+          const { r, c } = this._selectedCell;
+          const oldVal = this._sheetData[r][c];
+          if (oldVal !== '') {
+            this._undoStack.push({ type: 'cell', r, c, oldVal, newVal: '' });
+            this._redoStack = [];
+            this._sheetData[r][c] = '';
+            const cell = document.querySelector(`.sheet-cell[data-r="${r}"][data-c="${c}"]`);
+            if (cell) cell.textContent = '';
+            const barEl = document.getElementById('sheet-formula-bar');
+            if (barEl) barEl.value = '';
+          }
+        }
+      }
+      else if (e.ctrlKey && e.key === 'z') { e.preventDefault(); this.sheetUndo(); }
+      else if (e.ctrlKey && e.key === 'y') { e.preventDefault(); this.sheetRedo(); }
+      else if (e.ctrlKey && e.key === 's') { e.preventDefault(); this.saveSheet(); }
+      else if (e.ctrlKey && e.key === 'c') { this.sheetCopy(); }
+      else if (e.ctrlKey && e.key === 'v') { this.sheetPaste(); }
+      else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey && this._selectedCell) {
+        // Start typing into cell
+        this._sheetData[this._selectedCell.r][this._selectedCell.c] = '';
+        this.editCell(this._selectedCell.r, this._selectedCell.c);
+        const cell = document.querySelector(`.sheet-cell[data-r="${this._selectedCell.r}"][data-c="${this._selectedCell.c}"]`);
+        if (cell) {
+          const input = cell.querySelector('input');
+          if (input) { input.value = e.key; }
+        }
+      }
+    }
+
+    sheetCopy() {
+      if (!this._selectedCell) return;
+      const { r, c } = this._selectedCell;
+      this._clipboard = { value: this._sheetData[r][c] };
+    }
+
+    sheetPaste() {
+      if (!this._selectedCell || !this._clipboard) return;
+      const { r, c } = this._selectedCell;
+      const oldVal = this._sheetData[r][c];
+      const newVal = this._clipboard.value;
+      if (newVal !== oldVal) {
+        this._undoStack.push({ type: 'cell', r, c, oldVal, newVal });
+        this._redoStack = [];
+        this._sheetData[r][c] = newVal;
+        const cell = document.querySelector(`.sheet-cell[data-r="${r}"][data-c="${c}"]`);
+        if (cell) cell.textContent = newVal;
+        const barEl = document.getElementById('sheet-formula-bar');
+        if (barEl) barEl.value = newVal;
+      }
+    }
+
+    sheetUndo() {
+      if (this._undoStack.length === 0) return;
+      const action = this._undoStack.pop();
+      this._redoStack.push(action);
+
+      if (action.type === 'cell') {
+        this._sheetData[action.r][action.c] = action.oldVal;
+        const cell = document.querySelector(`.sheet-cell[data-r="${action.r}"][data-c="${action.c}"]`);
+        if (cell) cell.textContent = action.oldVal;
+        if (this._selectedCell && this._selectedCell.r === action.r && this._selectedCell.c === action.c) {
+          const barEl = document.getElementById('sheet-formula-bar');
+          if (barEl) barEl.value = action.oldVal;
+        }
+      } else if (action.type === 'grid') {
+        this._sheetData = action.oldData.map(r => [...r]);
+        this.renderSheetEditor(document.getElementById('spreadsheet-content'));
+      }
+    }
+
+    sheetRedo() {
+      if (this._redoStack.length === 0) return;
+      const action = this._redoStack.pop();
+      this._undoStack.push(action);
+
+      if (action.type === 'cell') {
+        this._sheetData[action.r][action.c] = action.newVal;
+        const cell = document.querySelector(`.sheet-cell[data-r="${action.r}"][data-c="${action.c}"]`);
+        if (cell) cell.textContent = action.newVal;
+        if (this._selectedCell && this._selectedCell.r === action.r && this._selectedCell.c === action.c) {
+          const barEl = document.getElementById('sheet-formula-bar');
+          if (barEl) barEl.value = action.newVal;
+        }
+      } else if (action.type === 'grid') {
+        this._sheetData = action.newData.map(r => [...r]);
+        this.renderSheetEditor(document.getElementById('spreadsheet-content'));
+      }
+    }
+
+    addSheetRow() {
+      const oldData = this._sheetData.map(r => [...r]);
+      const cols = this._sheetData[0].length;
+      const insertAt = this._selectedCell ? this._selectedCell.r + 1 : this._sheetData.length;
+      this._sheetData.splice(insertAt, 0, Array(cols).fill(''));
+      this._undoStack.push({ type: 'grid', oldData, newData: this._sheetData.map(r => [...r]) });
+      this._redoStack = [];
+      this.renderSheetEditor(document.getElementById('spreadsheet-content'));
+    }
+
+    addSheetCol() {
+      const oldData = this._sheetData.map(r => [...r]);
+      const insertAt = this._selectedCell ? this._selectedCell.c + 1 : this._sheetData[0].length;
+      this._sheetData.forEach(row => row.splice(insertAt, 0, ''));
+      this._undoStack.push({ type: 'grid', oldData, newData: this._sheetData.map(r => [...r]) });
+      this._redoStack = [];
+      this.renderSheetEditor(document.getElementById('spreadsheet-content'));
+    }
+
+    removeSheetRow() {
+      if (this._sheetData.length <= 1) return;
+      const oldData = this._sheetData.map(r => [...r]);
+      const removeAt = this._selectedCell ? this._selectedCell.r : this._sheetData.length - 1;
+      this._sheetData.splice(removeAt, 1);
+      if (this._selectedCell && this._selectedCell.r >= this._sheetData.length) {
+        this._selectedCell.r = this._sheetData.length - 1;
+      }
+      this._undoStack.push({ type: 'grid', oldData, newData: this._sheetData.map(r => [...r]) });
+      this._redoStack = [];
+      this.renderSheetEditor(document.getElementById('spreadsheet-content'));
+    }
+
+    removeSheetCol() {
+      if (this._sheetData[0].length <= 1) return;
+      const oldData = this._sheetData.map(r => [...r]);
+      const removeAt = this._selectedCell ? this._selectedCell.c : this._sheetData[0].length - 1;
+      this._sheetData.forEach(row => row.splice(removeAt, 1));
+      if (this._selectedCell && this._selectedCell.c >= this._sheetData[0].length) {
+        this._selectedCell.c = this._sheetData[0].length - 1;
+      }
+      this._undoStack.push({ type: 'grid', oldData, newData: this._sheetData.map(r => [...r]) });
+      this._redoStack = [];
+      this.renderSheetEditor(document.getElementById('spreadsheet-content'));
+    }
+
+    selectSheetRow(r) {
+      this.selectCell(r, 0);
+    }
+
+    selectSheetCol(c) {
+      this.selectCell(0, c);
+    }
+
+    showRowContextMenu(event, r) {
+      this.removeContextMenu();
+      const menu = document.createElement('div');
+      menu.id = 'sheet-context-menu';
+      menu.style.cssText = `position:fixed;top:${event.clientY}px;left:${event.clientX}px;z-index:9999;background:var(--card);border:1px solid var(--surface-border, rgba(255,255,255,0.1));border-radius:var(--radius-md, 8px);padding:4px 0;min-width:160px;box-shadow:var(--shadow-lg, 0 8px 24px rgba(0,0,0,0.3));`;
+      menu.innerHTML = `
+        <div style="padding:8px 16px;cursor:pointer;color:var(--text);font-size:13px;" onmouseover="this.style.background='var(--accent)';this.style.color='#fff'" onmouseout="this.style.background='';this.style.color='var(--text)'" onclick="app.removeContextMenu();app._selectedCell={r:${r},c:0};app.addSheetRow()">Insert Row Below</div>
+        <div style="padding:8px 16px;cursor:pointer;color:var(--danger);font-size:13px;" onmouseover="this.style.background='var(--danger)';this.style.color='#fff'" onmouseout="this.style.background='';this.style.color='var(--danger)'" onclick="app.removeContextMenu();app._selectedCell={r:${r},c:0};app.removeSheetRow()">Delete Row</div>
+      `;
+      document.body.appendChild(menu);
+      setTimeout(() => document.addEventListener('click', () => this.removeContextMenu(), { once: true }), 10);
+    }
+
+    showColContextMenu(event, c) {
+      this.removeContextMenu();
+      const menu = document.createElement('div');
+      menu.id = 'sheet-context-menu';
+      menu.style.cssText = `position:fixed;top:${event.clientY}px;left:${event.clientX}px;z-index:9999;background:var(--card);border:1px solid var(--surface-border, rgba(255,255,255,0.1));border-radius:var(--radius-md, 8px);padding:4px 0;min-width:160px;box-shadow:var(--shadow-lg, 0 8px 24px rgba(0,0,0,0.3));`;
+      menu.innerHTML = `
+        <div style="padding:8px 16px;cursor:pointer;color:var(--text);font-size:13px;" onmouseover="this.style.background='var(--accent)';this.style.color='#fff'" onmouseout="this.style.background='';this.style.color='var(--text)'" onclick="app.removeContextMenu();app._selectedCell={r:0,c:${c}};app.addSheetCol()">Insert Column Right</div>
+        <div style="padding:8px 16px;cursor:pointer;color:var(--danger);font-size:13px;" onmouseover="this.style.background='var(--danger)';this.style.color='#fff'" onmouseout="this.style.background='';this.style.color='var(--danger)'" onclick="app.removeContextMenu();app._selectedCell={r:0,c:${c}};app.removeSheetCol()">Delete Column</div>
+      `;
+      document.body.appendChild(menu);
+      setTimeout(() => document.addEventListener('click', () => this.removeContextMenu(), { once: true }), 10);
+    }
+
+    removeContextMenu() {
+      const menu = document.getElementById('sheet-context-menu');
+      if (menu) menu.remove();
+    }
+
+    async saveSheet() {
+      if (!this._activeSheetId) return;
+      const statusEl = document.getElementById('sheet-status');
+      if (statusEl) statusEl.textContent = 'Saving...';
+
+      try {
+        const csvData = this.sheetDataToCSV();
+        const { error } = await this.supabaseQuery(() =>
+          this.auth.supabase.from('teacher_sheets')
+            .update({ csv_data: csvData, name: this._activeSheetName, updated_at: new Date().toISOString() })
+            .eq('id', this._activeSheetId)
+            .eq('user_id', this.userInfo.user.id)
+        );
+        if (error) throw error;
+        if (statusEl) statusEl.textContent = 'Saved!';
+        setTimeout(() => { if (statusEl) statusEl.textContent = 'Ready'; }, 2000);
+        if (window.portalUI) portalUI.showNotification('Sheet saved', 'success');
+      } catch (e) {
+        console.error('Error saving sheet:', e);
+        if (statusEl) statusEl.textContent = 'Save failed';
+        if (window.portalUI) portalUI.showNotification('Failed to save sheet', 'error');
+      }
+    }
+
+    async renameSheet(newName) {
+      if (!newName.trim()) return;
+      this._activeSheetName = newName.trim();
+    }
+
+    async exportSheetCSV(sheetId, name) {
+      try {
+        const { data, error } = await this.supabaseQuery(() =>
+          this.auth.supabase.from('teacher_sheets')
+            .select('csv_data, name')
+            .eq('id', sheetId)
+            .eq('user_id', this.userInfo.user.id)
+            .single()
+        );
+        if (error) throw error;
+        this.downloadCSV(data.csv_data, data.name);
+      } catch (e) {
+        console.error('Error exporting sheet:', e);
+      }
+    }
+
+    exportCurrentSheetCSV() {
+      if (!this._activeSheetId) return;
+      const csvData = this.sheetDataToCSV();
+      this.downloadCSV(csvData, this._activeSheetName);
+    }
+
+    downloadCSV(csvData, name) {
+      const blob = new Blob([csvData], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = (name || 'sheet') + '.csv';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+
+    backToSheetsList() {
+      // Clean up keyboard listener
+      if (this._sheetKeyHandler) {
+        document.removeEventListener('keydown', this._sheetKeyHandler);
+        this._sheetKeyHandler = null;
+      }
+      this._activeSheetId = null;
+      this._selectedCell = null;
+      this.loadSheetsList().then(() => {
+        this.renderSheetsUI(document.getElementById('spreadsheet-content'));
+      });
+    }
+
+    // ==================== IRL PURCHASES ====================
 
     async renderIRLPurchases() {
       const section = document.getElementById('irl-purchases-section');
