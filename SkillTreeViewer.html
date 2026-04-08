@@ -945,6 +945,11 @@
         </div>
     </div>
 
+    <!-- Graph engine: Supabase client + CurriculumGraph (optional, graceful fallback if missing) -->
+    <script src="shared/supabase.min.js" onerror="console.warn('Supabase client not loaded — using hardcoded data')"></script>
+    <script src="shared/config.js" onerror="console.warn('Config not loaded — using hardcoded data')"></script>
+    <script src="shared/graph-data.js" onerror="console.warn('CurriculumGraph not loaded — using hardcoded data')"></script>
+
     <script>
         class MultiSubjectSkillTreeManager {
             constructor() {
@@ -1566,9 +1571,11 @@
                         subject: this.currentSubject
                     }, '*');
                 } else {
-                    // Fallback for standalone testing
-                    setTimeout(() => {
+                    // Standalone mode: load hardcoded first, then try graph engine
+                    setTimeout(async () => {
                         this.loadSubjectData(this.currentSubject);
+                        // Try upgrading to graph data (non-blocking, falls back silently)
+                        await this.tryLoadFromGraph(this.currentSubject);
                         this.initializeProgress();
                         this.enterApplication();
                     }, 500);
@@ -1623,6 +1630,7 @@
             }
 
             loadSubjectData(subject) {
+                // HARDCODED FALLBACK — always available as safety net
                 const dataLoaders = {
                     'Art': () => this.loadArtData(),
                     'Math': () => this.loadMathData(),
@@ -1631,9 +1639,50 @@
                     'Programming': () => this.loadProgrammingData(),
                     'Robotics': () => this.loadRoboticsData()
                 };
-                
+
                 const loader = dataLoaders[subject] || dataLoaders['Art'];
-                loader();
+                loader(); // Always load hardcoded first as baseline
+            }
+
+            /**
+             * Try loading from Supabase graph engine.
+             * If successful, replaces the hardcoded data that was already loaded.
+             * If it fails, the hardcoded data stays in place — zero disruption.
+             * This is called AFTER loadSubjectData() in the initialization flow.
+             */
+            async tryLoadFromGraph(subject) {
+                // Check if CurriculumGraph is available
+                if (typeof CurriculumGraph === 'undefined' || typeof PortalAuth === 'undefined') {
+                    console.log('Graph engine not available — using hardcoded data');
+                    return false;
+                }
+
+                try {
+                    // Initialize a read-only Supabase client for curriculum data
+                    if (!this._graphClient) {
+                        const auth = new PortalAuth();
+                        await auth.initialize();
+                        this._graphClient = new CurriculumGraph(auth.supabase);
+                    }
+
+                    const legacy = await this._graphClient.loadDomainAsLegacy(subject);
+                    if (!legacy || Object.keys(legacy.SKILL_TREE).length === 0) {
+                        console.log(`Graph engine returned no data for "${subject}" — keeping hardcoded data`);
+                        return false;
+                    }
+
+                    // Success! Replace the hardcoded data with graph data
+                    this.SKILL_TREE = legacy.SKILL_TREE;
+                    this.CONNECTIONS = legacy.CONNECTIONS;
+                    this.CONSTELLATION_COLORS = legacy.CONSTELLATION_COLORS;
+                    this.CONSTELLATION_POSITIONS = legacy.CONSTELLATION_POSITIONS;
+
+                    console.log(`Graph engine loaded "${subject}" — ${Object.keys(legacy.SKILL_TREE).length} nodes`);
+                    return true;
+                } catch (e) {
+                    console.warn(`Graph engine error for "${subject}":`, e.message, '— keeping hardcoded data');
+                    return false;
+                }
             }
 
             loadArtData() {
