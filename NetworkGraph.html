@@ -20,14 +20,14 @@
         .controls-bar {
             position: fixed;
             top: 0; left: 0; right: 0;
-            height: 48px;
             background: rgba(0,0,0,0.85);
             border-bottom: 1px solid rgba(212,175,55,0.3);
             display: flex;
             align-items: center;
-            padding: 0 16px;
+            padding: 8px 16px;
             z-index: 100;
-            gap: 12px;
+            gap: 8px;
+            flex-wrap: wrap;
         }
         .controls-bar h1 { font-size: 15px; color: #d4af37; white-space: nowrap; }
         .ctrl-btn {
@@ -215,15 +215,53 @@
         // Prepare graph data for 3d-force-graph
         // ============================================================
 
-        // Assign initial positions: domains in a ring, Y = stage height
-        const STAGE_HEIGHT = { 'Foundations': -200, 'Fluency': -80, 'Application': 40, 'Integration': 160, 'Mastery': 300 };
+        // Compute depth of each node via BFS from roots
+        const parentOf = {};
+        const childOf = {};
+        for (const e of rawData.edges) {
+            if (e.edge_type !== 'prerequisite_hard') continue;
+            (childOf[e.from_node] = childOf[e.from_node] || []).push(e.to_node);
+            (parentOf[e.to_node] = parentOf[e.to_node] || []).push(e.from_node);
+        }
+
+        const nodeDepth = {};
+        const roots = rawData.nodes.filter(n => !parentOf[n.id] || parentOf[n.id].length === 0);
+        const bfsQueue = roots.map(r => { nodeDepth[r.id] = 0; return r.id; });
+        const bfsVisited = new Set();
+        while (bfsQueue.length > 0) {
+            const cur = bfsQueue.shift();
+            if (bfsVisited.has(cur)) continue;
+            bfsVisited.add(cur);
+            for (const child of (childOf[cur] || [])) {
+                const nd = (nodeDepth[cur] || 0) + 1;
+                if (nodeDepth[child] === undefined || nd > nodeDepth[child]) {
+                    nodeDepth[child] = nd;
+                    if (!bfsVisited.has(child)) bfsQueue.push(child);
+                }
+            }
+        }
+        rawData.nodes.forEach(n => { if (nodeDepth[n.id] === undefined) nodeDepth[n.id] = 0; });
+
+        const maxDepth = Math.max(...Object.values(nodeDepth), 1);
+        console.log(`Depth computed: max=${maxDepth}, roots=${roots.length}`);
+
+        // Layout: domains in a ring on XZ plane, depth determines Y (pinned)
+        // Roots at bottom (Y = -300), deepest nodes at top (Y = 300)
+        const Y_BOTTOM = -300;
+        const Y_TOP = 400;
+        const Y_RANGE = Y_TOP - Y_BOTTOM;
+
         const domainAngle = {};
         DOMAINS.forEach((d, i) => { domainAngle[d] = (i / DOMAINS.length) * Math.PI * 2; });
 
         const gNodes = rawData.nodes.map(n => {
             const angle = domainAngle[n.domain] || 0;
-            const radius = 150 + Math.random() * 80;
-            const y = (STAGE_HEIGHT[n.stage] || 0) + (Math.random() - 0.5) * 60;
+            const radius = 120 + Math.random() * 60;
+            const depth = nodeDepth[n.id] || 0;
+
+            // Pin Y based on depth — roots at bottom, mastery at top
+            const yPos = Y_BOTTOM + (depth / maxDepth) * Y_RANGE;
+
             return {
                 id: n.id,
                 title: n.title,
@@ -232,11 +270,13 @@
                 stage: n.stage,
                 demonstration: n.demonstration || '',
                 color: COLORS[n.domain] || '#888',
-                // Initial 3D positions (force sim will refine)
-                fx: undefined, fy: undefined, fz: undefined,
-                x: Math.cos(angle) * radius + (Math.random() - 0.5) * 60,
-                y: y,
-                z: Math.sin(angle) * radius + (Math.random() - 0.5) * 60,
+                depth: depth,
+                // Initial XZ from domain angle, force sim will refine
+                x: Math.cos(angle) * radius + (Math.random() - 0.5) * 40,
+                z: Math.sin(angle) * radius + (Math.random() - 0.5) * 40,
+                // PIN Y position — force sim cannot move it vertically
+                y: yPos,
+                fy: yPos,
                 _size: n.path_type === 'Leaf' ? 5 : n.path_type === 'Branch' ? 2 : 3.5,
                 _raw: n
             };
@@ -324,8 +364,8 @@
         controls.autoRotate = true;
         controls.autoRotateSpeed = 0.5;
 
-        // Initial camera: looking at center of data
-        Graph.cameraPosition({ x: 0, y: focusTargetY + 150, z: 600 }, { x: 0, y: focusTargetY, z: 0 });
+        // Initial camera: looking at center of data, slightly above to see the tree growing up
+        Graph.cameraPosition({ x: 0, y: 100, z: 700 }, { x: 0, y: 50, z: 0 });
 
         // Right-drag handler: slide Y focus up/down
         let isRightDragging = false;
@@ -360,8 +400,8 @@
         renderer.render = function(s, c) {
             // Keep orbit target at current focusTargetY
             controls.target.y = focusTargetY;
-            // Camera Y stays offset above the target
-            camera.position.y = focusTargetY + 150;
+            // Camera Y stays above the target (allow right-drag to change focusTargetY)
+            camera.position.y = focusTargetY + 100;
             origRender(s || scene, c || camera);
         };
 
@@ -512,9 +552,9 @@
         // ============================================================
         document.getElementById('btnReset').addEventListener('click', () => {
             clearFocus();
-            focusTargetY = 0;
-            previousTargetY = 0;
-            Graph.cameraPosition({ x: 0, y: 150, z: 600 }, { x: 0, y: 0, z: 0 }, 1000);
+            focusTargetY = 50;
+            previousTargetY = 50;
+            Graph.cameraPosition({ x: 0, y: 100, z: 700 }, { x: 0, y: 50, z: 0 }, 1000);
         });
         document.getElementById('btnClear').addEventListener('click', clearFocus);
 
