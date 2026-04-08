@@ -116,7 +116,7 @@ CREATE POLICY "Admins can manage curriculum nodes"
     EXISTS (
       SELECT 1 FROM user_profiles
       WHERE user_profiles.id = auth.uid()
-      AND user_profiles.role = 'admin'
+      AND user_profiles.user_type = 'admin'
     )
   );
 
@@ -126,7 +126,7 @@ CREATE POLICY "Admins can manage curriculum edges"
     EXISTS (
       SELECT 1 FROM user_profiles
       WHERE user_profiles.id = auth.uid()
-      AND user_profiles.role = 'admin'
+      AND user_profiles.user_type = 'admin'
     )
   );
 
@@ -136,7 +136,7 @@ CREATE POLICY "Admins can manage curriculum clusters"
     EXISTS (
       SELECT 1 FROM user_profiles
       WHERE user_profiles.id = auth.uid()
-      AND user_profiles.role = 'admin'
+      AND user_profiles.user_type = 'admin'
     )
   );
 
