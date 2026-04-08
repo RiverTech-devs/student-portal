@@ -260,39 +260,6 @@
                 return n.pathType === 'Branch' ? 0.7 : 0.9;
             })
             .nodeLabel(n => `${EMOJI[n.domain]||''} ${n.title}\n${n.pathType} · ${n.stage}`)
-            .nodeThreeObject(n => {
-                // Custom sphere with glow for Leaf nodes
-                const THREE = Graph.THREE();
-                const size = n._size;
-
-                const geom = new THREE.SphereGeometry(size, 16, 12);
-                let color = n.color;
-                let emissive = 0x000000;
-                let emissiveIntensity = 0;
-
-                if (focusedNode && n.id !== focusedNode && !n._highlight) {
-                    color = '#1a1a2a';
-                } else {
-                    if (n.pathType === 'Leaf') {
-                        emissive = new THREE.Color(n.color).getHex();
-                        emissiveIntensity = 0.4;
-                    }
-                    if (n.id === focusedNode) {
-                        emissive = 0xffd700;
-                        emissiveIntensity = 0.8;
-                    }
-                }
-
-                const mat = new THREE.MeshLambertMaterial({
-                    color: new THREE.Color(color),
-                    emissive: new THREE.Color(emissive),
-                    emissiveIntensity: emissiveIntensity,
-                    transparent: true,
-                    opacity: (focusedNode && n.id !== focusedNode && !n._highlight) ? 0.06 : (n.pathType === 'Branch' ? 0.7 : 0.95)
-                });
-
-                return new THREE.Mesh(geom, mat);
-            })
 
             // Link appearance
             .linkColor(link => {
@@ -311,10 +278,6 @@
                 return true;
             })
 
-            // Force simulation tuning
-            .d3Force('charge', d3.forceManyBody().strength(-30))
-            .d3Force('link', d3.forceLink().distance(link => link._isCross ? 200 : 50).strength(link => link._isCross ? 0.02 : 0.3))
-
             // Interaction
             .onNodeClick(node => onNodeClick(node))
             .onBackgroundClick(() => clearFocus())
@@ -322,32 +285,36 @@
             .width(window.innerWidth)
             .height(window.innerHeight);
 
+        // Tune the built-in forces
+        Graph.d3Force('charge').strength(-30);
+        Graph.d3Force('link').distance(link => link._isCross ? 200 : 50).strength(link => link._isCross ? 0.02 : 0.3);
+
         // Auto-rotate
         Graph.controls().autoRotate = true;
         Graph.controls().autoRotateSpeed = 0.5;
 
-        // Add domain clustering force: pull nodes toward their domain's angle
+        // Custom force: pull nodes toward their domain's sector in XZ plane
         Graph.d3Force('domainCluster', alpha => {
             const strength = 0.15 * alpha;
             for (const node of gNodes) {
                 const angle = domainAngle[node.domain] || 0;
                 const targetX = Math.cos(angle) * 200;
                 const targetZ = Math.sin(angle) * 200;
-                node.vx += (targetX - node.x) * strength;
-                node.vz += (targetZ - node.z) * strength;
+                node.vx = (node.vx || 0) + (targetX - node.x) * strength;
+                node.vz = (node.vz || 0) + (targetZ - node.z) * strength;
             }
         });
 
-        // Add vertical staging force: pull nodes toward their stage height
+        // Custom force: pull nodes toward their stage height (Y axis)
         Graph.d3Force('stageHeight', alpha => {
             const strength = 0.12 * alpha;
             for (const node of gNodes) {
                 const targetY = STAGE_HEIGHT[node.stage] || 0;
-                node.vy += (targetY - node.y) * strength;
+                node.vy = (node.vy || 0) + (targetY - node.y) * strength;
             }
         });
 
-        // Reheat simulation to apply custom forces
+        // Reheat to apply custom forces
         Graph.d3ReheatSimulation();
 
         // Hide loading
@@ -402,8 +369,8 @@
                 l._highlight = connected.has(src) && connected.has(tgt);
             });
 
-            // Re-render
-            Graph.nodeThreeObject(Graph.nodeThreeObject())
+            // Re-render colors and widths
+            Graph.nodeColor(Graph.nodeColor())
                  .linkColor(Graph.linkColor())
                  .linkWidth(Graph.linkWidth());
 
@@ -421,7 +388,7 @@
             focusedNode = null;
             gNodes.forEach(n => { n._highlight = false; });
             gLinks.forEach(l => { l._highlight = false; });
-            Graph.nodeThreeObject(Graph.nodeThreeObject())
+            Graph.nodeColor(Graph.nodeColor())
                  .linkColor(Graph.linkColor())
                  .linkWidth(Graph.linkWidth());
             document.getElementById('infoPanel').classList.remove('active');
