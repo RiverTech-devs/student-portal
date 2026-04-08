@@ -289,28 +289,66 @@
             .width(window.innerWidth)
             .height(window.innerHeight);
 
-        // Lock rotation to Y-axis only (turntable style)
+        // === CAMERA CONTROL ===
+        // Left-drag: orbit around Y-axis only (turntable)
+        // Right-drag: slide focus point up/down Y-axis
+        // Scroll: zoom in/out
+        // Node click: focus on node (becomes new center)
+        // Background click / Clear: return to previous center
+
         const controls = Graph.controls();
-        controls.autoRotate = true;
-        controls.autoRotateSpeed = 0.5;
+        const camera = Graph.camera();
 
-        // Y-axis-only rotation: lock polar angle + enforce every frame
-        const CAMERA_Y = 150;
-        controls.minPolarAngle = Math.PI * 0.499; // Almost exactly horizontal
+        // State
+        let focusTargetY = 0;       // Current Y of the orbit center
+        let previousTargetY = 0;    // Saved before node focus
+        let previousCamDist = 600;  // Saved before node focus
+
+        // Lock polar angle to horizontal (Y-axis orbit only)
+        controls.minPolarAngle = Math.PI * 0.499;
         controls.maxPolarAngle = Math.PI * 0.501;
-        controls.enableRotate = true;
+        controls.enablePan = false;  // Disable default pan — we handle right-drag ourselves
         controls.autoRotate = true;
         controls.autoRotateSpeed = 0.5;
-        Graph.cameraPosition({ x: 0, y: CAMERA_Y, z: 600 }, { x: 0, y: 0, z: 0 });
 
-        // Enforce Y-lock every frame — catches focus zoom and manual drag
+        // Initial camera: looking at center of data
+        Graph.cameraPosition({ x: 0, y: focusTargetY + 150, z: 600 }, { x: 0, y: focusTargetY, z: 0 });
+
+        // Right-drag handler: slide Y focus up/down
+        let isRightDragging = false;
+        let rightDragStartY = 0;
+        let rightDragStartTargetY = 0;
+
+        const graphEl = container.querySelector('canvas');
+        if (graphEl) {
+            graphEl.addEventListener('mousedown', (e) => {
+                if (e.button === 2) { // Right mouse button
+                    isRightDragging = true;
+                    rightDragStartY = e.clientY;
+                    rightDragStartTargetY = focusTargetY;
+                    e.preventDefault();
+                }
+            });
+            window.addEventListener('mousemove', (e) => {
+                if (!isRightDragging) return;
+                const dy = (e.clientY - rightDragStartY) * 1.5; // Sensitivity
+                focusTargetY = rightDragStartTargetY + dy;
+            });
+            window.addEventListener('mouseup', (e) => {
+                if (e.button === 2) isRightDragging = false;
+            });
+            graphEl.addEventListener('contextmenu', (e) => e.preventDefault());
+        }
+
+        // Enforce camera constraints every frame
         const renderer = Graph.renderer();
         const origRender = renderer.render.bind(renderer);
         const scene = Graph.scene();
-        const camera = Graph.camera();
         renderer.render = function(s, c) {
-            camera.position.y = CAMERA_Y;
-            controls.target.y = 0;
+            // Keep orbit target at current focusTargetY
+            controls.target.y = focusTargetY;
+            // Camera Y stays offset above the target
+            camera.position.y = focusTargetY + 150;
             origRender(s || scene, c || camera);
         };
 
@@ -374,11 +412,19 @@
 
             showInfoPanel(node);
 
-            // Zoom to node — keep Y locked
-            const dist = 250;
+            // Save current state before focusing
+            previousTargetY = focusTargetY;
+            const camPos = camera.position;
+            previousCamDist = Math.sqrt(camPos.x * camPos.x + camPos.z * camPos.z);
+
+            // Move focus to the node — it becomes the new orbit center
+            const nodeY = node.y || 0;
+            focusTargetY = nodeY;
+
+            const dist = 200;
             Graph.cameraPosition(
-                { x: (node.x || 0) + dist, y: CAMERA_Y, z: (node.z || 0) + dist },
-                { x: node.x || 0, y: 0, z: node.z || 0 },
+                { x: (node.x || 0) + dist, y: nodeY + 150, z: (node.z || 0) + dist },
+                { x: node.x || 0, y: nodeY, z: node.z || 0 },
                 1000
             );
         }
@@ -392,6 +438,14 @@
                  .linkWidth(Graph.linkWidth())
                  .linkVisibility(Graph.linkVisibility());
             document.getElementById('infoPanel').classList.remove('active');
+
+            // Restore previous orbit center
+            focusTargetY = previousTargetY;
+            Graph.cameraPosition(
+                { x: 0, y: previousTargetY + 150, z: previousCamDist },
+                { x: 0, y: previousTargetY, z: 0 },
+                1000
+            );
         }
 
         function showInfoPanel(node) {
@@ -445,7 +499,9 @@
         // ============================================================
         document.getElementById('btnReset').addEventListener('click', () => {
             clearFocus();
-            Graph.cameraPosition({ x: 0, y: CAMERA_Y, z: 600 }, { x: 0, y: 0, z: 0 }, 1000);
+            focusTargetY = 0;
+            previousTargetY = 0;
+            Graph.cameraPosition({ x: 0, y: 150, z: 600 }, { x: 0, y: 0, z: 0 }, 1000);
         });
         document.getElementById('btnClear').addEventListener('click', clearFocus);
 
