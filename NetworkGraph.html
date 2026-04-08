@@ -26,7 +26,7 @@
 
         #canvas {
             position: absolute;
-            width: 8000px;
+            width: 12000px;
             height: 8000px;
             transform-origin: 0 0;
         }
@@ -357,7 +357,7 @@
         // ============================================================
         // Layout: compute radial positions
         // ============================================================
-        const DOMAINS = ['Math', 'Science', 'Technology', 'Language', 'Social', 'Bible', 'LifeSkills', 'Physical', 'Creative'];
+        const DOMAINS = ['Bible', 'LifeSkills', 'Social', 'Language', 'Math', 'Science', 'Technology', 'Creative', 'Physical'];
         const DOMAIN_COLORS = {
             'Math': '#ffd700', 'Science': '#20b2aa', 'Technology': '#7b68ee',
             'Language': '#87ceeb', 'Social': '#ffa07a', 'Bible': '#c9a96e',
@@ -368,32 +368,37 @@
             'Social': '🌍', 'Bible': '✝️', 'LifeSkills': '🧭', 'Physical': '🏃', 'Creative': '🎨'
         };
 
-        const CX = 4000, CY = 4000;
-        const SECTOR = (2 * Math.PI) / DOMAINS.length;
+        const CW = 12000, CH = 8000;
+        const STAGE_Y = { 'Foundations': 7200, 'Fluency': 5600, 'Application': 4000, 'Integration': 2400, 'Mastery': 900 };
+        const DOMAIN_SPACING = CW / (DOMAINS.length + 1);
+        const DOMAIN_X = {};
+        DOMAINS.forEach((d, i) => { DOMAIN_X[d] = DOMAIN_SPACING * (i + 1); });
+        const DOMAIN_WIDTH = DOMAIN_SPACING * 0.85;
 
-        function computeRadialLayout(nodes, edges) {
-            // Build prerequisite graph for depth computation
-            const outgoing = {};
-            const incoming = {};
+        function computeLayout(nodes, edges) {
+            const nodeMap = {};
+            nodes.forEach(n => { nodeMap[n.id] = n; });
+
+            // Build prerequisite adjacency
+            const parentOf = {};  // child → [parents]
+            const childOf = {};   // parent → [children]
             for (const e of edges) {
                 if (e.edge_type !== 'prerequisite_hard') continue;
-                if (!outgoing[e.from_node]) outgoing[e.from_node] = [];
-                outgoing[e.from_node].push(e.to_node);
-                if (!incoming[e.to_node]) incoming[e.to_node] = [];
-                incoming[e.to_node].push(e.from_node);
+                if (!nodeMap[e.from_node] || !nodeMap[e.to_node]) continue;
+                (childOf[e.from_node] = childOf[e.from_node] || []).push(e.to_node);
+                (parentOf[e.to_node] = parentOf[e.to_node] || []).push(e.from_node);
             }
 
             // BFS depth
             const depth = {};
-            const roots = nodes.filter(n => !incoming[n.id] || incoming[n.id].length === 0);
+            const roots = nodes.filter(n => !parentOf[n.id] || parentOf[n.id].length === 0);
             const queue = roots.map(r => { depth[r.id] = 0; return r.id; });
             const visited = new Set();
-
             while (queue.length > 0) {
                 const cur = queue.shift();
                 if (visited.has(cur)) continue;
                 visited.add(cur);
-                for (const child of (outgoing[cur] || [])) {
+                for (const child of (childOf[cur] || [])) {
                     const nd = (depth[cur] || 0) + 1;
                     if (depth[child] === undefined || nd > depth[child]) {
                         depth[child] = nd;
@@ -407,38 +412,85 @@
             const byDomain = {};
             nodes.forEach(n => { (byDomain[n.domain] = byDomain[n.domain] || []).push(n); });
 
-            // Position each domain
+            // PASS 1: Initial placement in domain columns
             const positions = {};
-            for (let i = 0; i < DOMAINS.length; i++) {
-                const domain = DOMAINS[i];
-                const dns = byDomain[domain] || [];
-                if (dns.length === 0) continue;
+            for (const [domain, dns] of Object.entries(byDomain)) {
+                const cx = DOMAIN_X[domain] || CW / 2;
 
-                const baseAngle = i * SECTOR - Math.PI / 2;
-                const maxD = Math.max(...dns.map(n => depth[n.id] || 0), 1);
-                const spread = SECTOR * 0.7;
+                // Group by stage
+                const byStage = {};
+                dns.forEach(n => { (byStage[n.stage || 'Application'] = byStage[n.stage || 'Application'] || []).push(n); });
 
-                const spine = dns.filter(n => n.path_type === 'Spine').sort((a,b) => (depth[a.id]||0) - (depth[b.id]||0));
-                const branch = dns.filter(n => n.path_type === 'Branch').sort((a,b) => (depth[a.id]||0) - (depth[b.id]||0));
-                const leaf = dns.filter(n => n.path_type === 'Leaf');
+                for (const [stage, stageNodes] of Object.entries(byStage)) {
+                    const baseY = STAGE_Y[stage] || 4000;
+                    const spine = stageNodes.filter(n => n.path_type === 'Spine');
+                    const branch = stageNodes.filter(n => n.path_type === 'Branch');
+                    const leaf = stageNodes.filter(n => n.path_type === 'Leaf');
 
-                spine.forEach((n, j) => {
-                    const r = 400 + ((depth[n.id]||0) / maxD) * 2600;
-                    const off = spine.length > 1 ? (j/(spine.length-1) - 0.5) * spread * 0.3 : 0;
-                    positions[n.id] = { x: CX + Math.cos(baseAngle + off) * r, y: CY + Math.sin(baseAngle + off) * r };
-                });
+                    spine.forEach((n, i) => {
+                        const xOff = spine.length > 1 ? (i/(spine.length-1) - 0.5) * DOMAIN_WIDTH * 0.5 : 0;
+                        const yJit = (depth[n.id] || 0) * 30 + (i % 3 - 1) * 40;
+                        positions[n.id] = { x: cx + xOff, y: baseY - yJit };
+                    });
 
-                branch.forEach((n, j) => {
-                    const r = 400 + ((depth[n.id]||0) / maxD) * 2600;
-                    const side = j % 2 === 0 ? 1 : -1;
-                    const off = (spread * 0.3 + Math.floor(j/2) * spread * 0.15) * side;
-                    positions[n.id] = { x: CX + Math.cos(baseAngle + off) * r, y: CY + Math.sin(baseAngle + off) * r };
-                });
+                    branch.forEach((n, i) => {
+                        const side = i % 2 === 0 ? 1 : -1;
+                        const xOff = (DOMAIN_WIDTH * 0.3 + Math.floor(i/2) * 60) * side;
+                        const yJit = (depth[n.id] || 0) * 25 + (i % 2) * 50;
+                        positions[n.id] = { x: cx + xOff, y: baseY - yJit };
+                    });
 
-                leaf.forEach((n, j) => {
-                    const off = leaf.length > 1 ? (j/(leaf.length-1) - 0.5) * spread * 0.3 : 0;
-                    positions[n.id] = { x: CX + Math.cos(baseAngle + off) * 3200, y: CY + Math.sin(baseAngle + off) * 3200 };
-                });
+                    leaf.forEach((n, i) => {
+                        const xOff = leaf.length > 1 ? (i/(leaf.length-1) - 0.5) * DOMAIN_WIDTH * 0.4 : 0;
+                        positions[n.id] = { x: cx + xOff, y: STAGE_Y['Mastery'] - 100 - i * 40 };
+                    });
+                }
+            }
+
+            // PASS 2: Average X from parents (multi-parent nodes drift between supports)
+            for (let iter = 0; iter < 5; iter++) {
+                let moved = 0;
+                for (const node of nodes) {
+                    const pars = parentOf[node.id] || [];
+                    if (pars.length === 0) continue;
+                    let sumX = 0, count = 0;
+                    for (const pid of pars) {
+                        if (positions[pid]) { sumX += positions[pid].x; count++; }
+                    }
+                    if (count === 0) continue;
+                    const avgX = sumX / count;
+                    const cur = positions[node.id];
+                    if (!cur) continue;
+                    const strength = pars.length > 1 ? 0.6 : 0.3;
+                    const newX = cur.x * (1 - strength) + avgX * strength;
+                    if (Math.abs(cur.x - newX) > 5) moved++;
+                    cur.x = newX;
+                }
+                if (moved === 0) break;
+            }
+
+            // PASS 3: De-overlap
+            const ids = Object.keys(positions);
+            for (let iter = 0; iter < 3; iter++) {
+                for (let i = 0; i < ids.length; i++) {
+                    for (let j = i+1; j < ids.length; j++) {
+                        const a = positions[ids[i]], b = positions[ids[j]];
+                        const dx = b.x - a.x, dy = b.y - a.y;
+                        const dist = Math.sqrt(dx*dx + dy*dy);
+                        if (dist < 50 && dist > 0) {
+                            const push = (50 - dist) / 2;
+                            const nx = dx/dist, ny = dy/dist;
+                            a.x -= nx*push; a.y -= ny*push;
+                            b.x += nx*push; b.y += ny*push;
+                        }
+                    }
+                }
+            }
+
+            // Round
+            for (const id of ids) {
+                positions[id].x = Math.round(positions[id].x);
+                positions[id].y = Math.round(positions[id].y);
             }
 
             return positions;
@@ -451,39 +503,35 @@
             canvas.innerHTML = '';
 
             // Stars
-            for (let i = 0; i < 400; i++) {
+            for (let i = 0; i < 500; i++) {
                 const star = document.createElement('div');
                 star.className = 'star';
                 const size = Math.random() * 2 + 0.5;
-                star.style.cssText = `left:${Math.random()*8000}px;top:${Math.random()*8000}px;width:${size}px;height:${size}px;opacity:${Math.random()*0.5+0.2}`;
+                star.style.cssText = `left:${Math.random()*CW}px;top:${Math.random()*CH}px;width:${size}px;height:${size}px;opacity:${Math.random()*0.5+0.2}`;
                 canvas.appendChild(star);
             }
 
-            // Stage rings
-            [600, 1200, 1800, 2400, 3000].forEach((r, i) => {
-                const ring = document.createElement('div');
-                ring.className = 'stage-ring';
-                ring.style.cssText = `left:${CX-r}px;top:${CY-r}px;width:${r*2}px;height:${r*2}px;`;
-                canvas.appendChild(ring);
+            // Horizontal stage lines (Foundations at bottom → Mastery at top)
+            Object.entries(STAGE_Y).forEach(([stage, y]) => {
+                const line = document.createElement('div');
+                line.className = 'stage-ring';
+                line.style.cssText = `left:0;top:${y}px;width:${CW}px;height:0;border-radius:0;border-top:1px solid rgba(212,175,55,0.08);`;
+                canvas.appendChild(line);
 
-                const stages = ['Foundations', 'Fluency', 'Application', 'Integration', 'Mastery'];
                 const lbl = document.createElement('div');
                 lbl.className = 'stage-ring-label';
-                lbl.textContent = stages[i];
-                lbl.style.cssText = `left:${CX+r+10}px;top:${CY-8}px;`;
+                lbl.textContent = stage;
+                lbl.style.cssText = `left:20px;top:${y - 20}px;`;
                 canvas.appendChild(lbl);
             });
 
-            // Domain labels
-            for (let i = 0; i < DOMAINS.length; i++) {
-                const d = DOMAINS[i];
-                const angle = i * SECTOR - Math.PI / 2;
-                const r = 3400;
+            // Domain labels at the bottom of each column
+            for (const d of DOMAINS) {
                 const lbl = document.createElement('div');
                 lbl.className = 'domain-label';
                 lbl.dataset.domain = d;
                 lbl.textContent = `${DOMAIN_EMOJI[d] || ''} ${d}`;
-                lbl.style.cssText = `left:${CX + Math.cos(angle)*r - 60}px;top:${CY + Math.sin(angle)*r - 15}px;border-color:${DOMAIN_COLORS[d]};color:${DOMAIN_COLORS[d]};`;
+                lbl.style.cssText = `left:${DOMAIN_X[d] - 60}px;top:${CH - 120}px;border-color:${DOMAIN_COLORS[d]};color:${DOMAIN_COLORS[d]};`;
                 canvas.appendChild(lbl);
             }
 
@@ -541,6 +589,14 @@
 
             document.getElementById('statsLabel').textContent =
                 `${data.nodes.length} nodes · ${data.edges.length} edges · ${DOMAINS.length} domains`;
+
+            // Draw light vertical separators between domains
+            for (let i = 1; i < DOMAINS.length; i++) {
+                const x = (DOMAIN_X[DOMAINS[i-1]] + DOMAIN_X[DOMAINS[i]]) / 2;
+                const sep = document.createElement('div');
+                sep.style.cssText = `position:absolute;left:${x}px;top:0;width:0;height:${CH}px;border-left:1px solid rgba(255,255,255,0.03);pointer-events:none;`;
+                canvas.appendChild(sep);
+            }
         }
 
         // ============================================================
@@ -552,10 +608,10 @@
 
         function centerView() {
             const vw = viewport.clientWidth;
-            const vh = viewport.clientHeight - 50; // minus controls bar
-            scale = Math.min(vw / 8000, vh / 8000) * 0.9;
-            panX = (vw - 8000 * scale) / 2;
-            panY = (vh - 8000 * scale) / 2 + 50;
+            const vh = viewport.clientHeight - 50;
+            scale = Math.min(vw / CW, vh / CH) * 0.9;
+            panX = (vw - CW * scale) / 2;
+            panY = (vh - CH * scale) / 2 + 50;
             updateTransform();
         }
 
@@ -769,7 +825,7 @@
             return;
         }
 
-        const positions = computeRadialLayout(graphData.nodes, graphData.edges);
+        const positions = computeLayout(graphData.nodes, graphData.edges);
         render(graphData, positions);
         centerView();
 
