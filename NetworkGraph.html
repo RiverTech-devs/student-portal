@@ -643,6 +643,8 @@
                 gNodes.forEach(n => { n.__visible = activeDomains.has(n.domain); });
                 Graph.nodeVisibility(n => activeDomains.has(n.domain))
                      .linkVisibility(Graph.linkVisibility());
+                // Apply layout mode (flat for single domain, 3D ring for multiple)
+                applyLayoutMode();
                 // If a node is focused, recompute its highlights with new domain filter
                 if (focusedNode) {
                     applyFocusHighlights(focusedNode);
@@ -650,6 +652,82 @@
             });
             pillsContainer.appendChild(pill);
         });
+
+        // ============================================================
+        // Layout mode: 3D ring (multi-domain) vs flat plane (single domain)
+        // ============================================================
+        function applyLayoutMode() {
+            if (activeDomains.size === 1) {
+                applyFlatMode();
+            } else {
+                apply3DMode();
+            }
+        }
+
+        function applyFlatMode() {
+            const domain = [...activeDomains][0];
+            const domainNodes = gNodes.filter(n => n.domain === domain);
+
+            // Group nodes by depth, then sort spine first
+            const byDepth = {};
+            domainNodes.forEach(n => {
+                const d = n.depth || 0;
+                (byDepth[d] = byDepth[d] || []).push(n);
+            });
+
+            // Spread nodes horizontally at each depth level
+            // Spine nodes centered, branches/leaves offset to sides
+            for (const [depthStr, nodes] of Object.entries(byDepth)) {
+                // Sort: Spine first, then Branch, then Leaf
+                nodes.sort((a, b) => {
+                    const order = { 'Spine': 0, 'Branch': 1, 'Leaf': 2 };
+                    return (order[a.pathType] || 0) - (order[b.pathType] || 0);
+                });
+
+                const count = nodes.length;
+                const spread = Math.max(400, count * 40);
+                nodes.forEach((n, i) => {
+                    const xPos = count > 1 ? (i / (count - 1) - 0.5) * spread : 0;
+                    n.fx = xPos;
+                    n.fz = 0; // Flatten to Z=0 plane
+                });
+            }
+
+            // Reheat simulation to apply pinned positions
+            Graph.d3ReheatSimulation();
+
+            // Move camera to look at flat plane straight on
+            setTimeout(() => {
+                Graph.cameraPosition(
+                    { x: 0, y: 50, z: 800 },
+                    { x: 0, y: 50, z: 0 },
+                    1000
+                );
+            }, 100);
+        }
+
+        function apply3DMode() {
+            // Unpin X and Z so force sim can spread nodes in 3D again
+            gNodes.forEach(n => {
+                const angle = domainAngle[n.domain] || 0;
+                const radius = 120 + Math.random() * 60;
+                n.fx = undefined;
+                n.fz = undefined;
+                // Reset to ring positions
+                n.x = Math.cos(angle) * radius + (Math.random() - 0.5) * 40;
+                n.z = Math.sin(angle) * radius + (Math.random() - 0.5) * 40;
+            });
+            Graph.d3ReheatSimulation();
+
+            // Restore default 3D camera
+            setTimeout(() => {
+                Graph.cameraPosition(
+                    { x: 0, y: 100, z: 700 },
+                    { x: 0, y: 50, z: 0 },
+                    1000
+                );
+            }, 100);
+        }
 
         // Resize
         window.addEventListener('resize', () => {
