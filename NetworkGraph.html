@@ -752,43 +752,52 @@
             const domain = [...activeDomains][0];
             const domainNodes = gNodes.filter(n => n.domain === domain);
 
-            // Group nodes by depth, then sort spine first
-            const byDepth = {};
-            domainNodes.forEach(n => {
-                const d = n.depth || 0;
-                (byDepth[d] = byDepth[d] || []).push(n);
+            // Identify the main spine: nodes with path_type === 'Spine'
+            // Branches and leaves go off to the side
+            const spineNodes = domainNodes.filter(n => n.pathType === 'Spine');
+            const branchNodes = domainNodes.filter(n => n.pathType === 'Branch');
+            const leafNodes = domainNodes.filter(n => n.pathType === 'Leaf');
+
+            // Pin spine to center column (X = 0), Y is already set by depth
+            spineNodes.forEach(n => {
+                n.fx = 0;
+                n.fz = 0;
             });
 
-            // Spread nodes horizontally at each depth level
-            // Spine nodes centered, branches/leaves offset to sides
-            for (const [depthStr, nodes] of Object.entries(byDepth)) {
-                // Sort: Spine first, then Branch, then Leaf
-                nodes.sort((a, b) => {
-                    const order = { 'Spine': 0, 'Branch': 1, 'Leaf': 2 };
-                    return (order[a.pathType] || 0) - (order[b.pathType] || 0);
-                });
+            // Group branches/leaves by depth so we can offset them at their level
+            const sideByDepth = {}; // depth → [{node, side}]
+            const allSide = [...branchNodes, ...leafNodes];
+            // Sort by depth, then by id for stable layout
+            allSide.sort((a, b) => (a.depth || 0) - (b.depth || 0));
 
-                const count = nodes.length;
-                const spread = Math.max(400, count * 40);
-                nodes.forEach((n, i) => {
-                    const xPos = count > 1 ? (i / (count - 1) - 0.5) * spread : 0;
-                    n.fx = xPos;
-                    n.fz = 0; // Flatten to Z=0 plane
-                });
-            }
+            // Track left/right alternation per depth so branches don't stack
+            const depthCounter = {};
+            allSide.forEach(n => {
+                const d = n.depth || 0;
+                if (!depthCounter[d]) depthCounter[d] = { left: 0, right: 0 };
 
-            // In flat mode, the single domain's nodes are centered at X=0, Z=0
-            // (we pinned them that way), so override orbit center to origin
+                // Alternate sides
+                const useRight = (depthCounter[d].right <= depthCounter[d].left);
+                const slot = useRight ? depthCounter[d].right++ : depthCounter[d].left++;
+                const sideSign = useRight ? 1 : -1;
+
+                // Distance from spine increases with slot number
+                const xPos = sideSign * (200 + slot * 80);
+                n.fx = xPos;
+                n.fz = 0;
+            });
+
+            // In flat mode, nodes are centered at X=0, Z=0
             focusTargetX = 0;
             focusTargetZ = 0;
 
             // Reheat simulation to apply pinned positions
             Graph.d3ReheatSimulation();
 
-            // Move camera to look at flat plane straight on
+            // Camera looks at flat plane straight on, centered on spine
             setTimeout(() => {
                 Graph.cameraPosition(
-                    { x: 0, y: 50, z: 800 },
+                    { x: 0, y: 50, z: 900 },
                     { x: 0, y: 50, z: 0 },
                     1000
                 );
