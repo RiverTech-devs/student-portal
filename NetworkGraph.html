@@ -336,15 +336,16 @@
             })
             .linkOpacity(1.0)
             .linkVisibility(link => {
+                // Domain filter — both endpoints must be in active domains
+                const srcDomain = typeof link.source === 'object' ? link.source.domain : null;
+                const tgtDomain = typeof link.target === 'object' ? link.target.domain : null;
+                if (srcDomain && !activeDomains.has(srcDomain)) return false;
+                if (tgtDomain && !activeDomains.has(tgtDomain)) return false;
+
                 // Cross-domain and leads_to edges hidden by default — only show on toggle or focus
                 if (link._isCross || link.type === 'leads_to') {
                     if (!showCrossLinks && !link._highlight) return false;
                 }
-                // Domain filter
-                const srcDomain = typeof link.source === 'object' ? link.source.domain : null;
-                const tgtDomain = typeof link.target === 'object' ? link.target.domain : null;
-                if (!srcDomain && !tgtDomain) return true;
-                if (srcDomain && !activeDomains.has(srcDomain) && tgtDomain && !activeDomains.has(tgtDomain)) return false;
                 return true;
             })
 
@@ -428,39 +429,72 @@
         // ============================================================
         // Node click → focus network
         // ============================================================
-        function onNodeClick(node) {
-            if (focusedNode === node.id) { clearFocus(); return; }
-            focusedNode = node.id;
+        // Lookup map for fast node access
+        const gNodeMap = {};
+        gNodes.forEach(n => { gNodeMap[n.id] = n; });
 
-            // Find connected nodes
-            const connected = new Set([node.id]);
+        // Recompute the highlight set for the currently focused node, respecting activeDomains
+        function computeFocusHighlights(nodeId) {
+            const node = gNodeMap[nodeId];
+            if (!node) return { connected: new Set() };
 
+            const connected = new Set([nodeId]);
+            const isAllowed = (id) => {
+                const n = gNodeMap[id];
+                return n && activeDomains.has(n.domain);
+            };
+
+            // Trace prerequisites (upstream) — only through active domains
             function traceUp(id, vis = new Set()) {
                 if (vis.has(id)) return; vis.add(id);
                 gLinks.forEach(l => {
                     const src = typeof l.source === 'object' ? l.source.id : l.source;
                     const tgt = typeof l.target === 'object' ? l.target.id : l.target;
-                    if (tgt === id) { connected.add(src); if (!l._isCross) traceUp(src, vis); }
+                    if (tgt !== id) return;
+                    // Skip if source domain is filtered out
+                    if (!isAllowed(src)) return;
+                    if (l._isCross) return; // cross-domain handled separately
+                    connected.add(src);
+                    traceUp(src, vis);
                 });
             }
+            // Trace downstream — only through active domains
             function traceDown(id, vis = new Set()) {
                 if (vis.has(id)) return; vis.add(id);
                 gLinks.forEach(l => {
                     const src = typeof l.source === 'object' ? l.source.id : l.source;
                     const tgt = typeof l.target === 'object' ? l.target.id : l.target;
-                    if (src === id) { connected.add(tgt); if (!l._isCross) traceDown(tgt, vis); }
+                    if (src !== id) return;
+                    if (!isAllowed(tgt)) return;
+                    if (l._isCross) return;
+                    connected.add(tgt);
+                    traceDown(tgt, vis);
                 });
             }
-            // Cross-domain: direct neighbors
+            traceUp(nodeId);
+            traceDown(nodeId);
+
+            // Cross-domain: direct neighbors of the focused node, only if target domain is active
             gLinks.forEach(l => {
+                if (!l._isCross) return;
                 const src = typeof l.source === 'object' ? l.source.id : l.source;
                 const tgt = typeof l.target === 'object' ? l.target.id : l.target;
-                if (l._isCross && (src === node.id || tgt === node.id)) {
-                    connected.add(src); connected.add(tgt);
+                if (src === nodeId && isAllowed(tgt)) {
+                    connected.add(tgt);
+                    // Trace prerequisites of cross-linked node within its own domain
+                    traceUp(tgt);
+                }
+                if (tgt === nodeId && isAllowed(src)) {
+                    connected.add(src);
+                    traceUp(src);
                 }
             });
-            traceUp(node.id);
-            traceDown(node.id);
+
+            return { connected };
+        }
+
+        function applyFocusHighlights(nodeId) {
+            const { connected } = computeFocusHighlights(nodeId);
 
             // Mark highlights
             gNodes.forEach(n => { n._highlight = connected.has(n.id); });
@@ -470,11 +504,18 @@
                 l._highlight = connected.has(src) && connected.has(tgt);
             });
 
-            // Re-render colors, widths, and visibility (show cross-links for focused node)
+            // Re-render colors, widths, and visibility
             Graph.nodeColor(Graph.nodeColor())
                  .linkColor(Graph.linkColor())
                  .linkWidth(Graph.linkWidth())
                  .linkVisibility(Graph.linkVisibility());
+        }
+
+        function onNodeClick(node) {
+            if (focusedNode === node.id) { clearFocus(); return; }
+            focusedNode = node.id;
+
+            applyFocusHighlights(node.id);
 
             showInfoPanel(node);
 
@@ -602,6 +643,10 @@
                 gNodes.forEach(n => { n.__visible = activeDomains.has(n.domain); });
                 Graph.nodeVisibility(n => activeDomains.has(n.domain))
                      .linkVisibility(Graph.linkVisibility());
+                // If a node is focused, recompute its highlights with new domain filter
+                if (focusedNode) {
+                    applyFocusHighlights(focusedNode);
+                }
             });
             pillsContainer.appendChild(pill);
         });
