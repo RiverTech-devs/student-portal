@@ -122,6 +122,8 @@
         <button class="ctrl-btn" id="btnReset">⌂ Reset</button>
         <button class="ctrl-btn" id="btnNormalize">⬆ Normalize</button>
         <button class="ctrl-btn" id="btnClear">Clear Focus</button>
+        <button class="ctrl-btn" id="btnSaveLayout">💾 Save Layout</button>
+        <button class="ctrl-btn" id="btnLoadLayout">📂 Load Layout</button>
         <button class="ctrl-btn" id="btnToggleLinks">🔗 Cross-Links</button>
         <button class="ctrl-btn" id="btnRotate">🔄 Auto-Rotate</button>
         <div class="domain-pills" id="domainPills"></div>
@@ -143,6 +145,20 @@
         <button class="close-btn" id="infoPanelClose">✕</button>
         <h3 id="infoPanelTitle"></h3>
         <div id="infoPanelContent"></div>
+    </div>
+
+    <!-- Layout JSON modal -->
+    <div id="layoutModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:500;align-items:center;justify-content:center;">
+        <div style="background:#0a0a1a;border:1px solid #d4af37;border-radius:10px;padding:20px;max-width:600px;width:90%;max-height:80vh;display:flex;flex-direction:column;">
+            <h3 id="layoutModalTitle" style="margin:0 0 10px;color:#ffd700;">Layout JSON</h3>
+            <p id="layoutModalDesc" style="margin:0 0 10px;font-size:12px;color:#888;">Copy this and send it to update the saved layout, or paste a layout JSON to load it.</p>
+            <textarea id="layoutModalText" style="flex:1;min-height:300px;background:#000;color:#d4af37;border:1px solid #444;padding:10px;font-family:monospace;font-size:11px;border-radius:5px;"></textarea>
+            <div style="margin-top:10px;display:flex;gap:8px;">
+                <button class="ctrl-btn" id="layoutModalCopy">📋 Copy</button>
+                <button class="ctrl-btn" id="layoutModalApply">✓ Apply</button>
+                <button class="ctrl-btn" id="layoutModalClose">✕ Close</button>
+            </div>
+        </div>
     </div>
 
     <div id="graph-container"></div>
@@ -395,6 +411,14 @@
             // Interaction
             .onNodeClick(node => onNodeClick(node))
             .onBackgroundClick(() => clearFocus())
+            .enableNodeDrag(true)
+            .onNodeDragEnd(node => {
+                // Pin the node where the user dropped it
+                node.fx = node.x;
+                node.fy = node.y;
+                node.fz = node.z;
+                console.log(`Pinned ${node.id} at (${Math.round(node.x)}, ${Math.round(node.y)}, ${Math.round(node.z)})`);
+            })
 
             .width(window.innerWidth)
             .height(window.innerHeight);
@@ -671,6 +695,104 @@
         });
         document.getElementById('btnNormalize').addEventListener('click', normalizeCamera);
         document.getElementById('btnClear').addEventListener('click', clearFocus);
+
+        // ============================================================
+        // Save / Load Layout
+        // ============================================================
+        function saveLayout() {
+            // Determine which domains are active — save just those
+            const domains = [...activeDomains];
+            const positions = {};
+
+            for (const node of gNodes) {
+                if (!activeDomains.has(node.domain)) continue;
+                positions[node.id] = {
+                    x: Math.round(node.x || 0),
+                    y: Math.round(node.y || 0),
+                    z: Math.round(node.z || 0)
+                };
+            }
+
+            const layout = {
+                domains: domains,
+                positions: positions,
+                count: Object.keys(positions).length,
+                savedAt: new Date().toISOString()
+            };
+
+            const json = JSON.stringify(layout, null, 2);
+            const modal = document.getElementById('layoutModal');
+            const title = document.getElementById('layoutModalTitle');
+            const desc = document.getElementById('layoutModalDesc');
+            const text = document.getElementById('layoutModalText');
+
+            title.textContent = `Saved Layout: ${domains.join(', ')}`;
+            desc.textContent = `${layout.count} nodes positioned. Copy this JSON and send it to lock these positions.`;
+            text.value = json;
+            modal.style.display = 'flex';
+        }
+
+        function loadLayoutFromJson(json) {
+            try {
+                const layout = JSON.parse(json);
+                if (!layout.positions) throw new Error('Missing positions field');
+
+                let applied = 0;
+                for (const [nodeId, pos] of Object.entries(layout.positions)) {
+                    const node = gNodeMap[nodeId];
+                    if (!node) continue;
+                    node.fx = pos.x;
+                    node.fy = pos.y;
+                    node.fz = pos.z;
+                    node.x = pos.x;
+                    node.y = pos.y;
+                    node.z = pos.z;
+                    applied++;
+                }
+
+                Graph.d3ReheatSimulation();
+                if (typeof Graph.refresh === 'function') Graph.refresh();
+                console.log(`Applied ${applied} positions from layout`);
+                return applied;
+            } catch (e) {
+                alert('Invalid layout JSON: ' + e.message);
+                return 0;
+            }
+        }
+
+        document.getElementById('btnSaveLayout').addEventListener('click', saveLayout);
+        document.getElementById('btnLoadLayout').addEventListener('click', () => {
+            const modal = document.getElementById('layoutModal');
+            const title = document.getElementById('layoutModalTitle');
+            const desc = document.getElementById('layoutModalDesc');
+            const text = document.getElementById('layoutModalText');
+            title.textContent = 'Load Layout';
+            desc.textContent = 'Paste layout JSON below and click Apply.';
+            text.value = '';
+            modal.style.display = 'flex';
+        });
+
+        document.getElementById('layoutModalCopy').addEventListener('click', () => {
+            const text = document.getElementById('layoutModalText');
+            text.select();
+            document.execCommand('copy');
+            const btn = document.getElementById('layoutModalCopy');
+            btn.textContent = '✓ Copied';
+            setTimeout(() => { btn.textContent = '📋 Copy'; }, 1500);
+        });
+
+        document.getElementById('layoutModalApply').addEventListener('click', () => {
+            const json = document.getElementById('layoutModalText').value.trim();
+            if (!json) return;
+            const count = loadLayoutFromJson(json);
+            if (count > 0) {
+                document.getElementById('layoutModal').style.display = 'none';
+            }
+        });
+
+        document.getElementById('layoutModalClose').addEventListener('click', () => {
+            document.getElementById('layoutModal').style.display = 'none';
+        });
 
         document.getElementById('btnToggleLinks').addEventListener('click', function() {
             showCrossLinks = !showCrossLinks;
