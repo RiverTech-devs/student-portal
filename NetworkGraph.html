@@ -226,7 +226,8 @@
         // Prepare graph data for 3d-force-graph
         // ============================================================
 
-        // Compute depth of each node via BFS from roots
+        // Compute LONGEST-PATH depth: every node's depth = max(parent depths) + 1
+        // This ensures every node sits at least one step beyond its deepest prerequisite.
         const parentOf = {};
         const childOf = {};
         for (const e of rawData.edges) {
@@ -235,23 +236,56 @@
             (parentOf[e.to_node] = parentOf[e.to_node] || []).push(e.from_node);
         }
 
-        const nodeDepth = {};
-        const roots = rawData.nodes.filter(n => !parentOf[n.id] || parentOf[n.id].length === 0);
-        const bfsQueue = roots.map(r => { nodeDepth[r.id] = 0; return r.id; });
-        const bfsVisited = new Set();
-        while (bfsQueue.length > 0) {
-            const cur = bfsQueue.shift();
-            if (bfsVisited.has(cur)) continue;
-            bfsVisited.add(cur);
+        // Topological sort using Kahn's algorithm
+        const nodeIds = rawData.nodes.map(n => n.id);
+        const inDegree = {};
+        nodeIds.forEach(id => { inDegree[id] = (parentOf[id] || []).length; });
+
+        const topoQueue = nodeIds.filter(id => inDegree[id] === 0);
+        const topoOrder = [];
+        const tempIn = { ...inDegree };
+        const queueCopy = [...topoQueue];
+
+        while (queueCopy.length > 0) {
+            const cur = queueCopy.shift();
+            topoOrder.push(cur);
             for (const child of (childOf[cur] || [])) {
-                const nd = (nodeDepth[cur] || 0) + 1;
-                if (nodeDepth[child] === undefined || nd > nodeDepth[child]) {
-                    nodeDepth[child] = nd;
-                    if (!bfsVisited.has(child)) bfsQueue.push(child);
-                }
+                tempIn[child]--;
+                if (tempIn[child] === 0) queueCopy.push(child);
             }
         }
+
+        // Detect cycles (nodes not in topo order)
+        if (topoOrder.length < nodeIds.length) {
+            console.warn(`Cycle detected: ${nodeIds.length - topoOrder.length} nodes unreachable in topo sort`);
+            // Add remaining nodes at the end
+            const inTopo = new Set(topoOrder);
+            for (const id of nodeIds) {
+                if (!inTopo.has(id)) topoOrder.push(id);
+            }
+        }
+
+        // Compute depth in topological order — guaranteed all parents processed first
+        const nodeDepth = {};
+        for (const id of topoOrder) {
+            const parents = parentOf[id] || [];
+            if (parents.length === 0) {
+                nodeDepth[id] = 0;
+            } else {
+                // Max parent depth + 1 — node sits beyond its deepest prerequisite
+                let maxParentDepth = -1;
+                for (const p of parents) {
+                    if (nodeDepth[p] !== undefined && nodeDepth[p] > maxParentDepth) {
+                        maxParentDepth = nodeDepth[p];
+                    }
+                }
+                nodeDepth[id] = maxParentDepth + 1;
+            }
+        }
+        // Safety: any nodes still missing depth get 0
         rawData.nodes.forEach(n => { if (nodeDepth[n.id] === undefined) nodeDepth[n.id] = 0; });
+
+        const roots = rawData.nodes.filter(n => nodeDepth[n.id] === 0);
 
         const maxDepth = Math.max(...Object.values(nodeDepth), 1);
         console.log(`Depth computed: max=${maxDepth}, roots=${roots.length}`);
