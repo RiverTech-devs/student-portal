@@ -1,6 +1,6 @@
 -- Curriculum Graph Seed Data
 -- Generated from compiled master graph: 658 nodes, 1269 edges, 69 clusters
--- Generated on: 2026-04-09T16:07:48.172Z
+-- Generated on: 2026-04-09T17:09:28.512Z
 --
 -- SAFETY: This only INSERTs into the NEW curriculum_* tables.
 -- It does NOT touch skill_progress or any other existing table.
