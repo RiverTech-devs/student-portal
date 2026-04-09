@@ -368,7 +368,11 @@
 
         // State
         let focusTargetY = 0;       // Current Y of the orbit center
+        let focusTargetX = 0;       // X of orbit center (avg of active domains)
+        let focusTargetZ = 0;       // Z of orbit center (avg of active domains)
         let previousTargetY = 0;    // Saved before node focus
+        let previousTargetX = 0;
+        let previousTargetZ = 0;
         let previousCamDist = 600;  // Saved before node focus
 
         // Lock polar angle to horizontal (Y-axis orbit only)
@@ -380,6 +384,9 @@
 
         // Initial camera: looking at center of data, slightly above to see the tree growing up
         Graph.cameraPosition({ x: 0, y: 100, z: 700 }, { x: 0, y: 50, z: 0 });
+
+        // Initialize orbit center based on active domains (all by default)
+        // Note: this gets called after Graph init since it references domainAngle
 
         // Right-drag handler: slide Y focus up/down
         let isRightDragging = false;
@@ -412,9 +419,11 @@
         const origRender = renderer.render.bind(renderer);
         const scene = Graph.scene();
         renderer.render = function(s, c) {
-            // Keep orbit target at current focusTargetY
+            // Keep orbit target at current focus point
+            controls.target.x = focusTargetX;
             controls.target.y = focusTargetY;
-            // Camera Y stays above the target (allow right-drag to change focusTargetY)
+            controls.target.z = focusTargetZ;
+            // Camera Y stays above the target
             camera.position.y = focusTargetY + 100;
             origRender(s || scene, c || camera);
         };
@@ -520,18 +529,21 @@
             showInfoPanel(node);
 
             // Save current state before focusing
+            previousTargetX = focusTargetX;
             previousTargetY = focusTargetY;
+            previousTargetZ = focusTargetZ;
             const camPos = camera.position;
-            previousCamDist = Math.sqrt(camPos.x * camPos.x + camPos.z * camPos.z);
+            previousCamDist = Math.sqrt((camPos.x - focusTargetX) ** 2 + (camPos.z - focusTargetZ) ** 2);
 
             // Move focus to the node — it becomes the new orbit center
-            const nodeY = node.y || 0;
-            focusTargetY = nodeY;
+            focusTargetX = node.x || 0;
+            focusTargetY = node.y || 0;
+            focusTargetZ = node.z || 0;
 
             const dist = 200;
             Graph.cameraPosition(
-                { x: (node.x || 0) + dist, y: nodeY + 150, z: (node.z || 0) + dist },
-                { x: node.x || 0, y: nodeY, z: node.z || 0 },
+                { x: focusTargetX + dist, y: focusTargetY + 150, z: focusTargetZ + dist },
+                { x: focusTargetX, y: focusTargetY, z: focusTargetZ },
                 1000
             );
         }
@@ -547,10 +559,12 @@
             document.getElementById('infoPanel').classList.remove('active');
 
             // Restore previous orbit center
+            focusTargetX = previousTargetX;
             focusTargetY = previousTargetY;
+            focusTargetZ = previousTargetZ;
             Graph.cameraPosition(
-                { x: 0, y: previousTargetY + 150, z: previousCamDist },
-                { x: 0, y: previousTargetY, z: 0 },
+                { x: focusTargetX, y: focusTargetY + 150, z: focusTargetZ + previousCamDist },
+                { x: focusTargetX, y: focusTargetY, z: focusTargetZ },
                 1000
             );
         }
@@ -654,9 +668,32 @@
         });
 
         // ============================================================
+        // Recompute orbit center as average XZ of active domains
+        // ============================================================
+        function recomputeOrbitCenter() {
+            if (activeDomains.size === 0) {
+                focusTargetX = 0;
+                focusTargetZ = 0;
+                return;
+            }
+
+            // Average X,Z of active domain anchors on the ring
+            let sumX = 0, sumZ = 0, count = 0;
+            for (const d of activeDomains) {
+                const angle = domainAngle[d] || 0;
+                sumX += Math.cos(angle) * 200;
+                sumZ += Math.sin(angle) * 200;
+                count++;
+            }
+            focusTargetX = sumX / count;
+            focusTargetZ = sumZ / count;
+        }
+
+        // ============================================================
         // Layout mode: 3D ring (multi-domain) vs flat plane (single domain)
         // ============================================================
         function applyLayoutMode() {
+            recomputeOrbitCenter();
             if (activeDomains.size === 1) {
                 applyFlatMode();
             } else {
@@ -693,6 +730,11 @@
                 });
             }
 
+            // In flat mode, the single domain's nodes are centered at X=0, Z=0
+            // (we pinned them that way), so override orbit center to origin
+            focusTargetX = 0;
+            focusTargetZ = 0;
+
             // Reheat simulation to apply pinned positions
             Graph.d3ReheatSimulation();
 
@@ -719,11 +761,12 @@
             });
             Graph.d3ReheatSimulation();
 
-            // Restore default 3D camera
+            // Camera looks at the active-domain-average orbit center
+            const camDist = 700;
             setTimeout(() => {
                 Graph.cameraPosition(
-                    { x: 0, y: 100, z: 700 },
-                    { x: 0, y: 50, z: 0 },
+                    { x: focusTargetX, y: 100, z: focusTargetZ + camDist },
+                    { x: focusTargetX, y: 50, z: focusTargetZ },
                     1000
                 );
             }, 100);
@@ -733,6 +776,9 @@
         window.addEventListener('resize', () => {
             Graph.width(window.innerWidth).height(window.innerHeight);
         });
+
+        // Initialize orbit center (all 9 domains active = should be ~0,0)
+        recomputeOrbitCenter();
 
         console.log(`3D Network Graph: ${gNodes.length} nodes, ${gLinks.length} links`);
     })();
