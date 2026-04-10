@@ -837,15 +837,117 @@
         // Flatten button: push all visible nodes to Z=0 (the depth axis from default camera view)
         // This makes them coplanar so you can drag them around in 2D for layout purposes
         document.getElementById('btnFlatten').addEventListener('click', () => {
-            for (const node of gNodes) {
-                if (!activeDomains.has(node.domain)) continue;
-                node.z = 0;
-                node.fz = 0;
+            flattenActiveNodes();
+        });
+
+        function flattenActiveNodes() {
+            const domainNodes = gNodes.filter(n => activeDomains.has(n.domain));
+            if (domainNodes.length === 0) return;
+
+            // Build adjacency for active nodes
+            const activeIds = new Set(domainNodes.map(n => n.id));
+            const childrenOf = {};
+            const parentsOf = {};
+            for (const l of gLinks) {
+                const src = typeof l.source === 'object' ? l.source.id : l.source;
+                const tgt = typeof l.target === 'object' ? l.target.id : l.target;
+                if (!activeIds.has(src) || !activeIds.has(tgt)) continue;
+                if (l._isCross) continue;
+                (childrenOf[src] = childrenOf[src] || []).push(tgt);
+                (parentsOf[tgt] = parentsOf[tgt] || []).push(src);
             }
+
+            // Group by depth
+            const byDepth = {};
+            domainNodes.forEach(n => {
+                const d = n.depth || 0;
+                (byDepth[d] = byDepth[d] || []).push(n);
+            });
+            const depths = Object.keys(byDepth).map(Number).sort((a, b) => a - b);
+
+            // Layout: at each depth level, spread nodes horizontally
+            // Spine nodes centered, branches/leaves pushed further out
+            // Nodes try to sit above their parents (average parent X)
+            const nodeX = {}; // nodeId → assigned X
+
+            const NODE_GAP = 60; // Minimum horizontal gap between nodes at same depth
+
+            for (const d of depths) {
+                const nodes = byDepth[d];
+
+                // Sort: spine first, then try to order by parent X for visual coherence
+                nodes.sort((a, b) => {
+                    // Spine before Branch before Leaf
+                    const typeOrder = { 'Spine': 0, 'Branch': 1, 'Leaf': 2 };
+                    const ta = typeOrder[a.pathType] || 1;
+                    const tb = typeOrder[b.pathType] || 1;
+                    if (ta !== tb) return ta - tb;
+
+                    // Then by average parent X (so children sit near their parents)
+                    const avgA = getAvgParentX(a.id);
+                    const avgB = getAvgParentX(b.id);
+                    return avgA - avgB;
+                });
+
+                // Assign X positions: spread evenly, centered at 0
+                const totalWidth = (nodes.length - 1) * NODE_GAP;
+                nodes.forEach((n, i) => {
+                    let x;
+                    if (nodes.length === 1) {
+                        x = getAvgParentX(n.id); // Sit above parent
+                    } else {
+                        x = -totalWidth / 2 + i * NODE_GAP;
+                    }
+
+                    // Branches offset further from center
+                    if (n.pathType === 'Branch' || n.pathType === 'Leaf') {
+                        const parentAvg = getAvgParentX(n.id);
+                        const side = parentAvg >= 0 ? 1 : -1;
+                        x = parentAvg + side * 80;
+                    }
+
+                    nodeX[n.id] = x;
+                    n.fx = x;
+                    n.fz = 0;
+                    n.x = x;
+                    n.z = 0;
+                });
+            }
+
+            function getAvgParentX(id) {
+                const pars = parentsOf[id] || [];
+                if (pars.length === 0) return 0;
+                let sum = 0, count = 0;
+                for (const p of pars) {
+                    if (nodeX[p] !== undefined) { sum += nodeX[p]; count++; }
+                }
+                return count > 0 ? sum / count : 0;
+            }
+
+            // De-overlap pass: push apart nodes at same depth that are too close
+            for (const d of depths) {
+                const nodes = byDepth[d];
+                nodes.sort((a, b) => (a.fx || 0) - (b.fx || 0));
+                for (let i = 1; i < nodes.length; i++) {
+                    const gap = (nodes[i].fx || 0) - (nodes[i - 1].fx || 0);
+                    if (gap < NODE_GAP) {
+                        const push = (NODE_GAP - gap) / 2 + 5;
+                        nodes[i].fx = (nodes[i].fx || 0) + push;
+                        nodes[i].x = nodes[i].fx;
+                        nodes[i - 1].fx = (nodes[i - 1].fx || 0) - push;
+                        nodes[i - 1].x = nodes[i - 1].fx;
+                        nodeX[nodes[i].id] = nodes[i].fx;
+                        nodeX[nodes[i - 1].id] = nodes[i - 1].fx;
+                    }
+                }
+            }
+
+            focusTargetX = 0;
+            focusTargetZ = 0;
             Graph.d3ReheatSimulation();
             if (typeof Graph.refresh === 'function') Graph.refresh();
-            console.log('Flattened all visible nodes to Z=0');
-        });
+            console.log(`Flattened ${domainNodes.length} nodes to Z=0 with spine layout`);
+        }
 
         document.getElementById('btnSaveLayout').addEventListener('click', saveLayout);
         document.getElementById('btnLoadLayout').addEventListener('click', () => {
@@ -1167,52 +1269,8 @@
         }
 
         function applyFlatMode() {
-            const domain = [...activeDomains][0];
-            const domainNodes = gNodes.filter(n => n.domain === domain);
-
-            // Identify the main spine: nodes with path_type === 'Spine'
-            // Branches and leaves go off to the side
-            const spineNodes = domainNodes.filter(n => n.pathType === 'Spine');
-            const branchNodes = domainNodes.filter(n => n.pathType === 'Branch');
-            const leafNodes = domainNodes.filter(n => n.pathType === 'Leaf');
-
-            // Pin spine to center column (X = 0), Y is already set by depth
-            spineNodes.forEach(n => {
-                n.fx = 0;
-                n.fz = 0;
-            });
-
-            // Group branches/leaves by depth so we can offset them at their level
-            const sideByDepth = {}; // depth → [{node, side}]
-            const allSide = [...branchNodes, ...leafNodes];
-            // Sort by depth, then by id for stable layout
-            allSide.sort((a, b) => (a.depth || 0) - (b.depth || 0));
-
-            // Track left/right alternation per depth so branches don't stack
-            const depthCounter = {};
-            allSide.forEach(n => {
-                const d = n.depth || 0;
-                if (!depthCounter[d]) depthCounter[d] = { left: 0, right: 0 };
-
-                // Alternate sides
-                const useRight = (depthCounter[d].right <= depthCounter[d].left);
-                const slot = useRight ? depthCounter[d].right++ : depthCounter[d].left++;
-                const sideSign = useRight ? 1 : -1;
-
-                // Distance from spine increases with slot number
-                const xPos = sideSign * (200 + slot * 80);
-                n.fx = xPos;
-                n.fz = 0;
-            });
-
-            // In flat mode, nodes are centered at X=0, Z=0
-            focusTargetX = 0;
-            focusTargetZ = 0;
-
-            // Reheat simulation to apply pinned positions
-            Graph.d3ReheatSimulation();
-
-            // Camera looks at flat plane straight on, centered on spine
+            flattenActiveNodes();
+            // Camera looks at flat plane straight on
             setTimeout(() => {
                 Graph.cameraPosition(
                     { x: 0, y: 50, z: 900 },
