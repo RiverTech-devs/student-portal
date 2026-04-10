@@ -105,6 +105,54 @@
         .legend-item { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
         .legend-dot { width: 10px; height: 10px; border-radius: 50%; }
 
+        /* Selection rectangle */
+        #selectionBox {
+            position: fixed;
+            border: 1px solid #87ceeb;
+            background: rgba(135,206,235,0.08);
+            pointer-events: none;
+            z-index: 300;
+            display: none;
+        }
+
+        /* Move controls */
+        .move-controls {
+            position: fixed;
+            bottom: 80px; right: 20px;
+            z-index: 100;
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            gap: 2px;
+        }
+        .move-controls.active { display: flex; }
+        .move-controls .row { display: flex; gap: 2px; }
+        .move-btn {
+            width: 34px; height: 34px;
+            background: rgba(0,0,0,0.85);
+            border: 1px solid #87ceeb;
+            color: #87ceeb;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .move-btn:hover { background: rgba(135,206,235,0.2); }
+        .move-label {
+            font-size: 10px;
+            color: #87ceeb;
+            text-align: center;
+            margin-bottom: 4px;
+        }
+
+        /* Multi-select active indicator */
+        .ctrl-btn.multi-active {
+            background: rgba(135,206,235,0.35);
+            border-color: #87ceeb;
+            color: #fff;
+            box-shadow: 0 0 8px rgba(135,206,235,0.4);
+        }
+
         /* Loading */
         #loading {
             position: fixed; inset: 0;
@@ -122,6 +170,7 @@
         <button class="ctrl-btn" id="btnReset">⌂ Reset</button>
         <button class="ctrl-btn" id="btnNormalize">⬆ Normalize</button>
         <button class="ctrl-btn" id="btnClear">Clear Focus</button>
+        <button class="ctrl-btn" id="btnMultiSelect">☐ Multi-Select</button>
         <button class="ctrl-btn" id="btnFlatten">▭ Flatten</button>
         <button class="ctrl-btn" id="btnSaveLayout">💾 Save Layout</button>
         <button class="ctrl-btn" id="btnLoadLayout">📂 Load Layout</button>
@@ -160,6 +209,21 @@
                 <button class="ctrl-btn" id="layoutModalClose">✕ Close</button>
             </div>
         </div>
+    </div>
+
+    <div id="selectionBox"></div>
+
+    <div class="move-controls" id="moveControls">
+        <div class="move-label"><span id="selectedCount">0</span> selected</div>
+        <div class="row">
+            <button class="move-btn" data-dir="up">↑</button>
+        </div>
+        <div class="row">
+            <button class="move-btn" data-dir="left">←</button>
+            <button class="move-btn" data-dir="down">↓</button>
+            <button class="move-btn" data-dir="right">→</button>
+        </div>
+        <div class="move-label" style="margin-top:4px;">Hold Shift = big step</div>
     </div>
 
     <div id="graph-container"></div>
@@ -370,6 +434,7 @@
             // Node appearance
             .nodeVal(n => n._size)
             .nodeColor(n => {
+                if (n._selected) return '#ffffff'; // Selected nodes glow white
                 if (focusedNode && n.id !== focusedNode && !n._highlight) return '#222233';
                 return n.color;
             })
@@ -822,6 +887,180 @@
         document.getElementById('btnRotate').classList.add('active');
 
         document.getElementById('infoPanelClose').addEventListener('click', clearFocus);
+
+        // ============================================================
+        // Multi-Select System
+        // ============================================================
+        let multiSelectMode = false;
+        const selectedNodes = new Set();
+        const selBox = document.getElementById('selectionBox');
+        const moveCtrl = document.getElementById('moveControls');
+        let selStart = null; // {x, y} screen coords of drag start
+
+        document.getElementById('btnMultiSelect').addEventListener('click', function() {
+            multiSelectMode = !multiSelectMode;
+            this.classList.toggle('multi-active', multiSelectMode);
+            this.textContent = multiSelectMode ? '☑ Multi-Select' : '☐ Multi-Select';
+            if (!multiSelectMode) {
+                clearSelection();
+            }
+            // Disable node drag in multi-select mode (we use drag for selection box)
+            Graph.enableNodeDrag(!multiSelectMode);
+        });
+
+        function clearSelection() {
+            selectedNodes.clear();
+            gNodes.forEach(n => { n._selected = false; });
+            moveCtrl.classList.remove('active');
+            updateSelectionVisuals();
+        }
+
+        function toggleNodeSelection(node) {
+            if (selectedNodes.has(node.id)) {
+                selectedNodes.delete(node.id);
+                node._selected = false;
+            } else {
+                selectedNodes.add(node.id);
+                node._selected = true;
+            }
+            updateSelectionVisuals();
+        }
+
+        function updateSelectionVisuals() {
+            document.getElementById('selectedCount').textContent = selectedNodes.size;
+            moveCtrl.classList.toggle('active', selectedNodes.size > 0);
+            if (typeof Graph.refresh === 'function') Graph.refresh();
+        }
+
+        // Override onNodeClick when in multi-select mode
+        const origOnNodeClick = onNodeClick;
+        Graph.onNodeClick(node => {
+            if (multiSelectMode) {
+                toggleNodeSelection(node);
+            } else {
+                origOnNodeClick(node);
+            }
+        });
+
+        Graph.onBackgroundClick(() => {
+            if (multiSelectMode) {
+                clearSelection();
+            } else {
+                clearFocus();
+            }
+        });
+
+        // Selection box drag — only in multi-select mode
+        const graphCanvas = container.querySelector('canvas');
+        if (graphCanvas) {
+            graphCanvas.addEventListener('mousedown', (e) => {
+                if (!multiSelectMode || e.button !== 0) return;
+                // Check if we're on a node — if so, let node click handle it
+                // We detect empty space by starting the selection box
+                selStart = { x: e.clientX, y: e.clientY };
+            });
+
+            window.addEventListener('mousemove', (e) => {
+                if (!selStart) return;
+                const dx = Math.abs(e.clientX - selStart.x);
+                const dy = Math.abs(e.clientY - selStart.y);
+                // Only show box after a small movement threshold
+                if (dx < 5 && dy < 5) return;
+
+                selBox.style.display = 'block';
+                selBox.style.left = Math.min(selStart.x, e.clientX) + 'px';
+                selBox.style.top = Math.min(selStart.y, e.clientY) + 'px';
+                selBox.style.width = dx + 'px';
+                selBox.style.height = dy + 'px';
+            });
+
+            window.addEventListener('mouseup', (e) => {
+                if (!selStart) return;
+                const sx = selStart.x, sy = selStart.y;
+                selStart = null;
+
+                // If selection box was shown, select nodes within it
+                if (selBox.style.display === 'block') {
+                    const rect = {
+                        x1: Math.min(sx, e.clientX),
+                        y1: Math.min(sy, e.clientY),
+                        x2: Math.max(sx, e.clientX),
+                        y2: Math.max(sy, e.clientY)
+                    };
+                    selectNodesInRect(rect);
+                    selBox.style.display = 'none';
+                }
+            });
+        }
+
+        function selectNodesInRect(rect) {
+            const cam = Graph.camera();
+            const width = window.innerWidth;
+            const height = window.innerHeight;
+
+            for (const node of gNodes) {
+                if (!activeDomains.has(node.domain)) continue;
+
+                // Project 3D position to 2D screen coordinates
+                const pos = new Graph.THREE().Vector3(
+                    node.x || 0, node.y || 0, node.z || 0
+                );
+                pos.project(cam);
+
+                const screenX = (pos.x * 0.5 + 0.5) * width;
+                const screenY = (-pos.y * 0.5 + 0.5) * height;
+
+                // Check if within selection rectangle
+                if (screenX >= rect.x1 && screenX <= rect.x2 &&
+                    screenY >= rect.y1 && screenY <= rect.y2) {
+                    selectedNodes.add(node.id);
+                    node._selected = true;
+                }
+            }
+            updateSelectionVisuals();
+        }
+
+        // Move controls — arrow buttons and keyboard
+        const MOVE_STEP = 15;
+        const MOVE_STEP_BIG = 50;
+
+        function moveSelected(dx, dy, dz = 0) {
+            for (const nodeId of selectedNodes) {
+                const node = gNodeMap[nodeId];
+                if (!node) continue;
+                node.x = (node.x || 0) + dx;
+                node.y = (node.y || 0) + dy;
+                node.z = (node.z || 0) + dz;
+                node.fx = node.x;
+                node.fy = node.y;
+                node.fz = node.z;
+            }
+            Graph.d3ReheatSimulation();
+            if (typeof Graph.refresh === 'function') Graph.refresh();
+        }
+
+        // Arrow button clicks
+        document.querySelectorAll('.move-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const step = e.shiftKey ? MOVE_STEP_BIG : MOVE_STEP;
+                const dir = btn.dataset.dir;
+                if (dir === 'up') moveSelected(0, step);
+                else if (dir === 'down') moveSelected(0, -step);
+                else if (dir === 'left') moveSelected(-step, 0);
+                else if (dir === 'right') moveSelected(step, 0);
+            });
+        });
+
+        // Keyboard arrows (when multi-select is active)
+        window.addEventListener('keydown', (e) => {
+            if (!multiSelectMode || selectedNodes.size === 0) return;
+            const step = e.shiftKey ? MOVE_STEP_BIG : MOVE_STEP;
+            if (e.key === 'ArrowUp') { moveSelected(0, step); e.preventDefault(); }
+            else if (e.key === 'ArrowDown') { moveSelected(0, -step); e.preventDefault(); }
+            else if (e.key === 'ArrowLeft') { moveSelected(-step, 0); e.preventDefault(); }
+            else if (e.key === 'ArrowRight') { moveSelected(step, 0); e.preventDefault(); }
+            else if (e.key === 'Escape') { clearSelection(); }
+        });
 
         // Domain filter pills
         const pillsContainer = document.getElementById('domainPills');
