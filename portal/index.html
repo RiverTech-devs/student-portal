@@ -1831,12 +1831,6 @@
             </section>
 
             <!-- IRL Purchases Section (Teachers & Admins) -->
-            <section id="spreadsheet-section" class="hidden">
-              <div id="spreadsheet-content">
-                <!-- Will be populated by renderSpreadsheet() -->
-              </div>
-            </section>
-
             <section id="irl-purchases-section" class="hidden">
               <!-- Will be populated by renderIRLPurchases() -->
             </section>
@@ -2574,6 +2568,15 @@
           if (this.modalTimeouts && this.modalTimeouts[modalId]) {
             clearTimeout(this.modalTimeouts[modalId]);
             delete this.modalTimeouts[modalId];
+          }
+
+          // Clean up sheets keyboard handler when class-sheets modal closes
+          if (modalId === 'class-sheets') {
+            this._sheetsModalOpen = false;
+            if (this._sheetKeyHandler) {
+              document.removeEventListener('keydown', this._sheetKeyHandler);
+              this._sheetKeyHandler = null;
+            }
           }
 
           console.log('📋 Modal closed:', modalId, 'Remaining:', this.modalStack.length);
@@ -4569,7 +4572,7 @@
             this.renderAdminRTCManagement();
             break;
           case 'spreadsheet':
-            this.renderSpreadsheet();
+            // Sheets are now per-class, opened via showClassSheets()
             break;
           case 'irl-purchases':
             this.renderIRLPurchases();
@@ -14390,6 +14393,9 @@
                   </button>
                   <button class="btn btn-secondary" onclick="app.showClassNotes('${classId}')" title="Private class notes only visible to you">
                     🔒 Class Notes
+                  </button>
+                  <button class="btn btn-secondary" onclick="app.showClassSheets('${classId}')" title="Spreadsheet notes for this class">
+                    📋 Class Sheets
                   </button>
                   <button class="btn btn-secondary" onclick="app.showClassRTCAward('${classId}')">
                     💰 Award RTC
@@ -36791,38 +36797,45 @@
 
     // ==================== IRL PURCHASES SYSTEM ====================
 
-    // ==================== SPREADSHEET / SHEETS ====================
+    // ==================== CLASS SHEETS (per-class spreadsheets) ====================
 
-    async renderSpreadsheet() {
-      const container = document.getElementById('spreadsheet-content');
-      if (!container) return;
+    async showClassSheets(classId) {
+      const classData = this.classes.find(c => c.id === classId);
+      const className = classData?.name || 'Class';
 
       // Initialize state
-      if (!this._sheets) {
-        this._sheets = [];
-        this._activeSheetId = null;
-        this._sheetData = [];
-        this._selectedCell = null;
-        this._clipboard = null;
-        this._undoStack = [];
-        this._redoStack = [];
-        this._colWidths = {};
-      }
+      this._sheetsClassId = classId;
+      this._sheets = [];
+      this._activeSheetId = null;
+      this._sheetData = [];
+      this._selectedCell = null;
+      this._clipboard = null;
+      this._undoStack = [];
+      this._redoStack = [];
+      this._colWidths = {};
+      this._sheetsModalOpen = true;
 
-      container.innerHTML = '<div style="text-align:center;padding:40px;"><div class="loading-spinner"></div><p>Loading Sheets...</p></div>';
+      const modalContent = `<div id="class-sheets-container"><div style="text-align:center;padding:40px;"><div class="loading-spinner"></div><p>Loading Sheets...</p></div></div>`;
+      this.showModal('class-sheets', '📋 Class Sheets — ' + this.escapeHtml(className), modalContent);
 
       await this.loadSheetsList();
-      this.renderSheetsUI(container);
+      this.renderSheetsUI(document.getElementById('class-sheets-container'));
+    }
+
+    _getSheetContainer() {
+      return document.getElementById('class-sheets-container');
     }
 
     async loadSheetsList() {
       try {
-        const { data, error } = await this.supabaseQuery(() =>
-          this.auth.supabase.from('teacher_sheets')
+        let query = this.auth.supabase.from('teacher_sheets')
             .select('id, name, updated_at')
             .eq('user_id', this.userInfo.user.id)
-            .order('updated_at', { ascending: false })
-        );
+            .order('updated_at', { ascending: false });
+        if (this._sheetsClassId) {
+          query = query.eq('class_id', this._sheetsClassId);
+        }
+        const { data, error } = await this.supabaseQuery(() => query);
         if (error) throw error;
         this._sheets = data || [];
       } catch (e) {
@@ -36832,6 +36845,7 @@
     }
 
     renderSheetsUI(container) {
+      if (!container) return;
       const sheetListHTML = this._sheets.map(s => `
         <div class="sheet-list-item" data-id="${s.id}" style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:var(--card);border:1px solid var(--surface-border, rgba(255,255,255,0.06));border-radius:var(--radius-md, 8px);cursor:pointer;transition:var(--transition-fast, 0.15s);" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--surface-border, rgba(255,255,255,0.06))'">
           <div>
@@ -36847,9 +36861,8 @@
       `).join('');
 
       container.innerHTML = `
-        <div style="max-width:1400px;margin:0 auto;padding:20px;">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px;">
-            <h2 style="margin:0;color:var(--text);">📋 My Sheets</h2>
+        <div style="max-width:1400px;margin:0 auto;">
+          <div style="display:flex;align-items:center;justify-content:flex-end;margin-bottom:24px;flex-wrap:wrap;gap:12px;">
             <div style="display:flex;gap:10px;flex-wrap:wrap;">
               <button class="btn btn-primary" onclick="app.createNewSheet()" style="padding:8px 18px;">+ New Sheet</button>
               <label class="btn btn-secondary" style="padding:8px 18px;cursor:pointer;margin:0;">
@@ -36881,13 +36894,16 @@
       const data = Array.from({ length: rows }, () => Array(cols).fill(''));
       const csvData = data.map(r => r.join(',')).join('\n');
 
+      const insertObj = {
+        user_id: this.userInfo.user.id,
+        name: name.trim(),
+        csv_data: csvData
+      };
+      if (this._sheetsClassId) insertObj.class_id = this._sheetsClassId;
+
       try {
         const { data: inserted, error } = await this.supabaseQuery(() =>
-          this.auth.supabase.from('teacher_sheets').insert({
-            user_id: this.userInfo.user.id,
-            name: name.trim(),
-            csv_data: csvData
-          }).select().single()
+          this.auth.supabase.from('teacher_sheets').insert(insertObj).select().single()
         );
         if (error) throw error;
         await this.openSheet(inserted.id);
@@ -36905,13 +36921,16 @@
       const text = await file.text();
       const name = file.name.replace(/\.(csv|tsv|txt)$/i, '').trim() || 'Imported Sheet';
 
+      const insertObj = {
+        user_id: this.userInfo.user.id,
+        name: name,
+        csv_data: text
+      };
+      if (this._sheetsClassId) insertObj.class_id = this._sheetsClassId;
+
       try {
         const { data: inserted, error } = await this.supabaseQuery(() =>
-          this.auth.supabase.from('teacher_sheets').insert({
-            user_id: this.userInfo.user.id,
-            name: name,
-            csv_data: text
-          }).select().single()
+          this.auth.supabase.from('teacher_sheets').insert(insertObj).select().single()
         );
         if (error) throw error;
         await this.openSheet(inserted.id);
@@ -36930,7 +36949,7 @@
         if (error) throw error;
         this._sheets = this._sheets.filter(s => s.id !== sheetId);
         if (this._activeSheetId === sheetId) this._activeSheetId = null;
-        const container = document.getElementById('spreadsheet-content');
+        const container = this._getSheetContainer();
         this.renderSheetsUI(container);
         if (window.portalUI) portalUI.showNotification('Sheet deleted', 'success');
       } catch (e) {
@@ -36939,7 +36958,8 @@
     }
 
     async openSheet(sheetId) {
-      const container = document.getElementById('spreadsheet-content');
+      const container = this._getSheetContainer();
+      if (!container) return;
       container.innerHTML = '<div style="text-align:center;padding:40px;"><div class="loading-spinner"></div><p>Loading sheet...</p></div>';
 
       try {
@@ -37051,14 +37071,14 @@
       const cols = this._sheetData[0].length;
 
       container.innerHTML = `
-        <div style="display:flex;flex-direction:column;height:calc(100vh - 140px);max-width:100%;overflow:hidden;">
+        <div style="display:flex;flex-direction:column;height:60vh;max-width:100%;overflow:hidden;">
           <!-- Toolbar -->
-          <div style="display:flex;align-items:center;gap:10px;padding:10px 16px;background:var(--card);border-bottom:1px solid var(--surface-border, rgba(255,255,255,0.06));flex-wrap:wrap;">
+          <div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--surface-border, rgba(255,255,255,0.06));flex-wrap:wrap;">
             <button class="btn btn-secondary" onclick="app.backToSheetsList()" style="padding:6px 14px;font-size:13px;">← Back</button>
             <input type="text" id="sheet-name-input" value="${this.escapeHtml(this._activeSheetName)}" style="background:var(--input-bg, rgba(255,255,255,0.05));border:1px solid var(--surface-border, rgba(255,255,255,0.1));border-radius:var(--radius-sm, 4px);padding:6px 12px;color:var(--text);font-size:14px;font-weight:600;width:200px;" onchange="app.renameSheet(this.value)">
             <div style="flex:1;"></div>
             <div id="sheet-cell-ref" style="font-size:13px;color:var(--muted);min-width:50px;"></div>
-            <input type="text" id="sheet-formula-bar" placeholder="Cell value" style="flex:1;max-width:400px;background:var(--input-bg, rgba(255,255,255,0.05));border:1px solid var(--surface-border, rgba(255,255,255,0.1));border-radius:var(--radius-sm, 4px);padding:6px 12px;color:var(--text);font-size:13px;" onkeydown="app.handleFormulaBarKey(event)" onchange="app.applyFormulaBar()">
+            <input type="text" id="sheet-formula-bar" placeholder="Cell value" style="flex:1;max-width:300px;background:var(--input-bg, rgba(255,255,255,0.05));border:1px solid var(--surface-border, rgba(255,255,255,0.1));border-radius:var(--radius-sm, 4px);padding:6px 12px;color:var(--text);font-size:13px;" onkeydown="app.handleFormulaBarKey(event)" onchange="app.applyFormulaBar()">
             <div style="display:flex;gap:6px;">
               <button class="btn btn-secondary" onclick="app.sheetUndo()" title="Undo (Ctrl+Z)" style="padding:6px 10px;font-size:13px;">↩</button>
               <button class="btn btn-secondary" onclick="app.sheetRedo()" title="Redo (Ctrl+Y)" style="padding:6px 10px;font-size:13px;">↪</button>
@@ -37066,8 +37086,8 @@
             <div style="display:flex;gap:6px;">
               <button class="btn btn-secondary" onclick="app.addSheetRow()" title="Add Row" style="padding:6px 10px;font-size:13px;">+ Row</button>
               <button class="btn btn-secondary" onclick="app.addSheetCol()" title="Add Column" style="padding:6px 10px;font-size:13px;">+ Col</button>
-              <button class="btn btn-secondary" onclick="app.removeSheetRow()" title="Remove Row" style="padding:6px 10px;font-size:13px;">− Row</button>
-              <button class="btn btn-secondary" onclick="app.removeSheetCol()" title="Remove Column" style="padding:6px 10px;font-size:13px;">− Col</button>
+              <button class="btn btn-secondary" onclick="app.removeSheetRow()" title="Remove Row" style="padding:6px 10px;font-size:13px;">- Row</button>
+              <button class="btn btn-secondary" onclick="app.removeSheetCol()" title="Remove Column" style="padding:6px 10px;font-size:13px;">- Col</button>
             </div>
             <button class="btn btn-primary" onclick="app.saveSheet()" style="padding:6px 18px;font-size:13px;">Save</button>
             <button class="btn btn-secondary" onclick="app.exportCurrentSheetCSV()" style="padding:6px 14px;font-size:13px;">Export CSV</button>
@@ -37098,8 +37118,8 @@
           </div>
 
           <!-- Status bar -->
-          <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 16px;background:var(--card);border-top:1px solid var(--surface-border, rgba(255,255,255,0.06));font-size:12px;color:var(--muted);">
-            <span>${rows} rows × ${cols} columns</span>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-top:1px solid var(--surface-border, rgba(255,255,255,0.06));font-size:12px;color:var(--muted);">
+            <span>${rows} rows x ${cols} columns</span>
             <span id="sheet-status">Ready</span>
           </div>
         </div>
@@ -37211,7 +37231,8 @@
     }
 
     handleSheetKeydown(e) {
-      if (this.currentSection !== 'spreadsheet') return;
+      if (!this._sheetsModalOpen) return;
+      if (!document.getElementById('modal-class-sheets')) return;
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
 
       if (e.key === 'ArrowUp') { e.preventDefault(); this.moveSelection(-1, 0); }
@@ -37289,7 +37310,7 @@
         }
       } else if (action.type === 'grid') {
         this._sheetData = action.oldData.map(r => [...r]);
-        this.renderSheetEditor(document.getElementById('spreadsheet-content'));
+        this.renderSheetEditor(this._getSheetContainer());
       }
     }
 
@@ -37308,7 +37329,7 @@
         }
       } else if (action.type === 'grid') {
         this._sheetData = action.newData.map(r => [...r]);
-        this.renderSheetEditor(document.getElementById('spreadsheet-content'));
+        this.renderSheetEditor(this._getSheetContainer());
       }
     }
 
@@ -37319,7 +37340,7 @@
       this._sheetData.splice(insertAt, 0, Array(cols).fill(''));
       this._undoStack.push({ type: 'grid', oldData, newData: this._sheetData.map(r => [...r]) });
       this._redoStack = [];
-      this.renderSheetEditor(document.getElementById('spreadsheet-content'));
+      this.renderSheetEditor(this._getSheetContainer());
     }
 
     addSheetCol() {
@@ -37328,7 +37349,7 @@
       this._sheetData.forEach(row => row.splice(insertAt, 0, ''));
       this._undoStack.push({ type: 'grid', oldData, newData: this._sheetData.map(r => [...r]) });
       this._redoStack = [];
-      this.renderSheetEditor(document.getElementById('spreadsheet-content'));
+      this.renderSheetEditor(this._getSheetContainer());
     }
 
     removeSheetRow() {
@@ -37341,7 +37362,7 @@
       }
       this._undoStack.push({ type: 'grid', oldData, newData: this._sheetData.map(r => [...r]) });
       this._redoStack = [];
-      this.renderSheetEditor(document.getElementById('spreadsheet-content'));
+      this.renderSheetEditor(this._getSheetContainer());
     }
 
     removeSheetCol() {
@@ -37354,7 +37375,7 @@
       }
       this._undoStack.push({ type: 'grid', oldData, newData: this._sheetData.map(r => [...r]) });
       this._redoStack = [];
-      this.renderSheetEditor(document.getElementById('spreadsheet-content'));
+      this.renderSheetEditor(this._getSheetContainer());
     }
 
     selectSheetRow(r) {
@@ -37468,7 +37489,7 @@
       this._activeSheetId = null;
       this._selectedCell = null;
       this.loadSheetsList().then(() => {
-        this.renderSheetsUI(document.getElementById('spreadsheet-content'));
+        this.renderSheetsUI(this._getSheetContainer());
       });
     }
 
