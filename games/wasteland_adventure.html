@@ -3164,10 +3164,28 @@
                 const { data: { session }, error } = await skillSystem.supabase.auth.getSession();
 
                 if (session && session.user) {
-                    skillSystem.currentUser = session.user;
+                    // Resolve user_profiles.id — necessary because writes to
+                    // skill_progress / skill_practice_sessions must use the
+                    // profile id, not auth.uid(). For split-id accounts those
+                    // two values differ, and using the wrong one would cause
+                    // progress to fragment across two different key spaces.
+                    let profileId = session.user.id;
+                    try {
+                        const { data: prof } = await skillSystem.supabase
+                            .from('user_profiles')
+                            .select('id')
+                            .or(`auth_user_id.eq.${session.user.id},id.eq.${session.user.id}`)
+                            .limit(1)
+                            .maybeSingle();
+                        if (prof && prof.id) profileId = prof.id;
+                    } catch (e) {
+                        console.warn('🎮 Profile lookup failed, falling back to auth id', e);
+                    }
+
+                    skillSystem.currentUser = { ...session.user, id: profileId };
                     skillSystem.isConnected = true;
                     skillSystem.isGuestMode = false;
-                    console.log('🎮 Skill System: Connected as', session.user.email);
+                    console.log('🎮 Skill System: Connected as', session.user.email, '(profile id:', profileId + ')');
 
                     // Load player's skills
                     await loadPlayerSkills();
