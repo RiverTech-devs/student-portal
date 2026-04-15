@@ -158,8 +158,10 @@ function checkLessonObject(tier, skill, obj) {
     }
     return;
   }
-  // Required top-level fields
-  const required = ['goalProblem', 'teachingSteps', 'finalAnswer', 'example', 'keyPoints', 'mistakes', 'guided', 'practice'];
+  // Required top-level fields. Note: `practice` was removed as a dead
+  // field — the game never read lesson.practice, so it's no longer part
+  // of the lesson schema.
+  const required = ['teachingSteps', 'example', 'keyPoints', 'mistakes', 'guided'];
   for (const k of required) {
     if (!(k in obj)) add(tier, skill, 'warn', `missing field: ${k}`);
   }
@@ -214,40 +216,7 @@ function checkLessonObject(tier, skill, obj) {
       }
     });
   }
-  // practice
-  const p = obj.practice;
-  if (p && typeof p === 'object') {
-    if (p.answer === undefined) add(tier, skill, 'warn', 'practice.answer missing');
-    if (Array.isArray(p.options)) {
-      const normAns = norm(p.answer);
-      const normOpts = p.options.map(norm);
-      if (normAns && !normOpts.includes(normAns)) {
-        add(tier, skill, 'error', `practice.options missing the correct answer "${p.answer}" — options: ${JSON.stringify(p.options)}`);
-      }
-      // Duplicates
-      const seen = new Set();
-      for (const o of normOpts) {
-        if (seen.has(o)) add(tier, skill, 'error', `practice.options has duplicate: "${o}"`);
-        seen.add(o);
-      }
-    }
-    if (p.mistakeAnalysis && typeof p.mistakeAnalysis === 'object') {
-      const normAns = norm(p.answer);
-      for (const key of Object.keys(p.mistakeAnalysis)) {
-        if (norm(key) === normAns) {
-          add(tier, skill, 'error', `practice.mistakeAnalysis key "${key}" equals correct answer`);
-        }
-      }
-      if (Array.isArray(p.options)) {
-        const normOpts = p.options.map(norm);
-        for (const key of Object.keys(p.mistakeAnalysis)) {
-          if (!normOpts.includes(norm(key))) {
-            add(tier, skill, 'warn', `practice.mistakeAnalysis key "${key}" is not in options (dead-code)`);
-          }
-        }
-      }
-    }
-  }
+  // `practice` was deleted from lessons — no checks needed.
 }
 
 function runLesson(tier, skill, fn, iterations) {
