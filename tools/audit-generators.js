@@ -76,6 +76,26 @@ function shuffle(arr) {
 function pick(arr) { return arr[rand(0, arr.length - 1)]; }
 function gcd(a, b) { while (b) { [a, b] = [b, a % b]; } return a; }
 function simplifyFrac(n, d) { const g = gcd(Math.abs(n), Math.abs(d)); return [n / g, d / g]; }
+// Mirror of the helper defined near the top of games/math-dojo.html.
+function getUnlockedSubSkillTypes(lessonKey, map, orderedSubSkillIds) {
+  const completed = (state && state.completedSubSkills && state.completedSubSkills[lessonKey]) || [];
+  const completedSet = new Set(completed);
+  const current = orderedSubSkillIds.find(id => !completedSet.has(id));
+  const allowed = new Set(completed);
+  if (current) allowed.add(current);
+  const types = [];
+  for (const id of allowed) {
+    const mapped = map[id];
+    if (Array.isArray(mapped)) types.push(...mapped);
+    else if (mapped) types.push(mapped);
+  }
+  if (types.length === 0) {
+    const firstMapped = map[orderedSubSkillIds[0]];
+    if (Array.isArray(firstMapped)) return firstMapped.slice();
+    if (firstMapped) return [firstMapped];
+  }
+  return types;
+}
 
 // Some generators read from a file-level `state` global that holds the
 // game's in-memory tracking. In production this is always defined; in
@@ -89,7 +109,7 @@ const state = {
 
 let generators;
 try {
-  generators = new Function('rand', 'shuffle', 'pick', 'state', 'gcd', 'simplifyFrac', 'return ' + literal)(rand, shuffle, pick, state, gcd, simplifyFrac);
+  generators = new Function('rand', 'shuffle', 'pick', 'state', 'gcd', 'simplifyFrac', 'getUnlockedSubSkillTypes', 'return ' + literal)(rand, shuffle, pick, state, gcd, simplifyFrac, getUnlockedSubSkillTypes);
 } catch (e) {
   console.error('FAILED to eval generators:', e.message);
   process.exit(1);

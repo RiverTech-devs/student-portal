@@ -3820,6 +3820,51 @@ function formatNumber(n) {
 }
 
 // ========================================
+// SUB-SKILL GATING HELPER
+// ========================================
+// Generators for multi-sub-skill lessons used to default to "all question
+// types available" whenever the student had no sub-skills marked complete
+// — which meant a student on their FIRST sub-skill was immediately tested
+// on every subsequent sub-skill they hadn't been taught yet. That violated
+// the basic rule "don't test what hasn't been taught".
+//
+// Correct behavior: only include question types for sub-skills the student
+// has already completed PLUS the one they're currently working on (= the
+// first sub-skill in the ordered list that isn't in the completed set).
+//
+// Usage:
+//   const types = getUnlockedSubSkillTypes(
+//       '3_Advanced Fractions',
+//       { lcd: 'lcd_find', add_different_denom: 'add_diff_denom', ... },
+//       ['lcd', 'add_different_denom', 'subtract_different_denom', ...]
+//   );
+//
+// The `map` value for a sub-skill id can be either a single type string
+// (most generators) or an array of types (some generators like Equations).
+// If `state` hasn't been initialised yet, completed is treated as empty.
+function getUnlockedSubSkillTypes(lessonKey, map, orderedSubSkillIds) {
+    const completed = (typeof state !== 'undefined' && state.completedSubSkills && state.completedSubSkills[lessonKey]) || [];
+    const completedSet = new Set(completed);
+    const current = orderedSubSkillIds.find(id => !completedSet.has(id));
+    const allowed = new Set(completed);
+    if (current) allowed.add(current);
+    const types = [];
+    for (const id of allowed) {
+        const mapped = map[id];
+        if (Array.isArray(mapped)) types.push(...mapped);
+        else if (mapped) types.push(mapped);
+    }
+    if (types.length === 0) {
+        // Safety net: unknown sub-skill state — fall back to the first
+        // sub-skill's type(s) so practice still works.
+        const firstMapped = map[orderedSubSkillIds[0]];
+        if (Array.isArray(firstMapped)) return firstMapped.slice();
+        if (firstMapped) return [firstMapped];
+    }
+    return types;
+}
+
+// ========================================
 // QUESTION GENERATORS BY TIER
 // ========================================
 const generators = {
@@ -5388,7 +5433,7 @@ const generators = {
     // TIER 3: Rational Numbers (5-7)
     3: {
         "Advanced Fractions": () => {
-            // Map sub-skill IDs to question types
+            // Map each sub-skill ID to the practice question type it unlocks.
             const subSkillToQuestionType = {
                 'lcd': 'lcd_find',
                 'add_different_denom': 'add_diff_denom',
@@ -5398,18 +5443,13 @@ const generators = {
                 'mixed_add': 'mixed_add',
                 'mixed_subtract': 'mixed_subtract'
             };
-
-            // Get unlocked question types based on completed sub-skills
-            const completedSubSkills = state.completedSubSkills['3_Advanced Fractions'] || [];
-            let availableTypes = completedSubSkills.length > 0
-                ? completedSubSkills.map(id => subSkillToQuestionType[id]).filter(Boolean)
-                : ["add_diff_denom", "subtract_diff_denom", "multiply", "divide", "mixed_add", "mixed_subtract", "lcd_find"]; // All if none tracked
-
-            // Ensure at least one type is available
-            if (availableTypes.length === 0) {
-                availableTypes = ["lcd_find"]; // Default to easiest
-            }
-
+            // Ordered list of sub-skills as the student progresses through
+            // the lesson. MUST match the order in the corresponding lesson
+            // definition (lessons[3]['Advanced Fractions'].subSkills), so
+            // that "current sub-skill" = first one not yet mastered.
+            const subSkillOrder = ['lcd', 'add_different_denom', 'subtract_different_denom', 'multiply', 'divide', 'mixed_add', 'mixed_subtract'];
+            // Only ask about sub-skills the student has been taught.
+            const availableTypes = getUnlockedSubSkillTypes('3_Advanced Fractions', subSkillToQuestionType, subSkillOrder);
             const type = pick(availableTypes);
 
             // Helper to find LCD
