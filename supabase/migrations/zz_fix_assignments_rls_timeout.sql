@@ -42,6 +42,40 @@
 -- 0. Make sure RLS is on (idempotent)
 ALTER TABLE public.assignments ENABLE ROW LEVEL SECURITY;
 
+-- 0.5 Ensure the SECURITY DEFINER helpers exist. These are normally
+--     created by fix_user_profiles_rls_lockout.sql and
+--     zz_fix_split_id_rls_skill_notifications.sql, but recreate them
+--     here so this migration is self-sufficient regardless of what's
+--     already been applied. CREATE OR REPLACE is idempotent.
+
+CREATE OR REPLACE FUNCTION public.get_my_user_type()
+RETURNS TEXT
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = ''
+STABLE
+AS $$
+  SELECT user_type FROM public.user_profiles
+  WHERE auth_user_id = auth.uid()
+  LIMIT 1;
+$$;
+GRANT EXECUTE ON FUNCTION public.get_my_user_type() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_my_user_type() TO anon;
+
+CREATE OR REPLACE FUNCTION public.get_my_profile_id()
+RETURNS UUID
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = ''
+STABLE
+AS $$
+  SELECT id FROM public.user_profiles
+  WHERE auth_user_id = auth.uid()
+  LIMIT 1;
+$$;
+GRANT EXECUTE ON FUNCTION public.get_my_profile_id() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_my_profile_id() TO anon;
+
 -- 1. Drop every existing policy on public.assignments so we can
 --    rebuild cleanly. We don't know the names since they were
 --    created via SQL editor, so enumerate dynamically.
