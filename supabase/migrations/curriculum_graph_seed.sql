@@ -900,7 +900,7 @@ INSERT INTO curriculum_edges (id, from_node, to_node, edge_type) VALUES ('E0178'
 INSERT INTO curriculum_edges (id, from_node, to_node, edge_type) VALUES ('E0179', 'M-119', 'M-120', 'prerequisite_hard') ON CONFLICT (from_node, to_node, edge_type) DO NOTHING;
 INSERT INTO curriculum_edges (id, from_node, to_node, edge_type) VALUES ('E0180', 'M-120', 'M-144', 'prerequisite_hard') ON CONFLICT (from_node, to_node, edge_type) DO NOTHING;
 INSERT INTO curriculum_edges (id, from_node, to_node, edge_type) VALUES ('E0181', 'M-121', 'M-122', 'prerequisite_hard') ON CONFLICT (from_node, to_node, edge_type) DO NOTHING;
-INSERT INTO curriculum_edges (id, from_node, to_node, edge_type) VALUES ('E0182', 'M-122', 'M-148', 'prerequisite_hard') ON CONFLICT (from_node, to_node, edge_type) DO NOTHING;
+INSERT INTO curriculum_edges (id, from_node, to_node, edge_type) VALUES ('E0182', 'M-122', 'M-143', 'prerequisite_hard') ON CONFLICT (from_node, to_node, edge_type) DO NOTHING;
 INSERT INTO curriculum_edges (id, from_node, to_node, edge_type) VALUES ('E0183', 'M-129', 'M-181', 'prerequisite_hard') ON CONFLICT (from_node, to_node, edge_type) DO NOTHING;
 INSERT INTO curriculum_edges (id, from_node, to_node, edge_type) VALUES ('E0184', 'M-128', 'M-138', 'prerequisite_hard') ON CONFLICT (from_node, to_node, edge_type) DO NOTHING;
 INSERT INTO curriculum_edges (id, from_node, to_node, edge_type) VALUES ('E0185', 'M-124', 'M-136', 'prerequisite_hard') ON CONFLICT (from_node, to_node, edge_type) DO NOTHING;
