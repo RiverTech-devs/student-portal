@@ -2137,11 +2137,10 @@
                                 </div>
                             </div>
                             <div class="card">
-                                <h3>🎯 Recent Activity</h3>
-                                <p>No recent activity</p>
-                                <button class="btn btn-secondary" onclick="window.portalAuth.goToClassesPortal('messaging')" style="margin-top: 10px;">
-                                    💬 Check Messages
-                                </button>
+                                <h3>🎯 This Week's Practice</h3>
+                                <div id="weekly-activity-summary">
+                                    <p style="color: var(--muted); font-size: 13px;">Loading activity...</p>
+                                </div>
                             </div>
                         </div>
                         <div id="calendar-mount"></div>
@@ -2149,6 +2148,7 @@
                 `;
 
                  this.loadStudentStats();
+                 this.loadWeeklyActivity();
                  this.initCalendar();
             }
 
@@ -2191,6 +2191,93 @@
                     if (classCountEl) {
                         classCountEl.textContent = '0';
                     }
+                }
+            }
+
+            async loadWeeklyActivity() {
+                const container = document.getElementById('weekly-activity-summary');
+                if (!container) return;
+                try {
+                    const userInfo = this.auth.getUserInfo();
+                    const userId = userInfo.profile?.id;
+                    if (!userId) { container.innerHTML = ''; return; }
+
+                    const now = new Date();
+                    const day = now.getDay();
+                    const monday = new Date(now);
+                    monday.setDate(now.getDate() - (day === 0 ? 6 : day - 1));
+                    monday.setHours(0, 0, 0, 0);
+
+                    const { data: sessions, error } = await this.auth.supabase
+                        .from('math_dojo_sessions')
+                        .select('*')
+                        .eq('user_id', userId)
+                        .gte('created_at', monday.toISOString())
+                        .order('created_at', { ascending: false });
+
+                    if (error) throw error;
+
+                    if (!sessions || sessions.length === 0) {
+                        container.innerHTML = `
+                            <p style="color: var(--muted); font-size: 13px; margin-bottom: 10px;">No practice sessions this week yet.</p>
+                            <button class="btn btn-primary" onclick="window.portal.showSection('games')" style="width: 100%;">🥋 Open Math Dojo</button>
+                        `;
+                        return;
+                    }
+
+                    const totalSessions = sessions.length;
+                    const totalQs = sessions.reduce((s, r) => s + (r.total_questions || 0), 0);
+                    const totalCorrect = sessions.reduce((s, r) => s + (r.total_correct || 0), 0);
+                    const avgAccuracy = totalQs > 0 ? Math.round((totalCorrect / totalQs) * 100) : 0;
+
+                    const dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+                    const today = new Date();
+                    today.setHours(0,0,0,0);
+
+                    const recentRows = sessions.slice(0, 5).map(s => {
+                        const d = new Date(s.created_at);
+                        const sDay = new Date(d); sDay.setHours(0,0,0,0);
+                        const label = sDay.getTime() === today.getTime() ? 'Today' : dayNames[d.getDay()];
+                        const acc = s.accuracy || 0;
+                        const barWidth = acc;
+                        const barColor = acc >= 80 ? '#10b981' : acc >= 60 ? '#f59e0b' : '#ef4444';
+                        return `
+                            <div style="display: grid; grid-template-columns: 50px 70px 45px 40px 1fr; align-items: center; gap: 6px; padding: 4px 0; font-size: 12px; border-bottom: 1px solid var(--border);">
+                                <span style="color: var(--muted);">${label}</span>
+                                <span style="text-transform: capitalize;">${s.mode || 'practice'}</span>
+                                <span>${s.total_questions} Q</span>
+                                <span style="font-weight: 600; color: ${barColor};">${acc}%</span>
+                                <div style="height: 6px; background: var(--border); border-radius: 3px; overflow: hidden;">
+                                    <div style="width: ${barWidth}%; height: 100%; background: ${barColor}; border-radius: 3px;"></div>
+                                </div>
+                            </div>
+                        `;
+                    }).join('');
+
+                    container.innerHTML = `
+                        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px;">
+                            <div style="background: var(--bg); border-radius: 8px; padding: 8px; text-align: center;">
+                                <div style="font-size: 20px; font-weight: 700; color: var(--accent);">${totalSessions}</div>
+                                <div style="font-size: 10px; color: var(--muted);">Sessions</div>
+                            </div>
+                            <div style="background: var(--bg); border-radius: 8px; padding: 8px; text-align: center;">
+                                <div style="font-size: 20px; font-weight: 700; color: #3b82f6;">${totalQs}</div>
+                                <div style="font-size: 10px; color: var(--muted);">Questions</div>
+                            </div>
+                            <div style="background: var(--bg); border-radius: 8px; padding: 8px; text-align: center;">
+                                <div style="font-size: 20px; font-weight: 700; color: ${avgAccuracy >= 80 ? '#10b981' : avgAccuracy >= 60 ? '#f59e0b' : '#ef4444'};">${avgAccuracy}%</div>
+                                <div style="font-size: 10px; color: var(--muted);">Accuracy</div>
+                            </div>
+                        </div>
+                        ${recentRows}
+                        <button class="btn btn-primary" onclick="window.portal.showSection('games')" style="width: 100%; margin-top: 10px;">🥋 Open Math Dojo</button>
+                    `;
+                } catch (err) {
+                    console.error('Error loading weekly activity:', err);
+                    container.innerHTML = `
+                        <p style="color: var(--muted); font-size: 13px;">No practice sessions this week yet.</p>
+                        <button class="btn btn-primary" onclick="window.portal.showSection('games')" style="width: 100%;">🥋 Open Math Dojo</button>
+                    `;
                 }
             }
 
@@ -4486,6 +4573,30 @@
                             .upsert(rows);
                         if (error) console.error('Failed to save session skills:', error);
                         else console.log(`✅ Saved ${rows.length} skills from Dojo session`);
+                    }
+
+                    // Record session for weekly activity tracking
+                    try {
+                        const skillEntries = Object.entries(data.skillProgress);
+                        const totalCorrect = skillEntries.reduce((sum, [, sp]) => sum + (sp.correct || 0), 0);
+                        const totalQuestions = skillEntries.reduce((sum, [, sp]) => sum + (sp.total || 0), 0);
+                        const skillDetails = skillEntries.map(([name, sp]) => ({
+                            skill: name, domain: sp.domain, tier: sp.tier,
+                            correct: sp.correct || 0, total: sp.total || 0,
+                            mastery: sp.masteryScore || 0, state: sp.skillState
+                        }));
+                        await this.portal.auth.supabase
+                            .from('math_dojo_sessions')
+                            .insert({
+                                user_id: userId,
+                                mode: data.mode || 'testing',
+                                skills_practiced: skillEntries.length,
+                                total_correct: totalCorrect,
+                                total_questions: totalQuestions,
+                                skill_details: skillDetails
+                            });
+                    } catch (sessErr) {
+                        console.error('Failed to record dojo session:', sessErr);
                     }
                 } catch (e) {
                     console.error('Error saving Dojo session:', e);
