@@ -73,8 +73,8 @@ CREATE POLICY "Parents can view child dojo sessions"
     TO authenticated
     USING (
         EXISTS (
-            SELECT 1 FROM public.parent_student_links psl
-            WHERE psl.student_id = math_dojo_sessions.user_id
-              AND psl.parent_id = auth.uid()
+            SELECT 1 FROM public.parent_child_links pcl
+            WHERE pcl.child_id = math_dojo_sessions.user_id
+              AND pcl.parent_id = auth.uid()
         )
     );
