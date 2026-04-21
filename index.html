@@ -4338,6 +4338,16 @@
                         this.handleBackfillSkills(event.data);
                         break;
 
+                    case 'DOGO_REQUEST_WEEKLY_MASTERIES':
+                        // Dojo Retention Gauntlet: asking for skills mastered this week
+                        this.sendWeeklyMasteriesToDojo(event.source);
+                        break;
+
+                    case 'DOGO_GAUNTLET_COMPLETE':
+                        // Dojo Retention Gauntlet finished: demote failed skills, award scaled RTC
+                        this.handleGauntletComplete(event.data);
+                        break;
+
                     default:
                         console.log('Unknown message from skill tree/game:', event.data.type);
                 }
@@ -4638,6 +4648,155 @@
                     else console.log(`✅ Saved lesson mastery for ${skillName}`);
                 } catch (e) {
                     console.error('Error saving lesson completion:', e);
+                }
+            }
+
+            async sendWeeklyMasteriesToDojo(sourceWindow) {
+                // Collect skills that reached 'mastered' state in the past 7 days
+                // via math_dojo_sessions.skill_details entries.
+                try {
+                    if (!this.portal.auth.isAuthenticated()) {
+                        sourceWindow?.postMessage({ type: 'WEEKLY_MASTERIES_FOR_DOGO', skills: [] }, '*');
+                        return;
+                    }
+                    const userId = this.portal.auth.getUserInfo().profile.id;
+                    const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+                    const { data: sessions, error } = await this.portal.auth.supabase
+                        .from('math_dojo_sessions')
+                        .select('skill_details, created_at')
+                        .eq('user_id', userId)
+                        .gte('created_at', weekAgo);
+                    if (error) {
+                        console.error('Failed to load weekly masteries:', error);
+                        sourceWindow?.postMessage({ type: 'WEEKLY_MASTERIES_FOR_DOGO', skills: [] }, '*');
+                        return;
+                    }
+                    // Dedupe by domain; keep most recent tier
+                    const byDomain = new Map();
+                    (sessions || []).forEach(s => {
+                        const details = Array.isArray(s.skill_details) ? s.skill_details : [];
+                        details.forEach(d => {
+                            if (!d || d.state !== 'mastered') return;
+                            const domain = d.domain;
+                            if (!domain) return;
+                            // Prefer the record with the skill name if it's a non-numeric string
+                            const skillName = (typeof d.skill === 'string' && !/^\d+$/.test(d.skill)) ? d.skill : domain;
+                            if (!byDomain.has(domain)) {
+                                byDomain.set(domain, { skill: skillName, domain, tier: d.tier || 1 });
+                            }
+                        });
+                    });
+                    const skills = Array.from(byDomain.values());
+                    sourceWindow?.postMessage({ type: 'WEEKLY_MASTERIES_FOR_DOGO', skills }, '*');
+                } catch (e) {
+                    console.error('Error sending weekly masteries:', e);
+                    sourceWindow?.postMessage({ type: 'WEEKLY_MASTERIES_FOR_DOGO', skills: [] }, '*');
+                }
+            }
+
+            async handleGauntletComplete(data) {
+                if (!this.portal.auth.isAuthenticated()) return;
+                try {
+                    const userId = this.portal.auth.getUserInfo().profile.id;
+                    const now = new Date().toISOString();
+                    const cleared = Array.isArray(data.cleared) ? data.cleared : [];
+                    const failed = Array.isArray(data.failed) ? data.failed : [];
+                    const rtcAward = Number(data.rtcAward) || 0;
+
+                    // Demote skills that failed the gauntlet: mastered -> activated
+                    if (failed.length > 0) {
+                        const rows = failed.map(f => {
+                            const name = f.skill || f.domain;
+                            if (!this.skillProgress['Math']) this.skillProgress['Math'] = {};
+                            const prev = this.skillProgress['Math'][name] || {};
+                            this.skillProgress['Math'][name] = {
+                                ...prev,
+                                state: 'activated',
+                                last_practiced: now
+                            };
+                            return {
+                                user_id: userId,
+                                subject: 'Math',
+                                skill_name: name,
+                                state: 'activated',
+                                mastery_score: Math.min(prev.mastery_score || 70, 70),
+                                last_practiced: now,
+                                practice_count: (prev.practice_count || 0) + 1,
+                                updated_at: now
+                            };
+                        });
+                        const { error: demoteErr } = await this.portal.auth.supabase
+                            .from('skill_progress')
+                            .upsert(rows);
+                        if (demoteErr) console.error('Failed to demote gauntlet failures:', demoteErr);
+                        else console.log(`✅ Demoted ${rows.length} skills from gauntlet failure`);
+                    }
+
+                    // Bump last_practiced on cleared skills so retention shows as recent
+                    if (cleared.length > 0) {
+                        const rows = cleared.map(c => {
+                            const name = c.skill || c.domain;
+                            const prev = (this.skillProgress['Math'] && this.skillProgress['Math'][name]) || {};
+                            if (!this.skillProgress['Math']) this.skillProgress['Math'] = {};
+                            this.skillProgress['Math'][name] = { ...prev, state: 'mastered', last_practiced: now };
+                            return {
+                                user_id: userId,
+                                subject: 'Math',
+                                skill_name: name,
+                                state: 'mastered',
+                                mastery_score: Math.max(prev.mastery_score || 0, 90),
+                                last_practiced: now,
+                                practice_count: (prev.practice_count || 0) + 1,
+                                mastered_at: prev.mastered_at || now,
+                                updated_at: now
+                            };
+                        });
+                        const { error: clearedErr } = await this.portal.auth.supabase
+                            .from('skill_progress')
+                            .upsert(rows);
+                        if (clearedErr) console.error('Failed to refresh cleared gauntlet skills:', clearedErr);
+                    }
+
+                    // Scaled RTC award via RPC (bypasses the skill_progress trigger dedupe)
+                    if (rtcAward > 0) {
+                        const refId = `gauntlet-${userId}-${Date.now()}`;
+                        const { error: rtcErr } = await this.portal.auth.supabase.rpc('process_rtc_transaction', {
+                            p_user_id: userId,
+                            p_amount: rtcAward,
+                            p_transaction_type: 'earn_skill',
+                            p_description: `Retention Gauntlet: ${cleared.length} skills defended`,
+                            p_reference_id: refId,
+                            p_reference_type: 'retention_gauntlet'
+                        });
+                        if (rtcErr) console.error('Failed to award gauntlet RTC:', rtcErr);
+                        else console.log(`🪙 Awarded ${rtcAward} RTC for Retention Gauntlet`);
+                    }
+
+                    // Log session to math_dojo_sessions so the weekly card picks it up
+                    try {
+                        const skillDetails = [
+                            ...cleared.map(c => ({ skill: c.skill, domain: c.domain, tier: c.tier, state: 'mastered', cleared: true })),
+                            ...failed.map(f => ({ skill: f.skill, domain: f.domain, tier: f.tier, state: 'activated', cleared: false }))
+                        ];
+                        await this.portal.auth.supabase
+                            .from('math_dojo_sessions')
+                            .insert({
+                                user_id: userId,
+                                mode: 'retention',
+                                skills_practiced: skillDetails.length,
+                                total_correct: Number(data.correctCount) || 0,
+                                total_questions: Number(data.questionsAsked) || 0,
+                                skill_details: skillDetails,
+                                duration_seconds: Math.round((Number(data.durationMs) || 0) / 1000)
+                            });
+                    } catch (sessErr) {
+                        console.error('Failed to record gauntlet session:', sessErr);
+                    }
+
+                    // Refresh RTC balance display if present
+                    try { this.portal?.refreshRtcBalance?.(); } catch (_) {}
+                } catch (e) {
+                    console.error('Error handling gauntlet completion:', e);
                 }
             }
 
