@@ -3844,6 +3844,8 @@ window.addEventListener('message', (event) => {
         }
     } else if (event.data.type === 'WEEKLY_MASTERIES_FOR_DOGO') {
         handleWeeklyMasteriesResponse(event.data.skills || []);
+    } else if (event.data.type === 'GAUNTLET_RTC_RESULT') {
+        updateGauntletRtcLine(event.data);
     } else if (event.data.type === 'FULLSCREEN_ENTER') {
         document.body.classList.add('fullscreen-mode');
     } else if (event.data.type === 'FULLSCREEN_EXIT') {
@@ -31519,7 +31521,7 @@ function handleWeeklyMasteriesResponse(skills) {
         return;
     }
 
-    info.innerHTML = `<strong style="color:var(--rose-300)">${unique.length}</strong> skill${unique.length === 1 ? '' : 's'} to defend. Projected reward: <strong style="color:var(--amber-400)">${unique.length * RTC_PER_CLEARED} RTC</strong> if you clear them all.`;
+    info.innerHTML = `<strong style="color:var(--rose-300)">${unique.length}</strong> skill${unique.length === 1 ? '' : 's'} to defend. Max reward: <strong style="color:var(--amber-400)">${unique.length * RTC_PER_CLEARED} RTC</strong> on your first run today.<br><span style="font-size:0.8rem;color:var(--slate-500)">Diminishing returns: 2nd run today ≈ 33%, 3rd+ = 0. Skills cleared in the last 24h don't pay again.</span>`;
     container.innerHTML = `<div class="gauntlet-skill-list">${unique.map(s => `
         <div class="gauntlet-skill-item">
             <div>
@@ -31637,15 +31639,13 @@ function endRetentionGauntlet(reason) {
     const failed = retentionState.skills.filter(s => !s.cleared); // anything not cleared gets demoted
     failed.forEach(s => { s.failed = true; });
 
-    const rtcAward = cleared.length * RTC_PER_CLEARED;
-
-    // Tell parent to update skill_progress (demotions) + award RTC + log session
+    // Tell parent to update skill_progress (demotions) + award scaled RTC + log session.
+    // Parent decides the actual RTC amount (diminishing returns) and posts it back.
     if (window.parent && window.parent !== window) {
         window.parent.postMessage({
             type: 'DOGO_GAUNTLET_COMPLETE',
             cleared: cleared.map(s => ({ skill: s.skill, domain: s.domain, tier: s.tier })),
             failed: failed.map(s => ({ skill: s.skill, domain: s.domain, tier: s.tier })),
-            rtcAward,
             questionsAsked: retentionState.questionsAsked,
             correctCount: retentionState.correctCount,
             durationMs: retentionState.startTime ? Date.now() - retentionState.startTime : 0,
@@ -31654,10 +31654,10 @@ function endRetentionGauntlet(reason) {
         }, '*');
     }
 
-    renderRetentionResults(cleared, failed, rtcAward, reason);
+    renderRetentionResults(cleared, failed, reason);
 }
 
-function renderRetentionResults(cleared, failed, rtcAward, reason) {
+function renderRetentionResults(cleared, failed, reason) {
     document.getElementById('test-screen').classList.remove('active');
     const results = document.getElementById('results-screen');
     results.classList.add('active');
@@ -31701,9 +31701,9 @@ function renderRetentionResults(cleared, failed, rtcAward, reason) {
     if (recs) {
         let html = '';
         html += `<div class="rec-item"><div class="rec-icon">🔥</div><div class="rec-content"><h4>Gauntlet ${reason === 'complete' ? 'Complete' : 'Forfeited'}</h4><p>Cleared ${cleared.length} of ${retentionState.skills.length} skills.</p></div></div>`;
-        if (rtcAward > 0) {
-            html += `<div class="rec-item"><div class="rec-icon">🪙</div><div class="rec-content"><h4>+${rtcAward} RTC Awarded</h4><p>${RTC_PER_CLEARED} RTC per cleared skill × ${cleared.length} cleared.</p></div></div>`;
-        }
+        // RTC line is populated asynchronously via GAUNTLET_RTC_RESULT from the parent
+        // (actual amount depends on today's completion count + per-skill 24h cooldowns).
+        html += `<div class="rec-item" id="gauntlet-rtc-line"><div class="rec-icon">🪙</div><div class="rec-content"><h4>RTC Reward</h4><p>Calculating…</p></div></div>`;
         if (failed.length > 0) {
             html += `<div class="rec-item"><div class="rec-icon">⚠️</div><div class="rec-content"><h4>${failed.length} Skill${failed.length === 1 ? '' : 's'} Demoted</h4><p>Re-train in Training Grounds or Sparring Arena to earn them back: ${failed.slice(0, 3).map(s => escapeHtml(s.skill)).join(', ')}${failed.length > 3 ? '...' : ''}.</p></div></div>`;
         }
@@ -31717,6 +31717,37 @@ function renderRetentionResults(cleared, failed, rtcAward, reason) {
     // Hide tree sync card (not used for this mode)
     const treeSyncCard = document.getElementById('tree-sync-card');
     if (treeSyncCard) treeSyncCard.style.display = 'none';
+}
+
+function updateGauntletRtcLine(result) {
+    const line = document.getElementById('gauntlet-rtc-line');
+    if (!line) return;
+    const content = line.querySelector('.rec-content');
+    if (!content) return;
+    const amount = Number(result.amount) || 0;
+    const perSkill = Number(result.perSkillAward) || 0;
+    const eligible = Number(result.eligibleCount) || 0;
+    const skippedCooldown = Number(result.skippedCooldown) || 0;
+    const completionIdx = Number(result.completionIdx) || 0; // 0 = first run today
+    const runLabel = completionIdx === 0 ? '1st run today' : completionIdx === 1 ? '2nd run today' : `${completionIdx + 1}th run today`;
+
+    let heading;
+    let body = '';
+    if (amount > 0) {
+        heading = `+${amount} RTC Awarded`;
+        body = `${perSkill} RTC × ${eligible} eligible skill${eligible === 1 ? '' : 's'} (${runLabel}).`;
+        if (skippedCooldown > 0) body += ` ${skippedCooldown} skill${skippedCooldown === 1 ? '' : 's'} on 24h cooldown.`;
+    } else if (completionIdx >= 2) {
+        heading = 'No RTC (3rd+ run today)';
+        body = `Diminishing returns: only the 1st and 2nd gauntlets per day pay out. Come back tomorrow.`;
+    } else if (skippedCooldown > 0 && eligible === 0) {
+        heading = 'No RTC (24h cooldown)';
+        body = `All cleared skills were already rewarded via the gauntlet in the last 24 hours.`;
+    } else {
+        heading = 'No RTC';
+        body = `Nothing eligible to reward this run.`;
+    }
+    content.innerHTML = `<h4>${heading}</h4><p>${body}</p>`;
 }
 
 // Helper function to get tier accuracy

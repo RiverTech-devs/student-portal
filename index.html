@@ -4701,7 +4701,53 @@
                     const now = new Date().toISOString();
                     const cleared = Array.isArray(data.cleared) ? data.cleared : [];
                     const failed = Array.isArray(data.failed) ? data.failed : [];
-                    const rtcAward = Number(data.rtcAward) || 0;
+
+                    // ----- Diminishing returns -----
+                    // (1) Per-completion decay: count today's retention sessions already logged.
+                    //     1st = 1.0x, 2nd = 0.33x, 3rd+ = 0x. Demotions happen regardless.
+                    const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0);
+                    let completionIdx = 0; // 0-based, so 0 = first of the day
+                    try {
+                        const { count, error: countErr } = await this.portal.auth.supabase
+                            .from('math_dojo_sessions')
+                            .select('id', { count: 'exact', head: true })
+                            .eq('user_id', userId)
+                            .eq('mode', 'retention')
+                            .gte('created_at', startOfDay.toISOString());
+                        if (!countErr) completionIdx = count || 0;
+                    } catch (_) {}
+                    const multiplier = completionIdx === 0 ? 1.0 : completionIdx === 1 ? 0.33 : 0;
+                    const perSkillBase = 3;
+                    const perSkillAward = Math.round(perSkillBase * multiplier);
+
+                    // (2) Per-skill 24h cooldown: skills already rewarded via retention gauntlet
+                    //     in the last 24h do not pay again, even if cleared.
+                    const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+                    const recentlyRewarded = new Set();
+                    try {
+                        const { data: recentTx } = await this.portal.auth.supabase
+                            .from('rtc_transactions')
+                            .select('reference_id')
+                            .eq('user_id', userId)
+                            .eq('reference_type', 'retention_gauntlet')
+                            .gte('created_at', dayAgo);
+                        (recentTx || []).forEach(tx => {
+                            // reference_id format: retention:<userId>:<skillName>:<timestamp>
+                            if (!tx.reference_id) return;
+                            const parts = tx.reference_id.split(':');
+                            if (parts[0] === 'retention' && parts.length >= 4) {
+                                // skillName is everything between the userId and the final timestamp
+                                const skillName = parts.slice(2, -1).join(':');
+                                recentlyRewarded.add(skillName);
+                            }
+                        });
+                    } catch (_) {}
+
+                    const eligibleForRtc = (perSkillAward > 0)
+                        ? cleared.filter(c => !recentlyRewarded.has(c.skill || c.domain))
+                        : [];
+                    const skippedSkills = cleared.length - eligibleForRtc.length;
+                    const rtcAward = eligibleForRtc.length * perSkillAward;
 
                     // Demote skills that failed the gauntlet: mastered -> activated
                     if (failed.length > 0) {
@@ -4757,19 +4803,26 @@
                         if (clearedErr) console.error('Failed to refresh cleared gauntlet skills:', clearedErr);
                     }
 
-                    // Scaled RTC award via RPC (bypasses the skill_progress trigger dedupe)
-                    if (rtcAward > 0) {
-                        const refId = `gauntlet-${userId}-${Date.now()}`;
-                        const { error: rtcErr } = await this.portal.auth.supabase.rpc('process_rtc_transaction', {
-                            p_user_id: userId,
-                            p_amount: rtcAward,
-                            p_transaction_type: 'earn_skill',
-                            p_description: `Retention Gauntlet: ${cleared.length} skills defended`,
-                            p_reference_id: refId,
-                            p_reference_type: 'retention_gauntlet'
-                        });
-                        if (rtcErr) console.error('Failed to award gauntlet RTC:', rtcErr);
-                        else console.log(`🪙 Awarded ${rtcAward} RTC for Retention Gauntlet`);
+                    // Scaled RTC award: one transaction per eligible skill so the per-skill
+                    // cooldown lookup above can identify them next time.
+                    let actualAwarded = 0;
+                    if (eligibleForRtc.length > 0 && perSkillAward > 0) {
+                        const ts = Date.now();
+                        for (const c of eligibleForRtc) {
+                            const skillName = c.skill || c.domain;
+                            const refId = `retention:${userId}:${skillName}:${ts}`;
+                            const { error: rtcErr } = await this.portal.auth.supabase.rpc('process_rtc_transaction', {
+                                p_user_id: userId,
+                                p_amount: perSkillAward,
+                                p_transaction_type: 'earn_skill',
+                                p_description: `Retention Gauntlet: defended ${skillName}`,
+                                p_reference_id: refId,
+                                p_reference_type: 'retention_gauntlet'
+                            });
+                            if (rtcErr) console.error('Failed to award gauntlet RTC for', skillName, rtcErr);
+                            else actualAwarded += perSkillAward;
+                        }
+                        console.log(`🪙 Awarded ${actualAwarded} RTC for Retention Gauntlet (${eligibleForRtc.length} skills × ${perSkillAward})`);
                     }
 
                     // Log session to math_dojo_sessions so the weekly card picks it up
@@ -4795,6 +4848,25 @@
 
                     // Refresh RTC balance display if present
                     try { this.portal?.refreshRtcBalance?.(); } catch (_) {}
+
+                    // Post the actual award back to the dojo so it can show the real number
+                    // (client-side projection doesn't know about the diminishing returns).
+                    try {
+                        const iframes = document.querySelectorAll('iframe');
+                        iframes.forEach(f => {
+                            try {
+                                f.contentWindow?.postMessage({
+                                    type: 'GAUNTLET_RTC_RESULT',
+                                    amount: actualAwarded,
+                                    perSkillAward,
+                                    multiplier,
+                                    completionIdx,
+                                    skippedCooldown: skippedSkills,
+                                    eligibleCount: eligibleForRtc.length
+                                }, '*');
+                            } catch (_) {}
+                        });
+                    } catch (_) {}
                 } catch (e) {
                     console.error('Error handling gauntlet completion:', e);
                 }
