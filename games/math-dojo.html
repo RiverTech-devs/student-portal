@@ -7016,28 +7016,44 @@ const generators = {
             }
         },
         Pythagorean: () => {
-            // Map sub-skill IDs to question types
-            const subSkillToQuestionType = {
-                'hyp': 'hyp',
-                'leg': 'leg'
-            };
-
-            // Get completed sub-skills for this domain
+            // Procedural: build a Pythagorean triple on the fly via (m, n) parametrization:
+            //   a = m² − n², b = 2mn, c = m² + n².
+            // Pick random m, n with m > n ≥ 1 and m, n coprime with opposite parity to
+            // get primitive triples. Then scale by k to generate multiples, so we get
+            // an effectively unlimited supply of valid (a, b, c) triples.
+            const subSkillToQuestionType = { 'hyp': 'hyp', 'leg': 'leg' };
             const subSkillOrder = ["hyp", "leg"];
-            let availableTypes = getUnlockedSubSkillTypes('4_Pythagorean', subSkillToQuestionType, subSkillOrder);
-            const triples = [[3,4,5], [5,12,13], [8,15,17], [6,8,10]];
-            const [a, b, c] = pick(triples);
-            const type = pick(availableTypes);
+            const availableTypes = getUnlockedSubSkillTypes('4_Pythagorean', subSkillToQuestionType, subSkillOrder);
 
-            if (type === "hyp") {
-                return { question: `Right triangle legs ${a} and ${b}. Find hypotenuse.`, answer: c, type: "procedural",
-                    explanation: `a² + b² = c². ${a}² + ${b}² = ${a*a} + ${b*b} = ${c*c}. c = ${c}`,
-                    visual: { type: 'shape', mode: 'display', data: { shape: 'right-triangle', dimensions: { a, b, c: '?' }, showMeasurements: true, highlightSides: ['c'] } } };
-            } else {
-                return { question: `Right triangle: leg ${a}, hypotenuse ${c}. Find other leg.`, answer: b, type: "procedural",
-                    explanation: `a² + b² = c². ${a}² + b² = ${c}². b² = ${c*c} - ${a*a} = ${b*b}. b = ${b}`,
-                    visual: { type: 'shape', mode: 'display', data: { shape: 'right-triangle', dimensions: { a, b: '?', c }, showMeasurements: true, highlightSides: ['b'] } } };
+            const gcdLocal = (x, y) => y === 0 ? x : gcdLocal(y, x % y);
+            let m = rand(2, 6), n = rand(1, m - 1);
+            // Primitive triple conditions: gcd(m,n)=1 and one of {m,n} even.
+            while (gcdLocal(m, n) !== 1 || (m % 2 === n % 2)) {
+                m = rand(2, 6); n = rand(1, m - 1);
             }
+            const k = rand(1, 3); // optional scale factor for variety
+            let a = k * (m * m - n * n);
+            let b = k * (2 * m * n);
+            const c = k * (m * m + n * n);
+            // Keep the shorter leg named `a` so "leg a, hypotenuse c" reads naturally.
+            if (a > b) [a, b] = [b, a];
+
+            const type = pick(availableTypes);
+            if (type === "hyp") {
+                return { question: `A right triangle has legs ${a} and ${b}. Find the hypotenuse.`,
+                    answer: c, type: "procedural",
+                    options: shuffle([c, c + 1, Math.max(1, c - 1), a + b]).filter((v, i, arr) => arr.indexOf(v) === i),
+                    explanation: `a² + b² = c². ${a}² + ${b}² = ${a * a} + ${b * b} = ${c * c}. c = ${c}.`,
+                    visual: { type: 'shape', mode: 'display', data: { shape: 'right-triangle', dimensions: { a, b, c: '?' }, showMeasurements: true, highlightSides: ['c'] } } };
+            }
+            // leg
+            const knownLeg = pick([a, b]);
+            const unknownLeg = knownLeg === a ? b : a;
+            return { question: `A right triangle has one leg of ${knownLeg} and a hypotenuse of ${c}. Find the other leg.`,
+                answer: unknownLeg, type: "procedural",
+                options: shuffle([unknownLeg, unknownLeg + 1, Math.max(1, unknownLeg - 1), c - knownLeg]).filter((v, i, arr) => arr.indexOf(v) === i),
+                explanation: `a² + b² = c². ${knownLeg}² + b² = ${c}². b² = ${c * c} − ${knownLeg * knownLeg} = ${unknownLeg * unknownLeg}. b = ${unknownLeg}.`,
+                visual: { type: 'shape', mode: 'display', data: { shape: 'right-triangle', dimensions: { a: knownLeg, b: '?', c }, showMeasurements: true, highlightSides: ['b'] } } };
         },
         "Angles and Lines": () => {
             const type = pick(["complementary", "supplementary", "vertical", "parallel"]);
@@ -7091,16 +7107,29 @@ const generators = {
                     options: [`${a + c}x + ${b + d}`, `${a * c}x + ${b + d}`, `${a + c}x + ${b * d}`, `${a + b}x + ${c + d}`],
                     explanation: `Combine like terms: (${a} + ${c})x + (${b} + ${d}) = ${a + c}x + ${b + d}` };
             } else {
-                const templates = [
-                    { phrase: "5 more than a number x", expr: "x + 5" },
-                    { phrase: "3 times a number x", expr: "3x" },
-                    { phrase: "a number x decreased by 7", expr: "x - 7" },
-                    { phrase: "twice a number x plus 4", expr: "2x + 4" }
+                // translate — procedural: pick an operation template and random coefficients.
+                // Each template produces question/expression pairs from rand() values.
+                const variable = pick(["x", "y", "n", "a"]);
+                const k = rand(2, 12), m = rand(2, 12);
+                const makeOpts = (correct, others) => shuffle([correct, ...shuffle(others).slice(0, 3)]).filter((v, i, a) => a.indexOf(v) === i);
+                const patterns = [
+                    { phrase: `${k} more than a number ${variable}`,              expr: `${variable} + ${k}`,           distract: () => [`${variable} − ${k}`, `${k}${variable}`, `${k} + ${variable}`.replace(`${k} + ${variable}`, `${variable} + ${k}`)] },
+                    { phrase: `${k} less than a number ${variable}`,              expr: `${variable} − ${k}`,           distract: () => [`${k} − ${variable}`, `${variable} + ${k}`, `${k}${variable}`] },
+                    { phrase: `${k} times a number ${variable}`,                  expr: `${k}${variable}`,              distract: () => [`${variable} + ${k}`, `${variable}/${k}`, `${variable} − ${k}`] },
+                    { phrase: `a number ${variable} divided by ${k}`,             expr: `${variable}/${k}`,             distract: () => [`${k}/${variable}`, `${k}${variable}`, `${variable} − ${k}`] },
+                    { phrase: `twice a number ${variable} plus ${k}`,             expr: `2${variable} + ${k}`,          distract: () => [`${variable} + 2${k}`, `${k}${variable} + 2`, `2(${variable} + ${k})`] },
+                    { phrase: `${m} more than ${k} times a number ${variable}`,   expr: `${k}${variable} + ${m}`,       distract: () => [`${k} + ${m}${variable}`, `${m}${variable} + ${k}`, `${k}(${variable} + ${m})`] },
+                    { phrase: `the quotient of a number ${variable} and ${k}`,    expr: `${variable}/${k}`,             distract: () => [`${variable} · ${k}`, `${k}/${variable}`, `${variable} − ${k}`] },
+                    { phrase: `the sum of ${k} and a number ${variable}`,         expr: `${k} + ${variable}`,           distract: () => [`${k} − ${variable}`, `${k}${variable}`, `${variable} − ${k}`] },
+                    { phrase: `the difference of a number ${variable} and ${k}`,  expr: `${variable} − ${k}`,           distract: () => [`${k} − ${variable}`, `${variable} + ${k}`, `${k}${variable}`] },
+                    { phrase: `${k} decreased by a number ${variable}`,           expr: `${k} − ${variable}`,           distract: () => [`${variable} − ${k}`, `${k} + ${variable}`, `${k}/${variable}`] },
+                    { phrase: `${m} less than ${k} times a number ${variable}`,   expr: `${k}${variable} − ${m}`,       distract: () => [`${k}${variable} + ${m}`, `${m} − ${k}${variable}`, `${k}(${variable} − ${m})`] },
+                    { phrase: `${k} times the sum of a number ${variable} and ${m}`, expr: `${k}(${variable} + ${m})`,  distract: () => [`${k}${variable} + ${m}`, `${k} + ${variable} + ${m}`, `${k}${variable} · ${m}`] }
                 ];
-                const t = pick(templates);
+                const t = pick(patterns);
                 return { question: `Write as an expression: "${t.phrase}"`, answer: t.expr, type: "conceptual",
-                    options: ["x + 5", "3x", "x - 7", "2x + 4"],
-                    explanation: `"${t.phrase}" translates to ${t.expr}` };
+                    options: makeOpts(t.expr, t.distract()),
+                    explanation: `"${t.phrase}" → ${t.expr}.` };
             }
         },
         "Surface Area": () => {
@@ -7145,51 +7174,87 @@ const generators = {
             }
         },
         "Scatter Plots": () => {
+            // Procedural: 'trend' now has a large scenario bank with trend label derived
+            // from the scenario's recorded direction. 'outlier' generates a linear cluster
+            // y = m·x + b with rand() slope/intercept, then injects a single point that
+            // jumps far off the trend line — its coordinates are the answer.
+            const trendScenarios = [
+                { desc: "hours studied vs. test score",               trend: "positive" },
+                { desc: "age vs. height (for children)",              trend: "positive" },
+                { desc: "time spent practicing vs. free-throw %",     trend: "positive" },
+                { desc: "miles run per week vs. cardio fitness",      trend: "positive" },
+                { desc: "savings balance over months (regular deposits)", trend: "positive" },
+                { desc: "altitude vs. atmospheric pressure",          trend: "negative" },
+                { desc: "outdoor temperature vs. hot-chocolate sales",trend: "negative" },
+                { desc: "age of a used car vs. its resale value",     trend: "negative" },
+                { desc: "price of an item vs. quantity demanded",     trend: "negative" },
+                { desc: "amount of sleep missed vs. reaction time",   trend: "negative" },
+                { desc: "shoe size vs. favorite ice cream flavor",    trend: "none" },
+                { desc: "birth month vs. math test score",            trend: "none" },
+                { desc: "hair color vs. weekly screen time",          trend: "none" },
+                { desc: "house number vs. daily rainfall",            trend: "none" }
+            ];
+
             const type = pick(["correlation", "trend", "outlier"]);
             if (type === "correlation") {
                 const corr = pick(["positive", "negative", "none"]);
-                const desc = corr === "positive" ? "points go up from left to right" :
-                            corr === "negative" ? "points go down from left to right" :
-                            "points are scattered randomly";
-                return { question: `A scatter plot shows ${desc}. What type of correlation?`, answer: corr, type: "conceptual",
+                const desc = corr === "positive" ? "points go up from left to right"
+                           : corr === "negative" ? "points go down from left to right"
+                           : "points are scattered randomly with no clear direction";
+                return { question: `A scatter plot shows: ${desc}. What type of correlation?`,
+                    answer: corr, type: "conceptual",
                     options: ["positive", "negative", "none"],
                     explanation: `When ${desc}, the correlation is ${corr}.` };
-            } else if (type === "trend") {
-                const scenarios = [
-                    { desc: "hours studied vs. test score", trend: "positive" },
-                    { desc: "temperature vs. hot chocolate sales", trend: "negative" },
-                    { desc: "age vs. height (for children)", trend: "positive" },
-                    { desc: "price vs. quantity demanded", trend: "negative" }
-                ];
-                const s = pick(scenarios);
-                return { question: `What correlation would you expect: ${s.desc}?`, answer: s.trend, type: "reasoning",
+            }
+            if (type === "trend") {
+                const s = pick(trendScenarios);
+                return { question: `What correlation would you expect: ${s.desc}?`,
+                    answer: s.trend, type: "reasoning",
                     options: ["positive", "negative", "none"],
                     explanation: `${s.desc} shows a ${s.trend} correlation.` };
-            } else {
-                const points = [[2, 3], [3, 5], [4, 6], [5, 8], [6, 9], [4, 20]];
-                return { question: `Points: (2,3), (3,5), (4,6), (5,8), (6,9), (4,20). Which is the outlier?`, answer: "(4, 20)", type: "conceptual",
-                    options: ["(2, 3)", "(4, 6)", "(4, 20)", "(6, 9)"],
-                    explanation: `(4, 20) is far from the pattern of other points, making it an outlier.` };
             }
+            // outlier — build a linear cluster plus one injected outlier.
+            const m = pick([1, 2, 3]);
+            const b = rand(0, 3);
+            const xs = [2, 3, 4, 5, 6];
+            const clusterPoints = xs.map(x => [x, m * x + b]);
+            // Outlier: pick a random x from the cluster range, give it a far-off y.
+            const outX = pick(xs);
+            const outY = m * outX + b + pick([-1, 1]) * rand(8, 15);
+            const outlierStr = `(${outX}, ${outY})`;
+            // Compose the displayed list including the outlier in a random slot.
+            const allPoints = [...clusterPoints];
+            const insertAt = rand(0, allPoints.length);
+            allPoints.splice(insertAt, 0, [outX, outY]);
+            const displayed = allPoints.map(([x, y]) => `(${x},${y})`).join(", ");
+            // Distractors: pick 3 non-outlier points from the cluster.
+            const distractors = shuffle(clusterPoints).slice(0, 3).map(([x, y]) => `(${x}, ${y})`);
+            return { question: `Points: ${displayed}. Which is the outlier?`,
+                answer: outlierStr, type: "conceptual",
+                options: shuffle([outlierStr, ...distractors]),
+                explanation: `The other points follow y = ${m}x${b > 0 ? ' + ' + b : b < 0 ? ' − ' + Math.abs(b) : ''}. ${outlierStr} is far from that pattern.` };
         },
         "Box Plots": () => {
-            const type = pick(["identify", "IQR", "compare"]);
-            const data = [12, 15, 18, 22, 25, 28, 30, 35, 40];
-            const min = data[0], q1 = data[2], median = data[4], q3 = data[6], max = data[8];
-            if (type === "identify") {
-                const part = pick(["minimum", "Q1", "median", "Q3", "maximum"]);
-                const values = { minimum: min, Q1: q1, median: median, Q3: q3, maximum: max };
-                return { question: `Data: ${data.join(", ")}. What is the ${part}?`, answer: values[part], type: "procedural",
-                    explanation: `${part} = ${values[part]}. Min=${min}, Q1=${q1}, Med=${median}, Q3=${q3}, Max=${max}` };
-            } else if (type === "IQR") {
-                const iqr = q3 - q1;
-                return { question: `Data: ${data.join(", ")}. What is the IQR (Interquartile Range)?`, answer: iqr, type: "procedural",
-                    explanation: `IQR = Q3 - Q1 = ${q3} - ${q1} = ${iqr}` };
-            } else {
-                const range = max - min;
-                return { question: `Data: ${data.join(", ")}. What is the range?`, answer: range, type: "procedural",
-                    explanation: `Range = Max - Min = ${max} - ${min} = ${range}` };
+            // Procedural: build a fresh sorted 9-value dataset each call so min/Q1/
+            // median/Q3/max are derived indices 0/2/4/6/8. Values are rand() with a
+            // guaranteed gap between consecutive values so the five-number summary is
+            // unambiguous.
+            const data = [];
+            let v = rand(2, 15);
+            data.push(v);
+            for (let i = 0; i < 8; i++) {
+                v += rand(1, 6);
+                data.push(v);
             }
+            const min = data[0], q1 = data[2], median = data[4], q3 = data[6], max = data[8];
+            const part = pick(["minimum", "Q1", "median", "Q3", "maximum", "IQR", "range"]);
+            const values = { minimum: min, Q1: q1, median: median, Q3: q3, maximum: max, IQR: q3 - q1, range: max - min };
+            const answer = values[part];
+            const distractorPool = Object.values(values).filter(v => v !== answer);
+            return { question: `Data: ${data.join(", ")}. What is the ${part}?`,
+                answer, type: "procedural",
+                options: shuffle([answer, ...shuffle(distractorPool).slice(0, 3)]).filter((v, i, a) => a.indexOf(v) === i),
+                explanation: `Min=${min}, Q1=${q1}, Median=${median}, Q3=${q3}, Max=${max}. ${part} = ${answer}.` };
         },
         "Probability Basics": () => {
             const type = pick(["simple", "complement", "word"]);
@@ -7212,64 +7277,140 @@ const generators = {
             }
         },
         "Irrational Numbers": () => {
+            // Procedural: compose every subtype from pools + rand(). 'identify' picks a
+            // random non-perfect-square under a random root or a transcendental. 'classify'
+            // builds the classified number on the fly: perfect square => rational,
+            // non-perfect-square => irrational; exact fractions => rational; repeating
+            // decimals => rational; transcendentals (π, e) => irrational.
+            const perfectSquares = [1, 4, 9, 16, 25, 36, 49, 64, 81, 100, 121, 144];
+            const transcendentals = ["π", "e", "π/2", "2π", "π + 1", "π − 1"];
             const type = pick(["identify", "approximate", "compare", "classify"]);
+
+            const makeIrrationalRoot = () => {
+                // Pick a positive integer that is NOT a perfect square up to 50.
+                let n = rand(2, 50);
+                while (perfectSquares.includes(n)) n = rand(2, 50);
+                return n;
+            };
+
             if (type === "identify") {
-                const irrational = pick(["√2", "√3", "√5", "π", "√7"]);
-                return { question: `Is ${irrational} rational or irrational?`, answer: "Irrational", type: "conceptual",
+                // 50/50 between root and transcendental.
+                const isRoot = pick([true, false]);
+                const number = isRoot ? `√${makeIrrationalRoot()}` : pick(transcendentals);
+                return { question: `Is ${number} rational or irrational?`, answer: "Irrational", type: "conceptual",
                     options: ["Rational", "Irrational"],
-                    explanation: `${irrational} cannot be written as a fraction of integers, so it's irrational.` };
-            } else if (type === "approximate") {
-                const roots = { 2: 1.414, 3: 1.732, 5: 2.236, 7: 2.646, 10: 3.162 };
-                const n = pick([2, 3, 5, 7, 10]);
-                return { question: `Approximate √${n} to 3 decimal places.`, answer: roots[n], type: "procedural",
-                    options: [roots[n], roots[n] + 0.1, roots[n] - 0.1, n / 2],
-                    explanation: `√${n} ≈ ${roots[n]}` };
-            } else if (type === "compare") {
-                const a = rand(2, 4);
-                const b = rand(a + 1, a + 3);
-                const sqrtA = Math.sqrt(a);
-                const larger = sqrtA > b / 2 ? `√${a}` : `${b}/2`;
-                return { question: `Which is larger: √${a} or ${b}/2?`, answer: larger, type: "reasoning",
-                    options: [`√${a}`, `${b}/2`],
-                    explanation: `√${a} ≈ ${sqrtA.toFixed(2)}, ${b}/2 = ${b / 2}. ${larger} is larger.` };
-            } else {
-                const nums = [
-                    { num: "0.333...", type: "Rational" },
-                    { num: "0.141421356...", type: "Irrational" },
-                    { num: "3/7", type: "Rational" },
-                    { num: "π", type: "Irrational" },
-                    { num: "√16", type: "Rational" },
-                    { num: "√15", type: "Irrational" }
-                ];
-                const n = pick(nums);
-                return { question: `Classify: ${n.num}`, answer: n.type, type: "conceptual",
-                    options: ["Rational", "Irrational"],
-                    explanation: n.type === "Rational" ? `${n.num} can be written as a fraction.` : `${n.num} has a non-repeating, non-terminating decimal.` };
+                    explanation: `${number} cannot be written as a fraction of integers, so it's irrational.` };
             }
+            if (type === "approximate") {
+                // Pick a random non-perfect-square, compute the true square root rounded to 3 places.
+                const n = makeIrrationalRoot();
+                const trueVal = Math.sqrt(n);
+                const rounded = Math.round(trueVal * 1000) / 1000;
+                // Distractors: close values and a wildly wrong one.
+                const distractors = [
+                    Math.round((trueVal + rand(5, 30) / 100) * 1000) / 1000,
+                    Math.round((trueVal - rand(5, 30) / 100) * 1000) / 1000,
+                    Math.round((n / 2) * 1000) / 1000
+                ];
+                return { question: `Approximate √${n} to 3 decimal places.`,
+                    answer: rounded, type: "procedural",
+                    options: shuffle([rounded, ...distractors]).filter((v, i, a) => a.indexOf(v) === i),
+                    explanation: `√${n} ≈ ${rounded}.` };
+            }
+            if (type === "compare") {
+                // Compare √a vs b/c where a is a non-perfect-square and b/c is a simple fraction.
+                const a = makeIrrationalRoot();
+                const c = rand(2, 6);
+                const b = rand(1, c * 8);
+                const sqrtA = Math.sqrt(a);
+                const frac = b / c;
+                if (Math.abs(sqrtA - frac) < 0.05) {
+                    // Too close to call — fall back to a simpler integer compare.
+                    return { question: `Which is larger: √${a} or ${Math.floor(sqrtA) + 1}?`,
+                        answer: `${Math.floor(sqrtA) + 1}`, type: "reasoning",
+                        options: [`√${a}`, `${Math.floor(sqrtA) + 1}`],
+                        explanation: `√${a} ≈ ${sqrtA.toFixed(2)} < ${Math.floor(sqrtA) + 1}.` };
+                }
+                const larger = sqrtA > frac ? `√${a}` : `${b}/${c}`;
+                return { question: `Which is larger: √${a} or ${b}/${c}?`, answer: larger, type: "reasoning",
+                    options: [`√${a}`, `${b}/${c}`],
+                    explanation: `√${a} ≈ ${sqrtA.toFixed(2)}, ${b}/${c} ≈ ${frac.toFixed(2)}. ${larger} is larger.` };
+            }
+            // classify — pick a classification, generate a matching number.
+            const targetType = pick(["Rational", "Irrational"]);
+            let display, exp;
+            if (targetType === "Rational") {
+                const variant = pick(["root_of_square", "fraction", "repeating_decimal", "terminating_decimal"]);
+                if (variant === "root_of_square") {
+                    const sq = pick(perfectSquares);
+                    display = `√${sq}`;
+                    exp = `${display} = ${Math.sqrt(sq)} (an integer), so it's rational.`;
+                } else if (variant === "fraction") {
+                    const num = rand(1, 20), den = rand(2, 12);
+                    display = `${num}/${den}`;
+                    exp = `${display} is a ratio of integers, so it's rational.`;
+                } else if (variant === "repeating_decimal") {
+                    const d = rand(1, 9);
+                    display = `0.${d}${d}${d}...`;
+                    exp = `${display} repeats, so it can be written as ${d}/9 (rational).`;
+                } else {
+                    const whole = rand(0, 3);
+                    const frac = rand(1, 9);
+                    display = `${whole}.${frac}`;
+                    exp = `${display} terminates, so it's rational.`;
+                }
+            } else {
+                const variant = pick(["irrational_root", "transcendental", "non_repeating_decimal"]);
+                if (variant === "irrational_root") {
+                    display = `√${makeIrrationalRoot()}`;
+                    exp = `${display} cannot be simplified to a ratio of integers — irrational.`;
+                } else if (variant === "transcendental") {
+                    display = pick(transcendentals);
+                    exp = `${display} is transcendental — irrational.`;
+                } else {
+                    const digits = [rand(1,9), rand(0,9), rand(1,9), rand(0,9), rand(1,9), rand(0,9), rand(1,9)].join("");
+                    display = `0.${digits}...`;
+                    exp = `${display} doesn't repeat or terminate — irrational.`;
+                }
+            }
+            return { question: `Classify: ${display}`, answer: targetType, type: "conceptual",
+                options: ["Rational", "Irrational"],
+                explanation: exp };
         },
         "Cube Roots": () => {
-            const type = pick(["perfect", "estimate", "negative"]);
+            // Procedural: every subtype derives the cube (and the question) from a
+            // random root in an expanded range. No fixed cube list.
+            const type = pick(["perfect", "estimate", "negative", "fraction"]);
             if (type === "perfect") {
-                const cubes = [1, 8, 27, 64, 125, 216];
-                const roots = [1, 2, 3, 4, 5, 6];
-                const idx = rand(0, 5);
-                return { question: `What is ∛${cubes[idx]}?`, answer: roots[idx], type: "procedural",
-                    options: [roots[idx], roots[idx] + 1, roots[idx] - 1, cubes[idx] / 3].filter((v,i,a) => a.indexOf(v) === i),
-                    explanation: `∛${cubes[idx]} = ${roots[idx]} because ${roots[idx]}³ = ${cubes[idx]}` };
-            } else if (type === "estimate") {
-                const root = rand(2, 4);
-                const cube = root * root * root;
-                const between = cube + rand(1, root * root);
-                return { question: `Between which integers is ∛${between}?`, answer: `${root} and ${root + 1}`, type: "reasoning",
-                    options: [`${root} and ${root + 1}`, `${root - 1} and ${root}`, `${root + 1} and ${root + 2}`, `1 and 2`],
-                    explanation: `${root}³ = ${cube}, ${root + 1}³ = ${(root + 1) ** 3}. Since ${cube} < ${between} < ${(root + 1) ** 3}, ∛${between} is between ${root} and ${root + 1}.` };
-            } else {
-                const root = rand(2, 4);
-                const cube = root * root * root;
-                return { question: `What is ∛-${cube}?`, answer: -root, type: "procedural",
-                    options: [-root, root, -cube, cube / root],
-                    explanation: `∛-${cube} = -${root} because (-${root})³ = -${cube}` };
+                const root = rand(1, 10);
+                const cube = root ** 3;
+                return { question: `What is ∛${cube}?`, answer: root, type: "procedural",
+                    options: shuffle([root, root + 1, Math.max(0, root - 1), cube / Math.max(1, root) * root === cube ? cube / 3 : root * 2]).filter((v, i, a) => a.indexOf(v) === i),
+                    explanation: `∛${cube} = ${root} because ${root}³ = ${cube}.` };
             }
+            if (type === "estimate") {
+                const root = rand(2, 9);
+                const cube = root ** 3;
+                const nextCube = (root + 1) ** 3;
+                const between = cube + rand(1, nextCube - cube - 1);
+                return { question: `Between which consecutive integers is ∛${between}?`,
+                    answer: `${root} and ${root + 1}`, type: "reasoning",
+                    options: shuffle([`${root} and ${root + 1}`, `${root - 1} and ${root}`, `${root + 1} and ${root + 2}`, `${Math.max(0, root - 2)} and ${Math.max(1, root - 1)}`]).filter((v, i, a) => a.indexOf(v) === i),
+                    explanation: `${root}³ = ${cube}, ${root + 1}³ = ${nextCube}. Since ${cube} < ${between} < ${nextCube}, ∛${between} is between ${root} and ${root + 1}.` };
+            }
+            if (type === "negative") {
+                const root = rand(2, 8);
+                const cube = root ** 3;
+                return { question: `What is ∛(−${cube})?`, answer: -root, type: "procedural",
+                    options: shuffle([-root, root, -cube, -(root + 1)]).filter((v, i, a) => a.indexOf(v) === i),
+                    explanation: `∛(−${cube}) = −${root} because (−${root})³ = −${cube}.` };
+            }
+            // fraction — cube-root of a perfect-cube fraction: (p/q)³ → ∛ → p/q.
+            const p = rand(1, 5), q = rand(2, 6);
+            const num = p ** 3, den = q ** 3;
+            return { question: `What is ∛(${num}/${den})?`, answer: `${p}/${q}`, type: "procedural",
+                options: shuffle([`${p}/${q}`, `${p + 1}/${q}`, `${p}/${q + 1}`, `${num}/${den}`]).filter((v, i, a) => a.indexOf(v) === i),
+                explanation: `∛${num} = ${p} and ∛${den} = ${q}, so ∛(${num}/${den}) = ${p}/${q}.` };
         },
         "Compound Probability": () => {
             const type = pick(["and_independent", "or_mutually_exclusive", "with_replacement", "without_replacement"]);
