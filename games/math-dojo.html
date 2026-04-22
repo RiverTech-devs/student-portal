@@ -3859,6 +3859,7 @@ window.addEventListener('message', (event) => {
 const rand = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
 const pick = arr => arr[rand(0, arr.length - 1)];
 const shuffle = arr => [...arr].sort(() => Math.random() - 0.5);
+const cap = s => String(s).length === 0 ? s : String(s).charAt(0).toUpperCase() + String(s).slice(1);
 const gcd = (a, b) => b === 0 ? a : gcd(b, a % b);
 const simplifyFrac = (n, d) => { const g = gcd(Math.abs(n), Math.abs(d)); return [n/g, d/g]; };
 
@@ -4358,53 +4359,98 @@ const generators = {
             }
         },
         "Positional Words": () => {
+            // Fully generative: a pool of position words (with opposites) × object pairs ×
+            // verb templates. Every question text is composed from random parts, so the
+            // combinatorial space is in the thousands.
             const positions = [
-                { word: "above", opposite: "below", examples: ["The bird is ___ the tree", "The lamp hangs ___ the table", "The cloud floats ___ the mountain"] },
-                { word: "below", opposite: "above", examples: ["The fish is ___ the water surface", "The basement is ___ the living room", "The roots grow ___ the ground"] },
-                { word: "beside", opposite: "far from", examples: ["The chair is ___ the table", "The dog sits ___ the door", "The flower grows ___ the fence"] },
-                { word: "between", opposite: "outside", examples: ["The number 5 is ___ 4 and 6", "The sandwich filling is ___ the bread", "The gap is ___ the two posts"] },
-                { word: "behind", opposite: "in front of", examples: ["The sun is ___ the clouds", "The player hides ___ the tree", "The backyard is ___ the house"] },
-                { word: "in front of", opposite: "behind", examples: ["The teacher stands ___ the class", "The car stops ___ the red light", "The mat lies ___ the door"] },
-                { word: "next to", opposite: "far from", examples: ["My desk is ___ the window", "The salt sits ___ the pepper", "The library is ___ the school"] },
-                { word: "on top of", opposite: "underneath", examples: ["The cat naps ___ the sofa", "The book is ___ the shelf", "Snow piles ___ the roof"] },
-                { word: "underneath", opposite: "on top of", examples: ["The toys rolled ___ the bed", "The cat hid ___ the blanket", "Mud collected ___ the car"] },
-                { word: "inside", opposite: "outside", examples: ["The cookies are ___ the jar", "The bird is ___ the cage", "The keys are ___ the drawer"] },
-                { word: "outside", opposite: "inside", examples: ["The dog plays ___ in the yard", "The garden is ___ the house", "They ate ___ under the trees"] }
+                { word: "above",       opposite: "below",       verbs: ["hangs", "floats", "hovers", "is placed"] },
+                { word: "below",       opposite: "above",       verbs: ["sits", "lies", "is placed", "rests"] },
+                { word: "beside",      opposite: "far from",    verbs: ["sits", "stands", "is placed", "rests"] },
+                { word: "between",     opposite: "outside",     verbs: ["sits", "is placed", "rests", "is tucked"] },
+                { word: "behind",      opposite: "in front of", verbs: ["hides", "is tucked", "stands", "is placed"] },
+                { word: "in front of", opposite: "behind",      verbs: ["stands", "is placed", "waits", "rests"] },
+                { word: "next to",     opposite: "far from",    verbs: ["sits", "rests", "stands", "is placed"] },
+                { word: "on top of",   opposite: "underneath",  verbs: ["sits", "is stacked", "rests", "is placed"] },
+                { word: "underneath",  opposite: "on top of",   verbs: ["hides", "is tucked", "slides", "is placed"] },
+                { word: "inside",      opposite: "outside",     verbs: ["sits", "is tucked", "rests", "is stored"] },
+                { word: "outside",     opposite: "inside",      verbs: ["plays", "waits", "stands", "rests"] }
             ];
-            const type = pick(["fill_in", "identify", "opposite", "which_picture"]);
+            const subjects = [
+                "cat", "puppy", "ball", "teddy bear", "pencil", "book", "lunchbox", "hat",
+                "backpack", "toy car", "water bottle", "mitten", "cup", "crayon", "apple",
+                "shoe", "kite", "umbrella", "lamp", "cookie", "frog", "rabbit", "toy plane"
+            ];
+            const landmarks = [
+                "desk", "chair", "table", "shelf", "box", "bed", "couch", "bench",
+                "window", "door", "rug", "basket", "bookcase", "pillow", "tree", "fence",
+                "rock", "blanket", "backpack", "toy chest", "cabinet", "mat"
+            ];
+            const between2 = [
+                ["the lamp", "the clock"], ["the window", "the door"], ["the blue cup", "the red cup"],
+                ["the desk", "the bookshelf"], ["the rug", "the chair"], ["the apple", "the orange"],
+                ["4 and 6", "8 and 10"], // numeric
+                ["Monday", "Wednesday"], ["the tree", "the bench"]
+            ];
+
+            const type = pick(["fill_in", "identify", "opposite", "which_word"]);
+            const pos = pick(positions);
+            const subj = pick(subjects);
+            const land = pick(landmarks);
+            const verb = pick(pos.verbs);
+            const distractors = shuffle(positions.filter(p => p.word !== pos.word && p.word !== pos.opposite).map(p => p.word));
+
+            // Build a random sentence that uses `pos.word` naturally.
+            const sentence = (withWord) => {
+                const w = withWord;
+                if (pos.word === "between") {
+                    const [x, y] = pick(between2);
+                    return `The ${subj} ${verb} ${w} ${x} and ${y}`;
+                }
+                return `The ${subj} ${verb} ${w} the ${land}`;
+            };
+
             if (type === "fill_in") {
-                const pos = pick(positions);
-                const wrongWords = shuffle(positions.filter(p => p.word !== pos.word).map(p => p.word)).slice(0, 3);
-                return { question: pick(pos.examples).replace("___", "____"), answer: pos.word, type: "conceptual",
-                    options: shuffle([pos.word, ...wrongWords]),
-                    explanation: `"${pos.word}" describes the position correctly.` };
-            } else if (type === "identify") {
-                const pos = pick(positions);
-                const distractors = shuffle(positions.filter(p => p.word !== pos.word && p.word !== pos.opposite).map(p => p.word)).slice(0, 2);
-                return { question: `Which word describes this position: ${pick(pos.examples).replace("___", pos.word)}?`,
+                return {
+                    question: `${sentence("____")}. Which word fits?`,
                     answer: pos.word, type: "conceptual",
-                    options: shuffle([pos.word, pos.opposite, ...distractors]),
-                    explanation: `"${pos.word}" matches this position.` };
-            } else if (type === "opposite") {
-                const pos = pick(positions.filter(p => p.opposite !== "far from"));
-                const distractors = shuffle(positions.filter(p => p.word !== pos.word && p.word !== pos.opposite).map(p => p.word)).slice(0, 2);
-                return { question: `What is the opposite of "${pos.word}"?`, answer: pos.opposite, type: "conceptual",
-                    options: shuffle([pos.opposite, pos.word, ...distractors]),
-                    explanation: `The opposite of "${pos.word}" is "${pos.opposite}".` };
-            } else {
-                // which_picture: pick a position, describe two objects, ask which relation fits
-                const pos = pick(positions);
-                const pairs = [
-                    ["cat", "box"], ["pencil", "desk"], ["book", "shelf"], ["ball", "chair"],
-                    ["bird", "nest"], ["shoe", "mat"], ["cup", "saucer"], ["lamp", "table"]
-                ];
-                const [a, b] = pick(pairs);
-                const distractors = shuffle(positions.filter(p => p.word !== pos.word).map(p => p.word)).slice(0, 3);
-                return { question: `If the ${a} is ${pos.word} the ${b}, which word describes their position?`,
-                    answer: pos.word, type: "conceptual",
-                    options: shuffle([pos.word, ...distractors]),
-                    explanation: `The ${a} being ${pos.word} the ${b} is exactly the "${pos.word}" relation.` };
+                    options: shuffle([pos.word, ...distractors.slice(0, 3)]),
+                    explanation: `"${pos.word}" describes this position.`
+                };
             }
+
+            if (type === "identify") {
+                // Show the full sentence with the word in it; student picks the word that describes the relation.
+                return {
+                    question: `Which word describes this position?\n"${sentence(pos.word)}"`,
+                    answer: pos.word, type: "conceptual",
+                    options: shuffle([pos.word, pos.opposite, ...distractors.slice(0, 2)]),
+                    explanation: `"${pos.word}" matches.`
+                };
+            }
+
+            if (type === "opposite") {
+                // Some "opposites" in the pool are non-unique (several words share opposite "far from").
+                // Filter to positions whose opposite is unambiguous so distractors don't accidentally include a valid answer.
+                const uniquelyPaired = positions.filter(p =>
+                    positions.filter(q => q.opposite === p.opposite).length === 1
+                );
+                const chosen = pick(uniquelyPaired);
+                const chosenDistractors = shuffle(positions.filter(p => p.word !== chosen.word && p.word !== chosen.opposite).map(p => p.word)).slice(0, 2);
+                return {
+                    question: `What is the opposite of "${chosen.word}"?`,
+                    answer: chosen.opposite, type: "conceptual",
+                    options: shuffle([chosen.opposite, chosen.word, ...chosenDistractors]),
+                    explanation: `The opposite of "${chosen.word}" is "${chosen.opposite}".`
+                };
+            }
+
+            // which_word: given a random pair of objects and a relation, pick the word that describes it.
+            return {
+                question: `If the ${subj} is ${pos.word} the ${land}, which word describes their position?`,
+                answer: pos.word, type: "conceptual",
+                options: shuffle([pos.word, ...distractors.slice(0, 3)]),
+                explanation: `The ${subj} being ${pos.word} the ${land} is exactly the "${pos.word}" relation.`
+            };
         },
         "Classifying Objects": () => {
             const type = pick(["by_color", "by_size", "by_shape", "odd_one_out"]);
@@ -6684,87 +6730,185 @@ const generators = {
             }
         },
         "Sampling Methods": () => {
-            const type = pick(["identify", "bias", "best_method", "example_match", "counter"]);
+            // Fully procedural: every question is composed from independent pools
+            // (method × population × topic × biased-venue × interval/N), so the
+            // total combinatorial space is in the thousands.
             const methods = [
                 { name: "Simple Random", desc: "Every member has equal chance of being selected" },
-                { name: "Stratified", desc: "Population divided into groups, samples taken from each" },
-                { name: "Systematic", desc: "Select every nth member from a list" },
-                { name: "Convenience", desc: "Use easily available members (often biased)" },
-                { name: "Cluster", desc: "Divide population into clusters, randomly pick whole clusters" }
+                { name: "Stratified",    desc: "Population is divided into groups, then samples are taken from each group" },
+                { name: "Systematic",    desc: "Select every nth member from a list, starting at a random point" },
+                { name: "Convenience",   desc: "Use easily available members (often biased)" },
+                { name: "Cluster",       desc: "Divide population into clusters, then randomly pick whole clusters to sample fully" }
             ];
-            if (type === "identify") {
+            const populations = [
+                "students", "voters", "customers", "employees", "subscribers", "citizens",
+                "households", "park visitors", "app users", "library patrons", "hospital patients", "shoppers"
+            ];
+            const topics = [
+                "satisfaction ratings", "favorite brands", "weekly spending", "commute time",
+                "opinions on a new policy", "internet usage", "exercise habits", "reading habits",
+                "music preferences", "meal choices", "vacation plans", "product quality"
+            ];
+            const strata = ["grade level", "age group", "region", "department", "income bracket", "shift", "zip code"];
+            const clusterUnits = ["schools", "neighborhoods", "classrooms", "office buildings", "branches", "apartment complexes"];
+            // Venues where every visitor shares some trait that biases against/toward a topic.
+            const biasedVenues = [
+                { venue: "a vegan restaurant",        tilt: "meat-eating habits" },
+                { venue: "a fitness center",          tilt: "exercise habits" },
+                { venue: "a luxury-car dealership",   tilt: "household income" },
+                { venue: "a kids' birthday party",    tilt: "opinions on toys" },
+                { venue: "a chess club meeting",      tilt: "interest in strategy games" },
+                { venue: "a senior community center", tilt: "smartphone usage" },
+                { venue: "a comic-book convention",   tilt: "favorite media" },
+                { venue: "a downtown office lobby at 9am", tilt: "work patterns" }
+            ];
+            const channelsBiased = [
+                "calling landlines during the workday",
+                "posting an online-only poll on a tech blog",
+                "stopping people at a single mall on a Saturday",
+                "emailing only people who already bought the product",
+                "asking your friends and family",
+                "approaching whoever walks by the researcher's office"
+            ];
+            const simpleRandomDevices = [
+                "drawing names from a hat", "using a random number generator",
+                "pulling raffle tickets blindly from a mixed drum",
+                "spinning a labeled roulette wheel", "assigning each person an ID and picking IDs at random"
+            ];
+
+            const pop = pick(populations);
+            const topic = pick(topics);
+            const stratum = pick(strata);
+            const clusterUnit = pick(clusterUnits);
+            const N = pick([10, 20, 25, 30, 50, 75, 100, 200]);
+            const k = pick([5, 7, 8, 10, 12, 15, 20, 25]);
+
+            const type = pick(["identify_from_desc", "identify_from_example", "bias_check", "best_method", "counter"]);
+
+            if (type === "identify_from_desc") {
                 const method = pick(methods);
-                return { question: `"${method.desc}" describes which sampling method?`, answer: method.name, type: "conceptual",
+                return {
+                    question: `"${method.desc}" describes which sampling method?`,
+                    answer: method.name, type: "conceptual",
                     options: methods.map(m => m.name),
-                    explanation: `${method.name} sampling: ${method.desc}` };
-            } else if (type === "bias") {
-                const scenarios = [
-                    { scenario: "Survey only honors students about school satisfaction", biased: true, reason: "Only surveys high-achieving students" },
-                    { scenario: "Randomly select 100 names from all student IDs", biased: false, reason: "Every student has equal chance" },
-                    { scenario: "Ask people leaving a gym about exercise habits", biased: true, reason: "Only surveys gym-goers" },
-                    { scenario: "Call landline phones during the workday to survey voters", biased: true, reason: "Misses people at work and those without landlines" },
-                    { scenario: "Post an online poll on a news site about internet speeds", biased: true, reason: "Only reaches people already online" },
-                    { scenario: "Randomly sample 50 students from every grade proportionally", biased: false, reason: "Stratified random — every grade is represented" },
-                    { scenario: "Interview shoppers at one store on a Saturday morning", biased: true, reason: "Only captures weekend shoppers at that location" },
-                    { scenario: "Draw 20 raffle tickets blindly from a mixed drum", biased: false, reason: "Every ticket has an equal draw chance" },
-                    { scenario: "Ask people outside a vegan restaurant about meat consumption", biased: true, reason: "Sample is self-selected against meat-eaters" },
-                    { scenario: "Select every 25th item from a random starting point on a production line", biased: false, reason: "Systematic sampling with random start is unbiased here" }
-                ];
-                const s = pick(scenarios);
-                return { question: `Is this sampling biased? "${s.scenario}"`, answer: s.biased ? "Yes" : "No", type: "reasoning",
-                    options: ["Yes", "No"],
-                    explanation: s.biased ? `Biased: ${s.reason}` : `Unbiased: ${s.reason}` };
-            } else if (type === "best_method") {
-                const situations = [
-                    { situation: "Survey opinions of all school grades", best: "Stratified", reason: "Sample from each grade ensures representation" },
-                    { situation: "Quality check every 10th item on an assembly line", best: "Systematic", reason: "Regular intervals give consistent checking" },
-                    { situation: "Select lottery winners from all entries", best: "Simple Random", reason: "Everyone must have an equal chance" },
-                    { situation: "Test water quality by picking a few whole neighborhoods", best: "Cluster", reason: "Pick whole clusters (neighborhoods) at random, test all within" },
-                    { situation: "Poll voter intent across regions proportional to population", best: "Stratified", reason: "Split by region, sample each in proportion to its size" },
-                    { situation: "Researcher stops the first 20 people they see at the mall", best: "Convenience", reason: "Easy to reach but not representative — convenience sampling" },
-                    { situation: "Pick every 5th name from an alphabetized class roster", best: "Systematic", reason: "Fixed interval through an ordered list is systematic" },
-                    { situation: "Pull names from a hat with every student's name", best: "Simple Random", reason: "Each student has an equal draw chance" },
-                    { situation: "Sample product batches by picking whole shipping crates at random", best: "Cluster", reason: "Crates are clusters; pick some crates and inspect everything inside" },
-                    { situation: "Survey boys and girls in equal proportion from each grade", best: "Stratified", reason: "Strata (grade × gender) ensure balanced coverage" }
-                ];
-                const s = pick(situations);
-                return { question: `Best sampling method for: "${s.situation}"?`, answer: s.best, type: "reasoning",
-                    options: methods.map(m => m.name),
-                    explanation: `${s.best}: ${s.reason}` };
-            } else if (type === "example_match") {
-                const examples = [
-                    { ex: "Every 7th customer gets a survey email", method: "Systematic" },
-                    { ex: "A researcher surveys the first 30 students who enter the cafeteria", method: "Convenience" },
-                    { ex: "Names are drawn from a raffle drum one by one", method: "Simple Random" },
-                    { ex: "Three schools are chosen at random and every student at those schools is surveyed", method: "Cluster" },
-                    { ex: "The population is split by age group and 10 people are randomly picked from each group", method: "Stratified" },
-                    { ex: "A reporter polls friends and family for a news piece", method: "Convenience" },
-                    { ex: "A computer picks a random integer and that row of the database is selected", method: "Simple Random" },
-                    { ex: "Entire homerooms are picked at random; then every student in those homerooms is included", method: "Cluster" }
-                ];
-                const e = pick(examples);
-                return { question: `Which method? "${e.ex}"`, answer: e.method, type: "conceptual",
-                    options: methods.map(m => m.name),
-                    explanation: `That's ${e.method} sampling.` };
-            } else {
-                // counter: given a method, ask which example is NOT that method
-                const method = pick(methods);
-                const pool = {
-                    "Simple Random": { yes: "Draw names from a hat", no: "Pick every 10th person from a list" },
-                    "Stratified":    { yes: "Sample equally from each grade",    no: "Poll the first 50 people at a mall" },
-                    "Systematic":    { yes: "Take every 12th item off a line",   no: "Email 100 randomly chosen customers" },
-                    "Convenience":   { yes: "Survey whoever is nearby right now", no: "Draw cards from a well-shuffled deck" },
-                    "Cluster":       { yes: "Pick 3 random schools and survey everyone in them", no: "Randomly pick one student per grade" }
+                    explanation: `${method.name} sampling: ${method.desc}`
                 };
-                const { yes, no } = pool[method.name];
-                const isYes = pick([true, false]);
-                return { question: `Which example is ${isYes ? '' : 'NOT '}${method.name} sampling?`,
-                    answer: isYes ? yes : no, type: "reasoning",
-                    options: [yes, no].sort(() => Math.random() - 0.5),
-                    explanation: isYes
-                        ? `"${yes}" matches ${method.name}.`
-                        : `"${no}" is NOT ${method.name} — that's a different method.` };
             }
+
+            if (type === "identify_from_example") {
+                // Generate an example for a randomly-chosen method, using random context.
+                const method = pick(methods);
+                let example;
+                switch (method.name) {
+                    case "Simple Random":
+                        example = `A researcher studies ${pop} by ${pick(simpleRandomDevices)} to pick ${N} people, then asks them about their ${topic}.`; break;
+                    case "Stratified":
+                        example = `${cap(pop)} are divided by ${stratum}, and ${N} people are randomly chosen from each ${stratum.replace(/s$/, "")} to answer questions about their ${topic}.`; break;
+                    case "Systematic":
+                        example = `Starting from a random spot in a list of ${pop}, the researcher picks every ${k}th person and records their ${topic}.`; break;
+                    case "Convenience":
+                        example = `The researcher simply asks the first ${N} ${pop} they run into about their ${topic}.`; break;
+                    case "Cluster":
+                        example = `Several ${clusterUnit} are chosen at random; every person in those ${clusterUnit} is surveyed about their ${topic}.`; break;
+                }
+                return {
+                    question: `Which sampling method is this?\n"${example}"`,
+                    answer: method.name, type: "conceptual",
+                    options: methods.map(m => m.name),
+                    explanation: `${method.name}: ${method.desc}.`
+                };
+            }
+
+            if (type === "bias_check") {
+                // 50/50 biased vs unbiased. Compose from the relevant bias pools.
+                const makeBiased = pick([true, false]);
+                let scenario, reason;
+                if (makeBiased) {
+                    const variant = pick(["venue", "channel"]);
+                    if (variant === "venue") {
+                        const v = pick(biasedVenues);
+                        scenario = `Ask ${N} people at ${v.venue} about their ${v.tilt}`;
+                        reason = `Everyone at ${v.venue} already shares traits tied to ${v.tilt}, so the sample is self-selected.`;
+                    } else {
+                        scenario = `${cap(pick(channelsBiased))} to survey ${pop} about their ${topic}`;
+                        reason = `That channel systematically excludes part of the ${pop} population, so the sample isn't representative.`;
+                    }
+                } else {
+                    const unbiasedVariant = pick(["random", "stratified", "systematic"]);
+                    if (unbiasedVariant === "random") {
+                        scenario = `${cap(pick(simpleRandomDevices))} to pick ${N} ${pop} to survey about their ${topic}`;
+                        reason = `Every member of the ${pop} population has the same chance of being picked.`;
+                    } else if (unbiasedVariant === "stratified") {
+                        scenario = `Split ${pop} by ${stratum} and randomly pick ${N} from each ${stratum.replace(/s$/, "")} to ask about their ${topic}`;
+                        reason = `Stratified random sampling — every ${stratum.replace(/s$/, "")} is represented in proportion.`;
+                    } else {
+                        scenario = `Starting from a random point in a list of ${pop}, pick every ${k}th person and ask about their ${topic}`;
+                        reason = `Systematic sampling with a random start from a non-ordered-by-topic list is unbiased.`;
+                    }
+                }
+                return {
+                    question: `Is this sampling biased?\n"${scenario}"`,
+                    answer: makeBiased ? "Yes" : "No", type: "reasoning",
+                    options: ["Yes", "No"],
+                    explanation: (makeBiased ? "Biased — " : "Not biased — ") + reason
+                };
+            }
+
+            if (type === "best_method") {
+                // Pick the method first, then describe a situation that uniquely calls for it.
+                const method = pick(methods);
+                let situation, reason;
+                switch (method.name) {
+                    case "Simple Random":
+                        situation = `You need to pick ${N} ${pop} to win a prize and every person must have an equal chance.`;
+                        reason = "Equal chance for every member = Simple Random."; break;
+                    case "Stratified":
+                        situation = `You want to survey ${pop} about their ${topic}, making sure every ${stratum} is represented proportionally.`;
+                        reason = `Proportional coverage across ${stratum} groups = Stratified.`; break;
+                    case "Systematic":
+                        situation = `You have an ordered list of ${pop} and want a quick, evenly-spaced sample of about ${Math.round(1000 / k)} people.`;
+                        reason = `Even spacing through an ordered list = Systematic (every ${k}th).`; break;
+                    case "Convenience":
+                        situation = `A reporter has 15 minutes to gather quotes from ${pop} about a breaking story and grabs whoever is closest.`;
+                        reason = `Whoever is easiest to reach = Convenience (often biased).`; break;
+                    case "Cluster":
+                        situation = `You want to test ${topic}-related behavior across a wide area by picking a few entire ${clusterUnit} at random and surveying everyone within.`;
+                        reason = `Pick whole groups at random, survey all within = Cluster.`; break;
+                }
+                return {
+                    question: `Best sampling method for this situation?\n"${situation}"`,
+                    answer: method.name, type: "reasoning",
+                    options: methods.map(m => m.name),
+                    explanation: `${method.name}: ${reason}`
+                };
+            }
+
+            // counter: which example is / is not <method>?
+            const method = pick(methods);
+            const isYes = pick([true, false]);
+            // A correct example for this method, and a correct example for some other method.
+            const genExample = (mName) => {
+                switch (mName) {
+                    case "Simple Random": return `${cap(pick(simpleRandomDevices))} to pick ${N} ${pop}`;
+                    case "Stratified":    return `Splitting ${pop} by ${stratum} and randomly picking ${N} from each ${stratum.replace(/s$/, "")}`;
+                    case "Systematic":    return `Picking every ${k}th person in a list of ${pop} from a random starting point`;
+                    case "Convenience":   return `Asking the first ${N} ${pop} the researcher runs into`;
+                    case "Cluster":       return `Picking a handful of ${clusterUnit} at random and surveying everyone in them`;
+                }
+            };
+            const correctForMethod = genExample(method.name);
+            const other = pick(methods.filter(m => m.name !== method.name));
+            const otherExample = genExample(other.name);
+            const [a, b] = [correctForMethod, otherExample];
+            return {
+                question: `Which example ${isYes ? "IS" : "is NOT"} ${method.name} sampling?`,
+                answer: isYes ? correctForMethod : otherExample,
+                type: "reasoning",
+                options: shuffle([a, b]),
+                explanation: isYes
+                    ? `"${correctForMethod}" matches ${method.name}: ${method.desc.toLowerCase()}.`
+                    : `"${otherExample}" is actually ${other.name}, not ${method.name}.`
+            };
         },
         "Transformations": () => {
             const type = pick(["translation", "reflection", "rotation", "identify"]);
