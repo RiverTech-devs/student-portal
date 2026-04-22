@@ -6249,27 +6249,76 @@ const generators = {
                 explanation: `Sum = ${sum}, count = ${n}. Mean = ${sum}/${n} = ${mean.toFixed(2)}` };
         },
         "Data Collection": () => {
-            const type = pick(["tally", "read", "organize"]);
+            // Procedural: 'read' now picks a random category set (colors/fruits/sports/
+            // transport/pets/subjects) and generates values that guarantee a unique max
+            // so "Which has the most?" has a single right answer. Also added a 'least'
+            // subtype and a 'range' subtype.
+            const categorySets = [
+                ["Red", "Blue", "Green", "Yellow"],
+                ["Apples", "Bananas", "Grapes", "Oranges"],
+                ["Soccer", "Basketball", "Baseball", "Tennis"],
+                ["Car", "Bus", "Bike", "Walk"],
+                ["Dog", "Cat", "Fish", "Bird"],
+                ["Math", "Science", "English", "Art"],
+                ["Pizza", "Burger", "Salad", "Taco"],
+                ["Spring", "Summer", "Fall", "Winter"]
+            ];
+            const surveyContexts = [
+                { prompt: "Survey results by day", labels: ["Mon", "Tue", "Wed", "Thu"] },
+                { prompt: "Classroom votes", labels: ["Class A", "Class B", "Class C", "Class D"] },
+                { prompt: "Store sales by month", labels: ["Jan", "Feb", "Mar", "Apr"] },
+                { prompt: "Books checked out", labels: ["Week 1", "Week 2", "Week 3", "Week 4"] },
+                { prompt: "Tickets sold by showtime", labels: ["Morning", "Afternoon", "Evening", "Night"] }
+            ];
+
+            const type = pick(["tally", "read_most", "read_least", "organize", "range"]);
+
             if (type === "tally") {
-                const count = rand(3, 12);
+                const count = rand(3, 30);
                 const tallyStr = "|||||".repeat(Math.floor(count / 5)) + "|".repeat(count % 5);
-                return { question: `How many does this tally show? ${tallyStr.replace(/\|\|\|\|\|/g, '||||̸ ')}`, answer: count, type: "procedural",
-                    explanation: `Each group of 5 is ||||̸. Count: ${Math.floor(count/5)} groups of 5 + ${count % 5} = ${count}` };
-            } else if (type === "read") {
-                const categories = ["Red", "Blue", "Green"];
-                const values = [rand(2, 8), rand(2, 8), rand(2, 8)];
-                const maxIdx = values.indexOf(Math.max(...values));
-                return { question: `Bar graph shows: Red=${values[0]}, Blue=${values[1]}, Green=${values[2]}. Which has the most?`,
-                    answer: categories[maxIdx], type: "conceptual",
-                    options: categories.concat(["They're equal"]),
-                    explanation: `${categories[maxIdx]} has ${values[maxIdx]}, which is the highest.` };
-            } else {
-                const data = [rand(5, 10), rand(3, 8), rand(7, 12), rand(4, 9)];
+                return { question: `How many does this tally show? ${tallyStr.replace(/\|\|\|\|\|/g, '||||̸ ')}`,
+                    answer: count, type: "procedural",
+                    options: shuffle([count, count + 1, Math.max(1, count - 1), count + 5]).filter((v, i, a) => a.indexOf(v) === i),
+                    explanation: `Each group of 5 is ||||̸. Count: ${Math.floor(count / 5)} groups of 5 + ${count % 5} = ${count}` };
+            }
+            if (type === "read_most" || type === "read_least") {
+                const cats = pick(categorySets);
+                // Generate values with one guaranteed extreme.
+                const values = cats.map(() => rand(2, 30));
+                const extreme = type === "read_most" ? Math.max(...values) : Math.min(...values);
+                // Make sure the extreme is unique.
+                while (values.filter(v => v === extreme).length > 1) {
+                    const dupIdx = values.indexOf(extreme, values.indexOf(extreme) + 1);
+                    values[dupIdx] = type === "read_most" ? rand(2, extreme - 1) : rand(extreme + 1, 30);
+                }
+                const idx = values.indexOf(extreme);
+                const labelStr = cats.map((c, i) => `${c}=${values[i]}`).join(", ");
+                return {
+                    question: `Bar graph shows: ${labelStr}. Which has the ${type === "read_most" ? "most" : "least"}?`,
+                    answer: cats[idx], type: "conceptual",
+                    options: cats,
+                    explanation: `${cats[idx]} has ${extreme}, the ${type === "read_most" ? "highest" : "lowest"} value.`
+                };
+            }
+            if (type === "organize") {
+                const ctx = pick(surveyContexts);
+                const data = ctx.labels.map(() => rand(3, 15));
                 const total = data.reduce((a, b) => a + b, 0);
-                return { question: `Survey results: Mon=${data[0]}, Tue=${data[1]}, Wed=${data[2]}, Thu=${data[3]}. Total responses?`,
+                const paired = ctx.labels.map((l, i) => `${l}=${data[i]}`).join(", ");
+                return { question: `${ctx.prompt}: ${paired}. Total?`,
                     answer: total, type: "procedural",
+                    options: shuffle([total, total + 5, Math.max(1, total - 5), total + 10]).filter((v, i, a) => a.indexOf(v) === i),
                     explanation: `${data.join(" + ")} = ${total}` };
             }
+            // range
+            const ctx = pick(surveyContexts);
+            const data = ctx.labels.map(() => rand(3, 25));
+            const range = Math.max(...data) - Math.min(...data);
+            const paired = ctx.labels.map((l, i) => `${l}=${data[i]}`).join(", ");
+            return { question: `${ctx.prompt}: ${paired}. What is the range?`,
+                answer: range, type: "procedural",
+                options: shuffle([range, range + 1, Math.max(0, range - 1), range + 5]).filter((v, i, a) => a.indexOf(v) === i),
+                explanation: `Range = ${Math.max(...data)} − ${Math.min(...data)} = ${range}` };
         },
         "Mean Median Mode": () => {
             const type = pick(["median", "mode", "range"]);
@@ -6441,29 +6490,61 @@ const generators = {
             }
         },
         "GCF and LCM": () => {
+            // Procedural: build each pair by picking a seed GCF g and two random
+            // co-factors m, n (guaranteed coprime via a quick coprime test). Then
+            // a = g*m, b = g*n, and GCF(a,b) = g, LCM(a,b) = g*m*n. Word-problem
+            // subtypes draw their narrative from independent context banks.
+            const gcfHelper = (x, y) => { while (y) { [x, y] = [y, x % y]; } return x; };
+            // Generate a random pair with bounded magnitudes so factoring stays tidy.
+            const g = rand(1, 8);
+            let m = rand(2, 9), n = rand(2, 9);
+            while (m === n || gcfHelper(m, n) !== 1) { m = rand(2, 9); n = rand(2, 9); }
+            let a = g * m, b = g * n;
+            if (a > b) [a, b] = [b, a];
+            const gcfVal = g;
+            const lcmVal = g * m * n;
+            const factorsOf = (x) => Array.from({ length: x }, (_, i) => i + 1).filter(k => x % k === 0);
+
+            const gcfContexts = [
+                { objA: "red beads", objB: "blue beads", action: "divided into equal groups", qTail: "What is the greatest number of groups possible?" },
+                { objA: "cupcakes", objB: "cookies", action: "sorted into identical party bags", qTail: "What is the largest number of bags she can fill with no leftovers?" },
+                { objA: "pencils", objB: "erasers", action: "packed into equal school kits", qTail: "What is the greatest number of kits she can pack (with no leftovers)?" },
+                { objA: "markers", objB: "notebooks", action: "split into equal supply packs", qTail: "What is the largest number of packs, with no leftovers?" },
+                { objA: "tulips", objB: "roses", action: "arranged into identical bouquets", qTail: "What is the greatest number of bouquets that use all the flowers?" },
+                { objA: "apples", objB: "oranges", action: "split into equal fruit baskets", qTail: "What is the greatest number of baskets?" }
+            ];
+            const lcmContexts = [
+                { objA: "hot dogs", objB: "buns", packA: "packs", packB: "packs", action: "have the same amount", qTail: "What's the least number of each to have the same amount?" },
+                { objA: "forks", objB: "spoons", packA: "boxes", packB: "boxes", action: "have matching counts", qTail: "What's the smallest count where both are equal?" },
+                { objA: "burgers", objB: "cheese slices", packA: "packs", packB: "packs", action: "have matching counts", qTail: "What's the smallest number where they match?" },
+                { objA: "cups", objB: "plates", packA: "packs", packB: "packs", action: "have no leftovers", qTail: "What's the smallest matching total?" },
+                { objA: "Bus A", objB: "Bus B", packA: "minutes", packB: "minutes", action: "both arrive at the stop together", qTail: "After how many minutes will they meet again?" }
+            ];
+
             const type = pick(["gcf", "lcm", "gcf_word", "lcm_word"]);
-            const pairs = [[12, 18], [8, 12], [15, 20], [10, 15], [14, 21], [16, 24], [9, 12], [6, 8]];
-            const [a, b] = pick(pairs);
-            // Calculate GCF
-            const findGCF = (x, y) => { while (y) { [x, y] = [y, x % y]; } return x; };
-            const gcfVal = findGCF(a, b);
-            // Calculate LCM
-            const lcmVal = (a * b) / gcfVal;
             if (type === "gcf") {
-                return { question: `What is the GCF (Greatest Common Factor) of ${a} and ${b}?`, answer: gcfVal, type: "procedural",
-                    options: [gcfVal, lcmVal, Math.min(a, b), a + b].filter((v,i,arr) => arr.indexOf(v) === i).slice(0, 4),
-                    explanation: `Factors of ${a}: ${[...Array(a)].map((_,i)=>i+1).filter(n=>a%n===0).join(", ")}. Factors of ${b}: ${[...Array(b)].map((_,i)=>i+1).filter(n=>b%n===0).join(", ")}. GCF = ${gcfVal}` };
-            } else if (type === "lcm") {
-                return { question: `What is the LCM (Least Common Multiple) of ${a} and ${b}?`, answer: lcmVal, type: "procedural",
-                    options: [lcmVal, a * b, gcfVal, Math.max(a, b)].filter((v,i,arr) => arr.indexOf(v) === i).slice(0, 4),
-                    explanation: `Multiples of ${a}: ${a}, ${a*2}, ${a*3}... Multiples of ${b}: ${b}, ${b*2}, ${b*3}... LCM = ${lcmVal}` };
-            } else if (type === "gcf_word") {
-                return { question: `${a} red beads and ${b} blue beads are divided into equal groups. What is the greatest number of groups possible?`, answer: gcfVal, type: "reasoning",
-                    explanation: `GCF of ${a} and ${b} = ${gcfVal}. You can make ${gcfVal} equal groups.` };
-            } else {
-                return { question: `Hot dogs come in packs of ${a}. Buns come in packs of ${b}. What's the least number of each to have the same amount?`, answer: lcmVal, type: "reasoning",
-                    explanation: `LCM of ${a} and ${b} = ${lcmVal}. Buy ${lcmVal / a} packs of hot dogs and ${lcmVal / b} packs of buns.` };
+                return { question: `What is the GCF of ${a} and ${b}?`, answer: gcfVal, type: "procedural",
+                    options: shuffle([gcfVal, lcmVal, Math.min(a, b), a + b]).filter((v, i, arr) => arr.indexOf(v) === i).slice(0, 4),
+                    explanation: `Factors of ${a}: ${factorsOf(a).join(", ")}. Factors of ${b}: ${factorsOf(b).join(", ")}. GCF = ${gcfVal}.` };
             }
+            if (type === "lcm") {
+                return { question: `What is the LCM of ${a} and ${b}?`, answer: lcmVal, type: "procedural",
+                    options: shuffle([lcmVal, a * b, gcfVal, Math.max(a, b)]).filter((v, i, arr) => arr.indexOf(v) === i).slice(0, 4),
+                    explanation: `LCM = (a × b) ÷ GCF = (${a} × ${b}) ÷ ${gcfVal} = ${lcmVal}.` };
+            }
+            if (type === "gcf_word") {
+                const ctx = pick(gcfContexts);
+                return { question: `Someone has ${a} ${ctx.objA} and ${b} ${ctx.objB}, ${ctx.action}. ${ctx.qTail}`,
+                    answer: gcfVal, type: "reasoning",
+                    options: shuffle([gcfVal, lcmVal, Math.min(a, b), 1]).filter((v, i, arr) => arr.indexOf(v) === i).slice(0, 4),
+                    explanation: `GCF(${a}, ${b}) = ${gcfVal}.` };
+            }
+            // lcm_word
+            const ctx = pick(lcmContexts);
+            return { question: `${ctx.objA} come in ${ctx.packA} of ${a}. ${ctx.objB} come in ${ctx.packB} of ${b}. ${ctx.qTail}`,
+                answer: lcmVal, type: "reasoning",
+                options: shuffle([lcmVal, a * b, gcfVal, Math.max(a, b)]).filter((v, i, arr) => arr.indexOf(v) === i).slice(0, 4),
+                explanation: `LCM(${a}, ${b}) = ${lcmVal}. (${lcmVal / a} ${ctx.packA} of ${ctx.objA}, ${lcmVal / b} ${ctx.packB} of ${ctx.objB}.)` };
         },
         "Powers of 10": () => {
             const type = pick(["multiply", "divide", "pattern", "decimal", "scientific"]);
@@ -6725,34 +6806,69 @@ const generators = {
             }
         },
         "Comparing Distributions": () => {
+            // Procedural: every subtype builds datasets from rand() and derives answers
+            // numerically. 'shape' now generates a random distribution profile (uniform /
+            // symmetric / skewed-left / skewed-right) and asks the matching question so
+            // the answer varies each call.
+            const labelPairs = [
+                ["Set A", "Set B"], ["Class A", "Class B"], ["Team 1", "Team 2"],
+                ["Store X", "Store Y"], ["School A", "School B"], ["Route 1", "Route 2"]
+            ];
             const type = pick(["mean", "spread", "center", "shape"]);
+
             if (type === "mean") {
-                const set1 = [rand(10, 20), rand(10, 20), rand(10, 20), rand(10, 20), rand(10, 20)];
-                const set2 = [rand(15, 25), rand(15, 25), rand(15, 25), rand(15, 25), rand(15, 25)];
-                const mean1 = set1.reduce((a, b) => a + b, 0) / 5;
-                const mean2 = set2.reduce((a, b) => a + b, 0) / 5;
-                const higher = mean1 > mean2 ? "Set A" : mean2 > mean1 ? "Set B" : "Same";
-                return { question: `Set A: ${set1.join(", ")}. Set B: ${set2.join(", ")}. Which has a higher mean?`, answer: higher, type: "reasoning",
-                    options: ["Set A", "Set B", "Same"],
-                    explanation: `Mean A = ${mean1.toFixed(1)}. Mean B = ${mean2.toFixed(1)}. ${higher === "Same" ? "They are equal." : higher + " is higher."}` };
-            } else if (type === "spread") {
-                const set1 = [10, 11, 12, 13, 14];
-                const set2 = [5, 10, 12, 15, 23];
-                return { question: `Set A: ${set1.join(", ")}. Set B: ${set2.join(", ")}. Which has more spread?`, answer: "Set B", type: "conceptual",
-                    options: ["Set A", "Set B", "Same"],
-                    explanation: `Set A ranges 10-14 (4). Set B ranges 5-23 (18). Set B has more spread.` };
-            } else if (type === "center") {
-                const median1 = rand(15, 25);
-                const median2 = rand(10, 20);
-                const higher = median1 > median2 ? "Class A" : median2 > median1 ? "Class B" : "Same";
-                return { question: `Class A median score: ${median1}. Class B median score: ${median2}. Which class performed better?`, answer: higher, type: "reasoning",
-                    options: ["Class A", "Class B", "Same"],
-                    explanation: higher === "Same" ? `Both classes have the same median (${median1}).` : `Higher median = better typical performance. ${higher} (median ${Math.max(median1, median2)}) did better.` };
-            } else {
-                return { question: `A distribution where most values cluster around the mean is called...?`, answer: "symmetric", type: "conceptual",
-                    options: ["symmetric", "skewed left", "skewed right", "uniform"],
-                    explanation: `When data clusters around the center with similar spread on both sides, it's symmetric.` };
+                const [lA, lB] = pick(labelPairs);
+                const set1 = Array.from({ length: 5 }, () => rand(10, 30));
+                const set2 = Array.from({ length: 5 }, () => rand(10, 30));
+                const mean1 = set1.reduce((x, y) => x + y, 0) / 5;
+                const mean2 = set2.reduce((x, y) => x + y, 0) / 5;
+                const answer = mean1 > mean2 ? lA : mean2 > mean1 ? lB : "Same";
+                return { question: `${lA}: ${set1.join(", ")}. ${lB}: ${set2.join(", ")}. Which has a higher mean?`,
+                    answer, type: "reasoning",
+                    options: [lA, lB, "Same"],
+                    explanation: `Mean ${lA} = ${mean1.toFixed(1)}. Mean ${lB} = ${mean2.toFixed(1)}. ${answer === "Same" ? "Equal." : `${answer} is higher.`}` };
             }
+            if (type === "spread") {
+                const [lA, lB] = pick(labelPairs);
+                const mid = rand(10, 25);
+                // Tight set clustered near mid; wide set spread widely around mid.
+                const tight = [mid - 2, mid - 1, mid, mid + 1, mid + 2];
+                const wide = [mid - rand(6, 10), mid - rand(1, 4), mid, mid + rand(1, 4), mid + rand(6, 10)];
+                const flipTight = pick([true, false]);
+                const set1 = flipTight ? tight : wide;
+                const set2 = flipTight ? wide : tight;
+                const range1 = Math.max(...set1) - Math.min(...set1);
+                const range2 = Math.max(...set2) - Math.min(...set2);
+                const answer = range1 > range2 ? lA : range2 > range1 ? lB : "Same";
+                return { question: `${lA}: ${set1.join(", ")}. ${lB}: ${set2.join(", ")}. Which has more spread?`,
+                    answer, type: "conceptual",
+                    options: [lA, lB, "Same"],
+                    explanation: `${lA} range = ${range1}. ${lB} range = ${range2}. ${answer === "Same" ? "Equal." : `${answer} has more spread.`}` };
+            }
+            if (type === "center") {
+                const [lA, lB] = pick(labelPairs);
+                const median1 = rand(10, 30);
+                let median2 = rand(10, 30);
+                while (median2 === median1) median2 = rand(10, 30);
+                const answer = median1 > median2 ? lA : lB;
+                return { question: `${lA} median score: ${median1}. ${lB} median score: ${median2}. Which typical score is higher?`,
+                    answer, type: "reasoning",
+                    options: [lA, lB, "Same"],
+                    explanation: `Higher median = higher typical value. ${answer} (median ${Math.max(median1, median2)}) is higher.` };
+            }
+            // shape — generate a random distribution profile and ask for its name.
+            const shapes = [
+                { name: "symmetric",    desc: "most values cluster around the mean and the two sides of the distribution mirror each other" },
+                { name: "skewed right", desc: "most values are on the low side with a long tail stretching to the high end" },
+                { name: "skewed left",  desc: "most values are on the high side with a long tail stretching to the low end" },
+                { name: "uniform",      desc: "every value occurs about equally often with no real peak" },
+                { name: "bimodal",      desc: "the data has two clear peaks instead of one" }
+            ];
+            const s = pick(shapes);
+            return { question: `A distribution where ${s.desc} is called...?`,
+                answer: s.name, type: "conceptual",
+                options: shapes.map(x => x.name).slice(0, 4).includes(s.name) ? shapes.map(x => x.name).slice(0, 4) : shuffle([s.name, ...shapes.filter(x => x.name !== s.name).map(x => x.name).slice(0, 3)]),
+                explanation: `${cap(s.name)}: ${s.desc}.` };
         },
         "Nets of 3D Shapes": () => {
             const type = pick(["identify", "surface_area", "count_faces", "fold"]);
