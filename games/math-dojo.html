@@ -9015,27 +9015,59 @@ const generators = {
             }
         },
         Logarithms: () => {
-            // Map sub-skill IDs to question types
-            const subSkillToQuestionType = {
-                'eval': 'eval',
-                'property': 'property'
-            };
-
-            // Get completed sub-skills for this domain
+            // Procedural: 'eval' picks a random base and exponent, computes base^exp as
+            // the operand, and the answer is the exponent. Supports any base/exp
+            // combination rather than 6 fixed triples.
+            const subSkillToQuestionType = { 'eval': 'eval', 'property': 'property' };
             const subSkillOrder = ["eval", "property"];
-            let availableTypes = getUnlockedSubSkillTypes('7_Logarithms', subSkillToQuestionType, subSkillOrder);
-            const bases = [[2, 8, 3], [2, 16, 4], [3, 9, 2], [3, 27, 3], [10, 100, 2], [10, 1000, 3]];
-            const [base, val, ans] = pick(bases);
+            const availableTypes = getUnlockedSubSkillTypes('7_Logarithms', subSkillToQuestionType, subSkillOrder);
             const type = pick(availableTypes);
+
             if (type === "eval") {
-                return { question: `log${base === 10 ? '' : '₊'.replace('₊', base)}(${val}) = ?`, answer: ans, type: "procedural",
-                    explanation: `${base}^? = ${val}. Since ${base}^${ans} = ${val}, answer is ${ans}` };
-            } else {
-                const a = rand(2, 5), b = rand(2, 5);
-                return { question: `Simplify: log(${a * b}) using log(${a}) + log(${b})`, answer: `log(${a}) + log(${b})`, type: "conceptual",
-                    options: [`log(${a}) + log(${b})`, `log(${a}) × log(${b})`, `log(${a + b})`, `${a} × log(${b})`],
-                    explanation: `log(ab) = log(a) + log(b). So log(${a*b}) = log(${a}) + log(${b})` };
+                const base = pick([2, 3, 4, 5, 6, 7, 10]);
+                const exp = rand(1, base === 2 ? 6 : base <= 4 ? 4 : 3);
+                const val = Math.pow(base, exp);
+                const baseDisplay = base === 10 ? "" : `₍${base}₎`;
+                return {
+                    question: `log${baseDisplay}(${val}) = ?`,
+                    answer: exp, type: "procedural",
+                    options: shuffle([exp, exp + 1, Math.max(0, exp - 1), base]).filter((v, i, a) => a.indexOf(v) === i),
+                    explanation: `${base}^? = ${val}. Since ${base}^${exp} = ${val}, the answer is ${exp}.`
+                };
             }
+            // property — random property choice × random coefficients.
+            const a = rand(2, 9), b = rand(2, 9);
+            const variant = pick(["product", "quotient", "power", "change_base"]);
+            if (variant === "product") {
+                return { question: `Rewrite log(${a * b}) using the product rule:`,
+                    answer: `log(${a}) + log(${b})`, type: "conceptual",
+                    options: shuffle([`log(${a}) + log(${b})`, `log(${a}) × log(${b})`, `log(${a + b})`, `${a} × log(${b})`]),
+                    explanation: `Product rule: log(ab) = log(a) + log(b).` };
+            }
+            if (variant === "quotient") {
+                return { question: `Rewrite log(${a}/${b}) using the quotient rule:`,
+                    answer: `log(${a}) − log(${b})`, type: "conceptual",
+                    options: shuffle([`log(${a}) − log(${b})`, `log(${a}) + log(${b})`, `log(${a}) ÷ log(${b})`, `log(${a - b})`]),
+                    explanation: `Quotient rule: log(a/b) = log(a) − log(b).` };
+            }
+            if (variant === "power") {
+                const k = rand(2, 5);
+                return { question: `Rewrite log(${a}^${k}) using the power rule:`,
+                    answer: `${k} · log(${a})`, type: "conceptual",
+                    options: shuffle([`${k} · log(${a})`, `log(${a}) · log(${k})`, `log(${a * k})`, `${k} + log(${a})`]),
+                    explanation: `Power rule: log(a^k) = k · log(a).` };
+            }
+            // change_base
+            const newBase = pick([2, 10, "e"]);
+            return { question: `Change log₍${a}₎(${b * b}) to base ${newBase} using the change-of-base formula:`,
+                answer: `log₍${newBase}₎(${b * b}) / log₍${newBase}₎(${a})`, type: "conceptual",
+                options: shuffle([
+                    `log₍${newBase}₎(${b * b}) / log₍${newBase}₎(${a})`,
+                    `log₍${newBase}₎(${a}) / log₍${newBase}₎(${b * b})`,
+                    `log₍${newBase}₎(${b * b}) − log₍${newBase}₎(${a})`,
+                    `log₍${newBase}₎(${a} · ${b * b})`
+                ]),
+                explanation: `Change of base: log_a(x) = log_c(x) / log_c(a) for any new base c.` };
         },
         Polynomials: () => {
             // Map sub-skill IDs to question types
@@ -9169,25 +9201,78 @@ const generators = {
             }
         },
         "Piecewise Functions": () => {
+            // Procedural: 'evaluate' composes random rule pairs × random test values.
+            // 'graph' (continuity check) generates a random boundary and two random
+            // linear rules, then tests whether they're continuous there.
             const subSkillToType = { 'evaluate': 'evaluate', 'identify': 'identify', 'graph': 'graph' };
             const subSkillOrder = ["evaluate", "identify", "graph"];
-            let available = getUnlockedSubSkillTypes('7_Piecewise Functions', subSkillToType, subSkillOrder);
+            const available = getUnlockedSubSkillTypes('7_Piecewise Functions', subSkillToType, subSkillOrder);
             const type = pick(available);
+
+            // Helpers to build random linear rules ax + b that accept x and return the value,
+            // plus a human-readable form.
+            const makeRule = () => {
+                const a = pick([-3, -2, -1, 1, 2, 3]);
+                const b = rand(-5, 5);
+                const fn = (x) => a * x + b;
+                const str = (a === 1 ? "x" : a === -1 ? "-x" : `${a}x`) + (b === 0 ? "" : b > 0 ? ` + ${b}` : ` - ${Math.abs(b)}`);
+                return { fn, str, a, b };
+            };
+
             if (type === "evaluate") {
-                const x = rand(-3, 5);
-                const boundary = rand(0, 2);
-                const ans = x < boundary ? x + 5 : 2 * x;
-                return { question: `f(x) = {x + 5 if x < ${boundary}, 2x if x ≥ ${boundary}}. Find f(${x}).`, answer: ans, type: "procedural",
-                    explanation: `Since ${x} ${x < boundary ? '<' : '≥'} ${boundary}, use ${x < boundary ? 'x + 5' : '2x'}. f(${x}) = ${ans}` };
-            } else if (type === "identify") {
-                return { question: `A piecewise function has different rules for different:`, answer: "intervals of x", type: "conceptual",
-                    options: ["intervals of x", "values of y", "slopes", "intercepts"],
-                    explanation: `Piecewise functions have different rules for different intervals of x.` };
-            } else {
-                return { question: `At x = 2, f(x) = {x² if x < 2, 2x if x ≥ 2}. Is f continuous at x = 2?`, answer: "Yes", type: "reasoning",
-                    options: ["Yes", "No", "Cannot determine"],
-                    explanation: `Left: 2² = 4. Right: 2(2) = 4. Both equal, so continuous.` };
+                const boundary = rand(-2, 3);
+                const leftRule = makeRule();
+                const rightRule = makeRule();
+                const x = rand(boundary - 4, boundary + 4);
+                const useLeft = x < boundary;
+                const ans = useLeft ? leftRule.fn(x) : rightRule.fn(x);
+                return {
+                    question: `f(x) = {${leftRule.str} if x < ${boundary}, ${rightRule.str} if x ≥ ${boundary}}. Find f(${x}).`,
+                    answer: ans, type: "procedural",
+                    options: shuffle([ans, leftRule.fn(x), rightRule.fn(x), ans + 1]).filter((v, i, a) => a.indexOf(v) === i),
+                    explanation: `Since ${x} ${useLeft ? '<' : '≥'} ${boundary}, use ${useLeft ? leftRule.str : rightRule.str}. f(${x}) = ${ans}.`
+                };
             }
+            if (type === "identify") {
+                const concept = pick([
+                    { q: "A piecewise function has different rules for different:",                     a: "intervals of x",            opts: ["intervals of x", "values of y", "slopes", "intercepts"],                    exp: "Different rules apply over different intervals of the input x." },
+                    { q: "A piecewise function's domain is the ___ of its piece domains.",              a: "union",                     opts: ["union", "intersection", "average", "sum"],                                   exp: "Domain is the union of all the intervals where the pieces are defined." },
+                    { q: "If two pieces meet at the boundary with the same value, the function is:",    a: "continuous at that point",  opts: ["continuous at that point", "discontinuous there", "undefined", "non-linear"],exp: "Same value at the boundary → continuous there." },
+                    { q: "The step function is an example of a ___ function:",                           a: "piecewise",                 opts: ["piecewise", "linear", "rational", "trigonometric"],                         exp: "A step function is piecewise constant." },
+                    { q: "The absolute-value function |x| can be written as a:",                        a: "piecewise function",        opts: ["piecewise function", "rational function", "quadratic function", "trigonometric function"], exp: "|x| = x for x ≥ 0 and -x for x < 0 — a two-piece piecewise function." }
+                ]);
+                return { question: concept.q, answer: concept.a, type: "conceptual",
+                    options: concept.opts, explanation: concept.exp };
+            }
+            // graph — continuity check at a random boundary.
+            const boundary = rand(-3, 4);
+            const leftRule = makeRule();
+            // 50% chance to build a right rule that matches at the boundary (continuous).
+            const wantContinuous = pick([true, false]);
+            let rightRule;
+            if (wantContinuous) {
+                const rightA = pick([-3, -2, -1, 1, 2, 3]);
+                // Solve for rightB so rightA*boundary + rightB == leftRule.fn(boundary)
+                const rightB = leftRule.fn(boundary) - rightA * boundary;
+                const str = (rightA === 1 ? "x" : rightA === -1 ? "-x" : `${rightA}x`) + (rightB === 0 ? "" : rightB > 0 ? ` + ${rightB}` : ` - ${Math.abs(rightB)}`);
+                rightRule = { fn: (x) => rightA * x + rightB, str, a: rightA, b: rightB };
+            } else {
+                rightRule = makeRule();
+                // Make sure it doesn't accidentally match at the boundary.
+                if (rightRule.fn(boundary) === leftRule.fn(boundary)) {
+                    rightRule = { ...rightRule, b: rightRule.b + 1, fn: (x) => rightRule.a * x + rightRule.b + 1,
+                        str: rightRule.str.replace(/( \+ -?\d+)?$/, ` + ${rightRule.b + 1}`) };
+                }
+            }
+            const leftVal = leftRule.fn(boundary);
+            const rightVal = rightRule.fn(boundary);
+            const isContinuous = leftVal === rightVal;
+            return {
+                question: `At x = ${boundary}, f(x) = {${leftRule.str} if x < ${boundary}, ${rightRule.str} if x ≥ ${boundary}}. Is f continuous at x = ${boundary}?`,
+                answer: isContinuous ? "Yes" : "No", type: "reasoning",
+                options: ["Yes", "No", "Cannot determine"],
+                explanation: `Left limit: ${leftRule.str.replace(/x/g, `(${boundary})`)} = ${leftVal}. Right value: ${rightRule.str.replace(/x/g, `(${boundary})`)} = ${rightVal}. ${isContinuous ? "Equal → continuous." : "Unequal → not continuous."}`
+            };
         },
         Asymptotes: () => {
             const subSkillToType = { 'vertical': 'vertical', 'horizontal': 'horizontal', 'both': 'both' };
@@ -9260,24 +9345,40 @@ const generators = {
             }
         },
         "Expected Value": () => {
+            // Procedural: 'dice' now uses a rand() number of sides (4/6/8/10/12/20).
+            // 'coins' and 'custom' already randomized; custom now uses rand() probabilities.
             const subSkillToType = { 'dice': 'dice', 'coins': 'coins', 'custom': 'custom' };
             const subSkillOrder = ["dice", "coins", "custom"];
-            let available = getUnlockedSubSkillTypes('7_Expected Value', subSkillToType, subSkillOrder);
+            const available = getUnlockedSubSkillTypes('7_Expected Value', subSkillToType, subSkillOrder);
             const type = pick(available);
+
             if (type === "dice") {
-                return { question: `Roll a fair die. What is the expected value?`, answer: 3.5, type: "procedural",
-                    explanation: `E(X) = (1+2+3+4+5+6)/6 = 21/6 = 3.5` };
-            } else if (type === "coins") {
-                const win = rand(5, 10), lose = rand(2, 4);
-                const ev = (0.5 * win - 0.5 * lose).toFixed(2);
-                return { question: `Flip coin: win $${win} for heads, lose $${lose} for tails. Expected value?`, answer: parseFloat(ev), type: "procedural",
-                    explanation: `E(X) = 0.5(${win}) + 0.5(-${lose}) = ${win/2} - ${lose/2} = ${ev}` };
-            } else {
-                const p1 = 0.3, v1 = rand(10, 20), p2 = 0.7, v2 = rand(2, 8);
-                const ev = (p1 * v1 + p2 * v2).toFixed(2);
-                return { question: `30% chance to win $${v1}, 70% chance to win $${v2}. Expected value?`, answer: parseFloat(ev), type: "procedural",
-                    explanation: `E(X) = 0.3(${v1}) + 0.7(${v2}) = ${(p1*v1).toFixed(1)} + ${(p2*v2).toFixed(1)} = ${ev}` };
+                const sides = pick([4, 6, 8, 10, 12, 20]);
+                const ev = (sides + 1) / 2;
+                return { question: `Roll a fair ${sides}-sided die. What is the expected value?`,
+                    answer: ev, type: "procedural",
+                    options: shuffle([ev, ev + 0.5, ev - 0.5, sides / 2]).filter((v, i, a) => a.indexOf(v) === i),
+                    explanation: `E(X) = (1 + 2 + ... + ${sides}) / ${sides} = ${sides * (sides + 1) / 2} / ${sides} = ${ev}.` };
             }
+            if (type === "coins") {
+                const win = rand(2, 15), lose = rand(1, 10);
+                const rawEv = 0.5 * win - 0.5 * lose;
+                const ev = Math.round(rawEv * 100) / 100;
+                return { question: `Flip a fair coin: win $${win} on heads, lose $${lose} on tails. Expected value?`,
+                    answer: ev, type: "procedural",
+                    options: shuffle([ev, Math.round((win - lose) * 100) / 100, Math.round((win + lose) / 2 * 100) / 100, Math.round((lose - win) / 2 * 100) / 100]).filter((v, i, a) => a.indexOf(v) === i),
+                    explanation: `E(X) = 0.5(${win}) + 0.5(−${lose}) = ${win / 2} − ${lose / 2} = ${ev}.` };
+            }
+            // custom — pick p1 at random, derive p2 = 1 - p1.
+            const p1Pct = pick([10, 20, 25, 30, 40, 50, 60, 70, 75, 80]);
+            const p1 = p1Pct / 100, p2 = 1 - p1;
+            const v1 = rand(5, 25), v2 = rand(1, 15);
+            const rawEv = p1 * v1 + p2 * v2;
+            const ev = Math.round(rawEv * 100) / 100;
+            return { question: `${p1Pct}% chance to win $${v1}, ${Math.round(p2 * 100)}% chance to win $${v2}. Expected value?`,
+                answer: ev, type: "procedural",
+                options: shuffle([ev, Math.round((v1 + v2) / 2 * 100) / 100, Math.round((v1 - v2) * 100) / 100, v1 + v2]).filter((v, i, a) => a.indexOf(v) === i),
+                explanation: `E(X) = ${p1}(${v1}) + ${p2.toFixed(2)}(${v2}) = ${(p1 * v1).toFixed(2)} + ${(p2 * v2).toFixed(2)} = ${ev}.` };
         },
         "Advanced Polynomials": () => {
             const type = pick(["degree", "end_behavior", "factor_theorem", "remainder_theorem", "roots"]);
@@ -9353,28 +9454,55 @@ const generators = {
             }
         },
         "Binomial Theorem": () => {
+            // Procedural: compute every Pascal row / binomial coefficient on the fly.
+            // 'expand_simple' picks a random binomial (x + k)^2 and computes its expansion.
             const subSkillToType = { 'pascal': 'pascal', 'coefficient': 'coefficient', 'expand_simple': 'expand_simple' };
             const subSkillOrder = ["pascal", "coefficient", "expand_simple"];
-            let available = getUnlockedSubSkillTypes('7_Binomial Theorem', subSkillToType, subSkillOrder);
+            const available = getUnlockedSubSkillTypes('7_Binomial Theorem', subSkillToType, subSkillOrder);
             const type = pick(available);
+
+            // Compute binomial coefficient C(n, k).
+            const binom = (n, k) => {
+                if (k < 0 || k > n) return 0;
+                let num = 1, den = 1;
+                for (let i = 0; i < k; i++) { num *= (n - i); den *= (i + 1); }
+                return num / den;
+            };
+            const pascalRow = (n) => Array.from({ length: n + 1 }, (_, k) => binom(n, k)).join(" ");
+
             if (type === "pascal") {
-                const row = rand(3, 5);
-                const pascalRows = { 3: "1 3 3 1", 4: "1 4 6 4 1", 5: "1 5 10 10 5 1" };
-                return { question: `Row ${row} of Pascal's Triangle:`, answer: pascalRows[row], type: "conceptual",
-                    options: [pascalRows[3], pascalRows[4], pascalRows[5], "1 2 1"],
-                    explanation: `Row ${row}: ${pascalRows[row]}` };
-            } else if (type === "coefficient") {
-                const n = 4;
-                const k = rand(1, 3);
-                const coef = { 1: 4, 2: 6, 3: 4 };
-                return { question: `In (a + b)⁴, coefficient of a^${4-k}b^${k}?`, answer: coef[k], type: "procedural",
-                    options: [coef[1], coef[2], coef[3], 1],
-                    explanation: `C(4, ${k}) = ${coef[k]}` };
-            } else {
-                return { question: `(x + 1)² expands to:`, answer: "x² + 2x + 1", type: "procedural",
-                    options: ["x² + 2x + 1", "x² + x + 1", "x² + 1", "2x² + 2x"],
-                    explanation: `(x + 1)² = x² + 2(x)(1) + 1² = x² + 2x + 1` };
+                const row = rand(3, 8);
+                const answer = pascalRow(row);
+                const distractors = [pascalRow(row - 1), pascalRow(row + 1), pascalRow(Math.max(2, row - 2))];
+                return { question: `Row ${row} of Pascal's Triangle:`, answer, type: "conceptual",
+                    options: shuffle([answer, ...distractors]).filter((v, i, a) => a.indexOf(v) === i),
+                    explanation: `Row ${row}: ${answer}. (Each entry is C(${row}, k) for k = 0..${row}.)` };
             }
+            if (type === "coefficient") {
+                const n = rand(3, 8);
+                const k = rand(1, n - 1);
+                const ans = binom(n, k);
+                const distractors = [binom(n, k - 1), binom(n, k + 1), binom(n - 1, k), n - k];
+                return { question: `In (a + b)^${n}, what is the coefficient of a^${n - k}b^${k}?`,
+                    answer: ans, type: "procedural",
+                    options: shuffle([ans, ...distractors]).filter((v, i, a) => a.indexOf(v) === i),
+                    explanation: `C(${n}, ${k}) = ${n}! / (${k}! · ${n - k}!) = ${ans}.` };
+            }
+            // expand_simple — pick (x + k)^2 with random k in [-5, 5] (excluding 0).
+            const k = pick([-5, -4, -3, -2, -1, 1, 2, 3, 4, 5]);
+            const sign = k >= 0 ? "+" : "−";
+            const abs = Math.abs(k);
+            const mid = 2 * k;
+            const midStr = mid === 0 ? "" : mid > 0 ? ` + ${mid}x` : ` − ${Math.abs(mid)}x`;
+            const constStr = k * k === 0 ? "" : ` + ${k * k}`;
+            const answer = `x²${midStr}${constStr}`;
+            const badMid1 = `x² ${sign} ${abs}x + ${k * k}`;
+            const badMid2 = `x² + ${k * k}`;
+            const badMid3 = `2x²${midStr}`;
+            return { question: `Expand: (x ${sign} ${abs})²`,
+                answer, type: "procedural",
+                options: shuffle([answer, badMid1, badMid2, badMid3]).filter((v, i, a) => a.indexOf(v) === i),
+                explanation: `(x ${sign} ${abs})² = x² + 2(${k})x + ${k * k} = ${answer}.` };
         },
         "Matrices Intro": () => {
             const subSkillToType = { 'dimensions': 'dimensions', 'add': 'add', 'scalar_mult': 'scalar_mult', 'element': 'element' };
