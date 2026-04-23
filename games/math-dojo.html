@@ -3245,8 +3245,12 @@ function recordQuestionResult(domain, tier, correct, time) {
     }
 }
 
-// End session and send batched update
-function endSessionTracking() {
+// End session and send batched update.
+// Pass { promote: false } to skip auto-promoting skills to mastered/activated —
+// used when the student bails on a lesson early so a few lucky correct
+// answers don't get credited as mastery.
+function endSessionTracking(options = {}) {
+    const { promote = true } = options;
     if (!sessionData.startTime || sessionData.questions.length === 0) return;
 
     const sessionDuration = Date.now() - sessionData.startTime;
@@ -3287,17 +3291,26 @@ function endSessionTracking() {
         skill.last_practiced = new Date().toISOString();
         skill.practice_count = (skill.practice_count || 0) + 1;
 
-        // Update mastery based on this session (will be properly calculated by tree)
-        if (result.accuracy >= 80 && result.total >= 3) {
-            skill.state = 'mastered';
-            skill.mastery_score = Math.max(skill.mastery_score || 0, result.accuracy);
-            // Unlock dependent skills when mastery is achieved
-            triggerDependentUnlocks(result.skill);
-        } else if (result.accuracy >= 60 && result.total >= 2) {
-            if (skill.state !== 'mastered') {
-                skill.state = 'activated';
+        if (promote) {
+            // Update mastery based on this session (will be properly calculated by tree)
+            if (result.accuracy >= 80 && result.total >= 3) {
+                skill.state = 'mastered';
+                skill.mastery_score = Math.max(skill.mastery_score || 0, result.accuracy);
+                // Unlock dependent skills when mastery is achieved
+                triggerDependentUnlocks(result.skill);
+            } else if (result.accuracy >= 60 && result.total >= 2) {
+                if (skill.state !== 'mastered') {
+                    skill.state = 'activated';
+                }
+                skill.mastery_score = Math.max(skill.mastery_score || 0, result.accuracy);
             }
-            skill.mastery_score = Math.max(skill.mastery_score || 0, result.accuracy);
+        } else {
+            // Early exit: record that we practiced but never promote state.
+            // Only move from 'locked'/undefined up to 'in_progress' so the skill
+            // shows progress without being credited as mastered/activated.
+            if (!skill.state || skill.state === 'locked' || skill.state === 'available') {
+                skill.state = 'in_progress';
+            }
         }
     }
 
@@ -3472,37 +3485,49 @@ function updateSkillInTree(skillName, newState, mastery) {
     }
 }
 
-// When a skill is mastered, unlock dependent skills whose prerequisites are all met
+// When a skill is mastered, unlock dependent skills whose prerequisites are all met.
+// Also runs a full pass over every known skill so cascades and previously-stuck
+// locked skills (e.g. from prereqs mastered in a prior session that didn't
+// propagate here) get picked up in one go — this is what makes the dojo
+// grid refresh without the user having to open the math tree.
 function triggerDependentUnlocks(masteredSkillName) {
-    // Find all skills that depend on the mastered skill
-    const dependents = MATH_CONNECTIONS
-        .filter(([from, to]) => from === masteredSkillName)
-        .map(([from, to]) => to);
-
-    for (const dependent of dependents) {
-        // Initialize if not tracked yet
-        if (!skillTreeData.skills[dependent]) {
-            skillTreeData.skills[dependent] = { state: 'locked', mastery_score: 0 };
-        }
-
-        const depSkill = skillTreeData.skills[dependent];
-        // Only unlock if currently locked
-        if (depSkill.state !== 'locked') continue;
-
-        // Check if ALL prerequisites for this dependent are mastered
+    const allMastered = (name) => {
         const prereqs = MATH_CONNECTIONS
-            .filter(([from, to]) => to === dependent)
+            .filter(([from, to]) => to === name)
             .map(([from]) => from);
-
-        const allMet = prereqs.every(prereq => {
-            const s = skillTreeData.skills[prereq];
+        if (prereqs.length === 0) return true;
+        return prereqs.every(p => {
+            const s = skillTreeData.skills[p];
             return s && (s.state === 'mastered' || s.state === 'activated');
         });
+    };
 
-        if (allMet) {
-            depSkill.state = 'available';
-            console.log(`Unlocked dependent skill: ${dependent}`);
-            // Recurse in case this unlock cascades (available doesn't trigger further, but be safe)
+    // Seed the work queue with direct dependents of the newly-mastered skill
+    // plus every skill currently known to be locked (so prior cascades that
+    // never ran get a chance to complete).
+    const queue = new Set(
+        MATH_CONNECTIONS.filter(([from]) => from === masteredSkillName).map(([, to]) => to)
+    );
+    for (const [name, data] of Object.entries(skillTreeData.skills)) {
+        if (!data || !data.state || data.state === 'locked') queue.add(name);
+    }
+    // Also consider skills only referenced in MATH_CONNECTIONS (may not yet be tracked)
+    MATH_CONNECTIONS.forEach(([, to]) => queue.add(to));
+
+    let changed = true;
+    let guard = 0;
+    while (changed && guard++ < 20) {
+        changed = false;
+        for (const name of queue) {
+            if (!skillTreeData.skills[name]) {
+                skillTreeData.skills[name] = { state: 'locked', mastery_score: 0 };
+            }
+            const s = skillTreeData.skills[name];
+            if (s.state === 'locked' && allMastered(name)) {
+                s.state = 'available';
+                console.log(`Unlocked dependent skill: ${name}`);
+                changed = true;
+            }
         }
     }
 }
@@ -4333,9 +4358,14 @@ const generators = {
                 { name: "square pyramid",    faces: 5, edges: 8,  vertices: 5, canRoll: false, realWorld: ["pyramid", "tent top", "paperweight"] },
                 { name: "triangular prism",  faces: 5, edges: 9,  vertices: 6, canRoll: false, realWorld: ["camping tent", "toblerone bar", "rooftop"] }
             ];
+            const shapeNameToVisual = {
+                'rectangular prism': 'rectangular-prism',
+                'square pyramid': 'square-pyramid',
+                'triangular prism': 'triangular-prism'
+            };
             const getVisual = (shapeName) => ({
                 type: 'shape', mode: 'display',
-                data: { shape: shapeName === 'rectangular prism' ? 'cube' : (shapeName === 'square pyramid' || shapeName === 'triangular prism' ? 'cone' : shapeName), showMeasurements: false }
+                data: { shape: shapeNameToVisual[shapeName] || shapeName, showMeasurements: false }
             });
             const type = pick(["identify", "faces", "edges", "vertices", "real_world", "roll", "name_from_property"]);
 
@@ -9115,20 +9145,68 @@ const generators = {
             }
         },
         Probability: () => {
-            const type = pick(["permutation", "combination"]);
-            if (type === "permutation") {
-                const n = rand(3, 6);
-                let factorial = 1;
-                for (let i = 2; i <= n; i++) factorial *= i;
-                return { question: `How many ways to arrange ${n} items?`, answer: factorial, type: "procedural",
-                    explanation: `${n}! = ${Array.from({length: n}, (_, i) => n - i).join(" × ")} = ${factorial}` };
-            } else {
-                const n = rand(4, 7), r = rand(2, 3);
-                const nFact = (x) => { let f = 1; for (let i = 2; i <= x; i++) f *= i; return f; };
-                const comb = nFact(n) / (nFact(r) * nFact(n - r));
-                return { question: `Choose ${r} from ${n}. How many ways?`, answer: comb, type: "procedural",
-                    explanation: `C(${n},${r}) = ${n}!/(${r}!×${n-r}!) = ${comb}` };
+            // Aligned with the Tier 7 Probability lesson, which teaches the basic
+            // probability formula P(event) = favorable / total. Permutations and
+            // combinations live in their own Tier 7 domains (Permutations,
+            // Combinations) — don't test them here or students get quizzed on
+            // material the Probability lesson never covered.
+            const type = pick(["bag", "dice", "complement", "scale"]);
+            if (type === "bag") {
+                const red = rand(2, 6);
+                const blue = rand(2, 6);
+                const total = red + blue;
+                const pickColor = pick(["red", "blue"]);
+                const favorable = pickColor === "red" ? red : blue;
+                const g = gcd(favorable, total);
+                const simp = g > 1 ? `${favorable/g}/${total/g}` : `${favorable}/${total}`;
+                return {
+                    question: `A bag has ${red} red and ${blue} blue marbles. What is P(${pickColor})?`,
+                    answer: simp, type: "procedural",
+                    options: shuffle([simp, `${total}/${favorable}`, `${favorable}/${total - favorable}`, `${favorable}/${favorable}`])
+                        .filter((v, i, a) => a.indexOf(v) === i).slice(0, 4),
+                    explanation: `Favorable = ${favorable} ${pickColor}, Total = ${total}. P(${pickColor}) = ${favorable}/${total}${g > 1 ? ` = ${simp}` : ''}.`
+                };
             }
+            if (type === "dice") {
+                const target = pick([
+                    { desc: "rolling a 6", fav: 1 },
+                    { desc: "rolling an even number", fav: 3 },
+                    { desc: "rolling a number greater than 4", fav: 2 },
+                    { desc: "rolling a number less than 3", fav: 2 }
+                ]);
+                const g = gcd(target.fav, 6);
+                const simp = `${target.fav/g}/${6/g}`;
+                return {
+                    question: `On a standard 6-sided die, what is the probability of ${target.desc}?`,
+                    answer: simp, type: "procedural",
+                    options: shuffle([simp, `${target.fav}/1`, `6/${target.fav}`, `${6 - target.fav}/6`])
+                        .filter((v, i, a) => a.indexOf(v) === i).slice(0, 4),
+                    explanation: `Favorable = ${target.fav}, Total = 6. P = ${target.fav}/6 = ${simp}.`
+                };
+            }
+            if (type === "complement") {
+                const fav = rand(2, 7);
+                const total = fav + rand(2, 6);
+                const pNot = total - fav;
+                const g = gcd(pNot, total);
+                const simp = `${pNot/g}/${total/g}`;
+                return {
+                    question: `If P(A) = ${fav}/${total}, what is P(not A)?`,
+                    answer: simp, type: "procedural",
+                    options: shuffle([simp, `${fav}/${total}`, `1/${total}`, `${total}/${pNot}`])
+                        .filter((v, i, a) => a.indexOf(v) === i).slice(0, 4),
+                    explanation: `P(not A) = 1 - P(A) = 1 - ${fav}/${total} = ${pNot}/${total}${g > 1 ? ` = ${simp}` : ''}.`
+                };
+            }
+            // scale
+            const concept = pick([
+                { q: "A probability of 0 means the event is:", a: "impossible", opts: ["impossible", "certain", "equally likely", "always"], exp: "0 = impossible." },
+                { q: "A probability of 1 means the event is:", a: "certain", opts: ["certain", "impossible", "unlikely", "rare"], exp: "1 = certain." },
+                { q: "Probability is always between:", a: "0 and 1", opts: ["0 and 1", "0 and 100", "-1 and 1", "any real number"], exp: "Probabilities are always in [0, 1]." },
+                { q: "The probability formula P(event) equals:", a: "favorable / total", opts: ["favorable / total", "total / favorable", "favorable - total", "favorable + total"], exp: "P(event) = favorable outcomes / total outcomes." }
+            ]);
+            return { question: concept.q, answer: concept.a, type: "conceptual",
+                options: concept.opts, explanation: concept.exp };
         },
         "Conic Sections": () => {
             const subSkillToQuestionType = { 'identify': 'identify', 'circle': 'circle', 'parabola': 'parabola', 'ellipse': 'ellipse' };
@@ -26249,6 +26327,11 @@ const lessons = {
                                 visual: "log_b(x) = y ↔ b^y = x"
                             },
                             {
+                                title: "Notation: \"log\" with no base",
+                                explanation: "When you see <strong>log(x)</strong> written with <em>no base</em>, it's assumed to be <strong>base 10</strong>.<br><br>So <strong>log(x) = log₁₀(x)</strong><br><br>If a different base is meant, it will always be written explicitly, like log₂(x) or log₅(x).<br><br>(You'll also see <strong>ln(x)</strong>, which means log base <em>e</em> — the natural log.)",
+                                visual: "log(x) = log₁₀(x)  •  ln(x) = logₑ(x)"
+                            },
+                            {
                                 title: "Example",
                                 explanation: "log₂(8) = ?<br><br>Ask: 2 to what power = 8?<br>2³ = 8 ✓<br><br>So log₂(8) = <strong>3</strong>",
                                 visual: "2³ = 8, so log₂(8) = 3"
@@ -26324,8 +26407,8 @@ const lessons = {
                         teachingSteps: [
                             {
                                 title: "The Product Rule",
-                                explanation: "One of the most important log rules:<br><br><strong>log(ab) = log(a) + log(b)</strong><br><br>Multiplying INSIDE becomes ADDING outside!",
-                                visual: "log(ab) = log(a) + log(b)"
+                                explanation: "One of the most important log rules:<br><br><strong>log(ab) = log(a) + log(b)</strong><br><br>Multiplying INSIDE becomes ADDING outside!<br><br><em>Reminder:</em> when <strong>log</strong> is written with no base, it means <strong>log base 10</strong>. These rules work for <em>any</em> base as long as every log in the equation uses the <em>same</em> base.",
+                                visual: "log(ab) = log(a) + log(b)   (any base, as long as it's the same on both sides)"
                             },
                             {
                                 title: "Why Does This Work?",
@@ -34183,6 +34266,52 @@ function renderShape(container, data) {
             }
             break;
         }
+        case 'triangular-prism': {
+            const bVal = dimensions.base || 60, hVal = dimensions.height || 50, lVal = dimensions.length || 70;
+            const maxD = Math.max(bVal, hVal, lVal);
+            const sf = maxD < 20 ? Math.min(Math.floor(60 / maxD), 8) : maxD > 70 ? 70 / maxD : 1;
+            const b = Math.round(bVal * sf), h = Math.round(hVal * sf), l = Math.round(lVal * sf * 0.6);
+            // Front triangle + back triangle offset by (l, -l*0.7) for 3D perspective
+            const off = Math.round(l * 0.7);
+            const fx1 = 50, fy1 = 130;               // front bottom-left
+            const fx2 = fx1 + b, fy2 = 130;           // front bottom-right
+            const fx3 = fx1 + b/2, fy3 = 130 - h;     // front apex
+            const bx1 = fx1 + l, by1 = fy1 - off;     // back bottom-left
+            const bx2 = fx2 + l, by2 = fy2 - off;     // back bottom-right
+            const bx3 = fx3 + l, by3 = fy3 - off;     // back apex
+            path = `M${fx1},${fy1} L${fx2},${fy2} L${fx3},${fy3} Z
+                    M${fx1},${fy1} L${bx1},${by1} L${bx2},${by2} L${fx2},${fy2}
+                    M${fx3},${fy3} L${bx3},${by3} L${bx1},${by1}
+                    M${bx2},${by2} L${bx3},${by3}`;
+            if (showMeasurements) {
+                dimLines.push({ x1: fx1, y1: fy1+12, x2: fx2, y2: fy2+12, label: bVal, labelY: fy1+25 });
+                dimLines.push({ x1: fx1-12, y1: fy1, x2: fx1-12, y2: fy3, label: hVal, labelX: fx1-25, vertical: true });
+                dimLines.push({ x1: fx2+5, y1: fy2, x2: bx2+5, y2: by2, label: lVal, labelX: fx2+20, labelY: (fy2+by2)/2 });
+            }
+            break;
+        }
+        case 'square-pyramid': {
+            const bVal = dimensions.base || 60, hVal = dimensions.height || 70;
+            const maxD = Math.max(bVal, hVal);
+            const sf = maxD < 20 ? Math.min(Math.floor(60 / maxD), 8) : maxD > 80 ? 80 / maxD : 1;
+            const b = Math.round(bVal * sf), h = Math.round(hVal * sf);
+            const off = Math.round(b * 0.35);
+            // Square base (perspective diamond) + apex above center
+            const bx = 100 - b/2, by = 130;
+            const x1 = bx, y1 = by;                   // front-left
+            const x2 = bx + b, y2 = by;               // front-right
+            const x3 = x2 + off, y3 = by - off;       // back-right
+            const x4 = x1 + off, y4 = by - off;       // back-left
+            const ax = bx + b/2 + off/2, ay = by - off/2 - h; // apex
+            path = `M${x1},${y1} L${x2},${y2} L${x3},${y3} L${x4},${y4} Z
+                    M${x1},${y1} L${ax},${ay} L${x2},${y2}
+                    M${x3},${y3} L${ax},${ay} L${x4},${y4}`;
+            if (showMeasurements) {
+                dimLines.push({ x1: x1, y1: y1+12, x2: x2, y2: y2+12, label: bVal, labelY: y1+25 });
+                dimLines.push({ x1: x2+10, y1: ay, x2: x2+10, y2: y2, label: hVal, labelX: x2+23, vertical: true });
+            }
+            break;
+        }
     }
 
     const pathEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
@@ -35544,6 +35673,11 @@ function navigateToLesson(treeSkillName) {
 }
 
 function updateSkillGrid() {
+    // Pull the freshest tree state from localStorage before rendering so any
+    // unlocks written by another tab (e.g. math tree viewer) or by the last
+    // completed lesson are reflected without requiring a page reload.
+    loadSkillTreeData();
+
     const grid = document.getElementById('skill-grid');
     const domains = TIERS[state.learningTier].domains;
     grid.innerHTML = '';
@@ -36602,8 +36736,11 @@ function completeLearning() {
         showNotification(`All ${lesson._totalSubSkills} sub-skills mastered! 🎉`);
     }
 
-    // End session tracking and send batched update to tree
-    endSessionTracking();
+    // End session tracking and send batched update to tree.
+    // We skip session-based promotion because we explicitly set the current
+    // skill to 'mastered' below — letting endSessionTracking also promote
+    // risks accidental activation of unrelated skills with partial stats.
+    endSessionTracking({ promote: false });
 
     // Ensure the mastered skill unlocks dependents in our local tree data
     const treeSkill = getTreeSkillName(state.learningSkill);
@@ -36639,7 +36776,7 @@ function completeLearning() {
         timestamp: Date.now()
     }));
 
-    endLearning();
+    endLearning({ skipSessionPromotion: true });
 
     // Show mastery notification
     showNotification(`Skill Mastered: ${state.learningSkill}!`);
@@ -36667,9 +36804,11 @@ function jumpToSubSkill(index) {
     }
 }
 
-function endLearning() {
-    // End session tracking if not already ended
-    endSessionTracking();
+function endLearning(options = {}) {
+    // Never auto-promote to mastered/activated from here. completeLearning()
+    // handles real mastery explicitly; any other path into endLearning() is
+    // a mid-lesson bail where partial correct streaks shouldn't count.
+    endSessionTracking({ promote: false });
 
     document.getElementById('learning-screen').classList.remove('active');
     document.getElementById('learning-setup-screen').classList.add('active');
@@ -36680,6 +36819,10 @@ function endLearning() {
     // Reset button
     document.getElementById('learning-continue-btn').onclick = nextLearningPhase;
     document.getElementById('learning-continue-btn').textContent = 'Continue →';
+
+    // Pick up any newer skill-tree state that completeLearning/parent
+    // saved to localStorage before re-rendering the grid.
+    loadSkillTreeData();
 
     // Refresh skill grid to show updated states
     updateSkillGrid();
