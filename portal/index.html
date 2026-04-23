@@ -2712,6 +2712,12 @@
             case 'BACKFILL_SKILLS':
               await this.handleBackfillSkills(event.data);
               break;
+            case 'DOJO_SUBSKILL_PROGRESS':
+              await this.handleDogoSubSkillProgress(event.data);
+              break;
+            case 'DOJO_REQUEST_SUBSKILL_PROGRESS':
+              await this.sendDogoSubSkillProgress(event.source);
+              break;
             // Testing Center messages
             case 'TESTING_CENTER_AUTH_READY':
               console.log('Testing Center auth acknowledged');
@@ -2844,6 +2850,71 @@
       handleSkillUnlocked(data) {
         const { skill } = data;
         this.showNotification(`Skill unlocked: ${skill}!`, 'success');
+      }
+
+      // Math Dojo sub-skill progress: persist the per-domain completed
+      // sub-skills map so gating survives device switches and cache clears.
+      // Stored as a single JSONB blob in user_profiles.dojo_subskill_progress
+      // (cheap to write, cheap to read back into the Dojo).
+      async handleDogoSubSkillProgress(data) {
+        const { completedSubSkills } = data;
+        if (!completedSubSkills) return;
+
+        if (this.userInfo?.profile?.user_type !== 'student') return;
+        const userId = this.userInfo?.user?.id;
+        if (!userId) return;
+
+        // Throttle: debounce writes so rapid sub-skill completions batch into
+        // one DB write. 1.5s debounce is plenty for a student clicking
+        // through guided steps.
+        if (this._dojoSubSkillWriteTimer) clearTimeout(this._dojoSubSkillWriteTimer);
+        this._pendingDojoSubSkillProgress = completedSubSkills;
+        this._dojoSubSkillWriteTimer = setTimeout(async () => {
+          const pending = this._pendingDojoSubSkillProgress;
+          this._pendingDojoSubSkillProgress = null;
+          this._dojoSubSkillWriteTimer = null;
+          try {
+            const { error } = await this.auth.supabase
+              .from('user_profiles')
+              .update({ dojo_subskill_progress: pending, updated_at: new Date().toISOString() })
+              .eq('id', userId);
+            if (error) {
+              // Column may not exist yet if migration hasn't run — log but
+              // don't spam the user; localStorage still works as a fallback.
+              console.warn('Could not sync Dojo sub-skill progress to DB:', error.message || error);
+            }
+          } catch (e) {
+            console.warn('Error syncing Dojo sub-skill progress:', e);
+          }
+        }, 1500);
+      }
+
+      // Dojo asked for its latest server-side sub-skill progress (typically
+      // on load). Read from user_profiles.dojo_subskill_progress and send
+      // back; the Dojo merges with localStorage on receive.
+      async sendDogoSubSkillProgress(source) {
+        const userId = this.userInfo?.user?.id;
+        if (!userId) return;
+        try {
+          const { data, error } = await this.auth.supabase
+            .from('user_profiles')
+            .select('dojo_subskill_progress')
+            .eq('id', userId)
+            .maybeSingle();
+          if (error) {
+            console.warn('Could not fetch Dojo sub-skill progress:', error.message || error);
+            return;
+          }
+          const progress = data?.dojo_subskill_progress || {};
+          const target = source || window;
+          target.postMessage({
+            type: 'SUBSKILL_PROGRESS_FROM_SERVER',
+            completedSubSkills: progress,
+            timestamp: Date.now()
+          }, '*');
+        } catch (e) {
+          console.warn('Error sending Dojo sub-skill progress:', e);
+        }
       }
 
       async handleBackfillSkills(data) {

@@ -3867,6 +3867,35 @@ window.addEventListener('message', (event) => {
             skillTreeData.lastSync = Date.now();
             console.log('✅ Updated local skill data from tree');
         }
+    } else if (event.data.type === 'SUBSKILL_PROGRESS_FROM_SERVER') {
+        // Parent has pulled per-user sub-skill progress from Supabase. Merge
+        // it on top of whatever's already in localStorage, taking the union
+        // of completed sub-skills per (tier, skill) key so we don't lose
+        // progress from either side.
+        try {
+            const incoming = event.data.completedSubSkills || {};
+            for (const [key, ids] of Object.entries(incoming)) {
+                if (!Array.isArray(ids)) continue;
+                const existing = state.completedSubSkills[key] || [];
+                const merged = Array.from(new Set([...existing, ...ids]));
+                state.completedSubSkills[key] = merged;
+            }
+            // Persist the merged state back to localStorage so subsequent
+            // loads have the server-augmented view. Don't re-broadcast —
+            // that would loop with the parent.
+            const userId = getUserId();
+            const lsKey = userId ? `subskill_progress_${userId}` : 'subskill_progress';
+            localStorage.setItem(lsKey, JSON.stringify(state.completedSubSkills));
+            console.log('📥 Merged sub-skill progress from server:', Object.keys(incoming).length, 'domains');
+            // Refresh the grid so newly unlocked gates are visible.
+            if (typeof updateSkillGrid === 'function' &&
+                document.getElementById('learning-setup-screen') &&
+                document.getElementById('learning-setup-screen').classList.contains('active')) {
+                updateSkillGrid();
+            }
+        } catch (e) {
+            console.warn('Failed to merge sub-skill progress from server:', e);
+        }
     } else if (event.data.type === 'WEEKLY_MASTERIES_FOR_DOGO') {
         handleWeeklyMasteriesResponse(event.data.skills || []);
     } else if (event.data.type === 'GAUNTLET_RTC_RESULT') {
@@ -33251,7 +33280,10 @@ function completeSubSkill(tier, skill, subSkillId) {
     }
 }
 
-// Save sub-skill progress to localStorage
+// Save sub-skill progress to localStorage AND sync to parent (portal) for
+// Supabase persistence. localStorage is the fast path; the parent handles
+// cross-device durability. If there's no parent (standalone open), we just
+// fall back to localStorage silently.
 function saveSubSkillProgress() {
     try {
         const userId = getUserId();
@@ -33259,6 +33291,20 @@ function saveSubSkillProgress() {
         localStorage.setItem(key, JSON.stringify(state.completedSubSkills));
     } catch (e) {
         console.warn('Could not save sub-skill progress:', e);
+    }
+
+    // Broadcast to parent so it can persist to Supabase. Parent handler:
+    // handleDogoSubSkillProgress in portal/index.html.
+    if (window.parent && window.parent !== window) {
+        try {
+            window.parent.postMessage({
+                type: 'DOJO_SUBSKILL_PROGRESS',
+                completedSubSkills: state.completedSubSkills,
+                timestamp: Date.now()
+            }, '*');
+        } catch (e) {
+            console.warn('Could not broadcast sub-skill progress:', e);
+        }
     }
 }
 
@@ -33274,6 +33320,15 @@ function loadSubSkillProgress() {
     } catch (e) {
         console.warn('Could not load sub-skill progress:', e);
         state.completedSubSkills = {};
+    }
+
+    // Also ask the parent for any server-side state that might be newer than
+    // what we have locally (different device, cache-clear, etc.). Response
+    // arrives via the message listener below as SUBSKILL_PROGRESS_FROM_SERVER.
+    if (window.parent && window.parent !== window) {
+        try {
+            window.parent.postMessage({ type: 'DOJO_REQUEST_SUBSKILL_PROGRESS' }, '*');
+        } catch (e) { /* silent */ }
     }
 }
 
