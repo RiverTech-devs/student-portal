@@ -169,9 +169,11 @@ function computeDepths(domain) {
   const skillMap = {};
   domain.skills.forEach(s => { skillMap[s.id] = s; });
   function getDepth(id) {
-    if (depthMap[id] !== undefined) return depthMap[id];
+    const cached = depthMap[id];
+    if (cached !== undefined) return cached === null ? 0 : cached;
     const s = skillMap[id];
     if (!s || s.prereqs.length === 0) { depthMap[id] = 0; return 0; }
+    depthMap[id] = null;                               // mark in-progress (cycle guard)
     let max = 0;
     s.prereqs.forEach(pId => { if (skillMap[pId]) max = Math.max(max, getDepth(pId) + 1); });
     depthMap[id] = max;
@@ -194,8 +196,9 @@ function computeSubtreeWidths(domain, childMap) {
   const memo = new Map();
   function getWidth(id) {
     if (memo.has(id)) return memo.get(id);
+    memo.set(id, 1);                                   // in-progress fallback (cycle guard)
     const children = childMap[id] || [];
-    if (children.length === 0) { memo.set(id, 1); return 1; }
+    if (children.length === 0) { return 1; }
     let w = 0;
     children.forEach(cId => { w += Math.min(getWidth(cId), 5); });
     w = Math.max(1, Math.min(w, 10));

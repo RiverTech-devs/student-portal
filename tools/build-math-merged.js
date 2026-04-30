@@ -217,6 +217,48 @@ for (const p of protoMath) {
   }
 }
 
+// ---------- Break cycles in prerequisite_hard ----------
+// Master + prototype edges occasionally combine into a cycle (e.g. when an
+// alias collapses two prototype skills onto the same master id). DFS-based
+// back-edge detection: when we hit a GRAY node, the closing edge is the
+// "back edge" — drop it. Prefer dropping master-source edges over
+// prototype-source ones; the prototype represents the cleaner taxonomy.
+const removedCycleEdges = [];
+{
+  const adj = new Map();
+  const edgeKeyByPair = new Map();
+  for (const k of merged.keys()) adj.set(k, []);
+  for (const [k, e] of mergedEdges) {
+    if (e.type !== 'prerequisite_hard') continue;
+    adj.get(e.to).push(e.from);                  // edges are direction "prereq -> dependent"; for DFS we walk prereqs
+    edgeKeyByPair.set(`${e.from}->${e.to}`, k);
+  }
+  const WHITE = 0, GRAY = 1, BLACK = 2;
+  const color = new Map([...merged.keys()].map(k => [k, WHITE]));
+  function visit(u) {
+    color.set(u, GRAY);
+    const neighbors = adj.get(u) || [];
+    for (let i = 0; i < neighbors.length; i++) {
+      const v = neighbors[i];
+      const c = color.get(v);
+      if (c === GRAY) {
+        // back edge u <- v in dependency space; the merged edge is v -> u
+        const edgeKey = edgeKeyByPair.get(`${v}->${u}`);
+        if (edgeKey && mergedEdges.has(edgeKey)) {
+          removedCycleEdges.push({ ...mergedEdges.get(edgeKey), sources: [...mergedEdges.get(edgeKey).sources] });
+          mergedEdges.delete(edgeKey);
+          neighbors.splice(i, 1);
+          i -= 1;
+        }
+      } else if (c === WHITE) {
+        visit(v);
+      }
+    }
+    color.set(u, BLACK);
+  }
+  for (const k of merged.keys()) if (color.get(k) === WHITE) visit(k);
+}
+
 // ---------- Stats ----------
 const matchedCount = [...merged.values()].filter(n => n.sources.includes('master') && n.sources.includes('prototype')).length;
 const masterOnlyCount = [...merged.values()].filter(n => n.sources.length === 1 && n.sources[0] === 'master').length;
@@ -235,8 +277,10 @@ const out = {
     master_only: masterOnlyCount,
     prototype_only: protoOnlyCount,
     edges_total: edgeArr.length,
-    stage_drifts_resolved: stageDrifts.length
+    stage_drifts_resolved: stageDrifts.length,
+    cycle_edges_removed: removedCycleEdges.length
   },
+  removed_cycle_edges: removedCycleEdges,
   nodes: [...merged.values()],
   edges: edgeArr
 };
@@ -285,4 +329,5 @@ console.log('=== MATH MERGE ===');
 console.log(`Nodes: ${out.stats.nodes_total} (matched ${matchedCount}, master-only ${masterOnlyCount}, prototype-only ${protoOnlyCount})`);
 console.log(`Edges: ${edgeArr.length}`);
 console.log(`Stage drifts resolved (prototype wins): ${stageDrifts.length}`);
+console.log(`Cycle edges removed: ${removedCycleEdges.length}`);
 console.log('Wrote data/compiled/math_merged.json + tools/build-math-merged.report.md');
