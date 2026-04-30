@@ -139,13 +139,18 @@ const nodeGeoRootCore = new THREE.SphereGeometry(NODE_SIZE * 1.6, 10, 10);
 const nodeGeoRootGlow = new THREE.SphereGeometry(NODE_SIZE * 1.6 * 2.2, 6, 6);
 const nodeGeoRootHit = new THREE.SphereGeometry(NODE_SIZE * 1.6 * 3.0, 4, 4);
 
-// Materials (shared across all instances)
+// Materials (shared across all instances).
+// Core: white base color + low-intensity white emissive so per-instance
+//   setColorAt() actually drives the visible color (depth gradient + progress
+//   state). The prototype shipped color=emissive=0x88aacc at intensity 1.0,
+//   which made per-instance tints invisible — every node read uniform blue.
+// Glow: white base for the same reason; instance color tints the additive halo.
 const coreMat = new THREE.MeshStandardMaterial({
-  color: 0x88aacc, emissive: 0x88aacc, emissiveIntensity: 1.0,
+  color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 0.35,
   metalness: 0.1, roughness: 0.3,
 });
 const glowMat = new THREE.MeshBasicMaterial({
-  color: 0x88aacc, transparent: true, opacity: 0.12,
+  color: 0xffffff, transparent: true, opacity: 0.12,
   side: THREE.BackSide, blending: THREE.AdditiveBlending, depthWrite: false,
 });
 const hitMat = new THREE.MeshBasicMaterial({ visible: false });
