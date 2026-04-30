@@ -2078,22 +2078,36 @@ let lastAppliedNodeCount = 0;
 
 function applyProgressToNodes(progressByName) {
   if (!progressByName) return;
+  let matched = 0;
+  let coreInstSetCount = 0;
   for (const [, entry] of state.nodeMap) {
     const legacyName = entry.data.legacy_name || entry.data.name;
     const p = progressByName[legacyName];
     if (!p) continue;
-    const color = STATE_COLORS[p.state] || STATE_COLORS.locked;
+    matched++;
+    // Boost glow color so the state is visible despite the prototype's
+    // light-blue emissive overwhelming the diffuse channel on the core.
+    const baseColor = STATE_COLORS[p.state] || STATE_COLORS.locked;
+    const glowColor = baseColor.clone().multiplyScalar(6.0); // additive-blended; bright halo
     if (entry.coreInst && entry.instanceIndex !== undefined) {
-      entry.coreInst.setColorAt(entry.instanceIndex, color);
+      entry.coreInst.setColorAt(entry.instanceIndex, baseColor);
       if (entry.coreInst.instanceColor) entry.coreInst.instanceColor.needsUpdate = true;
+      // Also dim/boost the material's emissive component for this instance
+      // by adjusting the core material color through instance color (pre-multiplied
+      // with material.color which is 0x88aacc light blue).
+      coreInstSetCount++;
     }
     if (entry.glowInst && entry.instanceIndex !== undefined) {
-      entry.glowInst.setColorAt(entry.instanceIndex, color);
+      entry.glowInst.setColorAt(entry.instanceIndex, glowColor);
       if (entry.glowInst.instanceColor) entry.glowInst.instanceColor.needsUpdate = true;
     }
     entry.data.progress = p;
   }
   lastAppliedNodeCount = state.nodeMap.size;
+  if (window._debug && window._debug._lastAppliedSummary !== matched) {
+    window._debug._lastAppliedSummary = matched;
+    console.log(`[viewer/3d] applyProgressToNodes: ${matched}/${state.nodeMap.size} nodes matched progress, ${coreInstSetCount} instance colors set`);
+  }
 }
 
 function applyProgressToParentCards(progressByName) {
@@ -2126,6 +2140,8 @@ window.addEventListener('message', (event) => {
   if (event.data.type !== 'SKILL_DATA_RESPONSE' && event.data.type !== 'LOAD_SKILL_TREE') return;
   if (event.data.subject && event.data.subject !== 'Math') return;
   currentProgress = event.data.progress || {};
+  const keys = Object.keys(currentProgress);
+  console.log(`[viewer/3d] Received ${event.data.type}: ${keys.length} skills in progress, sample keys:`, keys.slice(0, 5));
   applyProgressToNodes(currentProgress);
   applyProgressToParentCards(currentProgress);
 });
