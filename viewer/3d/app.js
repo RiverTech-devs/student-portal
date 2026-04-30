@@ -2147,11 +2147,15 @@ if (window.parent && window.parent !== window) {
   window.parent.postMessage({ type: 'REQUEST_SKILL_DATA', subject: 'Math' }, '*');
 }
 
-// View-mode switches rebuild nodeMap (Neural Map populates lazily
-// when the user opens it). Re-apply progress whenever the visible
-// node count changes so colors don't desync.
+// Re-apply progress every tick while the 3D nodes exist. clearScene()
+// wipes the nodeMap and buildScene() rebuilds it with fresh instance
+// meshes, and deselectNode() rewrites every node's color back to its
+// depth-based default — both happen on view-mode switches and
+// empty-space clicks. We can't size-compare our way out (224 -> 0 -> 224
+// looks like no change), so just re-apply unconditionally; it's a few
+// hundred buffer writes and an attribute upload on a sub-1ms path.
 setInterval(() => {
-  if (currentProgress && state.nodeMap.size > 0 && state.nodeMap.size !== lastAppliedNodeCount) {
+  if (currentProgress && state.nodeMap.size > 0) {
     applyProgressToNodes(currentProgress);
   }
 }, 250);
