@@ -630,25 +630,36 @@ function depthToColor(depth, maxDepth) {
 // Merged line geometry for a whole domain (single draw call per domain)
 function createMergedLines(lineSegments, color, opacity) {
   if (lineSegments.length === 0) return null;
+  const POINTS_PER_SEG = 12;                            // curve.getPoints(12) -> 13 points -> 12 line segments
+  const VERTS_PER_SEG = POINTS_PER_SEG * 2;             // 2 verts per line segment, 12 segments => 24 verts/edge
   const allPoints = [];
+  const allColors = [];
+  const baseCol = new THREE.Color(color);
   lineSegments.forEach(seg => {
     const mid = new THREE.Vector3().lerpVectors(seg.from, seg.to, 0.5);
     const dist = seg.from.distanceTo(seg.to);
     mid.y += dist * 0.06;
     const curve = new THREE.QuadraticBezierCurve3(seg.from.clone(), mid, seg.to.clone());
-    const pts = curve.getPoints(12); // reduced from 24
+    const pts = curve.getPoints(POINTS_PER_SEG);
     for (let i = 0; i < pts.length - 1; i++) {
       allPoints.push(pts[i].x, pts[i].y, pts[i].z);
       allPoints.push(pts[i+1].x, pts[i+1].y, pts[i+1].z);
+      allColors.push(baseCol.r, baseCol.g, baseCol.b);
+      allColors.push(baseCol.r, baseCol.g, baseCol.b);
     }
   });
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(allPoints, 3));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(allColors, 3));
   const mat = new THREE.LineBasicMaterial({
-    color, transparent: true, opacity,
+    transparent: true, opacity,
+    vertexColors: true,                                  // edges are recolored per-segment by progress state
     blending: THREE.AdditiveBlending, depthWrite: false,
   });
-  return new THREE.LineSegments(geo, mat);
+  const mesh = new THREE.LineSegments(geo, mat);
+  mesh.userData.vertsPerSeg = VERTS_PER_SEG;
+  mesh.userData.baseColor = baseCol;
+  return mesh;
 }
 
 function createTextSprite(text, color, size = 1) {
@@ -2115,6 +2126,50 @@ function applyProgressToNodes(progressByName) {
   }
 }
 
+function applyProgressToEdges(progressByName) {
+  if (!progressByName) return;
+  const masteredColor = STATE_COLORS.mastered;
+  const inProgressColor = STATE_COLORS.in_progress;
+
+  const stateOf = (key) => {
+    const entry = state.nodeMap.get(key);
+    if (!entry) return null;
+    const legacyName = entry.data.legacy_name || entry.data.name;
+    return progressByName[legacyName]?.state || null;
+  };
+
+  state.intraDomainLines.forEach(mesh => {
+    const meta = mesh.userData.lineMetadata;
+    const vertsPerSeg = mesh.userData.vertsPerSeg || 24;
+    const baseCol = mesh.userData.baseColor;
+    const colorAttr = mesh.geometry.attributes.color;
+    if (!meta || !colorAttr || !baseCol) return;
+    const arr = colorAttr.array;
+    meta.forEach((md, segIdx) => {
+      const fromState = stateOf(md.fromKey);
+      const toState = stateOf(md.toKey);
+      // Edge between two mastered/activated nodes: gold (completed dependency).
+      // Edge from a mastered node into an in-progress / available node: amber
+      // (this prereq is "frontier" — student cleared it, next skill is unlocked).
+      // Otherwise: domain-tinted default.
+      let segColor = baseCol;
+      const fromDone = fromState === 'mastered' || fromState === 'activated';
+      const toDone   = toState   === 'mastered' || toState   === 'activated';
+      if (fromDone && toDone) segColor = masteredColor;
+      else if (fromDone && (toState === 'in_progress' || toState === 'available')) segColor = inProgressColor;
+
+      const startVert = segIdx * vertsPerSeg;
+      for (let v = 0; v < vertsPerSeg; v++) {
+        const i = (startVert + v) * 3;
+        arr[i]     = segColor.r;
+        arr[i + 1] = segColor.g;
+        arr[i + 2] = segColor.b;
+      }
+    });
+    colorAttr.needsUpdate = true;
+  });
+}
+
 function applyProgressToParentCards(progressByName) {
   if (!progressByName) return;
   // Build a quick lookup from "domain.skillId" -> legacy_name via DOMAINS.
@@ -2148,6 +2203,7 @@ window.addEventListener('message', (event) => {
   const keys = Object.keys(currentProgress);
   console.log(`[viewer/3d] Received ${event.data.type}: ${keys.length} skills in progress, sample keys:`, keys.slice(0, 5));
   applyProgressToNodes(currentProgress);
+  applyProgressToEdges(currentProgress);
   applyProgressToParentCards(currentProgress);
 });
 
@@ -2178,6 +2234,7 @@ if (window.parent && window.parent !== window) {
 setInterval(() => {
   if (currentProgress && state.nodeMap.size > 0) {
     applyProgressToNodes(currentProgress);
+    applyProgressToEdges(currentProgress);
   }
 }, 250);
 
