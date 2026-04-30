@@ -2051,3 +2051,66 @@ openParentView();
 
 window.THREE = THREE;
 window._debug = { state, camera, raycaster, scene, DOMAINS, selectNode, deselectNode, animateCameraTo, computeDepths };
+
+// ============================================================
+// PARENT INTEGRATION
+// ------------------------------------------------------------
+// When iframed inside index.html or portal/index.html, request
+// per-student skill_progress on load and color the 3D nodes by
+// state. Mirrors the existing SkillTreeViewer.html ↔ index.html
+// protocol so the new viewer can drop into the same iframe slot
+// without changes to the host.
+// ============================================================
+const STATE_COLORS = {
+  locked:       new THREE.Color(0x2a2a35),
+  available:    new THREE.Color(0x3b82f6),
+  in_progress:  new THREE.Color(0xf59e0b),
+  activated:    new THREE.Color(0xfbbf24),
+  mastered:     new THREE.Color(0xfbbf24),
+  needs_review: new THREE.Color(0xef4444),
+};
+
+let currentProgress = null;
+let lastAppliedNodeCount = 0;
+
+function applyProgressToNodes(progressByName) {
+  if (!progressByName) return;
+  for (const [, entry] of state.nodeMap) {
+    const legacyName = entry.data.legacy_name || entry.data.name;
+    const p = progressByName[legacyName];
+    if (!p) continue;
+    const color = STATE_COLORS[p.state] || STATE_COLORS.locked;
+    if (entry.coreInst && entry.instanceIndex !== undefined) {
+      entry.coreInst.setColorAt(entry.instanceIndex, color);
+      if (entry.coreInst.instanceColor) entry.coreInst.instanceColor.needsUpdate = true;
+    }
+    if (entry.glowInst && entry.instanceIndex !== undefined) {
+      entry.glowInst.setColorAt(entry.instanceIndex, color);
+      if (entry.glowInst.instanceColor) entry.glowInst.instanceColor.needsUpdate = true;
+    }
+    entry.data.progress = p;
+  }
+  lastAppliedNodeCount = state.nodeMap.size;
+}
+
+window.addEventListener('message', (event) => {
+  if (!event.data || event.data.type !== 'SKILL_DATA_RESPONSE') return;
+  if (event.data.subject && event.data.subject !== 'Math') return;
+  currentProgress = event.data.progress || {};
+  applyProgressToNodes(currentProgress);
+});
+
+if (window.parent && window.parent !== window) {
+  window.parent.postMessage({ type: 'REQUEST_SKILL_DATA', subject: 'Math' }, '*');
+}
+
+// View-mode switches rebuild nodeMap (Neural Map populates lazily
+// when the user opens it). Re-apply progress whenever the visible
+// node count changes so colors don't desync.
+setInterval(() => {
+  if (currentProgress && state.nodeMap.size > 0 && state.nodeMap.size !== lastAppliedNodeCount) {
+    applyProgressToNodes(currentProgress);
+  }
+}, 250);
+
+window._debug.applyProgressToNodes = applyProgressToNodes;

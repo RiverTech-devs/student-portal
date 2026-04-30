@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>3D Viewer Integration Test Host</title>
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; background: #020208; color: #e1e1e6; font: 14px/1.4 system-ui, sans-serif; }
+    #bar {
+      position: fixed; top: 0; left: 0; right: 0; height: 40px;
+      background: #0a0a14; border-bottom: 1px solid #1f2030;
+      display: flex; align-items: center; gap: 12px; padding: 0 14px; z-index: 10;
+    }
+    #bar h1 { margin: 0; font-size: 13px; font-weight: 600; }
+    #bar button { background: #1f2030; border: 1px solid #2f3146; color: #e1e1e6; padding: 5px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+    #bar button:hover { background: #2a2c44; }
+    #bar .spacer { flex: 1; }
+    #bar .log { color: #888; font-size: 11px; font-family: ui-monospace, monospace; }
+    iframe { position: fixed; top: 40px; left: 0; right: 0; bottom: 0; width: 100%; height: calc(100% - 40px); border: 0; }
+  </style>
+</head>
+<body>
+  <div id="bar">
+    <h1>3D Viewer · Integration Test Host</h1>
+    <button id="btn-mock-empty">Send empty progress</button>
+    <button id="btn-mock-mixed">Send mixed progress</button>
+    <button id="btn-mock-all-mastered">All mastered</button>
+    <span class="spacer"></span>
+    <span class="log" id="log">awaiting child handshake…</span>
+  </div>
+  <iframe id="viewer" src="index.html"></iframe>
+
+  <script>
+    const log = (msg) => {
+      document.getElementById('log').textContent = msg;
+      console.log('[host]', msg);
+    };
+
+    const viewer = document.getElementById('viewer');
+
+    // Mock progress shapes — `skill_name` matches `legacy_name` on merged nodes.
+    const MOCK_EMPTY = {};
+
+    const MOCK_MIXED = {
+      'Counting and Number Recognition': { state: 'mastered',    mastery_score: 100, last_practiced: new Date().toISOString(), practice_count: 5,  decay_rate: 14, mastered_at: new Date().toISOString() },
+      'Number Lines':                    { state: 'mastered',    mastery_score: 100, last_practiced: new Date().toISOString(), practice_count: 4,  decay_rate: 14, mastered_at: new Date().toISOString() },
+      'Place Value Understanding':       { state: 'mastered',    mastery_score: 100, last_practiced: new Date().toISOString(), practice_count: 3,  decay_rate: 14, mastered_at: new Date().toISOString() },
+      'Basic Addition':                  { state: 'in_progress', mastery_score: 60,  last_practiced: new Date().toISOString(), practice_count: 2,  decay_rate: 14 },
+      'Basic Subtraction':               { state: 'in_progress', mastery_score: 45,  last_practiced: new Date().toISOString(), practice_count: 1,  decay_rate: 14 },
+      'Multiplication':                  { state: 'available',   mastery_score: 0,   last_practiced: null,                      practice_count: 0,  decay_rate: 14 },
+      'Division':                        { state: 'available',   mastery_score: 0,   last_practiced: null,                      practice_count: 0,  decay_rate: 14 },
+      'Fractions':                       { state: 'needs_review',mastery_score: 80,  last_practiced: '2025-12-01T00:00:00Z',    practice_count: 6,  decay_rate: 14, mastered_at: '2025-12-01T00:00:00Z' },
+    };
+
+    function sendProgress(progress, label) {
+      viewer.contentWindow.postMessage({
+        type: 'SKILL_DATA_RESPONSE',
+        subject: 'Math',
+        progress
+      }, '*');
+      log(`sent ${label} (${Object.keys(progress).length} skills)`);
+    }
+
+    document.getElementById('btn-mock-empty').addEventListener('click', () => sendProgress(MOCK_EMPTY, 'empty'));
+    document.getElementById('btn-mock-mixed').addEventListener('click', () => sendProgress(MOCK_MIXED, 'mixed'));
+    document.getElementById('btn-mock-all-mastered').addEventListener('click', () => {
+      // Build "all mastered" by waiting for the request and then flipping each requested skill.
+      // For the test host we just synthesize a few common ones; the viewer applies what matches.
+      const all = {};
+      ['Counting and Number Recognition','Number Lines','Place Value Understanding','Basic Addition','Basic Subtraction','Multiplication','Division','Fractions','Decimals','Measurement','Time Telling','Money and Coins','Place Value','Even and Odd','Skip Counting']
+        .forEach(n => { all[n] = { state: 'mastered', mastery_score: 100, last_practiced: new Date().toISOString(), practice_count: 1, decay_rate: 14, mastered_at: new Date().toISOString() }; });
+      sendProgress(all, 'all-mastered');
+    });
+
+    window.addEventListener('message', (event) => {
+      if (!event.data || !event.data.type) return;
+      if (event.data.type === 'REQUEST_SKILL_DATA') {
+        log(`received REQUEST_SKILL_DATA for "${event.data.subject}" — auto-replying with mixed mock`);
+        sendProgress(MOCK_MIXED, 'mixed (auto)');
+        return;
+      }
+      log(`child → host: ${event.data.type}` + (event.data.skill ? ` (${event.data.skill})` : ''));
+    });
+  </script>
+</body>
+</html>
