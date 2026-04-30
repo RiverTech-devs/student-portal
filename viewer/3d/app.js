@@ -2096,6 +2096,29 @@ function applyProgressToNodes(progressByName) {
   lastAppliedNodeCount = state.nodeMap.size;
 }
 
+function applyProgressToParentCards(progressByName) {
+  if (!progressByName) return;
+  // Build a quick lookup from "domain.skillId" -> legacy_name via DOMAINS.
+  const cards = document.querySelectorAll('#pv-body .pv-card[data-skill]');
+  cards.forEach(card => {
+    const key = card.getAttribute('data-skill');
+    const [domId, skillId] = key.split('.');
+    const dom = DOMAINS.find(dd => dd.id === domId);
+    const skill = dom?.skills.find(ss => ss.id === skillId);
+    if (!skill) return;
+    const legacyName = skill.legacy_name || skill.name;
+    const p = progressByName[legacyName];
+    card.classList.remove('pv-state-locked','pv-state-available','pv-state-in_progress','pv-state-activated','pv-state-mastered','pv-state-needs_review');
+    if (!p) return;
+    card.classList.add('pv-state-' + p.state);
+    const dot = card.querySelector('.pv-card-dot');
+    if (dot) {
+      const stateColor = STATE_COLORS[p.state];
+      if (stateColor) dot.style.background = '#' + stateColor.getHexString();
+    }
+  });
+}
+
 window.addEventListener('message', (event) => {
   if (!event.data) return;
   // SKILL_DATA_RESPONSE is the index.html flow; LOAD_SKILL_TREE is the
@@ -2104,7 +2127,21 @@ window.addEventListener('message', (event) => {
   if (event.data.subject && event.data.subject !== 'Math') return;
   currentProgress = event.data.progress || {};
   applyProgressToNodes(currentProgress);
+  applyProgressToParentCards(currentProgress);
 });
+
+// The Roadmap rebuilds its card grid every time the user switches domain
+// pills or toggles back from Neural Map. Re-apply state styling whenever
+// #pv-body's children change so progress doesn't disappear on re-render.
+{
+  const pvBody = document.getElementById('pv-body');
+  if (pvBody) {
+    const observer = new MutationObserver(() => {
+      if (currentProgress) applyProgressToParentCards(currentProgress);
+    });
+    observer.observe(pvBody, { childList: true, subtree: true });
+  }
+}
 
 if (window.parent && window.parent !== window) {
   window.parent.postMessage({ type: 'REQUEST_SKILL_DATA', subject: 'Math' }, '*');
