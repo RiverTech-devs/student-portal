@@ -259,6 +259,63 @@ const removedCycleEdges = [];
   for (const k of merged.keys()) if (color.get(k) === WHITE) visit(k);
 }
 
+// ---------- Transitive reduction of prerequisite_hard ----------
+// The prototype's prereqs were already chain-pruned, but unioning them with
+// the master edges re-introduced redundant transitive edges. Drop edge A->C
+// whenever A can reach C through some other path that doesn't pass through C
+// itself. Mirrors tools/transitive-reduction.js.
+const removedRedundantEdges = [];
+{
+  const childOf = new Map();
+  const edgeKeyByPair = new Map();
+  for (const k of merged.keys()) childOf.set(k, []);
+  for (const [k, e] of mergedEdges) {
+    if (e.type !== 'prerequisite_hard') continue;
+    childOf.get(e.from).push(e.to);
+    edgeKeyByPair.set(`${e.from}->${e.to}`, k);
+  }
+  function canReachExcluding(start, target, excludeNode) {
+    if (start === target) return true;
+    if (start === excludeNode) return false;
+    const stack = [start];
+    const visited = new Set([start]);
+    while (stack.length) {
+      const u = stack.pop();
+      const neighbors = childOf.get(u) || [];
+      for (const v of neighbors) {
+        if (v === excludeNode || visited.has(v)) continue;
+        if (v === target) return true;
+        visited.add(v);
+        stack.push(v);
+      }
+    }
+    return false;
+  }
+  // Reverse adjacency (parents of each node)
+  const parentsOf = new Map();
+  for (const k of merged.keys()) parentsOf.set(k, []);
+  for (const [u, kids] of childOf) for (const v of kids) parentsOf.get(v).push(u);
+
+  const toRemove = [];
+  for (const [node, parents] of parentsOf) {
+    if (parents.length < 2) continue;
+    for (const a of parents) {
+      let redundant = false;
+      for (const b of parents) {
+        if (a === b) continue;
+        if (canReachExcluding(a, b, node)) { redundant = true; break; }
+      }
+      if (redundant) toRemove.push(`${a}->${node}`);
+    }
+  }
+  for (const pair of toRemove) {
+    const k = edgeKeyByPair.get(pair);
+    if (!k || !mergedEdges.has(k)) continue;
+    removedRedundantEdges.push({ ...mergedEdges.get(k), sources: [...mergedEdges.get(k).sources] });
+    mergedEdges.delete(k);
+  }
+}
+
 // ---------- Stats ----------
 const matchedCount = [...merged.values()].filter(n => n.sources.includes('master') && n.sources.includes('prototype')).length;
 const masterOnlyCount = [...merged.values()].filter(n => n.sources.length === 1 && n.sources[0] === 'master').length;
@@ -278,9 +335,11 @@ const out = {
     prototype_only: protoOnlyCount,
     edges_total: edgeArr.length,
     stage_drifts_resolved: stageDrifts.length,
-    cycle_edges_removed: removedCycleEdges.length
+    cycle_edges_removed: removedCycleEdges.length,
+    redundant_edges_removed: removedRedundantEdges.length
   },
   removed_cycle_edges: removedCycleEdges,
+  removed_redundant_edges: removedRedundantEdges,
   nodes: [...merged.values()],
   edges: edgeArr
 };
@@ -330,4 +389,5 @@ console.log(`Nodes: ${out.stats.nodes_total} (matched ${matchedCount}, master-on
 console.log(`Edges: ${edgeArr.length}`);
 console.log(`Stage drifts resolved (prototype wins): ${stageDrifts.length}`);
 console.log(`Cycle edges removed: ${removedCycleEdges.length}`);
+console.log(`Redundant transitive edges removed: ${removedRedundantEdges.length}`);
 console.log('Wrote data/compiled/math_merged.json + tools/build-math-merged.report.md');

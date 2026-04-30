@@ -1,11 +1,11 @@
 # Math merge report
 
-Generated: 2026-04-30T17:00:08.758Z
+Generated: 2026-04-30T18:21:20.198Z
 
 ## Stats
 
 - Total merged Math nodes: **224** (176 matched, 30 master-only, 18 prototype-only)
-- Total Math edges: **610**
+- Total Math edges: **412**
 - Stage drifts auto-resolved (prototype tier wins): **111**
 
 ## Stage drift resolutions
