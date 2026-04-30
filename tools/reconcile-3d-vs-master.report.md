@@ -1,0 +1,1465 @@
+# 3D Prototype vs master_graph reconciliation
+
+Source: `Trees/3D Skill Tree/data.js` (1418 skills) vs `data/compiled/master_graph.json` (658 nodes).
+
+Match key: normalized title within domain (lowercase, alphanumeric only).
+
+## Headline counts
+
+| Domain | Matched | Prototype-only (new) | Master-only (would lose) |
+|---|---:|---:|---:|
+| Bible | 15 | 131 | 5 |
+| Creative | 32 | 138 | 58 |
+| Language | 33 | 114 | 9 |
+| LifeSkills | 23 | 129 | 1 |
+| Math | 158 | 36 | 48 |
+| Physical | 19 | 123 | 2 |
+| Science | 47 | 119 | 0 |
+| Social | 22 | 122 | 2 |
+| Technology | 24 | 133 | 160 |
+| **TOTAL** | **373** | **1045** | **285** |
+
+Stage drift (prototype tier → expected stage ≠ master stage): **109** matched nodes.
+
+## Stage drift on matched nodes
+
+Tier→Stage map: 1=Foundations, 2=Fluency, 3=Application, 4=Integration. Prototype goes higher (5–8) — those expand "Mastery".
+
+| Domain | Skill | Prototype tier | Master stage |
+|---|---|---:|---|
+| Bible | Reading Scripture Independently | 3 | Fluency |
+| Bible | Understanding Context | 3 | Fluency |
+| Bible | Applying Scripture | 4 | Application |
+| Bible | Doctrinal Basics | 4 | Application |
+| Bible | Discipleship | 4 | Mastery |
+| Creative | Color Theory | 4 | Fluency |
+| Creative | Digital Illustration | 4 | Fluency |
+| Creative | Figure Drawing | 4 | Application |
+| Creative | Creative Coding | 4 | Foundations |
+| Language | Basic Comprehension | 1 | Fluency |
+| Language | Main Ideas | 1 | Integration |
+| Language | Phonics | 2 | Foundations |
+| Language | Sight Words | 2 | Foundations |
+| Language | Text Features | 2 | Mastery |
+| Language | Inferences | 2 | Integration |
+| Language | Paragraph Writing | 3 | Fluency |
+| Language | Literature (Intro) | 3 | Fluency |
+| Language | Plot Structure | 3 | Integration |
+| Language | Supporting Details | 3 | Integration |
+| Language | Cause and Effect | 3 | Integration |
+| Language | Essay Writing | 4 | Application |
+| Language | Literary Analysis | 4 | Application |
+| Language | Research Skills | 4 | Mastery |
+| Language | Textual Evidence | 4 | Application |
+| Language | Media Literacy | 4 | Application |
+| Language | Research Basics | 4 | Application |
+| LifeSkills | Basic Money Concepts | 1 | Fluency |
+| LifeSkills | Time Management | 3 | Foundations |
+| LifeSkills | Problem Solving | 3 | Fluency |
+| LifeSkills | Work Habits | 4 | Application |
+| LifeSkills | Digital Productivity | 4 | Application |
+| LifeSkills | Home Management | 4 | Application |
+| Math | Arrays and Area Models | 2 | Foundations |
+| Math | Multi-Digit Subtraction | 2 | Foundations |
+| Math | 3D Shapes | 2 | Foundations |
+| Math | Absolute Value | 3 | Fluency |
+| Math | Negatives | 3 | Fluency |
+| Math | Fraction Operations | 3 | Fluency |
+| Math | Mixed Numbers | 3 | Fluency |
+| Math | Decimal Operations | 3 | Fluency |
+| Math | Factors and Multiples | 3 | Fluency |
+| Math | GCF and LCM | 3 | Fluency |
+| Math | Powers of 10 | 3 | Fluency |
+| Math | Square Roots | 3 | Fluency |
+| Math | Estimation | 3 | Fluency |
+| Math | Unit Conversion | 3 | Fluency |
+| Math | Perimeter | 3 | Fluency |
+| Math | Types of Angles | 3 | Fluency |
+| Math | Types of Lines | 3 | Fluency |
+| Math | Geometry Basics | 3 | Fluency |
+| … | 59 more — see report.json | | |
+
+## Master-only skills (orphaned if prototype becomes source of truth)
+
+### Bible (5)
+
+- `B2` Key Bible Stories — Foundations / Spine
+- `B12` Apologetics (Foundations) — Integration / Spine
+- `B17` Church History — Application / Branch
+- `B19` Biblical Languages (Intro) — Integration / Branch
+- `B20` Ethics & Moral Reasoning — Integration / Branch
+
+### Creative (58)
+
+- `CR-001` Foundational Drawing — Fluency / Spine
+- `CR-002` Line — Integration / Spine
+- `CR-004` Digital Drawing Tools — Application / Spine
+- `CR-005` 2D Graphic Design — Integration / Spine
+- `CR-006` Animation Basics — Fluency / Spine
+- `CR-010` Shape — Mastery / Spine
+- `CR-011` Form — Application / Branch
+- `CR-012` Anatomy — Integration / Spine
+- `CR-013` Value & Perspective — Mastery / Spine
+- `CR-014` Composition — Integration / Spine
+- `CR-016` Gesture Drawing — Integration / Leaf
+- `CR-017` Storytelling — Application / Spine
+- `CR-018` Color Mixing — Application / Spine
+- `CR-019` Basic Painting — Application / Spine
+- `CR-020` Pastels — Foundations / Leaf
+- `CR-021` Oil Techniques — Application / Spine
+- `CR-022` Watercolor — Fluency / Spine
+- `CR-023` Acrylic — Fluency / Spine
+- `CR-024` Charcoal — Application / Leaf
+- `CR-025` Still Life — Application / Leaf
+- `CR-026` Landscapes — Application / Leaf
+- `CR-028` Digital Sketching — Application / Spine
+- `CR-029` Digital Painting — Application / Spine
+- `CR-033` Speed Painting — Application / Leaf
+- `CR-036` Matte Painting — Fluency / Leaf
+- `CR-037` Texture Painting — Application / Leaf
+- `CR-044` UI/UX Design — Mastery / Spine
+- `CR-046` 2D Animation — Fluency / Spine
+- `CR-047` 3D Basics — Foundations / Spine
+- `CR-050` Character Animation — Fluency / Spine
+- `CR-052` VFX — Fluency / Leaf
+- `CR-054` Style Transfer — Foundations / Spine
+- `CR-056` Art Ethics — Fluency / Leaf
+- `CR-059` Machine Learning — Foundations / Spine
+- `CR-060` Neural Networks — Foundations / Leaf
+- `CR-061` Art Business — Integration / Spine
+- `CR-063` Freelancing — Integration / Spine
+- `CR-064` Client Work — Mastery / Spine
+- `CR-066` Marketing — Mastery / Leaf
+- `CR-067` Art Critique — Mastery / Leaf
+- `CR-068` Networking — Integration / Leaf
+- `CR-069` Medical Art — Integration / Leaf
+- `CR-070` Botanical Art — Integration / Leaf
+- `CR-071` Technical Drawing — Mastery / Spine
+- `C1` Creative Exploration — Foundations / Spine
+- `C2` Basic Art Skills — Foundations / Spine
+- `C3` Music & Rhythm Basics — Foundations / Spine
+- `C4` Creative Techniques — Fluency / Spine
+- `C5` Visual Design Principles — Fluency / Spine
+- `C7` Artistic Expression — Application / Spine
+- `C12` Creative Iteration — Integration / Spine
+- `C14` Specialization — Mastery / Spine
+- `C15` Creative Mastery — Mastery / Leaf
+- `C16` Visual Arts — Application / Branch
+- `C18` Theater & Acting — Application / Branch
+- `C19` Digital Art & Design — Integration / Branch
+- `C20` Film & Media Production — Integration / Branch
+- `C22` Advanced Creative Projects — Mastery / Branch
+
+### Language (9)
+
+- `L-004` Decoding — Foundations / Spine
+- `L-005` Fluency — Foundations / Spine
+- `L-006` Vocabulary — Fluency / Spine
+- `E10` Multi-Paragraph Writing — Application / Spine
+- `E11` Grammar & Mechanics — Application / Spine
+- `E15` Rhetoric (Persuasion) — Integration / Spine
+- `E16` Public Speaking — Integration / Spine
+- `E19` Argumentation & Debate — Integration / Spine
+- `E25` Advanced Creative Writing — Integration / Branch
+
+### LifeSkills (1)
+
+- `LS9` Banking & Transactions — Application / Spine
+
+### Math (48)
+
+- `M-001` Counting and Number Recognition — Foundations / Spine
+- `M-004` Skip Counting — Foundations / Spine
+- `M-007` Place Value Understanding — Foundations / Spine
+- `M-014` Time Telling — Foundations / Spine
+- `M-015` Money and Coins — Foundations / Spine
+- `M-024` Multiplication Properties — Foundations / Leaf
+- `M-028` Long Division — Fluency / Spine
+- `M-029` Basic Fractions — Fluency / Spine
+- `M-030` Equivalent Fractions — Fluency / Spine
+- `M-031` Simplifying Fractions — Fluency / Spine
+- `M-034` Fraction Word Problems — Fluency / Spine
+- `M-038` Basic Measurement — Fluency / Spine
+- `M-041` Elapsed Time — Fluency / Leaf
+- `M-045` Prime and Composite — Fluency / Spine
+- `M-051` Advanced Fractions — Fluency / Spine
+- `M-062` Mean Median Mode — Fluency / Spine
+- `M-066` Expressions with Variables — Application / Spine
+- `M-076` Basic Graphing — Application / Spine
+- `M-084` Volume of Cylinders Cones Spheres — Application / Spine
+- `M-087` Basic Geometry Concepts — Application / Spine
+- `M-100` Congruence — Integration / Spine
+- `M-101` Proofs — Integration / Branch
+- `M-119` Graphing Linear Inequalities — Application / Spine
+- `M-120` Systems by Graphing — Integration / Spine
+- `M-123` Basic Functions — Application / Spine
+- `M-125` Exponential Functions — Application / Spine
+- `M-132` Advanced Polynomials — Integration / Spine
+- `M-133` Synthetic Division — Integration / Spine
+- `M-135` Piecewise Functions — Integration / Spine
+- `M-136` Rational Functions — Integration / Spine
+- `M-143` Matrices Intro — Integration / Spine
+- `M-145` Advanced Functions — Integration / Spine
+- `M-149` Trigonometry — Mastery / Spine
+- `M-153` Graphing Trig Functions — Mastery / Spine
+- `M-154` Inverse Trig — Integration / Spine
+- `M-165` Applications — Mastery / Spine
+- `M-172` Partial Derivatives — Mastery / Leaf
+- `M-173` Double Integrals — Mastery / Spine
+- `M-174` Triple Integrals — Mastery / Leaf
+- `M-179` Eigenvalues — Mastery / Leaf
+- `M-180` Series — Mastery / Leaf
+- `M-184` Advanced Number Theory — Mastery / Leaf
+- `M12` Fractions (Concepts) — Fluency / Spine
+- `M23` Functions (Intro) — Integration / Spine
+- `M24` Linear Functions — Integration / Spine
+- `M31` Pre-Calculus — Mastery / Spine
+- `M32` Calculus (Intro) — Mastery / Leaf
+- `M40` Investments & Growth — Mastery / Branch
+
+### Physical (2)
+
+- `P5` Agility & Balance — Fluency / Spine
+- `P17` Team Sports — Application / Branch
+
+### Social (2)
+
+- `SS7` World History Overview — Application / Spine
+- `SS19` US History — Application / Branch
+
+### Technology (160)
+
+- `T-SD001` Introduction to Operating Systems — Foundations / Spine
+- `T-SD002` Basic Computer Operations — Foundations / Spine
+- `T-SD003` Basic Arithmetic — Foundations / Spine
+- `T-SD004` Basic Software Tools — Foundations / Spine
+- `T-SD005` Programming/Basic Theory — Foundations / Spine
+- `T-SD006` Text Manipulation — Foundations / Spine
+- `T-SD007` Basic Database Concepts — Fluency / Spine
+- `T-SD008` Markup Languages — Fluency / Spine
+- `T-SD010` Computer Science Algebra — Fluency / Spine
+- `T-SD011` Introduction to Hardware — Fluency / Spine
+- `T-SD012` Intro Computer Science — Application / Spine
+- `T-SD013` Basic Concepts — Fluency / Spine
+- `T-SD014` Console UI Fundamentals — Fluency / Spine
+- `T-SD015` Advanced Debugging Techniques — Application / Spine
+- `T-SD016` Assembly Language Programming — Application / Spine
+- `T-SD017` SQL — Application / Spine
+- `T-SD018` Web to Desktop Design — Application / Spine
+- `T-SD019` HTML CSS — Application / Spine
+- `T-SD020` JavaScript/jQuery — Application / Spine
+- `T-SD021` Event Driven Programming — Application / Spine
+- `T-SD022` HTML CSS Concepts — Integration / Spine
+- `T-SD023` Basic HTML Design — Integration / Spine
+- `T-SD024` HTML to Web Fundamentals — Mastery / Spine
+- `T-SD025` Building Responsive Websites — Integration / Spine
+- `T-SD026` Building Interactive Websites — Integration / Leaf
+- `T-SD027` Systems and Application Programming — Integration / Spine
+- `T-SD028` Operating System Fundamentals — Integration / Spine
+- `T-SD029` Cybersecurity Pathways — Integration / Spine
+- `T-SD030` Advanced Systems Programming — Integration / Branch
+- `T-SD031` Systems and Application Automation — Mastery / Spine
+- `T-SD032` Industrial Automation — Mastery / Leaf
+- `T-SD034` Advanced Software Development — Integration / Spine
+- `T-SD035` Building Scalable Applications — Integration / Spine
+- `T-SD036` Software Architecture — Mastery / Spine
+- `T-SD037` Application Security — Mastery / Spine
+- `T-SD038` Modern Software Practices — Mastery / Leaf
+- `T-SD039` Front-End Development — Integration / Spine
+- `T-SD040` Back-End Development — Integration / Spine
+- `T-SD042` Web Development Pathways — Integration / Branch
+- `T-SD043` Cloud Computing and DevOps — Mastery / Spine
+- `T-SD044` Advanced Cloud Development — Mastery / Leaf
+- `T-SD045` Intro to Game Programming — Integration / Spine
+- `T-SD046` Service Oriented Architecture — Integration / Spine
+- `T-SD047` Advanced Game Programming — Integration / Spine
+- `T-SD048` Game Engine Development — Integration / Branch
+- `T-SD049` Mobile App Development — Mastery / Spine
+- `T-SD050` Game Design Principles — Mastery / Leaf
+- `T-SD051` Data Science and Machine Learning — Integration / Spine
+- `T-SD052` Statistical Analysis — Integration / Spine
+- `T-SD053` Machine Learning Algorithms — Integration / Spine
+- `T-SD054` Deep Learning — Integration / Spine
+- `T-SD055` AI Development — Mastery / Spine
+- `T-RB001` Mechanics Basics — Integration / Spine
+- `T-RB002` Circuits Basics — Integration / Spine
+- `T-RB003` Coding Basics — Integration / Spine
+- `T-RB004` Design Basics — Application / Spine
+- `T-RB005` Innovation Basics — Application / Spine
+- `T-RB006` Frame Build — Application / Spine
+- `T-RB007` Axles & Wheels — Integration / Spine
+- `T-RB008` Motion Device — Integration / Spine
+- `T-RB009` Build Stability — Integration / Spine
+- `T-RB010` Gears & Torque — Integration / Spine
+- `T-RB011` Axle Compare — Integration / Spine
+- `T-RB012` Cranks & Pulleys — Integration / Spine
+- `T-RB013` 2-Joint Arm — Integration / Spine
+- `T-RB014` Gear Integration — Integration / Spine
+- `T-RB015` Walker/Biped — Integration / Spine
+- `T-RB016` Balance & Springs — Integration / Spine
+- `T-RB017` Materials Choice — Mastery / Spine
+- `T-RB018` Real-World Chassis — Mastery / Spine
+- `T-RB019` Mech-Control Integr. — Mastery / Spine
+- `T-RB020` Test Iteration — Mastery / Spine
+- `T-RB021` Labeled Mechanism — Mastery / Leaf
+- `T-RB022` Components ID — Integration / Spine
+- `T-RB023` Electricity Flow — Integration / Spine
+- `T-RB024` LED Switch — Integration / Spine
+- `T-RB025` Breadboard Use — Integration / Spine
+- `T-RB026` Sensor Read — Integration / Spine
+- `T-RB027` Multimeter Use — Integration / Spine
+- `T-RB028` Servo Drive — Mastery / Spine
+- `T-RB029` Sensor Logic — Mastery / Spine
+- `T-RB030` Light/Sound React — Integration / Spine
+- `T-RB031` Sensor Toggle — Integration / Spine
+- `T-RB032` Motor+Sensor Circuit — Mastery / Spine
+- `T-RB033` Power Budget — Integration / Spine
+- `T-RB034` Sensor Control — Mastery / Spine
+- `T-RB035` Regulators & Polarity — Mastery / Spine
+- `T-RB036` Alarm Device — Integration / Leaf
+- `T-RB037` Transistors/Relays — Mastery / Spine
+- `T-RB038` Multi-Load Power — Mastery / Spine
+- `T-RB039` Soldering — Mastery / Spine
+- `T-RB040` Autonomous Power — Mastery / Spine
+- `T-RB041` Enclosure Build — Mastery / Leaf
+- `T-RB042` Circuit Diagram — Mastery / Spine
+- `T-RB043` Starter Code — Integration / Spine
+- `T-RB044` Inputs ID — Integration / Spine
+- `T-RB045` Parameter Tuning — Integration / Spine
+- `T-RB046` If/Else & Loops — Mastery / Spine
+- `T-RB047` Debug Syntax — Integration / Spine
+- `T-RB048` Blink LED — Integration / Spine
+- `T-RB049` Input → Output — Integration / Spine
+- `T-RB050` Functions — Integration / Spine
+- `T-RB051` Serial Monitor — Integration / Spine
+- `T-RB052` Libraries — Integration / Spine
+- `T-RB053` Menu/UI — Integration / Spine
+- `T-RB054` Timers/Millis — Integration / Spine
+- `T-RB055` Interrupts/States — Mastery / Spine
+- `T-RB056` Concurrent Code — Mastery / Spine
+- `T-RB057` Optimize Code — Mastery / Spine
+- `T-RB058` RF/Bluetooth — Integration / Spine
+- `T-RB059` Auto Behavior — Mastery / Spine
+- `T-RB060` Code Docs — Mastery / Leaf
+- `T-RB061` Labeled Sketch — Fluency / Spine
+- `T-RB062` Part Explain — Application / Spine
+- `T-RB063` Design Weakness — Application / Spine
+- `T-RB064` Plan Template — Fluency / Spine
+- `T-RB065` Record Measures — Fluency / Spine
+- `T-RB066` Present Concept — Application / Spine
+- `T-RB067` BOM — Fluency / Spine
+- `T-RB068` Tinkercad Model — Fluency / Spine
+- `T-RB069` Label Schematics — Fluency / Spine
+- `T-RB070` Goals Fit — Application / Spine
+- `T-RB071` Scaled Drawings — Fluency / Spine
+- `T-RB072` Simulate System — Application / Spine
+- `T-RB073` Design Log — Fluency / Spine
+- `T-RB074` Material Eval — Fluency / Spine
+- `T-RB075` Fusion 360 — Fluency / Spine
+- `T-RB076` CAD Assemblies — Fluency / Spine
+- `T-RB077` Tech Prints — Fluency / Spine
+- `T-RB078` Client Design — Fluency / Spine
+- `T-RB079` Pro Presentation — Fluency / Spine
+- `T-RB080` Design Portfolio — Foundations / Leaf
+- `T-RB081` Budget Limits — Fluency / Spine
+- `T-RB082` Idea Brainstorm — Application / Spine
+- `T-RB083` Problem Describe — Application / Spine
+- `T-RB084` Success Criteria — Application / Spine
+- `T-RB085` Invention Sketch — Application / Spine
+- `T-RB086` Test Plan — Fluency / Spine
+- `T-RB087` Low-Fi Proto — Application / Spine
+- `T-RB088` User Interview — Fluency / Spine
+- `T-RB089` Usability Test — Fluency / Spine
+- `T-RB090` Multi Prototypes — Fluency / Spine
+- `T-RB091` Feedback Iterate — Fluency / Spine
+- `T-RB092` Constraint Track — Foundations / Spine
+- `T-RB093` Version Compare — Fluency / Spine
+- `T-RB094` Team Lead — Foundations / Spine
+- `T-RB095` Research Docs — Foundations / Spine
+- `T-RB096` Final Prototype — Foundations / Spine
+- `T-RB097` Reliability Test — Foundations / Spine
+- `T-RB098` Impact Project — Foundations / Spine
+- `T-RB099` Public Present — Foundations / Spine
+- `T-RB100` Scale Plan — Foundations / Leaf
+- `T10` Programming Logic — Application / Spine
+- `T11` Programming Projects — Application / Spine
+- `T12` Software Design — Integration / Spine
+- `T20` Game Logic — Application / Branch
+- `T22` Web Foundations — Application / Branch
+- `T25` Robotics Basics — Application / Branch
+- `T27` Robotics Engineering — Mastery / Branch
+- `T31` Data & Spreadsheets — Application / Branch
+
+## Prototype-only skills (would be added if we adopt the new data)
+
+### Bible (131)
+
+- `bible_stories` Bible Stories — tier 1
+- `prayer_basics` Prayer Basics — tier 1
+- `gods_love` God — tier 1
+- `church_community` Church & Community — tier 1
+- `worship` Worship — tier 1
+- `ten_commandments` Ten Commandments — tier 1
+- `ot_survey` Old Testament Survey — tier 2
+- `nt_survey` New Testament Survey — tier 2
+- `key_verses` Key Verses — tier 2
+- `parables` Parables — tier 2
+- `fruits_spirit` Fruits of the Spirit — tier 2
+- `church_hist_basics` Church History Basics — tier 2
+- `baptism` Baptism — tier 2
+- `biblical_geography` Biblical Geography — tier 3
+- `life_of_christ` Life of Christ — tier 3
+- `acts_early_church` Acts & Early Church — tier 3
+- `psalms_wisdom` Psalms & Wisdom Literature — tier 3
+- `personal_devotion` Personal Devotion — tier 3
+- `christian_ethics` Christian Ethics — tier 3
+- `denominational` Denominational Studies — tier 3
+- `hermeneutics` Hermeneutics — tier 4
+- `systematic_theo_basic` Systematic Theology (Basic) — tier 4
+- `church_hist_reformation` Church History: Reformation — tier 4
+- `apologetics` Apologetics — tier 4
+- `mission_evangelism` Mission & Evangelism — tier 4
+- `worship_traditions` Christian Worship Traditions — tier 4
+- `ot_exegesis` OT Exegesis — tier 5
+- `nt_exegesis` NT Exegesis — tier 5
+- `comparative_theology` Comparative Theology — tier 5
+- `christian_philosophy` Christian Philosophy — tier 5
+- `pastoral_care` Pastoral Care — tier 5
+- `homiletics` Homiletics — tier 5
+- `soteriology` Soteriology — tier 5
+- `creation_theology` Creation Theology — tier 5
+- `biblical_languages_basic` Biblical Languages (Basic) — tier 6
+- `historical_theology` Historical Theology — tier 6
+- `ethics_moral_theo` Ethics & Moral Theology — tier 6
+- `ecclesiology` Ecclesiology — tier 6
+- `missiology` Missiology — tier 6
+- `counseling` Christian Counseling — tier 6
+- `pneumatology` Pneumatology — tier 6
+- `biblical_archaeology` Biblical Archaeology — tier 6
+- `biblical_languages_adv` Biblical Languages (Advanced) — tier 7
+- `systematic_theology` Systematic Theology — tier 7
+- `philosophical_theology` Philosophical Theology — tier 7
+- `liturgical_studies` Liturgical Studies — tier 7
+- `church_admin` Church Administration — tier 7
+- `interfaith_dialogue` Interfaith Dialogue — tier 7
+- `eschatology` Eschatology — tier 7
+- `youth_ministry` Youth Ministry — tier 7
+- `christian_leadership` Christian Leadership — tier 7
+- `original_lang_scholarship` Original Language Scholarship — tier 8
+- `theology_of_culture` Theology of Culture — tier 8
+- `public_theology` Public Theology — tier 8
+- `academic_biblical_criticism` Academic Biblical Criticism — tier 8
+- `theological_research` Theological Research — tier 8
+- `creation_story` Creation Story — tier 1
+- `jesus_birth` The Birth of Jesus — tier 1
+- `lords_prayer` The Lord's Prayer — tier 1
+- `christian_songs` Hymns & Christian Songs — tier 1
+- `golden_rule` The Golden Rule — tier 1
+- `sermon_mount` Sermon on the Mount — tier 2
+- `david_stories` David & the Kings — tier 2
+- `prophets_intro` The Prophets (Introduction) — tier 2
+- `new_birth` Salvation & New Birth — tier 2
+- `holy_spirit_basics` Holy Spirit (Basic) — tier 2
+- `christian_calendar` Christian Calendar & Seasons — tier 2
+- `ot_law` Old Testament Law & Covenant — tier 2
+- `pentateuch` Pentateuch Study — tier 3
+- `historical_books` Historical Books (OT) — tier 3
+- `major_prophets` Major Prophets — tier 3
+- `minor_prophets` Minor Prophets — tier 3
+- `pauline_epistles` Pauline Epistles — tier 3
+- `general_epistles` General Epistles — tier 3
+- `revelation_intro` Book of Revelation (Introduction) — tier 3
+- `typology` Typology & Foreshadowing — tier 3
+- `covenant_theology` Covenant Theology (Basic) — tier 3
+- `miracles_of_jesus` Miracles of Jesus — tier 3
+- `lords_supper` The Lord's Supper — tier 3
+- `biblical_narrative` Biblical Narrative Arc — tier 3
+- `trinitarianism` Trinitarianism — tier 4
+- `christology` Christology — tier 4
+- `hamartiology` Hamartiology (Doctrine of Sin) — tier 4
+- `biblical_theology` Biblical Theology — tier 4
+- `church_hist_ancient` Church History: Ancient & Patristic — tier 4
+- `prayer_advanced` Prayer (Advanced Practices) — tier 4
+- `service_ministry` Service & Ministry Involvement — tier 5
+- `christian_worldview` Christian Worldview — tier 4
+- `testimony_sharing` Testimony & Personal Witness — tier 4
+- `creedal_study` Creeds & Confessions — tier 4
+- `reformed_theology` Reformed Theology — tier 5
+- `wesleyan_arminian` Wesleyan-Arminian Theology — tier 5
+- `charismatic_theology` Charismatic & Pentecostal Theology — tier 6
+- `liberation_theology` Liberation Theology — tier 5
+- `theodicy` Theodicy (Problem of Evil) — tier 5
+- `biblical_manhood_womanhood` Biblical Manhood & Womanhood — tier 5
+- `evangelism_methods` Evangelism Methods — tier 5
+- `small_group_leadership` Small Group Leadership — tier 5
+- `music_worship` Worship Music & Arts — tier 5
+- `social_justice_faith` Social Justice & Faith — tier 5
+- `church_and_state` Church & State — tier 5
+- `biblical_counseling_basic` Biblical Counseling (Basic) — tier 5
+- `patristics` Patristics — tier 6
+- `medieval_theology` Medieval Theology — tier 6
+- `biblical_hermeneutics_adv` Advanced Hermeneutics — tier 6
+- `ot_biblical_theology` OT Biblical Theology — tier 6
+- `nt_biblical_theology` NT Biblical Theology — tier 6
+- `angelology_demonology` Angelology & Demonology — tier 6
+- `sanctification` Sanctification & Holiness — tier 6
+- `preaching_practicum` Preaching Practicum — tier 6
+- `church_planting` Church Planting — tier 7
+- `camp_outdoor_ministry` Camp & Outdoor Ministry — tier 7
+- `narrative_theology` Narrative Theology — tier 6
+- `greek_intro` Biblical Greek (Introduction) — tier 7
+- `hebrew_intro` Biblical Hebrew (Introduction) — tier 7
+- `textual_criticism` Textual Criticism — tier 7
+- `covenant_theology_adv` Covenant Theology (Advanced) — tier 7
+- `dispensationalism` Dispensationalism — tier 7
+- `christian_social_thought` Christian Social Thought — tier 8
+- `theo_of_mission` Theology of Mission — tier 7
+- `pastoral_theology` Pastoral Theology — tier 7
+- `spiritual_formation_adv` Spiritual Formation (Advanced) — tier 7
+- `gender_sexuality_theology` Theology of Gender & Sexuality — tier 7
+- `dogmatics` Reformed Dogmatics — tier 8
+- `biblical_criticism_adv` Advanced Biblical Criticism — tier 8
+- `philosophy_religion` Philosophy of Religion — tier 8
+- `theo_of_arts` Theology of the Arts & Culture — tier 8
+- `inter_religious_theo` Inter-Religious Theology — tier 8
+- `urban_ministry` Urban Ministry & Theology — tier 8
+- `global_christianity` Global Christianity — tier 8
+- `theo_dissertation` Theological Dissertation — tier 8
+
+### Creative (138)
+
+- `scribbling` Scribbling & Mark-Making — tier 1
+- `coloring` Coloring — tier 1
+- `rhythm_beat` Rhythm & Beat — tier 1
+- `singing_along` Singing Along — tier 1
+- `imaginative_play` Imaginative Play — tier 1
+- `building_blocks` Building & Constructing — tier 1
+- `finger_painting` Finger Painting — tier 1
+- `basic_drawing` Basic Drawing — tier 2
+- `drawing_media` Drawing Media (Charcoal, Ink & Graphite) — tier 2
+- `crafts` Crafts & Making — tier 2
+- `basic_instrument` Basic Instrument Exploration — tier 2
+- `singing_choir` Singing & Choir — tier 2
+- `storytelling_creative` Creative Storytelling — tier 2
+- `dance_basics` Dance Basics — tier 2
+- `photography_basics` Photography Basics — tier 2
+- `sketching_shading` Sketching & Shading — tier 3
+- `painting` Painting Fundamentals — tier 3
+- `watercolor_gouache` Watercolor & Gouache — tier 3
+- `music_theory_basic` Music Theory Basics — tier 3
+- `instrument_proficiency` Instrument Proficiency — tier 3
+- `acting_theater` Acting & Theater — tier 3
+- `pottery_sculpture` Pottery & Sculpture — tier 3
+- `graphic_design_basic` Graphic Design Basics — tier 3
+- `design_principles` Design Principles — tier 4
+- `music_theory_intermediate` Music Theory Intermediate — tier 4
+- `ensemble_band` Ensemble & Band — tier 4
+- `directing` Directing — tier 4
+- `screenwriting` Screenwriting — tier 4
+- `digital_art` Digital Art — tier 4
+- `film_video_basics` Film & Video Basics — tier 4
+- `oil_acrylic_painting` Oil & Acrylic Painting — tier 4
+- `landscape_painting` Landscape Painting — tier 4
+- `printmaking` Printmaking — tier 4
+- `textile_arts` Textile Arts — tier 4
+- `calligraphy_lettering` Calligraphy & Lettering — tier 4
+- `3d_basics` 3D Modeling Basics — tier 4
+- `adv_drawing_painting` Advanced Drawing & Painting — tier 5
+- `music_composition` Music Composition — tier 5
+- `audio_production` Audio Production — tier 5
+- `midi_electronic_music` MIDI & Electronic Music — tier 5
+- `adv_acting` Advanced Acting — tier 5
+- `poetry` Poetry — tier 5
+- `animation` Animation — tier 5
+- `ux_ui_design` UX / UI Design — tier 5
+- `fashion_design` Fashion Design — tier 5
+- `anatomy_for_art` Anatomy for Artists — tier 5
+- `art_ethics` Art Ethics & Intellectual Property — tier 5
+- `music_production` Music Production — tier 6
+- `film_production` Film Production — tier 6
+- `documentary_filmmaking` Documentary Filmmaking — tier 6
+- `adv_sculpture` Advanced Sculpture — tier 6
+- `art_history` Art History — tier 6
+- `choreography` Choreography — tier 6
+- `game_design` Game Design — tier 6
+- `architecture` Architecture — tier 6
+- `style_transfer` Style Transfer & Neural Aesthetics — tier 6
+- `stage_design` Stage & Theater Design — tier 6
+- `art_business` Art Business & Networking — tier 6
+- `freelancing` Freelancing for Creatives — tier 6
+- `exhibition_gallery` Exhibition & Gallery Practice — tier 7
+- `orchestration` Orchestration — tier 7
+- `film_post_prod` Film Post-Production — tier 7
+- `mixed_media` Mixed Media & Interdisciplinary Art — tier 7
+- `art_criticism` Art Criticism & Theory — tier 7
+- `prof_performance` Professional Performance — tier 7
+- `sound_design` Sound Design — tier 7
+- `industrial_design` Industrial Design — tier 7
+- `vfx` Visual Effects (VFX) — tier 7
+- `machine_learning_creative` Machine Learning for Creative Work — tier 7
+- `marketing_creative` Creative Marketing — tier 7
+- `client_work` Client Work & Commissioning — tier 7
+- `creative_entrepreneurship` Creative Entrepreneurship — tier 7
+- `conducting` Conducting — tier 8
+- `cinematography` Cinematography — tier 8
+- `installation_art` Installation Art — tier 8
+- `curation` Curation — tier 8
+- `master_craftsmanship` Master Craftsmanship — tier 8
+- `art_appreciation` Art Appreciation & Aesthetics — tier 2
+- `music_notation` Music Notation & Reading — tier 3
+- `voice_technique` Vocal Technique & Training — tier 3
+- `piano_keyboard` Piano & Keyboard Skills — tier 3
+- `guitar_basics` Guitar & Fretted Instruments — tier 3
+- `perspective_drawing` Perspective Drawing — tier 3
+- `still_life` Still Life Drawing & Painting — tier 3
+- `art_journaling` Art Journaling — tier 3
+- `sequential_art` Sequential Art & Storyboarding — tier 3
+- `mosaic_tile` Mosaic & Tile Art — tier 3
+- `music_history` Music History & Appreciation — tier 4
+- `ear_training` Ear Training & Aural Skills — tier 4
+- `sight_reading` Sight-Reading — tier 4
+- `string_orchestra` String Orchestra — tier 4
+- `world_music` World Music & Global Traditions — tier 4
+- `dance_styles` Dance Styles (Jazz, Hip-Hop, Contemporary) — tier 4
+- `ballroom_dance` Social & Ballroom Dance — tier 4
+- `music_theater` Musical Theater — tier 4
+- `improv_theater` Improv & Sketch Comedy — tier 4
+- `photo_composition` Photography Composition & Lighting — tier 4
+- `metalworking` Metalworking & Jewelry — tier 4
+- `glass_art` Glass Art & Stained Glass — tier 4
+- `woodworking` Woodworking & Carpentry — tier 4
+- `harmony_counterpoint` Harmony & Counterpoint — tier 5
+- `music_improvisation` Musical Improvisation — tier 5
+- `music_arranging` Music Arranging — tier 5
+- `music_performance` Solo Performance & Recital — tier 5
+- `songwriting` Songwriting & Lyric Writing — tier 5
+- `jazz_studies` Jazz Studies & Improvisation — tier 5
+- `dance_performance` Dance Performance & Recital — tier 6
+- `playwriting` Playwriting — tier 5
+- `stage_combat` Stage Combat & Movement — tier 5
+- `circus_arts` Circus Arts & Physical Theater — tier 5
+- `mural_public_art` Mural & Public Art — tier 5
+- `street_photography` Street & Documentary Photography — tier 5
+- `darkroom_photo` Darkroom & Analog Photography — tier 5
+- `3d_sculpting` 3D Digital Sculpting — tier 5
+- `content_creation` Social Content Creation — tier 5
+- `podcast_production` Podcast Production — tier 5
+- `comic_graphic_novel` Comics & Graphic Novel Creation — tier 5
+- `infographic_design` Infographic & Data Visualization Design — tier 5
+- `leather_bookbinding` Bookbinding & Leather Craft — tier 5
+- `encaustic_mixed` Encaustic & Alternative Media — tier 5
+- `icon_symbol_design` Icon & Symbol Design — tier 5
+- `film_scoring` Film Scoring — tier 6
+- `photo_portfolio` Photography Portfolio & Exhibition — tier 6
+- `ceramics_adv` Advanced Ceramics — tier 6
+- `3d_rendering` 3D Rendering & Lighting — tier 6
+- `nft_digital_assets` NFT & Digital Asset Creation — tier 6
+- `spatial_design` Spatial Design & Wayfinding — tier 6
+- `adv_choreography` Advanced Choreography & Dance Making — tier 6
+- `adv_playwriting` Advanced Playwriting & Dramaturgy — tier 6
+- `narrative_design` Narrative Design & Interactive Story — tier 6
+- `motion_design_adv` Advanced Motion Design — tier 7
+- `exhibition_design` Exhibition & Museum Design — tier 7
+- `xr_experience` XR / Immersive Experience Design — tier 7
+- `grant_writing` Arts Grant Writing — tier 7
+- `residency_prep` Artist Residency Preparation — tier 7
+- `art_therapy` Art Therapy Foundations — tier 8
+- `documentary_sound` Documentary Sound Design — tier 7
+- `opera_musical_theater` Opera & Advanced Musical Theater — tier 7
+
+### Language (114)
+
+- `basic_vocab` Basic Vocabulary — tier 1
+- `listening_comp` Listening Comprehension — tier 1
+- `reading_fluency` Reading Fluency — tier 2
+- `handwriting` Handwriting — tier 2
+- `spelling` Spelling — tier 2
+- `vocab_development` Vocabulary Development — tier 2
+- `alphabetizing` Alphabetizing & Reference Tools — tier 2
+- `grammar` Grammar — tier 3
+- `expanded_vocab` Expanded Vocabulary — tier 3
+- `dictionary_skills` Dictionary Skills — tier 3
+- `figurative_lang` Figurative Language — tier 4
+- `note_taking` Note Taking — tier 4
+- `public_speaking_basic` Public Speaking (Basic) — tier 4
+- `oral_presentation` Oral Presentation — tier 4
+- `persuasive_writing` Persuasive Writing — tier 5
+- `comparative_analysis` Comparative Analysis — tier 5
+- `rhetoric` Rhetoric — tier 5
+- `adv_grammar` Advanced Grammar — tier 5
+- `debate` Debate — tier 5
+- `socratic_discussion` Socratic Discussion — tier 5
+- `speech_writing` Speech Writing — tier 5
+- `academic_writing` Academic Writing — tier 6
+- `literary_criticism` Literary Criticism — tier 6
+- `linguistics_basics` Linguistics Basics — tier 6
+- `adv_rhetoric` Advanced Rhetoric — tier 6
+- `technical_writing` Technical Writing — tier 6
+- `journalism` Journalism — tier 6
+- `world_literature` World Literature — tier 6
+- `media_writing` Media Writing — tier 6
+- `esl_foreign_lang` ESL / Foreign Language Awareness — tier 6
+- `research_papers` Research Papers — tier 7
+- `thesis_development` Thesis Development — tier 7
+- `semiotics` Semiotics — tier 7
+- `discourse_analysis` Discourse Analysis — tier 7
+- `prof_communication` Professional Communication — tier 7
+- `editing_revision` Editing & Revision — tier 7
+- `publishing_editing` Publishing & Editing — tier 7
+- `academic_publishing` Academic Publishing — tier 8
+- `translation_theory` Translation Theory — tier 8
+- `comp_linguistics` Computational Linguistics — tier 8
+- `literary_theory` Literary Theory — tier 8
+- `screenwriting_lang` Screenwriting — tier 8
+- `grant_writing` Grant Writing — tier 8
+- `oral_lang_dev` Oral Language Development — tier 1
+- `print_awareness` Print Awareness — tier 1
+- `rhyming` Rhyming & Word Families — tier 1
+- `story_retelling` Story Retelling — tier 1
+- `decoding` Decoding Strategies — tier 2
+- `print_concepts` Print Concepts & Book Handling — tier 2
+- `writing_process_basic` Writing Process (Basic) — tier 2
+- `narrative_writing` Narrative Writing — tier 2
+- `word_families` Word Families & Patterns — tier 2
+- `context_clues` Context Clues — tier 2
+- `informational_text` Informational Text Reading — tier 3
+- `expository_writing` Expository Writing — tier 3
+- `descriptive_writing` Descriptive Writing — tier 3
+- `text_structure` Text Structure — tier 3
+- `compare_contrast` Compare & Contrast — tier 3
+- `genre_study` Genre Study — tier 3
+- `poetry_intro` Poetry Introduction — tier 3
+- `drama_intro` Drama Introduction — tier 3
+- `summarizing` Summarizing — tier 3
+- `point_of_view` Point of View — tier 3
+- `word_roots` Word Roots & Affixes — tier 3
+- `research_note_taking` Research Note-Taking — tier 4
+- `argumentative_writing` Argumentative Writing — tier 4
+- `narrative_techniques` Narrative Techniques — tier 4
+- `informational_writing` Informational/Explanatory Writing — tier 4
+- `setting_analysis` Setting Analysis — tier 4
+- `symbolism` Symbolism — tier 4
+- `tone_mood` Tone & Mood — tier 4
+- `narrator_voice` Narrator & Point of View Analysis — tier 4
+- `source_evaluation` Source Evaluation — tier 4
+- `citation_skills` Citation & MLA/APA Basics — tier 4
+- `grammar_mechanics` Grammar Mechanics & Usage — tier 5
+- `word_choice_style` Word Choice & Style — tier 4
+- `short_story_writing` Short Story Writing — tier 4
+- `drama_analysis` Drama Analysis — tier 4
+- `satire_irony` Satire & Irony — tier 5
+- `mythological_allusion` Mythology & Allusion — tier 5
+- `ap_lang_reading` AP-Style Rhetorical Reading — tier 5
+- `synthesis_writing` Synthesis Writing — tier 5
+- `close_reading` Close Reading — tier 5
+- `multimedia_presentation` Multimedia Presentation — tier 5
+- `interview_skills` Interview Skills — tier 5
+- `college_essay` College Application Essay — tier 5
+- `nonfiction_analysis` Nonfiction & Essay Analysis — tier 5
+- `script_writing` Script & Playwriting — tier 5
+- `timed_writing` Timed Writing — tier 5
+- `ap_lit_analysis` AP Literature Analysis — tier 6
+- `rhetorical_analysis` Rhetorical Analysis (Advanced) — tier 6
+- `stylistics` Stylistics — tier 6
+- `adaptation_study` Adaptation & Intertextuality — tier 6
+- `author_study` Author Study — tier 6
+- `genre_theory` Genre Theory — tier 6
+- `spoken_word_poetry` Spoken Word & Performance Poetry — tier 6
+- `digital_storytelling` Digital Storytelling — tier 6
+- `content_creation` Content Creation & Publishing — tier 6
+- `ib_lang_lit` IB Language & Literature — tier 6
+- `corpus_linguistics` Corpus Linguistics — tier 8
+- `narrative_theory` Narrative Theory — tier 8
+- `rhetorical_theory` Rhetorical Theory — tier 7
+- `media_criticism` Media Criticism — tier 7
+- `writing_center_tutor` Writing Center Tutoring — tier 7
+- `language_acquisition` Language Acquisition Theory — tier 7
+- `creative_nonfiction` Creative Nonfiction — tier 7
+- `magazine_journalism` Magazine & Long-Form Journalism — tier 7
+- `sociolinguistics` Sociolinguistics — tier 8
+- `psycholinguistics` Psycholinguistics — tier 8
+- `digital_humanities` Digital Humanities — tier 8
+- `rhetoric_of_science` Rhetoric of Science & Technology — tier 8
+- `book_editing` Book Editing & Acquisitions — tier 8
+- `applied_linguistics` Applied Linguistics — tier 8
+- `creative_writing_adv` Advanced Creative Writing (MFA Level) — tier 8
+
+### LifeSkills (129)
+
+- `personal_hygiene` Personal Hygiene — tier 1
+- `dressing_self` Dressing Self — tier 1
+- `basic_manners` Basic Manners — tier 1
+- `following_instructions` Following Instructions — tier 1
+- `sharing_turns` Sharing & Taking Turns — tier 1
+- `basic_safety` Basic Safety — tier 1
+- `telling_time` Telling Time — tier 1
+- `recognizing_coins` Recognizing Coins — tier 1
+- `chores` Chores & Household Tasks — tier 2
+- `basic_cooking` Basic Cooking — tier 2
+- `money_counting` Money Counting — tier 2
+- `stranger_danger` Stranger Danger — tier 2
+- `fire_safety` Fire Safety — tier 2
+- `phone_skills` Phone Skills — tier 2
+- `basic_first_aid` Basic First Aid — tier 2
+- `laundry` Laundry — tier 3
+- `meal_planning` Meal Planning — tier 3
+- `study_skills` Study Skills — tier 3
+- `internet_safety` Internet Safety — tier 3
+- `emotional_reg` Emotional Regulation — tier 3
+- `pet_care` Pet Care — tier 3
+- `home_organization` Home Organization — tier 3
+- `grocery_shopping` Grocery Shopping — tier 4
+- `banking` Banking — tier 4
+- `resume_writing` Resume Writing — tier 4
+- `job_interview` Job Interview Skills — tier 4
+- `drivers_ed` Driver — tier 4
+- `home_maintenance` Home Maintenance — tier 4
+- `nutrition` Nutrition — tier 4
+- `stress_management` Stress Management — tier 4
+- `relationship_skills` Relationship Skills — tier 4
+- `travel_skills` Travel Skills — tier 4
+- `taxes` Taxes — tier 5
+- `insurance` Insurance — tier 5
+- `apartment_hunting` Apartment Hunting — tier 5
+- `adv_cooking` Advanced Cooking — tier 5
+- `financial_planning` Financial Planning — tier 5
+- `networking` Networking — tier 5
+- `self_advocacy` Self-Advocacy — tier 5
+- `critical_thinking` Critical Thinking — tier 5
+- `voting_civic` Voting & Civic Duty — tier 5
+- `media_awareness` Media Consumption Awareness — tier 5
+- `childcare_basics` Childcare Basics — tier 5
+- `home_buying` Home Buying — tier 6
+- `investing` Investing — tier 6
+- `career_planning` Career Planning — tier 6
+- `parenting` Parenting — tier 6
+- `legal_literacy` Legal Literacy — tier 6
+- `contract_understanding` Contract Understanding — tier 6
+- `emergency_prep` Emergency Preparedness — tier 6
+- `leadership` Leadership — tier 6
+- `workplace_etiquette` Workplace Etiquette — tier 6
+- `digital_identity` Digital Identity Management — tier 6
+- `community_service` Community Service — tier 6
+- `adv_investing` Advanced Investing — tier 7
+- `estate_planning` Estate Planning — tier 7
+- `mentoring` Mentoring — tier 7
+- `adv_negotiation` Advanced Negotiation — tier 7
+- `project_management` Project Management — tier 7
+- `policy_engagement` Policy Engagement — tier 7
+- `retirement_planning` Retirement Planning — tier 7
+- `wealth_management` Wealth Management — tier 8
+- `business_strategy` Business Strategy — tier 8
+- `exec_leadership` Executive Leadership — tier 8
+- `philanthropy` Philanthropy — tier 8
+- `legacy_planning` Legacy Planning — tier 8
+- `empathy_basics` Empathy Basics — tier 1
+- `cleaning_basics` Basic Cleaning — tier 1
+- `kitchen_safety` Kitchen Safety — tier 1
+- `asking_for_help` Asking for Help — tier 1
+- `saving_money` Saving Money — tier 1
+- `basic_sewing` Basic Sewing & Clothing Repair — tier 2
+- `grocery_awareness` Grocery Awareness — tier 2
+- `digital_basics` Digital Basics — tier 2
+- `library_skills` Library & Research Skills — tier 2
+- `reading_labels` Reading Food Labels — tier 2
+- `public_safety` Public Safety & Community Helpers — tier 2
+- `simple_repairs` Simple Repairs & Tool Use — tier 2
+- `environmental_stewardship` Environmental Stewardship — tier 2
+- `reading_maps` Reading Maps & Navigation — tier 3
+- `social_media_basics` Social Media Basics — tier 3
+- `consumer_basics` Consumer Basics — tier 3
+- `emotional_intelligence` Emotional Intelligence — tier 3
+- `mindfulness` Mindfulness & Self-Reflection — tier 3
+- `public_transportation` Using Public Transportation — tier 3
+- `volunteering` Volunteering & Community Involvement — tier 3
+- `basic_car_care` Basic Vehicle Maintenance — tier 3
+- `cultural_awareness` Cultural Awareness — tier 3
+- `credit_debit_basics` Credit & Debit Basics — tier 4
+- `social_media_literacy` Social Media Literacy — tier 5
+- `mental_health_literacy` Mental Health Literacy — tier 5
+- `medical_navigation` Navigating the Healthcare System — tier 4
+- `college_planning` College Planning Basics — tier 4
+- `boundaries_consent` Personal Boundaries & Consent — tier 5
+- `consumer_rights` Consumer Rights & Protection — tier 6
+- `home_plumbing_basics` Basic Home Plumbing — tier 4
+- `home_electrical_basics` Basic Home Electrical Safety — tier 4
+- `sewing_intermediate` Sewing & Textile Skills — tier 4
+- `financial_records` Personal Financial Records — tier 4
+- `civic_literacy` Civic Literacy — tier 5
+- `credit_score` Credit Score Management — tier 5
+- `financial_aid` Financial Aid & Scholarships — tier 5
+- `healthcare_literacy` Healthcare Literacy & Insurance — tier 5
+- `conflict_mediation` Conflict Mediation — tier 5
+- `diversity_inclusion` Diversity, Equity & Inclusion — tier 5
+- `personal_branding` Personal Branding — tier 5
+- `advanced_cooking_nutrition` Advanced Cooking & Nutrition — tier 5
+- `sustainability_living` Sustainable Living Practices — tier 5
+- `debt_management` Debt Management — tier 5
+- `local_government` Local Government & Civic Action — tier 6
+- `tax_planning` Tax Planning & Optimization — tier 6
+- `small_business_basics` Small Business Basics — tier 7
+- `advanced_negotiation` Negotiation Skills — tier 6
+- `power_of_attorney` Power of Attorney & Wills — tier 6
+- `cross_cultural_competency` Cross-Cultural Competency — tier 6
+- `workplace_wellness` Workplace Wellness & Boundaries — tier 6
+- `rental_management` Rental & Property Management — tier 6
+- `media_production` Media Production Basics — tier 6
+- `grant_fundraising` Grants & Fundraising — tier 6
+- `advanced_financial_modeling` Advanced Financial Modeling — tier 7
+- `social_enterprise` Social Enterprise & Impact Investing — tier 7
+- `governance_nonprofit` Nonprofit Governance — tier 7
+- `executive_communication` Executive Communication — tier 7
+- `systems_leadership` Systems Thinking in Leadership — tier 7
+- `advanced_parenting` Advanced Parenting & Child Development — tier 7
+- `life_coaching_basics` Life Coaching Basics — tier 7
+- `wealth_psychology` Wealth Psychology & Behavioral Finance — tier 8
+- `org_strategy` Organizational Strategy — tier 8
+- `intergenerational_impact` Intergenerational Wealth & Impact — tier 8
+
+### Math (36)
+
+- `counting` Counting — tier 1
+- `number_recognition` Number Recognition — tier 1
+- `place_value` Place Value — tier 2
+- `fractions` Fractions — tier 2
+- `measurement` Measurement — tier 2
+- `time_math` Time Math — tier 2
+- `money_math` Money Math — tier 2
+- `integers` Integers — tier 3
+- `basic_geometry` Basic Geometry — tier 3
+- `prime_and_composite` Prime and Composite Numbers — tier 3
+- `mean_median_mode` Mean, Median, and Mode — tier 3
+- `variables_expr` Variables and Expressions — tier 4
+- `functions` Functions — tier 4
+- `graphing` Graphing — tier 4
+- `euclidean_geo` Euclidean Geometry — tier 5
+- `proofs` Geometric Proofs — tier 5
+- `triangles_cong` Triangle Congruence — tier 5
+- `trig_ratios` Trigonometric Ratios — tier 5
+- `solid_geometry` Solid Geometry — tier 5
+- `volume_cylinders_cones_spheres` Volume of Cylinders, Cones, and Spheres — tier 5
+- `set_theory` Set Theory — tier 5
+- `polygon_properties` Polygon Properties — tier 5
+- `sequences_series` Sequences and Series — tier 6
+- `inverse_trig` Inverse Trigonometry — tier 6
+- `hypothesis_testing` Hypothesis Testing — tier 6
+- `confidence_intervals` Confidence Intervals — tier 6
+- `regression` Regression — tier 6
+- `math_modeling` Mathematical Modeling — tier 6
+- `investments_growth` Investments and Growth — tier 6
+- `trig_functions` Trigonometric Functions — tier 7
+- `anova` ANOVA — tier 7
+- `combinatorics` Combinatorics — tier 7
+- `modular_arithmetic` Modular Arithmetic — tier 7
+- `probability_theory` Probability Theory — tier 8
+- `eigenvalues` Eigenvalues and Eigenvectors — tier 8
+- `applications` Applications of Mathematics — tier 8
+
+### Physical (123)
+
+- `crawling` Crawling — tier 1
+- `walking` Walking — tier 1
+- `running` Running — tier 1
+- `jumping` Jumping — tier 1
+- `throwing` Throwing — tier 1
+- `catching` Catching — tier 1
+- `balance` Balance — tier 1
+- `swimming_basics` Swimming Basics — tier 2
+- `cycling` Cycling — tier 2
+- `ball_sports_basics` Ball Sports Basics — tier 2
+- `gymnastics_basics` Gymnastics Basics — tier 2
+- `stretching` Stretching — tier 2
+- `bodyweight_exercises` Bodyweight Exercises — tier 2
+- `team_sports_intro` Team Sports Introduction — tier 2
+- `agility_intro` Agility Training — tier 2
+- `dance_fitness` Dance Fitness — tier 2
+- `sport_specific` Sport-Specific Skills — tier 3
+- `endurance` Endurance — tier 3
+- `flexibility` Flexibility — tier 3
+- `strength_basics` Strength Basics — tier 3
+- `nutrition_fitness` Nutrition for Fitness — tier 3
+- `warmup_cooldown` Warm-Up & Cool-Down — tier 3
+- `sportsmanship` Sportsmanship — tier 3
+- `weight_training` Weight Training — tier 4
+- `interval_training` Interval Training — tier 4
+- `sport_strategy` Sport Strategy — tier 4
+- `adv_swimming` Advanced Swimming — tier 4
+- `martial_arts` Martial Arts — tier 4
+- `yoga` Yoga — tier 4
+- `cross_training` Cross Training — tier 4
+- `plyometrics` Plyometrics — tier 4
+- `rock_climbing` Rock Climbing — tier 4
+- `water_sports` Water Sports — tier 4
+- `goal_setting_fitness` Fitness Goal Setting — tier 4
+- `periodization` Periodization — tier 5
+- `sports_psychology` Sports Psychology — tier 5
+- `adv_strength` Advanced Strength Training — tier 5
+- `competition_prep` Competition Preparation — tier 5
+- `coaching_basics` Coaching Basics — tier 5
+- `mobility_recovery` Mobility & Recovery — tier 5
+- `sport_conditioning` Sport Conditioning — tier 5
+- `olympic_lifting` Olympic Lifting — tier 5
+- `functional_fitness` Functional Fitness — tier 5
+- `mindfulness_sport` Mindfulness in Sport — tier 5
+- `adv_sport_strategy` Advanced Sport Strategy — tier 6
+- `personal_training` Personal Training — tier 6
+- `exercise_physiology` Exercise Physiology — tier 6
+- `sports_nutrition` Sports Nutrition — tier 6
+- `rehabilitation` Rehabilitation — tier 6
+- `endurance_events` Endurance Events — tier 6
+- `triathlon_training` Triathlon Training — tier 6
+- `movement_screening` Movement Screening — tier 6
+- `corrective_exercise` Corrective Exercise — tier 6
+- `athletic_optimization` Athletic Optimization — tier 7
+- `biomechanics` Biomechanics — tier 7
+- `kinesiology` Kinesiology — tier 7
+- `strength_conditioning_prog` Strength & Conditioning Programming — tier 7
+- `sports_medicine` Sports Medicine — tier 7
+- `elite_competition` Elite Competition — tier 7
+- `sports_analytics` Sports Analytics — tier 7
+- `professional_athletics` Professional Athletics — tier 8
+- `sports_science` Sports Science — tier 8
+- `exercise_prescription` Exercise Prescription — tier 8
+- `performance_analytics` Performance Analytics — tier 8
+- `elite_coaching` Elite Coaching — tier 8
+- `adaptive_athletics` Adaptive Athletics — tier 8
+- `kicking` Kicking — tier 1
+- `skipping_galloping` Skipping & Galloping — tier 1
+- `spatial_awareness` Spatial Awareness — tier 1
+- `nonlocomotor_skills` Nonlocomotor Skills — tier 1
+- `manipulative_skills` Manipulative Skills — tier 1
+- `physical_activity_habits` Physical Activity Habits — tier 1
+- `jump_rope` Jump Rope Skills — tier 2
+- `track_field_basics` Track & Field Basics — tier 2
+- `soccer_basics` Soccer Fundamentals — tier 2
+- `basketball_basics` Basketball Fundamentals — tier 2
+- `swimming_safety` Water Safety — tier 2
+- `creative_movement` Creative Movement — tier 2
+- `playground_fitness` Playground Fitness — tier 2
+- `folk_dance` Folk & Cultural Dance — tier 2
+- `volleyball_basics` Volleyball Fundamentals — tier 3
+- `baseball_softball` Baseball & Softball — tier 3
+- `tennis_racket` Tennis & Racket Sports — tier 3
+- `swimming_strokes` Swimming Strokes — tier 3
+- `fitness_testing` Fitness Testing & Assessment — tier 3
+- `rhythmic_gymnastics` Rhythmic Gymnastics — tier 3
+- `adventure_playground` Cooperative Games & Adventure Play — tier 3
+- `tumbling` Tumbling Skills — tier 3
+- `flag_football` Flag Football — tier 3
+- `fitness_vocabulary` Fitness Vocabulary & Concepts — tier 3
+- `weight_room_safety` Weight Room Safety — tier 4
+- `body_composition` Body Composition & Fitness Components — tier 4
+- `swimming_competitive` Competitive Swimming — tier 4
+- `golf_basics` Golf & Lifetime Sports — tier 4
+- `hip_hop_dance` Hip-Hop & Contemporary Dance — tier 4
+- `outdoor_education` Outdoor Education — tier 4
+- `self_defense` Self-Defense Basics — tier 4
+- `wrestling_basics` Wrestling & Grappling — tier 4
+- `fitness_goal_tracking` Fitness Goal Tracking — tier 4
+- `lifetime_fitness` Lifetime Fitness Activities — tier 4
+- `fitness_technology` Fitness Technology & Wearables — tier 5
+- `sleep_recovery_science` Sleep & Recovery Science — tier 5
+- `sport_specific_strength` Sport-Specific Strength Training — tier 5
+- `dance_performance` Dance Performance — tier 5
+- `aquatic_rescue` Aquatic Safety & Rescue — tier 5
+- `officiating_basics` Officiating & Rules Knowledge — tier 5
+- `adaptive_pe_intro` Adaptive Physical Education — tier 5
+- `climbing_advanced` Advanced Climbing & Bouldering — tier 5
+- `pickleball_lifetime` Pickleball & Net Sports — tier 5
+- `cardiorespiratory_training` Cardiorespiratory Training — tier 5
+- `nutrition_timing` Nutrition Timing & Periodization — tier 6
+- `fitness_assessment_advanced` Advanced Fitness Assessment — tier 6
+- `coaching_practicum` Coaching Practicum — tier 6
+- `group_exercise_instruction` Group Exercise Instruction — tier 6
+- `dance_choreography` Dance Choreography — tier 6
+- `wellness_programming` Wellness Programming — tier 6
+- `injury_rehabilitation` Injury Rehabilitation — tier 6
+- `first_aid_cpr` First Aid & CPR for Fitness — tier 6
+- `research_methods_pe` Research Methods in PE — tier 7
+- `motor_learning` Motor Learning & Development — tier 7
+- `health_behavior_theory` Health Behavior Theory — tier 7
+- `strength_cond_cert_prep` Strength & Conditioning Certification Prep — tier 7
+- `sports_ethics_law` Sports Ethics & Law — tier 7
+
+### Science (119)
+
+- `lab_safety` Lab Safety — tier 1
+- `food_webs_ecosystems` Food Webs & Ecosystems — tier 3
+- `cells_intro` Cells (Intro) — tier 4
+- `plate_tectonics` Plate Tectonics — tier 4
+- `waves_sound` Waves & Sound — tier 4
+- `light_optics` Light & Optics — tier 4
+- `research_ethics` Ethics in Science — tier 4
+- `periodic_table` Periodic Table — tier 5
+- `acids_bases` Acids & Bases — tier 5
+- `cell_biology` Cell Biology — tier 5
+- `genetics_intro` Genetics (Intro) — tier 5
+- `ecology` Ecology — tier 5
+- `electricity` Electricity — tier 5
+- `kinematics` Kinematics — tier 5
+- `thermodynamics_intro` Thermodynamics (Intro) — tier 5
+- `astronomy` Astronomy — tier 5
+- `oceanography` Oceanography — tier 5
+- `microbiology_intro` Microbiology (Intro) — tier 5
+- `anatomy_physiology` Anatomy & Physiology — tier 5
+- `natural_resources` Natural Resources — tier 5
+- `evolution` Evolution — tier 6
+- `botany` Botany — tier 6
+- `chemical_bonding` Chemical Bonding — tier 6
+- `stoichiometry` Stoichiometry — tier 6
+- `momentum` Momentum & Impulse — tier 6
+- `fluid_mechanics` Fluid Mechanics — tier 6
+- `environmental_science` Environmental Science — tier 6
+- `geology` Geology — tier 6
+- `peer_review` Peer Review — tier 6
+- `research_design` Research Design — tier 6
+- `organic_chemistry` Organic Chemistry — tier 7
+- `biochemistry` Biochemistry — tier 7
+- `thermodynamics_advanced` Thermodynamics (Advanced) — tier 7
+- `genetics_advanced` Genetics & Heredity — tier 7
+- `microbiology_advanced` Microbiology (Advanced) — tier 7
+- `forensic_science` Forensic Science — tier 7
+- `materials_science` Materials Science — tier 7
+- `biomedical_science` Biomedical Science — tier 7
+- `space_exploration` Space Exploration — tier 7
+- `renewable_energy_science` Renewable Energy Science — tier 7
+- `quantum_mechanics` Quantum Mechanics (Intro) — tier 8
+- `nuclear_physics` Nuclear Physics — tier 8
+- `relativity` Relativity (Intro) — tier 8
+- `genetic_engineering` Genetic Engineering — tier 8
+- `nanotechnology` Nanotechnology — tier 8
+- `advanced_physics_mastery` Advanced Physics (Mastery) — tier 8
+- `sorting_classifying` Sorting & Classifying — tier 1
+- `life_cycles` Life Cycles — tier 1
+- `weather_observation` Weather Observation — tier 1
+- `pushes_pulls` Pushes & Pulls (Force Intro) — tier 1
+- `habitats` Habitats & Animal Needs — tier 1
+- `properties_materials` Properties of Materials — tier 2
+- `plant_growth` Plant Growth & Needs — tier 2
+- `water_cycle` Water Cycle — tier 2
+- `magnets_basics` Magnets & Magnetic Force — tier 2
+- `sun_earth_basics` Sun, Earth & Seasons — tier 2
+- `sound_basics` Sound & Vibration — tier 2
+- `engineering_design_intro` Engineering Design Introduction — tier 2
+- `adaptation_survival` Adaptation & Survival — tier 3
+- `photosynthesis_basic` Photosynthesis Basics — tier 3
+- `heredity_basics` Heredity & Traits — tier 3
+- `chemical_physical_changes` Chemical vs Physical Changes — tier 3
+- `electricity_basics` Electricity Basics — tier 3
+- `engineering_design` Engineering Design Process — tier 3
+- `human_impact` Human Impact on Environment — tier 3
+- `matter_conservation` Conservation of Matter — tier 3
+- `speed_distance` Speed, Distance & Motion — tier 3
+- `atomic_theory_intro` Atomic Theory (Intro) — tier 4
+- `photosynthesis_respiration` Photosynthesis & Cellular Respiration — tier 4
+- `biodiversity` Biodiversity — tier 5
+- `electromagnetic_spectrum_intro` Electromagnetic Spectrum (Intro) — tier 4
+- `chemical_formulas` Chemical Formulas & Naming — tier 5
+- `newtons_laws` Newton's Laws of Motion — tier 5
+- `geologic_time` Geologic Time Scale — tier 4
+- `human_body_systems` Human Body Systems — tier 4
+- `engineering_constraints` Engineering Constraints & Trade-offs — tier 4
+- `weather_climate_modeling` Weather & Climate Modeling — tier 4
+- `natural_selection` Natural Selection — tier 5
+- `molecular_genetics` Molecular Genetics — tier 5
+- `electromagnetic_spectrum` Electromagnetic Spectrum — tier 5
+- `nuclear_intro` Nuclear Structure & Radioactivity — tier 5
+- `chemical_equilibrium` Chemical Equilibrium — tier 5
+- `reaction_rates` Reaction Rates & Kinetics — tier 5
+- `population_ecology` Population Ecology — tier 5
+- `ecosystem_services` Ecosystem Services — tier 5
+- `gravitational_fields` Gravitational & Electric Fields — tier 5
+- `astrophysics_basics` Stellar & Galactic Structure — tier 6
+- `computational_thinking_sci` Computational Thinking in Science — tier 6
+- `scientific_argumentation` Scientific Argumentation — tier 5
+- `electromagnetism` Electromagnetism — tier 6
+- `optics_advanced` Optics (Advanced) — tier 6
+- `rotational_mechanics` Rotational Mechanics — tier 6
+- `molecular_biology` Molecular Biology — tier 6
+- `immunology_intro` Immunology (Intro) — tier 6
+- `nervous_system` Neuroscience & Nervous System — tier 6
+- `endocrinology` Endocrinology & Hormones — tier 6
+- `solution_chemistry` Solution Chemistry & Colligative Properties — tier 6
+- `energy_transfer` Energy Transfer & Thermodynamic Systems — tier 6
+- `population_genetics` Population Genetics — tier 6
+- `agroecology` Agroecology & Food Systems — tier 6
+- `engineering_design_adv` Advanced Engineering Design — tier 6
+- `health_science` Health Science & Epidemiology — tier 6
+- `astrophysics_cosmos` Cosmology & Astrophysics — tier 7
+- `neuroscience_advanced` Neuroscience (Advanced) — tier 7
+- `immunology_advanced` Immunology & Infectious Disease — tier 7
+- `synthetic_biology` Synthetic Biology — tier 8
+- `computational_science` Computational Science & Simulation — tier 7
+- `particle_physics_intro` Particle Physics (Intro) — tier 8
+- `pharmacology_basics` Pharmacology Basics — tier 7
+- `electrodynamics` Classical Electrodynamics — tier 7
+- `physical_chemistry` Physical Chemistry — tier 7
+- `ecology_theory` Ecological Theory & Modeling — tier 7
+- `science_policy` Science Policy & Communication — tier 7
+- `research_methods_adv` Advanced Research Methods — tier 7
+- `string_theory_intro` String Theory & Unification (Intro) — tier 8
+- `systems_biology` Systems Biology — tier 8
+- `advanced_biochemistry` Advanced Biochemistry — tier 8
+- `astrobiology` Astrobiology — tier 8
+- `climate_systems_modeling` Climate Systems Modeling — tier 8
+
+### Social (122)
+
+- `family_structures` Family Structures — tier 1
+- `basic_maps` Basic Maps — tier 1
+- `rules_laws` Rules & Laws — tier 1
+- `sharing_coop` Sharing & Cooperation — tier 1
+- `us_geography` US Geography — tier 2
+- `timeline_chrono` Timeline & Chronology — tier 2
+- `cultural_awareness` Cultural Awareness — tier 2
+- `citizenship_basics` Citizenship Basics — tier 2
+- `historical_figures` Historical Figures — tier 2
+- `ancient_civs` Ancient Civilizations — tier 3
+- `world_religions_overview` World Religions Overview — tier 3
+- `us_hist_colonial` US History: Colonial Era — tier 3
+- `gov_structure` Government Structure — tier 3
+- `map_globe` Map & Globe Skills — tier 3
+- `us_hist_rev` US History: Revolution & Founding — tier 4
+- `world_hist_medieval` World History: Medieval — tier 4
+- `civics_gov` Civics & Government — tier 4
+- `microeconomics` Microeconomics — tier 4
+- `sociology_basics` Sociology Basics — tier 4
+- `critical_analysis` Critical Analysis — tier 4
+- `human_rights` Human Rights — tier 4
+- `us_hist_modern` US History: Modern Era — tier 5
+- `world_hist_modern` World History: Modern Era — tier 5
+- `macroeconomics` Macroeconomics — tier 5
+- `political_sci` Political Science — tier 5
+- `anthropology` Anthropology — tier 5
+- `media_literacy` Media Literacy — tier 5
+- `intl_relations` International Relations — tier 5
+- `labor_history` Labor History — tier 5
+- `immigration_studies` Immigration Studies — tier 5
+- `ap_history` AP History — tier 6
+- `constitutional_law` Constitutional Law — tier 6
+- `comparative_gov` Comparative Government — tier 6
+- `behavioral_econ` Behavioral Economics — tier 6
+- `historiography` Historiography — tier 6
+- `environmental_policy` Environmental Policy — tier 6
+- `social_justice` Social Justice Movements — tier 6
+- `political_philosophy` Political Philosophy — tier 7
+- `economic_theory` Economic Theory — tier 7
+- `foreign_policy` Foreign Policy — tier 7
+- `demographic_analysis` Demographic Analysis — tier 7
+- `urban_planning` Urban Planning — tier 7
+- `public_policy` Public Policy — tier 7
+- `philosophy_gov` Philosophy of Government — tier 7
+- `digital_democracy` Digital Democracy — tier 7
+- `game_theory` Game Theory — tier 8
+- `intl_law` International Law — tier 8
+- `dev_economics` Development Economics — tier 8
+- `political_economy` Political Economy — tier 8
+- `research_methodology` Research Methodology — tier 8
+- `diplomatic_strategy` Diplomatic Strategy — tier 8
+- `global_economics` Global Economics — tier 8
+- `needs_wants` Needs & Wants — tier 1
+- `past_present` Past & Present — tier 2
+- `goods_services` Goods & Services — tier 1
+- `cardinal_directions` Cardinal Directions — tier 1
+- `landforms` Landforms & Bodies of Water — tier 2
+- `continents_oceans` Continents & Oceans — tier 2
+- `supply_demand_basic` Supply & Demand (Basic) — tier 3
+- `community_workers` Community Workers & Roles — tier 2
+- `native_peoples` Native Peoples of North America — tier 2
+- `physical_geography` Physical Geography — tier 3
+- `human_geography` Human Geography — tier 3
+- `africa_asia_overview` Africa & Asia Overview — tier 3
+- `latin_america` Latin America & Caribbean — tier 3
+- `economics_trade` Trade & Economic Exchange — tier 3
+- `government_types` Types of Government — tier 3
+- `bill_rights` Bill of Rights — tier 3
+- `state_local_gov` State & Local Government — tier 3
+- `election_basics` Elections & Voting Basics — tier 3
+- `colonial_daily_life` Colonial Daily Life — tier 3
+- `american_revolution_detail` American Revolution (In-Depth) — tier 4
+- `us_constitution` US Constitution — tier 4
+- `civil_war_era` Civil War & Reconstruction — tier 4
+- `world_hist_renaissance` World History: Renaissance & Reformation — tier 4
+- `age_exploration` Age of Exploration — tier 4
+- `economic_systems` Economic Systems — tier 4
+- `consumer_economics` Consumer Economics — tier 4
+- `environmental_geo` Environmental Geography — tier 4
+- `propaganda_analysis` Propaganda & Persuasion — tier 4
+- `religion_history` Role of Religion in History — tier 4
+- `mythology_folklore` Mythology & Folklore — tier 4
+- `africa_history` African History — tier 4
+- `us_hist_civil_rights` Civil Rights Movement — tier 6
+- `ww1_ww2` World Wars I & II — tier 5
+- `cold_war` Cold War — tier 5
+- `colonialism_imperialism` Colonialism & Imperialism — tier 5
+- `personal_finance` Personal Finance — tier 5
+- `financial_literacy` Financial Literacy — tier 5
+- `psychology_intro` Psychology Introduction — tier 5
+- `geography_analysis` Geographic Analysis & GIS — tier 5
+- `genocide_human_rights` Genocide Studies & Human Rights — tier 5
+- `current_events` Current Events Analysis — tier 5
+- `middle_east_history` Middle East History — tier 5
+- `decolonization` Decolonization Movements — tier 5
+- `ap_world_history` AP World History — tier 6
+- `ap_gov_politics` AP Government & Politics — tier 6
+- `ap_economics` AP Economics — tier 6
+- `ap_human_geography` AP Human Geography — tier 6
+- `holocaust_studies` Holocaust Studies — tier 6
+- `social_movements` Social Movements — tier 6
+- `globalization` Globalization — tier 6
+- `gender_studies` Gender & Identity Studies — tier 6
+- `philosophy_intro` Philosophy Introduction — tier 6
+- `ethical_theory` Ethical Theory — tier 6
+- `climate_change_policy` Climate Change & Policy — tier 6
+- `media_policy` Media & Information Policy — tier 7
+- `social_psychology` Social Psychology — tier 7
+- `historical_geography` Historical Geography — tier 7
+- `comparative_religion` Comparative Religion — tier 7
+- `human_rights_law` Human Rights Law — tier 8
+- `intl_economics` International Economics — tier 7
+- `peace_conflict` Peace & Conflict Studies — tier 8
+- `ethnic_studies` Ethnic & Cultural Studies — tier 7
+- `environmental_justice` Environmental Justice — tier 7
+- `global_governance` Global Governance — tier 8
+- `critical_race_theory` Critical Race Theory — tier 8
+- `quantitative_social` Quantitative Social Science Methods — tier 8
+- `empire_studies` Empire & Post-Colonial Studies — tier 8
+- `state_formation` State Formation Theory — tier 8
+- `health_policy` Health Policy & Society — tier 8
+- `media_studies` Media Studies & Communications — tier 8
+
+### Technology (133)
+
+- `mouse_keyboard` Mouse & Keyboard — tier 1
+- `device_onoff` Device Power & Care — tier 1
+- `basic_app_usage` Basic App Usage — tier 1
+- `internet_browsing` Internet Browsing — tier 1
+- `typing_basics` Typing Basics — tier 1
+- `word_processing` Word Processing — tier 2
+- `email` Email — tier 2
+- `internet_search` Internet Search — tier 2
+- `basic_troubleshooting` Basic Troubleshooting — tier 2
+- `presentation_software` Presentation Software — tier 2
+- `spreadsheets` Spreadsheets — tier 3
+- `intro_coding` Intro to Coding — tier 3
+- `touch_typing` Touch Typing — tier 3
+- `cloud_storage` Cloud Storage — tier 3
+- `social_media_lit` Social Media Literacy — tier 3
+- `hardware_basics` Hardware Basics — tier 3
+- `digital_security` Digital Security — tier 3
+- `game_logic` Game Logic & Design Thinking — tier 3
+- `mechanical_fundamentals` Mechanical Fundamentals — tier 3
+- `basic_electronics` Basic Electronics — tier 3
+- `no_code_low_code` No-Code & Low-Code Tools — tier 3
+- `prog_fundamentals` Programming Fundamentals — tier 4
+- `web_dev_basics` Web Dev Basics — tier 4
+- `database_concepts` Database Concepts — tier 4
+- `networking_basics` Networking Basics — tier 4
+- `operating_systems` Operating Systems — tier 4
+- `version_control` Version Control — tier 4
+- `web_foundations` Web Foundations (HTML/CSS) — tier 4
+- `microcontroller_basics` Microcontroller Basics — tier 4
+- `cad_3d_modeling` CAD & 3D Modeling — tier 4
+- `mechanisms_structures` Mechanisms & Structures — tier 4
+- `python_js` Python & JavaScript — tier 5
+- `sql` SQL & Relational Databases — tier 5
+- `apis` APIs & Web Services — tier 5
+- `mobile_dev` Mobile Development — tier 5
+- `linux_cli` Linux & Command Line — tier 5
+- `ui_ux_design` UI/UX Design — tier 5
+- `game_dev_basics` Game Development Basics — tier 5
+- `power_systems_wiring` Power Systems & Wiring — tier 5
+- `tech_documentation` Technical Documentation — tier 5
+- `3d_printing_fab` 3D Printing & Digital Fabrication — tier 5
+- `data_structures` Data Structures & Algorithms — tier 6
+- `cloud_computing` Cloud Computing — tier 6
+- `cybersecurity` Cybersecurity — tier 6
+- `devops` DevOps & CI/CD — tier 6
+- `ml_basics` Machine Learning Basics — tier 6
+- `computer_architecture` Computer Architecture — tier 6
+- `embedded_systems` Embedded Systems — tier 6
+- `network_security` Network Security — tier 6
+- `data_engineering` Data Engineering & ETL — tier 6
+- `game_dev_intermediate` Intermediate Game Development — tier 6
+- `systems_programming` Systems Programming — tier 6
+- `linear_algebra_cs` Linear Algebra for CS — tier 6
+- `accessibility_tech` Accessibility & Assistive Tech — tier 6
+- `agile_practices` Agile & Project Management — tier 6
+- `open_source_contribution` Open Source Contribution — tier 6
+- `data_viz` Data Visualization — tier 6
+- `functional_programming` Functional Programming — tier 6
+- `system_design` System Design — tier 7
+- `distributed_systems` Distributed Systems — tier 7
+- `compiler_design` Compiler Design — tier 7
+- `computer_graphics` Computer Graphics — tier 7
+- `robotics` Robotics — tier 7
+- `blockchain` Blockchain & Distributed Ledger — tier 7
+- `iot` Internet of Things (IoT) — tier 7
+- `ar_vr_dev` AR/VR Development — tier 7
+- `game_dev_advanced` Advanced Game Development — tier 7
+- `data_science` Data Science — tier 7
+- `api_design` API Design & Architecture — tier 7
+- `mlops` MLOps & Model Deployment — tier 7
+- `cloud_native` Cloud-Native & Containers — tier 7
+- `prog_languages_theory` Programming Language Theory — tier 8
+- `quantum_computing` Quantum Computing — tier 8
+- `advanced_ai_research` Advanced AI Research — tier 8
+- `cryptography` Cryptography — tier 8
+- `formal_verification` Formal Verification — tier 8
+- `hci_research` HCI Research — tier 8
+- `comp_biology` Computational Biology — tier 8
+- `cybersecurity_awareness` Cybersecurity Awareness — tier 3
+- `ai_literacy` AI Literacy & Prompt Engineering — tier 3
+- `spreadsheet_adv` Advanced Spreadsheets & Formulas — tier 4
+- `regex_text` Regular Expressions & Text Processing — tier 4
+- `network_protocols` Network Protocols (TCP/IP, DNS, HTTP) — tier 4
+- `binary_data` Binary, Hex & Data Representation — tier 4
+- `java_oop` Java Programming — tier 5
+- `cpp_programming` C/C++ Programming — tier 6
+- `typescript_adv` TypeScript & Type Systems — tier 5
+- `css_advanced` Advanced CSS & Responsive Design — tier 5
+- `javascript_adv` Advanced JavaScript & ES6+ — tier 5
+- `database_design` Database Design & Normalization — tier 5
+- `statistics_data` Statistics for Data Science — tier 5
+- `data_cleaning` Data Cleaning & Preprocessing — tier 5
+- `wireless_networks` Wireless & Mobile Networks — tier 5
+- `secure_coding` Secure Coding Practices — tier 5
+- `code_review` Code Review & Pair Programming — tier 5
+- `circuit_design` Circuit Design & PCB Basics — tier 5
+- `data_privacy` Data Privacy & Ethics — tier 5
+- `tech_ethics` Technology Ethics — tier 5
+- `react_frontend` React & Component Frameworks — tier 6
+- `backend_frameworks` Backend Frameworks (Node/Django/Rails) — tier 6
+- `web_security` Web Security & OWASP — tier 6
+- `pwa_mobile_web` Progressive Web Apps — tier 6
+- `graphql_api` GraphQL & Modern APIs — tier 6
+- `nosql_db` NoSQL Databases — tier 6
+- `containerization` Containerization & Docker — tier 6
+- `infrastructure_as_code` Infrastructure as Code — tier 6
+- `monitoring_observability` Monitoring & Observability — tier 6
+- `identity_access` Identity & Access Management — tier 6
+- `network_admin` Network Administration — tier 6
+- `feature_engineering` Feature Engineering — tier 6
+- `model_evaluation` Model Evaluation & Metrics — tier 6
+- `design_patterns` Design Patterns — tier 6
+- `tdd_bdd` Test-Driven Development (TDD/BDD) — tier 6
+- `wireless_embedded` Wireless & BLE Embedded Systems — tier 6
+- `rust_systems` Rust & Memory-Safe Systems Programming — tier 6
+- `kubernetes` Kubernetes & Container Orchestration — tier 7
+- `serverless` Serverless & Edge Computing — tier 7
+- `db_performance` Database Performance & Indexing — tier 7
+- `microservices` Microservices Architecture — tier 7
+- `software_architecture` Software Architecture Patterns — tier 7
+- `performance_optimization` Performance Optimization — tier 7
+- `penetration_testing` Penetration Testing — tier 7
+- `digital_forensics` Digital Forensics — tier 7
+- `nlp` Natural Language Processing — tier 7
+- `computer_vision` Computer Vision — tier 7
+- `deep_learning` Deep Learning & Neural Networks — tier 7
+- `fpga` FPGA & Digital Logic Design — tier 7
+- `signal_processing` Signal Processing — tier 7
+- `generative_ai_eng` Generative AI Engineering — tier 7
+- `web3_smart_contracts` Smart Contracts & Web3 Development — tier 7
+- `reinforcement_learning` Reinforcement Learning — tier 8
+- `edge_ai` Edge AI & TinyML — tier 8
+- `spatial_computing` Spatial Computing — tier 8
