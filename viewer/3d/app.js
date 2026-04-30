@@ -2097,7 +2097,10 @@ function applyProgressToNodes(progressByName) {
 }
 
 window.addEventListener('message', (event) => {
-  if (!event.data || event.data.type !== 'SKILL_DATA_RESPONSE') return;
+  if (!event.data) return;
+  // SKILL_DATA_RESPONSE is the index.html flow; LOAD_SKILL_TREE is the
+  // portal/index.html flow (teacher viewing a student). Same payload shape.
+  if (event.data.type !== 'SKILL_DATA_RESPONSE' && event.data.type !== 'LOAD_SKILL_TREE') return;
   if (event.data.subject && event.data.subject !== 'Math') return;
   currentProgress = event.data.progress || {};
   applyProgressToNodes(currentProgress);
