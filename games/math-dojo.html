@@ -34111,8 +34111,9 @@ function setupTestUI(isTC) {
 
 const REQUIRED_STREAK = 3;
 const MAX_FAILS_PER_SKILL = 5; // safety net to avoid infinite loops on a bad day
-const RTC_PER_CLEARED = 1;
-const MAX_GAUNTLET_RTC = 15;        // matches the parent's per-gauntlet cap
+// Per-category RTC. Mirrors PER_CATEGORY_RTC on the parent (handleGauntletComplete).
+// No total cap — the per-skill 24h cooldown is the limiter.
+const RTC_PER_CATEGORY = { recent: 3, touch_on: 2, retention: 1 };
 
 let retentionState = {
     skills: [],         // [{ skill, domain, tier, streak, fails, cleared, failed }]
@@ -34196,8 +34197,13 @@ function handleWeeklyMasteriesResponse(skills) {
         return;
     }
 
-    const projectedRtc = Math.min(unique.length * RTC_PER_CLEARED, MAX_GAUNTLET_RTC);
-    info.innerHTML = `<strong style="color:var(--rose-300)">${unique.length}</strong> skill${unique.length === 1 ? '' : 's'} to defend. Max reward: <strong style="color:var(--amber-400)">${projectedRtc} RTC</strong> on your first run today (capped at ${MAX_GAUNTLET_RTC}).<br><span style="font-size:0.8rem;color:var(--slate-500)">Mix of recent mastery, skills to touch up, and long-term recall checks. Diminishing returns: 2nd run today &asymp; 33%, 3rd+ = 0. Skills cleared in the last 24h don&rsquo;t pay again.</span>`;
+    // Project max RTC by summing per-category rates over eligible skills.
+    const byCat = unique.reduce((acc, s) => { acc[s.category] = (acc[s.category] || 0) + 1; return acc; }, {});
+    const projectedRtc =
+        (byCat.recent    || 0) * RTC_PER_CATEGORY.recent   +
+        (byCat.touch_on  || 0) * RTC_PER_CATEGORY.touch_on +
+        (byCat.retention || 0) * RTC_PER_CATEGORY.retention;
+    info.innerHTML = `<strong style="color:var(--rose-300)">${unique.length}</strong> skill${unique.length === 1 ? '' : 's'} to defend. Max reward: <strong style="color:var(--amber-400)">${projectedRtc} RTC</strong>.<br><span style="font-size:0.8rem;color:var(--slate-500)">Per-skill rates: <strong style="color:var(--emerald-400)">${RTC_PER_CATEGORY.recent} recent</strong> &middot; <strong style="color:var(--amber-400)">${RTC_PER_CATEGORY.touch_on} touch up</strong> &middot; <strong style="color:var(--sky-400)">${RTC_PER_CATEGORY.retention} long-term</strong>. Each cleared skill goes on a 24h cooldown &mdash; you can grind every Math skill you own, but a skill seen within 24 hours won&rsquo;t pay again.</span>`;
     container.innerHTML = `<div class="gauntlet-skill-list">${unique.map(s => {
         const lbl = CATEGORY_LABEL[s.category] || '';
         const col = CATEGORY_COLOR[s.category] || 'var(--slate-400)';
@@ -34320,13 +34326,15 @@ function endRetentionGauntlet(reason) {
     const failed = retentionState.skills.filter(s => !s.cleared); // anything not cleared gets demoted
     failed.forEach(s => { s.failed = true; });
 
-    // Tell parent to update skill_progress (demotions) + award scaled RTC + log session.
-    // Parent decides the actual RTC amount (diminishing returns) and posts it back.
+    // Tell parent to update skill_progress (demotions) + award per-category RTC + log session.
+    // Parent decides the actual RTC amount (per-skill 24h cooldown) and posts it back.
     if (window.parent && window.parent !== window) {
         window.parent.postMessage({
             type: 'DOGO_GAUNTLET_COMPLETE',
-            cleared: cleared.map(s => ({ skill: s.skill, domain: s.domain, tier: s.tier })),
-            failed: failed.map(s => ({ skill: s.skill, domain: s.domain, tier: s.tier })),
+            // Forward category so the parent can pay per-category rates
+            // (recent=3, touch_on=2, retention=1).
+            cleared: cleared.map(s => ({ skill: s.skill, domain: s.domain, tier: s.tier, category: s.category })),
+            failed:  failed.map(s  => ({ skill: s.skill, domain: s.domain, tier: s.tier, category: s.category })),
             questionsAsked: retentionState.questionsAsked,
             correctCount: retentionState.correctCount,
             durationMs: retentionState.startTime ? Date.now() - retentionState.startTime : 0,
@@ -34406,27 +34414,25 @@ function updateGauntletRtcLine(result) {
     const content = line.querySelector('.rec-content');
     if (!content) return;
     const amount = Number(result.amount) || 0;
-    const perSkill = Number(result.perSkillAward) || 0;
     const eligible = Number(result.eligibleCount) || 0;
+    const cleared = Number(result.clearedCount) || 0;
     const skippedCooldown = Number(result.skippedCooldown) || 0;
-    const skippedCap = Number(result.skippedCap) || 0;
-    const cap = Number(result.cap) || 0;
-    const completionIdx = Number(result.completionIdx) || 0; // 0 = first run today
-    const runLabel = completionIdx === 0 ? '1st run today' : completionIdx === 1 ? '2nd run today' : `${completionIdx + 1}th run today`;
+    const byCat = result.rewardedByCategory || {};
+    const rates = result.perCategoryRtc || { recent: 3, touch_on: 2, retention: 1 };
 
     let heading;
     let body = '';
     if (amount > 0) {
         heading = `+${amount} RTC Awarded`;
-        body = `${perSkill} RTC × ${eligible} rewarded skill${eligible === 1 ? '' : 's'} (${runLabel}).`;
-        if (skippedCap > 0) body += ` ${skippedCap} additional skill${skippedCap === 1 ? '' : 's'} cleared but the per-gauntlet cap (${cap} RTC) was already reached.`;
-        if (skippedCooldown > 0) body += ` ${skippedCooldown} skill${skippedCooldown === 1 ? '' : 's'} on 24h cooldown.`;
-    } else if (completionIdx >= 2) {
-        heading = 'No RTC (3rd+ run today)';
-        body = `Diminishing returns: only the 1st and 2nd gauntlets per day pay out. Come back tomorrow.`;
-    } else if (skippedCooldown > 0 && eligible === 0) {
+        const parts = [];
+        if (byCat.recent)    parts.push(`<strong style="color:var(--emerald-400)">${byCat.recent}</strong> recent`);
+        if (byCat.touch_on)  parts.push(`<strong style="color:var(--amber-400)">${byCat.touch_on}</strong> touch up`);
+        if (byCat.retention) parts.push(`<strong style="color:var(--sky-400)">${byCat.retention}</strong> long-term`);
+        body = parts.length ? `Breakdown: ${parts.join(' &middot; ')}.` : `${eligible} skill${eligible === 1 ? '' : 's'} rewarded.`;
+        if (skippedCooldown > 0) body += ` ${skippedCooldown} skill${skippedCooldown === 1 ? '' : 's'} on 24h cooldown &mdash; come back tomorrow to defend ${skippedCooldown === 1 ? 'it' : 'them'} again.`;
+    } else if (cleared > 0 && skippedCooldown === cleared) {
         heading = 'No RTC (24h cooldown)';
-        body = `All cleared skills were already rewarded via the gauntlet in the last 24 hours.`;
+        body = `All ${cleared} cleared skill${cleared === 1 ? '' : 's'} already paid out within the last 24 hours. Try a different mix tomorrow.`;
     } else {
         heading = 'No RTC';
         body = `Nothing eligible to reward this run.`;
