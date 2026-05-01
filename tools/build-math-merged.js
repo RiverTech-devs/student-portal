@@ -259,6 +259,32 @@ const removedCycleEdges = [];
   for (const k of merged.keys()) if (color.get(k) === WHITE) visit(k);
 }
 
+// ---------- Drop edges that contradict the resolved tier ordering ----------
+// When master and prototype disagreed on a node's tier, stage-drift resolution
+// adopted the prototype's tier. Some master edges then point "backwards"
+// (parent tier > child tier), e.g., master edge "Place Value Understanding
+// (now t2) -> Basic Addition (t1)". These read as wrong prereqs in the new
+// taxonomy — drop them so they don't render as visually-confusing long arcs.
+const removedBackwardEdges = [];
+{
+  const STAGE_TO_TIER_LOCAL = { Foundations: 1, Fluency: 2, Application: 3, Integration: 4, Mastery: 5 };
+  const tierOf = new Map();
+  for (const [id, n] of merged) {
+    tierOf.set(id, n.tier ?? STAGE_TO_TIER_LOCAL[n.stage] ?? 1);
+  }
+  const toRemove = [];
+  for (const [k, e] of mergedEdges) {
+    if (e.type !== 'prerequisite_hard') continue;
+    const ft = tierOf.get(e.from);
+    const tt = tierOf.get(e.to);
+    if (ft != null && tt != null && tt < ft) toRemove.push(k);
+  }
+  for (const k of toRemove) {
+    removedBackwardEdges.push({ ...mergedEdges.get(k), sources: [...mergedEdges.get(k).sources] });
+    mergedEdges.delete(k);
+  }
+}
+
 // ---------- Transitive reduction of prerequisite_hard ----------
 // The prototype's prereqs were already chain-pruned, but unioning them with
 // the master edges re-introduced redundant transitive edges. Drop edge A->C
@@ -336,10 +362,12 @@ const out = {
     edges_total: edgeArr.length,
     stage_drifts_resolved: stageDrifts.length,
     cycle_edges_removed: removedCycleEdges.length,
-    redundant_edges_removed: removedRedundantEdges.length
+    redundant_edges_removed: removedRedundantEdges.length,
+    backward_edges_removed: removedBackwardEdges.length
   },
   removed_cycle_edges: removedCycleEdges,
   removed_redundant_edges: removedRedundantEdges,
+  removed_backward_edges: removedBackwardEdges,
   nodes: [...merged.values()],
   edges: edgeArr
 };
@@ -389,5 +417,6 @@ console.log(`Nodes: ${out.stats.nodes_total} (matched ${matchedCount}, master-on
 console.log(`Edges: ${edgeArr.length}`);
 console.log(`Stage drifts resolved (prototype wins): ${stageDrifts.length}`);
 console.log(`Cycle edges removed: ${removedCycleEdges.length}`);
+console.log(`Backward (parent-tier > child-tier) edges removed: ${removedBackwardEdges.length}`);
 console.log(`Redundant transitive edges removed: ${removedRedundantEdges.length}`);
 console.log('Wrote data/compiled/math_merged.json + tools/build-math-merged.report.md');
