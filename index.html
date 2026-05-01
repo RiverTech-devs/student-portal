@@ -4655,41 +4655,77 @@
             }
 
             async sendWeeklyMasteriesToDojo(sourceWindow) {
-                // Collect skills that reached 'mastered' state in the past 7 days
-                // via math_dojo_sessions.skill_details entries.
+                // Build the retention gauntlet line-up from skill_progress, the
+                // authoritative per-skill record of what the student has actually
+                // engaged with. This avoids generating questions on topics the
+                // student hasn't been taught yet.
+                //
+                // 21 skills, three buckets of 7:
+                //   recent     — mastered within the last 14 days (top of mind)
+                //   touch_on   — in_progress, or mastered with stale practice (8-30d)
+                //   retention  — mastered long ago, practice > 30 days stale
                 try {
                     if (!this.portal.auth.isAuthenticated()) {
                         sourceWindow?.postMessage({ type: 'WEEKLY_MASTERIES_FOR_DOGO', skills: [] }, '*');
                         return;
                     }
                     const userId = this.portal.auth.getUserInfo().profile.id;
-                    const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-                    const { data: sessions, error } = await this.portal.auth.supabase
-                        .from('math_dojo_sessions')
-                        .select('skill_details, created_at')
+                    const { data, error } = await this.portal.auth.supabase
+                        .from('skill_progress')
+                        .select('skill_name, state, mastery_score, last_practiced, mastered_at, practice_count')
                         .eq('user_id', userId)
-                        .gte('created_at', weekAgo);
+                        .eq('subject', 'Math');
                     if (error) {
-                        console.error('Failed to load weekly masteries:', error);
+                        console.error('Failed to load skill_progress for gauntlet:', error);
                         sourceWindow?.postMessage({ type: 'WEEKLY_MASTERIES_FOR_DOGO', skills: [] }, '*');
                         return;
                     }
-                    // Dedupe by domain; keep most recent tier
-                    const byDomain = new Map();
-                    (sessions || []).forEach(s => {
-                        const details = Array.isArray(s.skill_details) ? s.skill_details : [];
-                        details.forEach(d => {
-                            if (!d || d.state !== 'mastered') return;
-                            const domain = d.domain;
-                            if (!domain) return;
-                            // Prefer the record with the skill name if it's a non-numeric string
-                            const skillName = (typeof d.skill === 'string' && !/^\d+$/.test(d.skill)) ? d.skill : domain;
-                            if (!byDomain.has(domain)) {
-                                byDomain.set(domain, { skill: skillName, domain, tier: d.tier || 1 });
-                            }
-                        });
+
+                    const now = Date.now();
+                    const DAY = 86400000;
+                    const recent = [];
+                    const touchOn = [];
+                    const retention = [];
+
+                    (data || []).forEach(row => {
+                        if (!row.skill_name) return;
+                        const lp  = row.last_practiced ? new Date(row.last_practiced).getTime() : 0;
+                        const mst = row.mastered_at   ? new Date(row.mastered_at).getTime()   : 0;
+                        const daysSinceMaster   = mst ? (now - mst) / DAY : Infinity;
+                        const daysSincePractice = lp  ? (now - lp)  / DAY : Infinity;
+
+                        if (row.state === 'mastered' || row.state === 'activated') {
+                            if (daysSinceMaster <= 14)       recent.push({ ...row, _sort: -daysSinceMaster });
+                            else if (daysSincePractice >= 30) retention.push({ ...row, _sort: daysSincePractice });
+                            else if (daysSincePractice >= 8)  touchOn.push({ ...row, _sort: daysSincePractice });
+                            else                              recent.push({ ...row, _sort: -daysSincePractice });
+                        } else if (row.state === 'in_progress') {
+                            touchOn.push({ ...row, _sort: 1000 });   // surface in_progress at the top of touch_on
+                        }
                     });
-                    const skills = Array.from(byDomain.values());
+
+                    // recent: most recently mastered first; touch: most stale first; retention: oldest practice first
+                    recent.sort((a, b)    => b._sort - a._sort);
+                    touchOn.sort((a, b)   => b._sort - a._sort);
+                    retention.sort((a, b) => b._sort - a._sort);
+
+                    const used = new Set();
+                    const pickN = (arr, n, category) => {
+                        const out = [];
+                        for (const r of arr) {
+                            if (out.length >= n) break;
+                            if (used.has(r.skill_name)) continue;
+                            used.add(r.skill_name);
+                            out.push({ skill: r.skill_name, tier: 1, category });
+                        }
+                        return out;
+                    };
+
+                    const skills = [
+                        ...pickN(recent,    7, 'recent'),
+                        ...pickN(touchOn,   7, 'touch_on'),
+                        ...pickN(retention, 7, 'retention')
+                    ];
                     sourceWindow?.postMessage({ type: 'WEEKLY_MASTERIES_FOR_DOGO', skills }, '*');
                 } catch (e) {
                     console.error('Error sending weekly masteries:', e);

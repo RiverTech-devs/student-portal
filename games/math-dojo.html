@@ -34082,21 +34082,49 @@ function initRetentionSetup() {
 }
 
 function handleWeeklyMasteriesResponse(skills) {
-    // skills expected: [{ skill, domain, tier }]
+    // Parent sends `skills: [{ skill: <legacy_name>, tier, category }]` from
+    // skill_progress. We need to map each skill_name back to a Dojo generator
+    // key (the LHS of DOJO_TO_TREE_SKILL) so generateQuestion(tier, domain)
+    // hits a real generator and doesn't auto-clear with no questions.
     const info = document.getElementById('retention-setup-info');
     const container = document.getElementById('retention-skill-list-container');
     const empty = document.getElementById('retention-empty-state');
     const startBtn = document.getElementById('start-retention-btn');
-    if (!info || !container) return; // setup screen not active
+    if (!info || !container) return;
 
-    // Dedupe by domain (our generator key)
+    // Cache the inverse legacy_name -> Dojo domain map. Multiple Dojo domains
+    // may share a tree name; first wins (they generate equivalent questions).
+    if (!window._INV_DOJO_TO_TREE) {
+        const inv = {};
+        for (const [dojoDomain, treeName] of Object.entries(DOJO_TO_TREE_SKILL)) {
+            if (!inv[treeName]) inv[treeName] = dojoDomain;
+        }
+        window._INV_DOJO_TO_TREE = inv;
+    }
+    const invMap = window._INV_DOJO_TO_TREE;
+
+    const CATEGORY_LABEL = { recent: 'Recent', touch_on: 'Touch up', retention: 'Long-term recall' };
+    const CATEGORY_COLOR = { recent: 'var(--emerald-400)', touch_on: 'var(--amber-400)', retention: 'var(--sky-400)' };
+
     const seen = new Set();
     const unique = [];
     for (const s of skills) {
-        const key = s.domain || s.skill;
-        if (!key || seen.has(key)) continue;
-        seen.add(key);
-        unique.push({ skill: s.skill || key, domain: key, tier: s.tier || 1 });
+        const candidate = s.skill || s.domain;
+        if (!candidate) continue;
+        // Prefer s.domain if it's already a Dojo key. Otherwise inverse-map
+        // s.skill (the skill_progress legacy_name) to its Dojo domain.
+        let dojoDomain = (s.domain && DOJO_TO_TREE_SKILL[s.domain] !== undefined)
+            ? s.domain
+            : (invMap[candidate] || (DOJO_TO_TREE_SKILL[candidate] !== undefined ? candidate : null));
+        if (!dojoDomain) continue;                // unknown skill; skip rather than ask untaught questions
+        if (seen.has(dojoDomain)) continue;
+        seen.add(dojoDomain);
+        unique.push({
+            skill: s.skill || dojoDomain,
+            domain: dojoDomain,
+            tier: s.tier || 1,
+            category: s.category || 'recent'
+        });
     }
 
     retentionState.skills = unique.map(s => ({ ...s, streak: 0, fails: 0, cleared: false, failed: false }));
@@ -34109,14 +34137,19 @@ function handleWeeklyMasteriesResponse(skills) {
         return;
     }
 
-    info.innerHTML = `<strong style="color:var(--rose-300)">${unique.length}</strong> skill${unique.length === 1 ? '' : 's'} to defend. Max reward: <strong style="color:var(--amber-400)">${unique.length * RTC_PER_CLEARED} RTC</strong> on your first run today.<br><span style="font-size:0.8rem;color:var(--slate-500)">Diminishing returns: 2nd run today ≈ 33%, 3rd+ = 0. Skills cleared in the last 24h don't pay again.</span>`;
-    container.innerHTML = `<div class="gauntlet-skill-list">${unique.map(s => `
+    info.innerHTML = `<strong style="color:var(--rose-300)">${unique.length}</strong> skill${unique.length === 1 ? '' : 's'} to defend. Max reward: <strong style="color:var(--amber-400)">${unique.length * RTC_PER_CLEARED} RTC</strong> on your first run today.<br><span style="font-size:0.8rem;color:var(--slate-500)">Mix of recent mastery, skills to touch up, and long-term recall checks. Diminishing returns: 2nd run today &asymp; 33%, 3rd+ = 0. Skills cleared in the last 24h don&rsquo;t pay again.</span>`;
+    container.innerHTML = `<div class="gauntlet-skill-list">${unique.map(s => {
+        const lbl = CATEGORY_LABEL[s.category] || '';
+        const col = CATEGORY_COLOR[s.category] || 'var(--slate-400)';
+        const badge = lbl ? `<span style="color:${col};font-size:0.7rem;font-weight:600;margin-left:0.5rem;">${lbl}</span>` : '';
+        return `
         <div class="gauntlet-skill-item">
             <div>
-                <div class="g-skill-name">${escapeHtml(s.skill)}</div>
-                <div class="g-skill-tier">Tier ${s.tier} · ${escapeHtml(s.domain)}</div>
+                <div class="g-skill-name">${escapeHtml(s.skill)}${badge}</div>
+                <div class="g-skill-tier">Tier ${s.tier} &middot; ${escapeHtml(s.domain)}</div>
             </div>
-        </div>`).join('')}</div>`;
+        </div>`;
+    }).join('')}</div>`;
     empty.style.display = 'none';
     startBtn.disabled = false;
 }
