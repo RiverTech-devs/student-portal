@@ -1894,6 +1894,8 @@
         this.notificationSubscription = null;
         this.showClosedClasses = false;  // Teacher: toggle closed classes
         this.showWithdrawnClasses = false;  // Student: toggle withdrawn enrollments
+        this.classFilterSubject = 'all';   // All users: filter classes view by subject
+        this.classFilterGrade = 'all';     // All users: filter classes view by grade level
 
         // Quarter weights for GPA calculation
         this.quarterWeights = {
@@ -13966,9 +13968,15 @@
 
         console.log('🔍 Rendering classes, userType:', userType, 'classes count:', this.classes?.length);
 
+        // Apply user-set subject/grade filters before all the existing
+        // status/enrollment splits. Filters are applied to the input list so
+        // the "active" / "closed" / "withdrawn" buckets only contain matches.
+        const filterFn = this.classMatchesFilters.bind(this);
+        const matched = (this.classes || []).filter(filterFn);
+
         // Separate active and closed classes
-        const activeClasses = this.classes.filter(c => c.status !== 'closed');
-        const closedClasses = this.classes.filter(c => c.status === 'closed');
+        const activeClasses = matched.filter(c => c.status !== 'closed');
+        const closedClasses = matched.filter(c => c.status === 'closed');
 
         // Setup actions based on user type
         if (isTeacherOrAdmin) {
@@ -13987,8 +13995,8 @@
           `;
         } else if (userType === 'student') {
           // Filter student classes by enrollment status (active vs archived/withdrawn)
-          const activeEnrollments = this.classes.filter(c => c.enrollment_status === 'active');
-          const withdrawnEnrollments = this.classes.filter(c => c.enrollment_status === 'archived');
+          const activeEnrollments = matched.filter(c => c.enrollment_status === 'active');
+          const withdrawnEnrollments = matched.filter(c => c.enrollment_status === 'archived');
           const hasWithdrawn = withdrawnEnrollments.length > 0;
 
           classesActions.innerHTML = `
@@ -14010,13 +14018,20 @@
           `;
         }
 
+        // Inject the filter bar (subject + grade) above the class grid.
+        const filterBarHtml = this.renderClassFilterBar();
+
         // Determine which classes to show
         const classesToShow = isTeacherOrAdmin && this.showClosedClasses
-          ? this.classes
+          ? matched
           : activeClasses;
 
         // Render classes
-        if (activeClasses.length === 0 && closedClasses.length === 0) {
+        const totalUnfiltered = (this.classes || []).length;
+        const totalMatched = matched.length;
+        const filtersActive = this.classFilterSubject !== 'all' || this.classFilterGrade !== 'all';
+
+        if (totalUnfiltered === 0) {
           const emptyMessage = userType === 'teacher'
             ? 'Create your first class to get started.'
             : userType === 'parent'
@@ -14024,22 +14039,33 @@
               : 'Enroll in a class to begin learning.';
 
           classesContent.innerHTML = `
+            ${filterBarHtml}
             <div class="empty-state">
               <h3>📚 No Classes Yet</h3>
               <p>${emptyMessage}</p>
             </div>
           `;
+        } else if (totalMatched === 0 && filtersActive) {
+          // Filters narrowed everything out — keep the bar visible so the user can clear them.
+          classesContent.innerHTML = `
+            ${filterBarHtml}
+            <div class="empty-state">
+              <h3>🔍 No Classes Match</h3>
+              <p>No classes match the current subject/grade filters. <a href="#" onclick="event.preventDefault(); app.clearClassFilters();" style="color: var(--accent);">Clear filters</a>.</p>
+            </div>
+          `;
         } else if (isTeacherOrAdmin) {
           // Teacher/admin view - show toggle button handled above
           classesContent.innerHTML = `
+            ${filterBarHtml}
             <div class="grid grid-3">
               ${classesToShow.map(cls => this.renderClassCard(cls)).join('')}
             </div>
           `;
         } else if (userType === 'student') {
           // Student view - filter by enrollment status (active vs withdrawn/archived)
-          const activeEnrollments = this.classes.filter(c => c.enrollment_status === 'active');
-          const withdrawnEnrollments = this.classes.filter(c => c.enrollment_status === 'archived');
+          const activeEnrollments = matched.filter(c => c.enrollment_status === 'active');
+          const withdrawnEnrollments = matched.filter(c => c.enrollment_status === 'archived');
 
           let html = '';
 
@@ -14080,7 +14106,7 @@
             }
           }
 
-          classesContent.innerHTML = html;
+          classesContent.innerHTML = filterBarHtml + html;
         } else {
           // Parent view - show active classes, with closed classes in a separate section
           let html = '';
@@ -14115,8 +14141,64 @@
             `;
           }
 
-          classesContent.innerHTML = html;
+          classesContent.innerHTML = filterBarHtml + html;
         }
+      }
+
+      // -- Class filter bar (subject/grade) ----------------------------------
+      // Distinct subject + grade values are derived from the live this.classes
+      // collection so the dropdowns always match what the user owns / is
+      // enrolled in. Hidden when there's nothing to filter (single subject and
+      // single grade). Filters apply identically for teacher / admin / parent /
+      // student via classMatchesFilters().
+      classMatchesFilters(cls) {
+        if (!cls) return false;
+        const subjectOk = this.classFilterSubject === 'all' || (cls.subject || '') === this.classFilterSubject;
+        const gradeOk = this.classFilterGrade === 'all' || String(cls.grade_level ?? '') === this.classFilterGrade;
+        return subjectOk && gradeOk;
+      }
+
+      renderClassFilterBar() {
+        const all = this.classes || [];
+        const subjects = Array.from(new Set(all.map(c => c.subject).filter(Boolean))).sort();
+        const grades = Array.from(new Set(all.map(c => String(c.grade_level ?? '')).filter(Boolean))).sort((a, b) => {
+          const na = parseInt(a, 10), nb = parseInt(b, 10);
+          if (!isNaN(na) && !isNaN(nb)) return na - nb;
+          return a.localeCompare(b);
+        });
+        if (subjects.length <= 1 && grades.length <= 1) return '';   // nothing to filter
+
+        const escape = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+        const subjectOptions = ['<option value="all">All subjects</option>',
+          ...subjects.map(s => `<option value="${escape(s)}"${s === this.classFilterSubject ? ' selected' : ''}>${escape(s)}</option>`)].join('');
+        const gradeOptions = ['<option value="all">All grades</option>',
+          ...grades.map(g => `<option value="${escape(g)}"${g === this.classFilterGrade ? ' selected' : ''}>${escape(g)}</option>`)].join('');
+
+        const filtersActive = this.classFilterSubject !== 'all' || this.classFilterGrade !== 'all';
+        return `
+          <div style="display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:16px;">
+            <span style="font-size:12px; color:var(--muted); font-weight:600; letter-spacing:0.04em; text-transform:uppercase;">Filter</span>
+            <select onchange="app.setClassFilterSubject(this.value)" style="padding:6px 10px; border-radius:6px; background:var(--card); color:var(--text); border:1px solid var(--border); font-size:13px;">${subjectOptions}</select>
+            <select onchange="app.setClassFilterGrade(this.value)" style="padding:6px 10px; border-radius:6px; background:var(--card); color:var(--text); border:1px solid var(--border); font-size:13px;">${gradeOptions}</select>
+            ${filtersActive ? `<button class="btn btn-secondary" onclick="app.clearClassFilters()" style="padding:6px 12px; font-size:12px;">Clear</button>` : ''}
+          </div>
+        `;
+      }
+
+      setClassFilterSubject(value) {
+        this.classFilterSubject = value || 'all';
+        this.renderClasses();
+      }
+
+      setClassFilterGrade(value) {
+        this.classFilterGrade = value || 'all';
+        this.renderClasses();
+      }
+
+      clearClassFilters() {
+        this.classFilterSubject = 'all';
+        this.classFilterGrade = 'all';
+        this.renderClasses();
       }
 
       toggleClosedClasses() {
