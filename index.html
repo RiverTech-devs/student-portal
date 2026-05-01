@@ -4756,8 +4756,14 @@
                         if (!countErr) completionIdx = count || 0;
                     } catch (_) {}
                     const multiplier = completionIdx === 0 ? 1.0 : completionIdx === 1 ? 0.33 : 0;
-                    const perSkillBase = 3;
+                    // 21-skill gauntlets (7 recent + 7 touch + 7 retention) rotate
+                    // through every section, so a fixed per-skill rate would scale
+                    // RTC linearly with section count and feel like it never stops.
+                    // Cap: 1 RTC per cleared, ≤ 15 RTC total per first run.
+                    const perSkillBase = 1;
                     const perSkillAward = Math.round(perSkillBase * multiplier);
+                    const MAX_GAUNTLET_RTC = 15;
+                    const gauntletRtcCap = Math.round(MAX_GAUNTLET_RTC * multiplier);
 
                     // (2) Per-skill 24h cooldown: skills already rewarded via retention gauntlet
                     //     in the last 24h do not pay again, even if cleared.
@@ -4785,8 +4791,14 @@
                     const eligibleForRtc = (perSkillAward > 0)
                         ? cleared.filter(c => !recentlyRewarded.has(c.skill || c.domain))
                         : [];
-                    const skippedSkills = cleared.length - eligibleForRtc.length;
-                    const rtcAward = eligibleForRtc.length * perSkillAward;
+                    // Cap total RTC at gauntletRtcCap regardless of skills cleared.
+                    // Take the first N eligible (already in pickN order: recent, then
+                    // touch_on, then retention) so the "freshly mastered" tier is
+                    // rewarded first if the cap is hit.
+                    const maxRewardable = perSkillAward > 0 ? Math.floor(gauntletRtcCap / perSkillAward) : 0;
+                    const eligibleCapped = eligibleForRtc.slice(0, maxRewardable);
+                    const skippedSkills = cleared.length - eligibleCapped.length;
+                    const rtcAward = eligibleCapped.length * perSkillAward;
 
                     // Demote skills that failed the gauntlet: mastered -> activated
                     if (failed.length > 0) {
@@ -4843,11 +4855,13 @@
                     }
 
                     // Scaled RTC award: one transaction per eligible skill so the per-skill
-                    // cooldown lookup above can identify them next time.
+                    // cooldown lookup above can identify them next time. eligibleCapped
+                    // applies the per-gauntlet RTC ceiling so a 21-skill rotation can't
+                    // pay out 21+ RTC linearly.
                     let actualAwarded = 0;
-                    if (eligibleForRtc.length > 0 && perSkillAward > 0) {
+                    if (eligibleCapped.length > 0 && perSkillAward > 0) {
                         const ts = Date.now();
-                        for (const c of eligibleForRtc) {
+                        for (const c of eligibleCapped) {
                             const skillName = c.skill || c.domain;
                             const refId = `retention:${userId}:${skillName}:${ts}`;
                             const { error: rtcErr } = await this.portal.auth.supabase.rpc('process_rtc_transaction', {
@@ -4861,7 +4875,7 @@
                             if (rtcErr) console.error('Failed to award gauntlet RTC for', skillName, rtcErr);
                             else actualAwarded += perSkillAward;
                         }
-                        console.log(`🪙 Awarded ${actualAwarded} RTC for Retention Gauntlet (${eligibleForRtc.length} skills × ${perSkillAward})`);
+                        console.log(`🪙 Awarded ${actualAwarded} RTC for Retention Gauntlet (${eligibleCapped.length}/${eligibleForRtc.length} skills × ${perSkillAward}, cap ${gauntletRtcCap})`);
                     }
 
                     // Log session to math_dojo_sessions so the weekly card picks it up
@@ -4900,8 +4914,10 @@
                                     perSkillAward,
                                     multiplier,
                                     completionIdx,
-                                    skippedCooldown: skippedSkills,
-                                    eligibleCount: eligibleForRtc.length
+                                    skippedCooldown: cleared.length - eligibleForRtc.length,
+                                    skippedCap: eligibleForRtc.length - eligibleCapped.length,
+                                    eligibleCount: eligibleCapped.length,
+                                    cap: gauntletRtcCap
                                 }, '*');
                             } catch (_) {}
                         });
