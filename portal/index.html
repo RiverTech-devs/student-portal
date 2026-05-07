@@ -14,7 +14,7 @@
   <link rel="stylesheet" href="styles.css">
 
   <!-- Load shared configuration -->
-  <script src="../shared/config.js?v=2"></script>
+  <script src="../shared/config.js?v=3"></script>
   <script src="../shared/components.js"></script>
   <script src="../shared/supabase.min.js"></script>
 
@@ -1863,6 +1863,11 @@
               <!-- Will be populated by renderAdminRTCManagement() -->
             </section>
 
+            <!-- RTC Bank Helper Section (Teachers & Admins) -->
+            <section id="rtc-bank-helper-section" class="hidden">
+              <!-- Will be populated by renderRTCBankHelper() -->
+            </section>
+
             <!-- IRL Purchases Section (Teachers & Admins) -->
             <section id="irl-purchases-section" class="hidden">
               <!-- Will be populated by renderIRLPurchases() -->
@@ -2305,7 +2310,7 @@
 
         // Navigate to hash section if present, otherwise show home
         const hash = window.location.hash.substring(1);
-        const validSections = ['home', 'classes', 'messaging', 'profile', 'my-students', 'materials-requests', 'testing-center', 'activities', 'admin-dashboard', 'admin-classes', 'admin-users', 'admin-settings', 'admin-reports', 'admin-attendance', 'admin-student-records', 'admin-enrollment', 'admin-activities', 'admin-facilities', 'admin-rtc-management', 'irl-purchases'];
+        const validSections = ['home', 'classes', 'messaging', 'profile', 'my-students', 'materials-requests', 'testing-center', 'activities', 'admin-dashboard', 'admin-classes', 'admin-users', 'admin-settings', 'admin-reports', 'admin-attendance', 'admin-student-records', 'admin-enrollment', 'admin-activities', 'admin-facilities', 'admin-rtc-management', 'rtc-bank-helper', 'irl-purchases'];
         if (hash && validSections.includes(hash)) {
           this.showSection(hash);
         } else {
@@ -4617,7 +4622,7 @@
 
       handleHashNavigation() {
         const hash = window.location.hash.substring(1);
-        const validSections = ['home', 'classes', 'messaging', 'profile', 'my-students', 'materials-requests', 'testing-center', 'activities', 'admin-dashboard', 'admin-classes', 'admin-users', 'admin-settings', 'admin-reports', 'admin-attendance', 'admin-student-records', 'admin-enrollment', 'admin-activities', 'admin-facilities', 'admin-rtc-management', 'irl-purchases'];
+        const validSections = ['home', 'classes', 'messaging', 'profile', 'my-students', 'materials-requests', 'testing-center', 'activities', 'admin-dashboard', 'admin-classes', 'admin-users', 'admin-settings', 'admin-reports', 'admin-attendance', 'admin-student-records', 'admin-enrollment', 'admin-activities', 'admin-facilities', 'admin-rtc-management', 'rtc-bank-helper', 'irl-purchases'];
 
         if (hash && validSections.includes(hash)) {
           this.showSection(hash);
@@ -4726,6 +4731,9 @@
             break;
           case 'admin-rtc-management':
             this.renderAdminRTCManagement();
+            break;
+          case 'rtc-bank-helper':
+            this.renderRTCBankHelper();
             break;
           case 'spreadsheet':
             // Sheets are now per-class, opened via showClassSheets()
@@ -35334,6 +35342,7 @@
           <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap;">
             <button class="btn btn-secondary" onclick="app.showAdminSection('dashboard')" style="padding: 6px 12px;">← Back</button>
             <h2 style="margin: 0;">💰 RTC Management</h2>
+            <button class="btn" onclick="app.showSection('rtc-bank-helper')" style="padding: 6px 12px; margin-left: auto;" title="Push bank deposits/withdrawals on behalf of students">🏦 Bank Helper</button>
           </div>
 
           <div style="display: flex; gap: 15px; margin-bottom: 20px; flex-wrap: wrap;">
@@ -35714,6 +35723,240 @@
       // Re-render the shell to update stats, preserving current tab
       this._renderRTCManagementShell(section);
       this.switchRTCTab(this._rtcCurrentTab);
+    }
+
+    // ============================================================
+    // RTC Bank Helper — staff-pushed deposits/withdrawals on behalf
+    // of students who can't (or won't) use the bank UI themselves.
+    // Open to admins and teachers. Backed by admin_bank_*_for_student
+    // RPCs which audit-log the caller via created_by.
+    // ============================================================
+
+    async renderRTCBankHelper() {
+      const section = document.getElementById('rtc-bank-helper-section');
+      if (!section) { console.error('Bank helper section not found'); return; }
+
+      section.innerHTML = '<div style="text-align: center; padding: 40px;"><div class="loading-spinner"></div><p>Loading bank helper...</p></div>';
+
+      try {
+        const { data, error } = await this.auth.supabase.rpc('admin_bank_list_students');
+        if (error) throw error;
+        if (data && data.success === false) throw new Error(data.error || 'Failed to load students');
+
+        this._bankHelperStudents = (data && data.students) || [];
+        this._bankHelperFilter = this._bankHelperFilter || { search: '', status: 'all' };
+        this._renderRTCBankHelperShell(section);
+        this._renderRTCBankHelperTable();
+      } catch (err) {
+        console.error('Error loading bank helper:', err);
+        section.innerHTML = `<div class="card" style="margin: 20px;"><p style="color: var(--danger);">Error loading bank helper: ${err.message}</p></div>`;
+      }
+    }
+
+    _renderRTCBankHelperShell(section) {
+      const totals = (this._bankHelperStudents || []).reduce((acc, s) => {
+        acc.wallet += s.wallet_balance || 0;
+        acc.bank += s.bank_balance || 0;
+        if (s.student_status === 'past') acc.past++;
+        return acc;
+      }, { wallet: 0, bank: 0, past: 0 });
+
+      section.innerHTML = `
+        <div style="max-width: 1200px; margin: 0 auto; padding: 20px;">
+          <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;">
+            <button class="btn btn-secondary" onclick="app.showSection('home')" style="padding: 6px 12px;">← Back</button>
+            <h2 style="margin: 0;">🏦 RTC Bank Helper</h2>
+          </div>
+
+          <div class="card" style="padding: 12px 16px; margin-bottom: 16px; border-left: 3px solid var(--accent); font-size: 13px; color: var(--muted);">
+            Move RTC between a student's wallet and their bank on their behalf — useful for students who can't access the bank UI themselves (left the school, locked out, etc.). No early-withdrawal tax is charged on staff pushes. Every action is logged with your name in the transaction history.
+          </div>
+
+          <div style="display: flex; gap: 15px; margin-bottom: 16px; flex-wrap: wrap;">
+            <div class="card" style="padding: 12px; flex: 1; min-width: 140px; text-align: center;">
+              <div style="font-size: 22px; font-weight: bold; color: #f39c12;">${totals.wallet}</div>
+              <div style="color: var(--muted); font-size: 12px;">Total RTC in Wallets</div>
+            </div>
+            <div class="card" style="padding: 12px; flex: 1; min-width: 140px; text-align: center;">
+              <div style="font-size: 22px; font-weight: bold; color: var(--accent);">${totals.bank}</div>
+              <div style="color: var(--muted); font-size: 12px;">Total RTC in Banks</div>
+            </div>
+            <div class="card" style="padding: 12px; flex: 1; min-width: 140px; text-align: center;">
+              <div style="font-size: 22px; font-weight: bold; color: var(--text);">${this._bankHelperStudents.length}</div>
+              <div style="color: var(--muted); font-size: 12px;">Students (incl. ${totals.past} past)</div>
+            </div>
+          </div>
+
+          <div class="card" style="padding: 12px; margin-bottom: 12px;">
+            <div style="display: flex; gap: 10px; align-items: end; flex-wrap: wrap;">
+              <div style="flex: 1; min-width: 200px;">
+                <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Search Students</label>
+                <input type="text" id="bank-helper-search" placeholder="Search by name..." oninput="app.filterRTCBankHelper()"
+                  style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+              </div>
+              <div>
+                <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Status</label>
+                <select id="bank-helper-status" onchange="app.filterRTCBankHelper()"
+                  style="padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+                  <option value="all">All students</option>
+                  <option value="active">Active only</option>
+                  <option value="past">Past only</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div id="bank-helper-table"></div>
+        </div>
+      `;
+    }
+
+    filterRTCBankHelper() {
+      this._bankHelperFilter = {
+        search: (document.getElementById('bank-helper-search')?.value || '').toLowerCase(),
+        status: document.getElementById('bank-helper-status')?.value || 'all'
+      };
+      this._renderRTCBankHelperTable();
+    }
+
+    _renderRTCBankHelperTable() {
+      const container = document.getElementById('bank-helper-table');
+      if (!container) return;
+
+      const { search, status } = this._bankHelperFilter;
+      const filtered = (this._bankHelperStudents || []).filter(s => {
+        const name = `${s.first_name || ''} ${s.last_name || ''}`.toLowerCase();
+        if (search && !name.includes(search)) return false;
+        if (status === 'active' && s.student_status !== 'active') return false;
+        if (status === 'past' && s.student_status !== 'past') return false;
+        return true;
+      });
+
+      if (filtered.length === 0) {
+        container.innerHTML = '<div class="card" style="padding: 20px; text-align: center; color: var(--muted);">No students match your filter.</div>';
+        return;
+      }
+
+      let html = `
+        <div style="overflow-x: auto;">
+          <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+            <thead>
+              <tr style="background: var(--bg);">
+                <th style="padding: 10px; text-align: left;">Name</th>
+                <th style="padding: 10px; text-align: center;">Grade</th>
+                <th style="padding: 10px; text-align: center;">Wallet</th>
+                <th style="padding: 10px; text-align: center;">Bank</th>
+                <th style="padding: 10px; text-align: left;">Push</th>
+              </tr>
+            </thead>
+            <tbody>
+      `;
+
+      filtered.forEach(s => {
+        const isPast = s.student_status === 'past';
+        const statusBadge = isPast
+          ? '<span style="font-size: 10px; padding: 2px 6px; background: rgba(255, 99, 99, 0.2); color: var(--danger); border-radius: 4px; margin-left: 6px; font-weight: 600;">PAST</span>'
+          : '';
+        html += `
+          <tr id="bh-row-${s.id}" style="border-bottom: 1px solid var(--border);">
+            <td style="padding: 8px 10px; font-weight: 500;">${s.first_name || ''} ${s.last_name || ''}${statusBadge}</td>
+            <td style="padding: 8px 10px; text-align: center; color: var(--muted);">${s.grade_level || '-'}</td>
+            <td style="padding: 8px 10px; text-align: center;">
+              <span id="bh-wallet-${s.id}" style="font-weight: bold; color: #f39c12; font-size: 15px;">${s.wallet_balance || 0}</span>
+            </td>
+            <td style="padding: 8px 10px; text-align: center;">
+              <span id="bh-bank-${s.id}" style="font-weight: bold; color: var(--accent); font-size: 15px;">${s.bank_balance || 0}</span>
+            </td>
+            <td style="padding: 6px 10px;">
+              <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+                <input type="number" id="bh-amt-${s.id}" value="10" min="1" style="width: 70px; padding: 4px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); font-size: 12px;">
+                <input type="text" id="bh-note-${s.id}" placeholder="Note (optional)" style="width: 140px; padding: 4px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); font-size: 12px;">
+                <button class="btn btn-primary" style="padding: 4px 10px; font-size: 11px;" onclick="app.bankHelperDeposit('${s.id}')" title="Move from wallet to bank">→ Bank</button>
+                <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 11px;" onclick="app.bankHelperWithdraw('${s.id}')" title="Move from bank to wallet (no tax)">← Wallet</button>
+              </div>
+            </td>
+          </tr>
+        `;
+      });
+
+      html += '</tbody></table></div>';
+      container.innerHTML = html;
+    }
+
+    async bankHelperDeposit(studentId) {
+      const amount = parseInt(document.getElementById('bh-amt-' + studentId)?.value);
+      const note = document.getElementById('bh-note-' + studentId)?.value?.trim() || null;
+
+      if (!amount || amount <= 0) {
+        this.showNotification('Enter a positive amount', 'error');
+        return;
+      }
+
+      try {
+        const { data, error } = await this.auth.supabase.rpc('admin_bank_deposit_for_student', {
+          p_user_id: studentId,
+          p_amount: amount,
+          p_note: note
+        });
+        if (error) throw error;
+        if (data && data.success === false) throw new Error(data.error);
+
+        this._applyBankHelperResult(studentId, data, '+');
+        this.showNotification(`Deposited ${amount} RTC to bank`, 'success');
+      } catch (err) {
+        console.error('Bank deposit failed:', err);
+        this.showNotification('Error: ' + err.message, 'error');
+      }
+    }
+
+    async bankHelperWithdraw(studentId) {
+      const amount = parseInt(document.getElementById('bh-amt-' + studentId)?.value);
+      const note = document.getElementById('bh-note-' + studentId)?.value?.trim() || null;
+
+      if (!amount || amount <= 0) {
+        this.showNotification('Enter a positive amount', 'error');
+        return;
+      }
+
+      try {
+        const { data, error } = await this.auth.supabase.rpc('admin_bank_withdraw_for_student', {
+          p_user_id: studentId,
+          p_amount: amount,
+          p_note: note
+        });
+        if (error) throw error;
+        if (data && data.success === false) throw new Error(data.error);
+
+        this._applyBankHelperResult(studentId, data, '-');
+        this.showNotification(`Withdrew ${amount} RTC to wallet`, 'success');
+      } catch (err) {
+        console.error('Bank withdraw failed:', err);
+        this.showNotification('Error: ' + err.message, 'error');
+      }
+    }
+
+    _applyBankHelperResult(studentId, data, flashSign) {
+      const student = (this._bankHelperStudents || []).find(s => s.id === studentId);
+      if (student) {
+        student.wallet_balance = data.new_wallet_balance;
+        student.bank_balance = data.new_bank_balance;
+      }
+
+      const walletEl = document.getElementById('bh-wallet-' + studentId);
+      const bankEl = document.getElementById('bh-bank-' + studentId);
+      const noteEl = document.getElementById('bh-note-' + studentId);
+
+      if (walletEl) walletEl.textContent = data.new_wallet_balance;
+      if (bankEl) bankEl.textContent = data.new_bank_balance;
+      if (noteEl) noteEl.value = '';
+
+      // Brief flash on the row
+      const row = document.getElementById('bh-row-' + studentId);
+      if (row) {
+        const color = flashSign === '+' ? 'rgba(106, 169, 255, 0.15)' : 'rgba(243, 156, 18, 0.15)';
+        row.style.background = color;
+        setTimeout(() => { row.style.background = 'transparent'; }, 1200);
+      }
     }
 
     // ---- Transaction Log Tab ----
