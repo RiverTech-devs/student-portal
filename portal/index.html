@@ -7926,7 +7926,7 @@
           // Load all students (including past students)
           const { data: students, error } = await this.auth.supabase
             .from('user_profiles')
-            .select('id, first_name, last_name, email, grade_level, phone, address_line1, city, state, student_status, left_date, left_reason')
+            .select('id, first_name, last_name, email, grade_level, phone, address_line1, city, state, student_status, left_date, left_reason, games_pin')
             .eq('user_type', 'student')
             .order('last_name', { ascending: true });
 
@@ -8002,6 +8002,7 @@
                   <th style="padding: 12px; text-align: left;">Grade</th>
                   <th style="padding: 12px; text-align: left;">Email</th>
                   <th style="padding: 12px; text-align: left;">Status</th>
+                  <th style="padding: 12px; text-align: center;">Games PIN</th>
                   <th style="padding: 12px; text-align: center;">Actions</th>
                 </tr>
               </thead>
@@ -8012,6 +8013,9 @@
                     ? `<span style="background: var(--muted); color: white; padding: 2px 8px; border-radius: 10px; font-size: 11px;">Past</span>
                        ${student.left_date ? `<br><small style="color: var(--muted);">Left: ${new Date(student.left_date).toLocaleDateString()}</small>` : ''}`
                     : `<span style="background: var(--success); color: white; padding: 2px 8px; border-radius: 10px; font-size: 11px;">Active</span>`;
+                  const pinDisplay = student.games_pin
+                    ? `<span style="font-family: monospace; font-weight: 600; color: var(--accent); letter-spacing: 1px;" title="Games sign-in PIN">${student.games_pin}</span>`
+                    : '<span style="color: var(--muted); font-size: 11px;">—</span>';
 
                   return `
                   <tr style="border-bottom: 1px solid var(--border); ${isPast ? 'opacity: 0.7;' : ''}">
@@ -8019,6 +8023,12 @@
                     <td style="padding: 12px;">${student.grade_level ? `Grade ${student.grade_level}` : 'N/A'}</td>
                     <td style="padding: 12px;"><a href="mailto:${student.email}" style="color: var(--accent);">${student.email}</a></td>
                     <td style="padding: 12px;">${statusBadge}</td>
+                    <td style="padding: 12px; text-align: center;">
+                      <div style="display: flex; gap: 6px; align-items: center; justify-content: center;">
+                        ${pinDisplay}
+                        <button class="btn btn-secondary" style="padding: 2px 6px; font-size: 11px;" onclick="app.adminRegenerateStudentPin('${student.id}', '${student.first_name} ${student.last_name}')" title="${student.games_pin ? 'Generate new PIN' : 'Generate PIN'}">${student.games_pin ? '↻' : 'Generate'}</button>
+                      </div>
+                    </td>
                     <td style="padding: 12px; text-align: center;">
                       <div style="display: flex; gap: 6px; justify-content: center; flex-wrap: wrap;">
                         <button class="btn btn-primary" style="padding: 6px 12px; font-size: 13px;"
@@ -8129,8 +8139,9 @@
         try {
           this.showNotification('Marking student as past...', 'info');
 
-          // Call the RPC function
-          const { error } = await this.auth.supabase.rpc('mark_student_as_past', {
+          // Call the RPC function (now returns { success, pin } — auto-generated
+          // a games PIN if the student didn't already have one).
+          const { data, error } = await this.auth.supabase.rpc('mark_student_as_past', {
             p_student_id: studentId,
             p_left_date: leftDate,
             p_left_reason: leftReason
@@ -8138,14 +8149,42 @@
 
           if (error) throw error;
 
-          // Close modal and refresh
           document.getElementById('mark-past-modal-overlay')?.remove();
-          this.showNotification('Student marked as past. Records preserved.', 'success');
+          const pin = data && data.pin;
+          this.showNotification(
+            pin
+              ? `Student marked as past. Games PIN: ${pin}`
+              : 'Student marked as past. Records preserved.',
+            'success'
+          );
           await this.renderAdminStudentRecords();
 
         } catch (error) {
           console.error('Error marking student as past:', error);
           this.showNotification(`Failed to mark student as past: ${error.message}`, 'error');
+        }
+      }
+
+      async adminRegenerateStudentPin(studentId, studentName) {
+        const student = (this._adminStudentsData || []).find(s => s.id === studentId);
+        const hasPin = !!(student && student.games_pin);
+        if (hasPin && !window.confirm(`Generate a new PIN for ${studentName}? The old PIN will stop working.`)) {
+          return;
+        }
+
+        try {
+          const { data, error } = await this.auth.supabase.rpc('staff_regenerate_student_pin', {
+            p_user_id: studentId,
+          });
+          if (error) throw error;
+          if (data && data.success === false) throw new Error(data.error);
+
+          if (student) student.games_pin = data.pin;
+          this.showNotification(`PIN for ${studentName}: ${data.pin}`, 'success');
+          this.filterAdminStudentRecords();
+        } catch (err) {
+          console.error('Regenerate PIN failed:', err);
+          this.showNotification('Error: ' + err.message, 'error');
         }
       }
 
@@ -35858,9 +35897,10 @@
         const statusBadge = isPast
           ? '<span style="font-size: 10px; padding: 2px 6px; background: rgba(255, 99, 99, 0.2); color: var(--danger); border-radius: 4px; margin-left: 6px; font-weight: 600;">PAST</span>'
           : '';
-        const pinCell = s.has_pin
-          ? `<span style="font-family: monospace; color: var(--accent);" title="PIN is set">${s.pin_masked || '••••'}</span>`
+        const pinDisplay = s.has_pin && s.pin
+          ? `<span style="font-family: monospace; font-weight: 600; color: var(--accent); letter-spacing: 1px;" title="Games sign-in PIN">${s.pin}</span>`
           : '<span style="color: var(--muted); font-size: 11px;">—</span>';
+        const escName = `${(s.first_name || '').replace(/'/g, "\\'")} ${(s.last_name || '').replace(/'/g, "\\'")}`;
         html += `
           <tr id="bh-row-${s.id}" style="border-bottom: 1px solid var(--border);">
             <td style="padding: 8px 10px; font-weight: 500;">${s.first_name || ''} ${s.last_name || ''}${statusBadge}</td>
@@ -35872,9 +35912,10 @@
               <span id="bh-bank-${s.id}" style="font-weight: bold; color: var(--accent); font-size: 15px;">${s.bank_balance || 0}</span>
             </td>
             <td style="padding: 6px 10px; text-align: center;">
-              <div style="display: flex; gap: 4px; align-items: center; justify-content: center;">
-                <span id="bh-pin-${s.id}">${pinCell}</span>
-                <button class="btn btn-secondary" style="padding: 2px 8px; font-size: 11px;" onclick="app.bankHelperSetPin('${s.id}', '${(s.first_name || '').replace(/'/g, "\\'")} ${(s.last_name || '').replace(/'/g, "\\'")}')" title="Set or clear games PIN">${s.has_pin ? 'Edit' : 'Set'}</button>
+              <div style="display: flex; gap: 6px; align-items: center; justify-content: center; flex-wrap: wrap;">
+                <span id="bh-pin-${s.id}">${pinDisplay}</span>
+                <button class="btn btn-secondary" style="padding: 2px 8px; font-size: 11px;" onclick="app.bankHelperRegeneratePin('${s.id}', '${escName}')" title="${s.has_pin ? 'Generate a new random PIN' : 'Generate a PIN'}">${s.has_pin ? '↻' : 'Generate'}</button>
+                ${s.has_pin ? `<button class="btn" style="padding: 2px 6px; font-size: 11px; opacity: 0.7;" onclick="app.bankHelperSetPin('${s.id}', '${escName}')" title="Set custom PIN or clear">Edit</button>` : ''}
               </div>
             </td>
             <td style="padding: 6px 10px;">
@@ -35973,8 +36014,8 @@
       const student = (this._bankHelperStudents || []).find(s => s.id === studentId);
       const hasPin = !!(student && student.has_pin);
       const promptText = hasPin
-        ? `Set a new 4-character games PIN for ${studentName}.\n\nEnter blank to clear the PIN.\nUse letters A–Z and digits 0–9 only.`
-        : `Set a 4-character games PIN for ${studentName}.\n\nThe student will use this with their first + last name to sign in.\nUse letters A–Z and digits 0–9 only.`;
+        ? `Set a custom 4-character games PIN for ${studentName}.\n\nEnter blank to clear the PIN.\nUse letters A–Z and digits 0–9 only.`
+        : `Set a custom 4-character games PIN for ${studentName}.\n\nUse letters A–Z and digits 0–9 only.`;
       const raw = window.prompt(promptText, '');
       if (raw === null) return;
 
@@ -35992,28 +36033,47 @@
         if (error) throw error;
         if (data && data.success === false) throw new Error(data.error);
 
-        if (student) {
-          student.has_pin = !!data.pin_set;
-          student.pin_masked = data.pin_set && data.pin ? '•••' + data.pin.slice(-1) : null;
-        }
-
-        const cell = document.getElementById('bh-pin-' + studentId);
-        if (cell) {
-          cell.innerHTML = data.pin_set
-            ? `<span style="font-family: monospace; color: var(--accent);" title="PIN is set">${student?.pin_masked || '••••'}</span>`
-            : '<span style="color: var(--muted); font-size: 11px;">—</span>';
-        }
-
-        if (data.pin_set) {
-          // Show the actual PIN once so staff can write it down for the student.
-          this.showNotification(`PIN for ${studentName} set to ${data.pin}. Share it with them now — it won't be shown again.`, 'success');
-        } else {
-          this.showNotification(`PIN for ${studentName} cleared.`, 'success');
-        }
+        this._applyPinUpdate(studentId, data.pin_set ? data.pin : null);
+        this.showNotification(
+          data.pin_set ? `PIN for ${studentName}: ${data.pin}` : `PIN for ${studentName} cleared.`,
+          'success'
+        );
       } catch (err) {
         console.error('Set PIN failed:', err);
         this.showNotification('Error: ' + err.message, 'error');
       }
+    }
+
+    async bankHelperRegeneratePin(studentId, studentName) {
+      const student = (this._bankHelperStudents || []).find(s => s.id === studentId);
+      const hasPin = !!(student && student.has_pin);
+      if (hasPin && !window.confirm(`Generate a new PIN for ${studentName}? The old PIN will stop working.`)) {
+        return;
+      }
+
+      try {
+        const { data, error } = await this.auth.supabase.rpc('staff_regenerate_student_pin', {
+          p_user_id: studentId,
+        });
+        if (error) throw error;
+        if (data && data.success === false) throw new Error(data.error);
+
+        this._applyPinUpdate(studentId, data.pin);
+        this.showNotification(`New PIN for ${studentName}: ${data.pin}`, 'success');
+      } catch (err) {
+        console.error('Regenerate PIN failed:', err);
+        this.showNotification('Error: ' + err.message, 'error');
+      }
+    }
+
+    _applyPinUpdate(studentId, pin) {
+      const student = (this._bankHelperStudents || []).find(s => s.id === studentId);
+      if (student) {
+        student.has_pin = !!pin;
+        student.pin = pin || null;
+      }
+      // Re-render this row's PIN cell from the canonical row data.
+      this._renderRTCBankHelperTable();
     }
 
     // ---- Transaction Log Tab ----

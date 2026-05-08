@@ -165,10 +165,8 @@ GRANT EXECUTE ON FUNCTION public.pin_lookup_student(TEXT, TEXT, TEXT) TO service
 
 -- ------------------------------------------------------------
 -- staff_get_student_pin_status(p_user_id)
---   Quick lookup so the staff UI can show whether a student has a
---   PIN set (without leaking the PIN itself to non-admins). Returns
---   has_pin and the masked PIN ("•••X" — last char) for the staff
---   row to recognize at a glance.
+--   Returns the student's PIN in plain text so staff can see / read it
+--   to remind a forgetful student. Admin or teacher only.
 -- ------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.staff_get_student_pin_status(p_user_id UUID)
 RETURNS JSON
@@ -196,13 +194,169 @@ BEGIN
   RETURN json_build_object(
     'success', true,
     'has_pin', v_pin IS NOT NULL,
-    'pin_masked', CASE WHEN v_pin IS NULL THEN NULL ELSE '•••' || right(v_pin, 1) END,
+    'pin', v_pin,
     'pin_set_at', v_set_at
   );
 END;
 $$;
 
 GRANT EXECUTE ON FUNCTION public.staff_get_student_pin_status(UUID) TO authenticated;
+
+-- ------------------------------------------------------------
+-- _generate_games_pin()
+--   Internal helper: returns a fresh random 4-char PIN drawn from a
+--   confusion-resistant alphabet (no 0/O, 1/I, L). Loops until it
+--   finds one not already in use, so the (name, PIN) tuple stays
+--   meaningful for lookup.
+-- ------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public._generate_games_pin()
+RETURNS TEXT
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  v_alphabet TEXT := 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+  v_len INTEGER := length(v_alphabet);
+  v_pin TEXT;
+  v_attempt INTEGER := 0;
+BEGIN
+  LOOP
+    v_pin :=
+      substr(v_alphabet, 1 + floor(random() * v_len)::int, 1) ||
+      substr(v_alphabet, 1 + floor(random() * v_len)::int, 1) ||
+      substr(v_alphabet, 1 + floor(random() * v_len)::int, 1) ||
+      substr(v_alphabet, 1 + floor(random() * v_len)::int, 1);
+
+    -- Uniqueness across the whole table is overkill, but cheap and
+    -- avoids the corner case where two students with the same name
+    -- end up with the same PIN. Bail out after 50 attempts so we
+    -- don't loop forever in a pathologically full table.
+    IF NOT EXISTS (SELECT 1 FROM public.user_profiles WHERE games_pin = v_pin) THEN
+      RETURN v_pin;
+    END IF;
+
+    v_attempt := v_attempt + 1;
+    EXIT WHEN v_attempt >= 50;
+  END LOOP;
+
+  RETURN v_pin;
+END;
+$$;
+
+REVOKE EXECUTE ON FUNCTION public._generate_games_pin() FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public._generate_games_pin() FROM authenticated;
+GRANT EXECUTE ON FUNCTION public._generate_games_pin() TO service_role;
+
+-- ------------------------------------------------------------
+-- staff_regenerate_student_pin(p_user_id)
+--   Lets staff roll a new random PIN for a student (e.g. when the
+--   student forgot the old one and the staff member just wants a
+--   fresh one to read out). Admin or teacher only.
+-- ------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.staff_regenerate_student_pin(p_user_id UUID)
+RETURNS JSON
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  v_caller_id UUID;
+  v_caller_type TEXT;
+  v_target_type TEXT;
+  v_pin TEXT;
+BEGIN
+  SELECT id, user_type INTO v_caller_id, v_caller_type
+  FROM public.user_profiles
+  WHERE auth_user_id = auth.uid();
+
+  IF v_caller_id IS NULL THEN
+    RETURN json_build_object('success', false, 'error', 'Caller not found');
+  END IF;
+
+  IF v_caller_type NOT IN ('admin', 'teacher') THEN
+    RETURN json_build_object('success', false, 'error', 'Admin or teacher access required');
+  END IF;
+
+  SELECT user_type INTO v_target_type
+  FROM public.user_profiles
+  WHERE id = p_user_id;
+
+  IF v_target_type IS NULL OR v_target_type <> 'student' THEN
+    RETURN json_build_object('success', false, 'error', 'Student not found');
+  END IF;
+
+  v_pin := public._generate_games_pin();
+
+  UPDATE public.user_profiles
+  SET games_pin = v_pin,
+      games_pin_set_by = v_caller_id,
+      games_pin_set_at = now()
+  WHERE id = p_user_id;
+
+  RETURN json_build_object('success', true, 'pin', v_pin);
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.staff_regenerate_student_pin(UUID) TO authenticated;
+
+-- ------------------------------------------------------------
+-- Patch mark_student_as_past so it auto-generates a games PIN when
+-- the student doesn't have one yet. Inactive students need PIN
+-- access by definition, and they routinely forget it — having staff
+-- remember to set one manually is the wrong default.
+-- ------------------------------------------------------------
+DROP FUNCTION IF EXISTS public.mark_student_as_past(UUID, DATE, TEXT);
+
+CREATE OR REPLACE FUNCTION public.mark_student_as_past(
+  p_student_id UUID,
+  p_left_date DATE DEFAULT CURRENT_DATE,
+  p_left_reason TEXT DEFAULT NULL
+)
+RETURNS JSON
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  v_existing_pin TEXT;
+  v_pin TEXT;
+BEGIN
+  -- Move the student to past status
+  UPDATE public.user_profiles
+  SET
+    student_status = 'past',
+    left_date = p_left_date,
+    left_reason = p_left_reason
+  WHERE id = p_student_id AND user_type = 'student';
+
+  -- Archive active enrollments (preserves grades and history)
+  UPDATE public.class_enrollments
+  SET status = 'archived'
+  WHERE student_id = p_student_id AND status = 'active';
+
+  -- Auto-generate a games PIN if the student doesn't already have one.
+  -- Inactive students need PIN access by definition.
+  SELECT games_pin INTO v_existing_pin
+  FROM public.user_profiles
+  WHERE id = p_student_id;
+
+  IF v_existing_pin IS NULL THEN
+    v_pin := public._generate_games_pin();
+    UPDATE public.user_profiles
+    SET games_pin = v_pin,
+        games_pin_set_at = now()
+    WHERE id = p_student_id;
+  ELSE
+    v_pin := v_existing_pin;
+  END IF;
+
+  RETURN json_build_object('success', true, 'pin', v_pin);
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.mark_student_as_past(UUID, DATE, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.mark_student_as_past(UUID, DATE, TEXT) TO service_role;
 
 -- ------------------------------------------------------------
 -- Refresh admin_bank_list_students to include has_pin / pin_masked
@@ -238,7 +392,7 @@ BEGIN
       COALESCE(up.rtc_balance, 0) AS wallet_balance,
       COALESCE(ba.balance, 0) AS bank_balance,
       (up.games_pin IS NOT NULL) AS has_pin,
-      CASE WHEN up.games_pin IS NULL THEN NULL ELSE '•••' || right(up.games_pin, 1) END AS pin_masked
+      up.games_pin AS pin
     FROM public.user_profiles up
     LEFT JOIN public.rtc_bank_accounts ba ON ba.user_id = up.id
     WHERE up.user_type = 'student'
