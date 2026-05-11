@@ -94,19 +94,72 @@ serve(async (req) => {
       return jsonResponse(req, { error: 'No match. Check your name and PIN.' }, 401)
     }
 
-    const authUserId: string | null = lookupResult.auth_user_id
+    let authUserId: string | null = lookupResult.auth_user_id
+    let email: string | null = null
+
     if (!authUserId) {
-      return jsonResponse(req, { error: 'This student account has no login set up. Ask an admin.' }, 409)
+      // Unclaimed inactive student: nobody has ever logged in as them
+      // before, so there's no auth.users row yet. Create one with a
+      // placeholder email (no real inbox — the OTP is verified by us
+      // directly, not by a clicked link) and a long random password
+      // so the email/password route can't be used. We leave
+      // account_status='inactive' and can_login=false on the profile
+      // so the regular Activate Account flow still works later.
+      const profileId: string = lookupResult.user_id
+      const placeholderEmail = `pin-${profileId}@pin.rivertech.me`
+      // 64+ chars of randomness — nobody is ever supposed to know this.
+      const randomPassword =
+        crypto.randomUUID() + crypto.randomUUID()
+
+      const { data: created, error: createErr } = await adminClient.auth.admin.createUser({
+        email: placeholderEmail,
+        password: randomPassword,
+        email_confirm: true,
+        user_metadata: { pin_only: true, profile_id: profileId },
+      })
+
+      if (createErr || !created?.user) {
+        console.error('admin.createUser error:', createErr)
+        return jsonResponse(req, { error: 'Could not provision sign-in for this student' }, 500)
+      }
+
+      // Link the new auth user to the profile via a SECURITY DEFINER
+      // RPC. If another concurrent sign-in raced us, the RPC reports
+      // the already-attached auth_user_id and we use that instead.
+      const { data: attachRes, error: attachErr } = await adminClient.rpc('pin_attach_auth_user', {
+        p_profile_id: profileId,
+        p_auth_user_id: created.user.id,
+        p_email: placeholderEmail,
+      })
+
+      if (attachErr || !attachRes || attachRes.success === false) {
+        console.error('pin_attach_auth_user error:', attachErr || attachRes)
+        // Roll back the auth user we just made so we don't leak it.
+        await adminClient.auth.admin.deleteUser(created.user.id).catch(() => {})
+        return jsonResponse(req, { error: 'Could not link sign-in to student profile' }, 500)
+      }
+
+      if (attachRes.already_attached) {
+        // Another concurrent sign-in beat us to it. Throw ours away
+        // and use theirs.
+        await adminClient.auth.admin.deleteUser(created.user.id).catch(() => {})
+        authUserId = attachRes.auth_user_id
+      } else {
+        authUserId = created.user.id
+        email = placeholderEmail
+      }
     }
 
-    // Resolve the student's email from auth.users.
-    const { data: authUser, error: authUserError } = await adminClient.auth.admin.getUserById(authUserId)
-    if (authUserError || !authUser?.user?.email) {
-      console.error('admin.getUserById error:', authUserError)
-      return jsonResponse(req, { error: 'Could not resolve student account email' }, 500)
+    if (!email) {
+      // Resolve the email from auth.users (either an already-existing
+      // auth user, or one another tab attached while we were running).
+      const { data: authUser, error: authUserError } = await adminClient.auth.admin.getUserById(authUserId!)
+      if (authUserError || !authUser?.user?.email) {
+        console.error('admin.getUserById error:', authUserError)
+        return jsonResponse(req, { error: 'Could not resolve student account email' }, 500)
+      }
+      email = authUser.user.email
     }
-
-    const email = authUser.user.email
 
     // Mint a magic-link OTP. The frontend will consume it via verifyOtp.
     const { data: linkData, error: linkError } = await adminClient.auth.admin.generateLink({

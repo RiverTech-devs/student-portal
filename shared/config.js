@@ -535,6 +535,12 @@ class PortalUI {
         if (!userInfo.isAuthenticated) return '';
 
         const userType = userInfo.profile?.user_type || 'student';
+        // "PIN-only" mode: an unclaimed inactive student profile that signed
+        // in via the games PIN. They get games + skills + RTC only — no
+        // grades, classes, messaging, dashboard, etc. They can upgrade to a
+        // full account later via the regular Activate Account flow.
+        const isPinOnlyStudent = userType === 'student'
+            && userInfo.profile?.account_status === 'inactive';
 
         // Define all nav items — each knows which app it belongs to
         const allItems = [
@@ -557,7 +563,16 @@ class PortalUI {
         ];
 
         // Filter to items visible for this user type
-        const visibleItems = allItems.filter(item => item.roles.includes(userType));
+        let visibleItems = allItems.filter(item => item.roles.includes(userType));
+
+        // PIN-only students see only Games and Skills. Everything else
+        // belongs to a fully claimed account.
+        if (isPinOnlyStudent) {
+            const allowedSections = new Set(['games', 'skills']);
+            visibleItems = visibleItems.filter(item =>
+                item.app === 'main' && allowedSections.has(item.section)
+            );
+        }
 
         // URLs for cross-app navigation
         const mainUrl = currentApp === 'portal' ? '../index.html' : window.location.pathname;
