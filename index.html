@@ -208,7 +208,34 @@
           outline:none; border-color:var(--accent); box-shadow:0 0 0 2px rgba(106,169,255,.2);
         }
         .auth-form{max-width:400px;margin:0 auto;text-align:center}
-        
+
+        /* Sign-in tab switcher (email vs games PIN) */
+        .signin-tabs{
+          display:flex; gap:8px; margin: 4px 0 16px;
+          padding:4px; background:var(--bg); border:1px solid var(--border);
+          border-radius:10px;
+        }
+        .signin-tab{
+          flex:1; appearance:none; border:0; background:transparent;
+          color:var(--muted); padding:10px 12px; border-radius:8px;
+          font-size:14px; font-weight:600; cursor:pointer;
+          transition:background-color .15s, color .15s;
+        }
+        .signin-tab:hover{ color:var(--text); }
+        .signin-tab.active{
+          background:var(--card); color:var(--text);
+          box-shadow:0 1px 3px rgba(0,0,0,0.25);
+        }
+
+        /* Big, centered, spaced-letter PIN input */
+        .pin-input{
+          text-align:center !important;
+          font-size:22px !important;
+          letter-spacing:8px;
+          text-transform:uppercase;
+          font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        }
+
         /* Buttons */
         .btn{
           appearance:none; border:1px solid var(--surface-border); background:var(--nav-bg); color:var(--text-light);
@@ -565,7 +592,20 @@
                         <div class="auth-form">
                             <h2>Student Portal Login</h2>
                             <div id="auth-alerts"></div>
-                           <form id="login-form">
+
+                            <!-- Sign-in method picker. The email tab is the
+                                 normal flow; the PIN tab is the short games-
+                                 only path for inactive (unclaimed) students. -->
+                            <div id="signin-tabs" class="signin-tabs">
+                                <button type="button" class="signin-tab active" data-signin-tab="email">
+                                    📧 Email
+                                </button>
+                                <button type="button" class="signin-tab" data-signin-tab="pin">
+                                    🎮 Games PIN
+                                </button>
+                            </div>
+
+                           <form id="login-form" data-signin-pane="email">
                                 <div class="form-group">
                                     <label for="email">Email Address</label>
                                     <input type="email" id="email" required>
@@ -581,14 +621,37 @@
                                     <span style="margin: 0 10px; color: var(--muted);">|</span>
                                     <a href="#" id="activate-account-link" style="color: var(--link);">Activate Account</a>
                                 </p>
-                                <p style="margin-top: 8px; text-align: center; font-size: 13px;">
-                                    <a href="pin-login.html" style="color: var(--link);">🎮 Sign in with PIN</a>
-                                    <span style="color: var(--muted); margin-left: 6px;">— games, skills, RTC only</span>
-                                </p>
                                 <div style="margin-top: 20px; padding: 16px; background: linear-gradient(135deg, rgba(106, 169, 255, 0.1), rgba(139, 255, 176, 0.1)); border: 1px solid var(--border); border-radius: 10px; text-align: center;">
                                     <p style="color: var(--text); font-size: 14px; margin-bottom: 10px;">New to our school?</p>
                                     <a href="enrollment/" class="btn btn-primary" style="display: inline-block; text-decoration: none; width: 100%;">Apply for Enrollment</a>
                                 </div>
+                            </form>
+
+                            <!-- PIN sign-in pane. Real Supabase auth — verifyOtp
+                                 mints a session against a placeholder email
+                                 created by the pin-login edge function. -->
+                            <form id="pin-form" data-signin-pane="pin" class="hidden">
+                                <p style="color: var(--muted); font-size: 13px; margin: 0 0 14px;">
+                                    For inactive students who haven't claimed an email/password account yet. Unlocks Games + Skills only.
+                                </p>
+                                <div class="form-group">
+                                    <label for="pin-first-name">First Name</label>
+                                    <input type="text" id="pin-first-name" autocomplete="given-name" required>
+                                </div>
+                                <div class="form-group">
+                                    <label for="pin-last-name">Last Name</label>
+                                    <input type="text" id="pin-last-name" autocomplete="family-name" required>
+                                </div>
+                                <div class="form-group">
+                                    <label for="pin-code">4-character PIN</label>
+                                    <input type="text" id="pin-code" class="pin-input" required maxlength="4"
+                                           inputmode="text" autocapitalize="characters"
+                                           pattern="[A-Za-z0-9]{4}" placeholder="ABCD">
+                                </div>
+                                <button type="submit" class="btn btn-primary" id="pin-login-btn">Sign in with PIN</button>
+                                <p style="margin-top: 14px; text-align: center; font-size: 13px; color: var(--muted);">
+                                    Don't know your PIN? Ask a teacher or admin.
+                                </p>
                             </form>
 
                             <form id="register-form" class="hidden">
@@ -1115,19 +1178,48 @@
 
             showLoginForm() {
                 document.body.classList.remove('authenticated');
-                
+
                 // Hide unified navigation
                 const navContainer = document.getElementById('unified-nav-container');
                 if (navContainer) navContainer.innerHTML = '';
-                
+
                 // Show login
                 this.showTab('login');
                 const loginForm = document.getElementById('login-form');
                 const registerForm = document.getElementById('register-form');
                 const activateForm = document.getElementById('activate-form');
+                const pinForm = document.getElementById('pin-form');
+                const tabs = document.getElementById('signin-tabs');
                 if (loginForm) loginForm.classList.remove('hidden');
                 if (registerForm) registerForm.classList.add('hidden');
                 if (activateForm) activateForm.classList.add('hidden');
+                if (pinForm) pinForm.classList.add('hidden');
+                if (tabs) tabs.classList.remove('hidden');
+                this.switchSigninPane('email');
+            }
+
+            // Email vs Games-PIN tab switcher on the login screen.
+            switchSigninPane(pane) {
+                const tabs = document.getElementById('signin-tabs');
+                if (tabs) {
+                    tabs.querySelectorAll('.signin-tab').forEach(btn => {
+                        btn.classList.toggle('active', btn.dataset.signinTab === pane);
+                    });
+                }
+                document.querySelectorAll('[data-signin-pane]').forEach(form => {
+                    form.classList.toggle('hidden', form.dataset.signinPane !== pane);
+                });
+                // Keep other auth sub-forms (register, activate) hidden when
+                // switching tabs — those are reached via the Register / Activate
+                // buttons inside the email pane, not via the picker.
+                const registerForm = document.getElementById('register-form');
+                const activateForm = document.getElementById('activate-form');
+                if (registerForm) registerForm.classList.add('hidden');
+                if (activateForm) activateForm.classList.add('hidden');
+                if (pane === 'pin') {
+                    const first = document.getElementById('pin-first-name');
+                    if (first) setTimeout(() => first.focus(), 50);
+                }
             }
 
             handleHashNavigation() {
@@ -1149,6 +1241,21 @@
                 // Auth forms
                 this.addSafeEventListener('login-form', 'submit', (e) => this.handleLogin(e));
                 this.addSafeEventListener('register-form', 'submit', (e) => this.handleRegister(e));
+                this.addSafeEventListener('pin-form', 'submit', (e) => this.handlePinLogin(e));
+
+                // Sign-in method tabs (Email vs Games PIN)
+                document.querySelectorAll('.signin-tab').forEach(btn => {
+                    btn.addEventListener('click', () => this.switchSigninPane(btn.dataset.signinTab));
+                });
+
+                // PIN input: force uppercase + alphanumeric as the user types.
+                const pinCode = document.getElementById('pin-code');
+                if (pinCode) {
+                    pinCode.addEventListener('input', () => {
+                        const cleaned = pinCode.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+                        if (cleaned !== pinCode.value) pinCode.value = cleaned;
+                    });
+                }
                 
                 // Auth navigation
                 this.addSafeEventListener('register-btn', 'click', () => this.showRegisterForm());
@@ -1226,9 +1333,72 @@
                 }
             }
 
+            async handlePinLogin(e) {
+                e.preventDefault();
+
+                const firstName = document.getElementById('pin-first-name')?.value?.trim();
+                const lastName = document.getElementById('pin-last-name')?.value?.trim();
+                const pinRaw = document.getElementById('pin-code')?.value?.trim() || '';
+                const pin = pinRaw.toUpperCase();
+                const submitBtn = document.getElementById('pin-login-btn');
+
+                if (!firstName || !lastName) {
+                    window.PortalUI.showNotification('Please enter your first and last name.', 'error');
+                    return;
+                }
+                if (!/^[A-Z0-9]{4}$/.test(pin)) {
+                    window.PortalUI.showNotification('PIN must be exactly 4 letters or digits.', 'error');
+                    return;
+                }
+
+                if (submitBtn) {
+                    submitBtn.disabled = true;
+                    submitBtn.textContent = 'Signing in…';
+                }
+
+                try {
+                    // Step 1 — exchange (name, PIN) for an OTP via the edge function.
+                    const supabaseUrl = window.portalAuth?.config?.supabaseUrl || 'https://joxvhzxkrcigknsdrusr.supabase.co';
+                    const supabaseKey = window.portalAuth?.config?.supabaseKey || 'sb_publishable_xgvdFBaHCJKl9p-Lu61aZw_3oLkeTtc';
+                    const fnRes = await fetch(supabaseUrl + '/functions/v1/pin-login', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'apikey': supabaseKey,
+                        },
+                        body: JSON.stringify({ first_name: firstName, last_name: lastName, pin }),
+                    });
+                    const fnData = await fnRes.json().catch(() => ({}));
+                    if (!fnRes.ok || !fnData.success) {
+                        throw new Error(fnData.error || 'Sign-in failed. Check your name and PIN.');
+                    }
+
+                    // Step 2 — verify the OTP to mint a real Supabase session.
+                    const { error: verifyError } = await this.auth.supabase.auth.verifyOtp({
+                        email: fnData.email,
+                        token: fnData.token,
+                        type: 'email',
+                    });
+                    if (verifyError) throw verifyError;
+
+                    // Land on Games — buildUnifiedNav + showTab will already
+                    // strip everything else for the PIN-only account.
+                    window.PortalUI.showNotification(`Welcome, ${fnData.first_name}!`, 'success');
+                    window.location.hash = 'games';
+                } catch (err) {
+                    console.error('PIN login error:', err);
+                    window.PortalUI.showNotification(err.message || 'Sign-in failed.', 'error');
+                } finally {
+                    if (submitBtn) {
+                        submitBtn.disabled = false;
+                        submitBtn.textContent = 'Sign in with PIN';
+                    }
+                }
+            }
+
             async handleLogin(e) {
                 e.preventDefault();
-                
+
                 const email = document.getElementById('email')?.value;
                 const password = document.getElementById('password')?.value;
                 const loginBtn = document.getElementById('login-btn');
@@ -1781,7 +1951,11 @@
                 document.getElementById('login-form').classList.add('hidden');
                 document.getElementById('register-form').classList.add('hidden');
                 document.getElementById('activate-form').classList.remove('hidden');
-                
+                const pinForm = document.getElementById('pin-form');
+                const tabs = document.getElementById('signin-tabs');
+                if (pinForm) pinForm.classList.add('hidden');
+                if (tabs) tabs.classList.add('hidden');
+
                 // Clear any alerts
                 const alerts = document.getElementById('auth-alerts');
                 if (alerts) alerts.innerHTML = '';
@@ -1992,8 +2166,12 @@
             showRegisterForm() {
                 const loginForm = document.getElementById('login-form');
                 const registerForm = document.getElementById('register-form');
-                
+                const pinForm = document.getElementById('pin-form');
+                const tabs = document.getElementById('signin-tabs');
+
                 if (loginForm) loginForm.classList.add('hidden');
+                if (pinForm) pinForm.classList.add('hidden');
+                if (tabs) tabs.classList.add('hidden');
                 if (registerForm) registerForm.classList.remove('hidden');
             }
 
