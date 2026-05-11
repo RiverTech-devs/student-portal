@@ -7934,8 +7934,12 @@
 
           this._adminStudentsData = students || [];
 
-          // Count active vs past students
-          const activeCount = (students || []).filter(s => s.student_status !== 'past').length;
+          // Count active / inactive / past students.
+          // 'inactive' = still at school but no grade/class access (uses PIN sign-in).
+          // 'past'     = left the school entirely.
+          // Anything else (including NULL) counts as active.
+          const activeCount = (students || []).filter(s => !s.student_status || s.student_status === 'active').length;
+          const inactiveCount = (students || []).filter(s => s.student_status === 'inactive').length;
           const pastCount = (students || []).filter(s => s.student_status === 'past').length;
 
           section.innerHTML = `
@@ -7947,6 +7951,7 @@
                   </button>
                   <h2 style="margin: 0;">📁 Student Records</h2>
                   <span style="background: var(--accent); color: white; padding: 2px 8px; border-radius: 10px; font-size: 12px;">${activeCount} active</span>
+                  ${inactiveCount > 0 ? `<span style="background: var(--warning); color: #0b0f14; padding: 2px 8px; border-radius: 10px; font-size: 12px;">${inactiveCount} inactive</span>` : ''}
                   ${pastCount > 0 ? `<span style="background: var(--muted); color: white; padding: 2px 8px; border-radius: 10px; font-size: 12px;">${pastCount} past</span>` : ''}
                 </div>
                 <div style="display: flex; gap: 10px; flex-wrap: wrap;">
@@ -7956,7 +7961,9 @@
                   <select id="admin-student-records-status" style="padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);"
                           onchange="app.filterAdminStudentRecords()">
                     <option value="active">Active Students</option>
+                    <option value="inactive">Inactive Students</option>
                     <option value="past">Past Students</option>
+                    <option value="current">Active + Inactive</option>
                     <option value="">All Students</option>
                   </select>
                   <select id="admin-student-records-grade" style="padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);"
@@ -8008,17 +8015,56 @@
               </thead>
               <tbody>
                 ${students.map(student => {
-                  const isPast = student.student_status === 'past';
-                  const statusBadge = isPast
-                    ? `<span style="background: var(--muted); color: white; padding: 2px 8px; border-radius: 10px; font-size: 11px;">Past</span>
-                       ${student.left_date ? `<br><small style="color: var(--muted);">Left: ${new Date(student.left_date).toLocaleDateString()}</small>` : ''}`
-                    : `<span style="background: var(--success); color: white; padding: 2px 8px; border-radius: 10px; font-size: 11px;">Active</span>`;
+                  const status = student.student_status || 'active';
+                  const isPast = status === 'past';
+                  const isInactive = status === 'inactive';
+                  let statusBadge;
+                  if (isPast) {
+                    statusBadge = `<span style="background: var(--muted); color: white; padding: 2px 8px; border-radius: 10px; font-size: 11px;">Past</span>
+                       ${student.left_date ? `<br><small style="color: var(--muted);">Left: ${new Date(student.left_date).toLocaleDateString()}</small>` : ''}`;
+                  } else if (isInactive) {
+                    statusBadge = `<span style="background: var(--warning); color: #0b0f14; padding: 2px 8px; border-radius: 10px; font-size: 11px;">Inactive</span>
+                       ${student.left_reason ? `<br><small style="color: var(--muted);">${student.left_reason}</small>` : ''}`;
+                  } else {
+                    statusBadge = `<span style="background: var(--success); color: white; padding: 2px 8px; border-radius: 10px; font-size: 11px;">Active</span>`;
+                  }
                   const pinDisplay = student.games_pin
                     ? `<span style="font-family: monospace; font-weight: 600; color: var(--accent); letter-spacing: 1px;" title="Games sign-in PIN">${student.games_pin}</span>`
                     : '<span style="color: var(--muted); font-size: 11px;">—</span>';
+                  const rowOpacity = isPast ? 'opacity: 0.65;' : isInactive ? 'opacity: 0.85;' : '';
+                  const escName = `${student.first_name} ${student.last_name}`;
+
+                  let stateButtons;
+                  if (isPast) {
+                    stateButtons = `<button class="btn btn-primary" style="padding: 6px 12px; font-size: 13px;"
+                                    onclick="app.reactivateStudent('${student.id}')">
+                              Reactivate
+                            </button>`;
+                  } else if (isInactive) {
+                    stateButtons = `
+                            <button class="btn btn-primary" style="padding: 6px 12px; font-size: 13px;"
+                                    onclick="app.reactivateStudent('${student.id}')">
+                              Reactivate
+                            </button>
+                            <button class="btn btn-warning small"
+                                    onclick="app.showMarkStudentAsPastModal('${student.id}', '${escName}')">
+                              Mark as Past
+                            </button>`;
+                  } else {
+                    stateButtons = `
+                            <button class="btn btn-secondary small"
+                                    onclick="app.markStudentAsInactive('${student.id}', '${escName}')"
+                                    title="Limit to games + skills + RTC only (auto-generates PIN)">
+                              Mark Inactive
+                            </button>
+                            <button class="btn btn-warning small"
+                                    onclick="app.showMarkStudentAsPastModal('${student.id}', '${escName}')">
+                              Mark as Past
+                            </button>`;
+                  }
 
                   return `
-                  <tr style="border-bottom: 1px solid var(--border); ${isPast ? 'opacity: 0.7;' : ''}">
+                  <tr style="border-bottom: 1px solid var(--border); ${rowOpacity}">
                     <td style="padding: 12px;">${student.first_name} ${student.last_name}</td>
                     <td style="padding: 12px;">${student.grade_level ? `Grade ${student.grade_level}` : 'N/A'}</td>
                     <td style="padding: 12px;"><a href="mailto:${student.email}" style="color: var(--accent);">${student.email}</a></td>
@@ -8026,7 +8072,7 @@
                     <td style="padding: 12px; text-align: center;">
                       <div style="display: flex; gap: 6px; align-items: center; justify-content: center;">
                         ${pinDisplay}
-                        <button class="btn btn-secondary" style="padding: 2px 6px; font-size: 11px;" onclick="app.adminRegenerateStudentPin('${student.id}', '${student.first_name} ${student.last_name}')" title="${student.games_pin ? 'Generate new PIN' : 'Generate PIN'}">${student.games_pin ? '↻' : 'Generate'}</button>
+                        <button class="btn btn-secondary" style="padding: 2px 6px; font-size: 11px;" onclick="app.adminRegenerateStudentPin('${student.id}', '${escName}')" title="${student.games_pin ? 'Generate new PIN' : 'Generate PIN'}">${student.games_pin ? '↻' : 'Generate'}</button>
                       </div>
                     </td>
                     <td style="padding: 12px; text-align: center;">
@@ -8039,16 +8085,7 @@
                                 onclick="app.showAdminStudentRecordModal('${student.id}')">
                           Edit Records
                         </button>
-                        ${isPast
-                          ? `<button class="btn btn-primary" style="padding: 6px 12px; font-size: 13px;"
-                                    onclick="app.reactivateStudent('${student.id}')">
-                              Reactivate
-                            </button>`
-                          : `<button class="btn btn-warning small"
-                                    onclick="app.showMarkStudentAsPastModal('${student.id}', '${student.first_name} ${student.last_name}')">
-                              Mark as Past
-                            </button>`
-                        }
+                        ${stateButtons}
                       </div>
                     </td>
                   </tr>
@@ -8069,9 +8106,12 @@
             `${student.first_name} ${student.last_name}`.toLowerCase().includes(searchTerm) ||
             student.email?.toLowerCase().includes(searchTerm);
           const matchesGrade = !gradeFilter || student.grade_level == gradeFilter;
+          const status = student.student_status || 'active';
           const matchesStatus = !statusFilter ||
-            (statusFilter === 'active' && student.student_status !== 'past') ||
-            (statusFilter === 'past' && student.student_status === 'past');
+            (statusFilter === 'active' && status === 'active') ||
+            (statusFilter === 'inactive' && status === 'inactive') ||
+            (statusFilter === 'past' && status === 'past') ||
+            (statusFilter === 'current' && (status === 'active' || status === 'inactive'));
           return matchesSearch && matchesGrade && matchesStatus;
         });
 
@@ -8162,6 +8202,34 @@
         } catch (error) {
           console.error('Error marking student as past:', error);
           this.showNotification(`Failed to mark student as past: ${error.message}`, 'error');
+        }
+      }
+
+      async markStudentAsInactive(studentId, studentName) {
+        const reason = window.prompt(
+          `Mark ${studentName} as inactive?\n\nInactive students keep their account for games, skills, and RTC but lose grade/class access. A 4-character sign-in PIN is generated automatically.\n\n(Optional) Reason:`,
+          ''
+        );
+        if (reason === null) return;
+
+        try {
+          const { data, error } = await this.auth.supabase.rpc('mark_student_as_inactive', {
+            p_student_id: studentId,
+            p_reason: reason && reason.trim() !== '' ? reason.trim() : null,
+          });
+          if (error) throw error;
+          if (data && data.success === false) throw new Error(data.error);
+
+          this.showNotification(
+            data && data.pin
+              ? `${studentName} marked inactive. Games PIN: ${data.pin}`
+              : `${studentName} marked inactive.`,
+            'success'
+          );
+          await this.renderAdminStudentRecords();
+        } catch (err) {
+          console.error('Mark inactive failed:', err);
+          this.showNotification('Error: ' + err.message, 'error');
         }
       }
 
@@ -35783,7 +35851,7 @@
         if (data && data.success === false) throw new Error(data.error || 'Failed to load students');
 
         this._bankHelperStudents = (data && data.students) || [];
-        this._bankHelperFilter = this._bankHelperFilter || { search: '', status: 'all' };
+        this._bankHelperFilter = this._bankHelperFilter || { search: '', status: 'current' };
         this._renderRTCBankHelperShell(section);
         this._renderRTCBankHelperTable();
       } catch (err) {
@@ -35797,8 +35865,9 @@
         acc.wallet += s.wallet_balance || 0;
         acc.bank += s.bank_balance || 0;
         if (s.student_status === 'past') acc.past++;
+        if (s.student_status === 'inactive') acc.inactive++;
         return acc;
-      }, { wallet: 0, bank: 0, past: 0 });
+      }, { wallet: 0, bank: 0, past: 0, inactive: 0 });
 
       section.innerHTML = `
         <div style="max-width: 1200px; margin: 0 auto; padding: 20px;">
@@ -35822,7 +35891,7 @@
             </div>
             <div class="card" style="padding: 12px; flex: 1; min-width: 140px; text-align: center;">
               <div style="font-size: 22px; font-weight: bold; color: var(--text);">${this._bankHelperStudents.length}</div>
-              <div style="color: var(--muted); font-size: 12px;">Students (incl. ${totals.past} past)</div>
+              <div style="color: var(--muted); font-size: 12px;">Students · ${totals.inactive} inactive · ${totals.past} past</div>
             </div>
           </div>
 
@@ -35837,9 +35906,11 @@
                 <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Status</label>
                 <select id="bank-helper-status" onchange="app.filterRTCBankHelper()"
                   style="padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
-                  <option value="all">All students</option>
+                  <option value="current">Active + Inactive</option>
                   <option value="active">Active only</option>
+                  <option value="inactive">Inactive only</option>
                   <option value="past">Past only</option>
+                  <option value="all">All students</option>
                 </select>
               </div>
             </div>
@@ -35866,8 +35937,11 @@
       const filtered = (this._bankHelperStudents || []).filter(s => {
         const name = `${s.first_name || ''} ${s.last_name || ''}`.toLowerCase();
         if (search && !name.includes(search)) return false;
-        if (status === 'active' && s.student_status !== 'active') return false;
-        if (status === 'past' && s.student_status !== 'past') return false;
+        const rowStatus = s.student_status || 'active';
+        if (status === 'active' && rowStatus !== 'active') return false;
+        if (status === 'inactive' && rowStatus !== 'inactive') return false;
+        if (status === 'past' && rowStatus !== 'past') return false;
+        if (status === 'current' && rowStatus !== 'active' && rowStatus !== 'inactive') return false;
         return true;
       });
 
@@ -35893,10 +35967,15 @@
       `;
 
       filtered.forEach(s => {
-        const isPast = s.student_status === 'past';
-        const statusBadge = isPast
-          ? '<span style="font-size: 10px; padding: 2px 6px; background: rgba(255, 99, 99, 0.2); color: var(--danger); border-radius: 4px; margin-left: 6px; font-weight: 600;">PAST</span>'
-          : '';
+        const rowStatus = s.student_status || 'active';
+        const isPast = rowStatus === 'past';
+        const isInactive = rowStatus === 'inactive';
+        let statusBadge = '';
+        if (isPast) {
+          statusBadge = '<span style="font-size: 10px; padding: 2px 6px; background: rgba(151, 162, 176, 0.25); color: var(--muted); border-radius: 4px; margin-left: 6px; font-weight: 600;">PAST</span>';
+        } else if (isInactive) {
+          statusBadge = '<span style="font-size: 10px; padding: 2px 6px; background: rgba(255, 211, 106, 0.2); color: var(--warning); border-radius: 4px; margin-left: 6px; font-weight: 600;">INACTIVE</span>';
+        }
         const pinDisplay = s.has_pin && s.pin
           ? `<span style="font-family: monospace; font-weight: 600; color: var(--accent); letter-spacing: 1px;" title="Games sign-in PIN">${s.pin}</span>`
           : '<span style="color: var(--muted); font-size: 11px;">—</span>';
