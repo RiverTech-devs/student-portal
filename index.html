@@ -1155,14 +1155,22 @@
                 const loginSection = document.getElementById('login-section');
                 if (loginSection) loginSection.classList.add('hidden');
 
-                // Show appropriate dashboard
-                if (userType === 'parent') {
-                    this.loadParentTeacherDashboard();
-                } else if (userType === 'teacher' || userType === 'admin') {
-                    this.loadParentTeacherDashboard();
-                } else {
-                    this.loadStudentDashboard();
-                    setTimeout(() => this.updateMathleticsProgress(), 500);
+                // PIN-only inactive students never see the dashboard, grades,
+                // or messaging — showTab redirects them to #games. Skip the
+                // dashboard loaders so we don't fire queries (and 406s) for
+                // a screen the student will never see.
+                const isPinOnlyStudent = userType === 'student'
+                    && userInfo.profile?.account_status === 'inactive';
+
+                if (!isPinOnlyStudent) {
+                    if (userType === 'parent') {
+                        this.loadParentTeacherDashboard();
+                    } else if (userType === 'teacher' || userType === 'admin') {
+                        this.loadParentTeacherDashboard();
+                    } else {
+                        this.loadStudentDashboard();
+                        setTimeout(() => this.updateMathleticsProgress(), 500);
+                    }
                 }
 
                 this.showTab('dashboard');
@@ -2353,12 +2361,17 @@
                         classCountEl.textContent = classCount;
                     }
 
-                    // Fetch RTC balance from user_profiles
+                    // Fetch RTC balance from user_profiles. Use the profile
+                    // row's own id (not auth_user_id) — legacy accounts
+                    // happen to have id === auth_user_id, but PIN-claimed
+                    // inactive students get a fresh auth.users id that
+                    // doesn't match their pre-existing profile id.
+                    const profileId = userInfo.profile?.id || userId;
                     const { data: profile } = await this.auth.supabase
                         .from('user_profiles')
                         .select('rtc_balance')
-                        .eq('id', userId)
-                        .single();
+                        .eq('id', profileId)
+                        .maybeSingle();
 
                     const rtcEl = document.getElementById('rtc-balance');
                     if (rtcEl && profile) {
@@ -3823,14 +3836,16 @@
 
             async updateMathleticsProgress() {
                 if (!this.auth.isAuthenticated()) return;
-                
+
                 try {
+                    // maybeSingle so a student who hasn't played Mathletics
+                    // yet returns null (no row) instead of throwing a 406.
                     const { data, error } = await this.auth.supabase
                         .from('mathletics_progress')
                         .select('current_range, mastery_level')
                         .eq('user_id', this.auth.getUserInfo().profile.id)
-                        .single();
-                    
+                        .maybeSingle();
+
                     if (data && !error) {
                         const rangeElement = document.getElementById('mathletics-range');
                         const masteryElement = document.getElementById('mathletics-mastery');
