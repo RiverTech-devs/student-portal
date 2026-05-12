@@ -82,14 +82,35 @@ serve(async (req) => {
       p_pin: pin,
     })
 
+    // Mask all but the last character for log breadcrumbs — gives enough
+    // context to diagnose without leaking the secret to Supabase logs.
+    const maskedPin = '***' + pin.slice(-1)
+
     if (lookupError) {
-      console.error('pin_lookup_student error:', lookupError)
+      console.error('pin_lookup_by_pin RPC error', { masked_pin: maskedPin, error: lookupError })
+      // Most common cause of a real error here is that the
+      // pin_only_signin.sql migration hasn't been applied yet —
+      // pin_lookup_by_pin doesn't exist. Tell the operator clearly
+      // (the message lands in their browser console / network tab).
+      const msg = (lookupError as { message?: string })?.message || ''
+      if (msg.includes('does not exist') || msg.includes('PGRST202')) {
+        return jsonResponse(req, {
+          error: 'PIN sign-in is not fully set up — apply pin_only_signin.sql migration.',
+        }, 500)
+      }
       return jsonResponse(req, { error: 'Lookup failed' }, 500)
     }
 
     if (!lookupResult || !lookupResult.success) {
+      console.warn('pin_lookup_by_pin no match', { masked_pin: maskedPin })
       return jsonResponse(req, { error: 'No match. Check your PIN.' }, 401)
     }
+
+    console.log('pin_lookup_by_pin matched', {
+      masked_pin: maskedPin,
+      user_id: lookupResult.user_id,
+      has_auth_user: !!lookupResult.auth_user_id,
+    })
 
     let authUserId: string | null = lookupResult.auth_user_id
     let email: string | null = null
