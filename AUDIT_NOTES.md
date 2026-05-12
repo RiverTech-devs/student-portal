@@ -48,6 +48,26 @@ For per-session commit-by-commit detail, see `git log`. This file is the
   `profiles.role` (should be `user_profiles.user_type`) — production has
   aliases or these were created via SQL editor
 
+### PIN-login edge function must be deployed with verify_jwt = false
+
+The `pin-login` function is anonymously callable — students don't have
+a session when they're signing in via PIN. Supabase's gateway rejects
+unauthenticated requests by default with
+`sb-error-code: UNAUTHORIZED_NO_AUTH_HEADER` (HTTP 401) **before the
+function code runs**. The fix is committed in `supabase/config.toml`:
+
+```toml
+[functions.pin-login]
+verify_jwt = false
+```
+
+`supabase functions deploy pin-login` reads that file and applies the
+flag automatically. If you ever deploy without the config.toml present
+(e.g. ad-hoc from another machine), pass `--no-verify-jwt` explicitly,
+or the entire flow returns 401s that look like "no PIN match" but
+aren't reaching the function at all. Diagnostic header on a failing
+response: look for `sb-error-code: UNAUTHORIZED_NO_AUTH_HEADER`.
+
 ### PIN auth hardening (the games-PIN sign-in flow)
 
 The 4-character PIN is now the *only* credential for the games-only sign-in
