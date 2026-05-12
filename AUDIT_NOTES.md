@@ -48,6 +48,52 @@ For per-session commit-by-commit detail, see `git log`. This file is the
   `profiles.role` (should be `user_profiles.user_type`) — production has
   aliases or these were created via SQL editor
 
+### PIN auth hardening (the games-PIN sign-in flow)
+
+The 4-character PIN is now the *only* credential for the games-only sign-in
+(`pin-login` edge function + inline tab on the login screen). Math: alphabet
+is 31 chars (`A–Z` minus `O/I/L`, plus `2–9`), so 31⁴ ≈ **923K combinations**.
+With N students enrolled (each with a unique PIN), random brute force has an
+N/923K hit rate per request. At 100 students that's ~0.01% per guess; at 10K
+it's ~1%. Worth hardening before the feature gets wide use:
+
+- **Edge-function rate limit.** Supabase Edge Functions support per-IP
+  request limits — tighten `pin-login` to ~5 requests/minute. Cheapest fix,
+  do this first.
+- **`pin_login_attempts` lockout table.** Track failures per-IP and/or
+  per-PIN; lock the target PIN for N minutes after K failures. Pairs with
+  the rate limit (rate limit slows down, lockout stops). Schema sketch:
+  `(id, ip inet, pin text, attempted_at timestamptz)` with an index on
+  `(pin, attempted_at)` and a counter query in the edge function before it
+  calls `pin_lookup_by_pin`.
+- **CAPTCHA on the PIN form** after K failures from the same IP. Cloudflare
+  Turnstile is the lowest-friction option here.
+
+Related: the new `idx_user_profiles_games_pin_unique` partial unique index
+guarantees PIN-alone identifies one student, and `staff_set_student_pin`
+now rejects duplicates — so a single correct PIN always lands you on the
+same account. That's a feature for UX but it's also why the brute-force
+math is what it is.
+
+### PIN-only session UI gating is not enforced by RLS
+
+When a student signs in via PIN, `buildUnifiedNav` and `showTab` strip
+everything except **Games** and **Skills** for `account_status='inactive'`
+sessions. This is **UI-only** — the underlying RLS policies on grade,
+class, messaging, and assignment tables still allow the session to read
+its own rows. A PIN-only student poking at `supabase.from(...).select()`
+from the browser console could still pull grades and messages for their
+own profile.
+
+Hardening plan when this matters:
+- Add a `WHERE` clause to the SELECT policies on `homework_assignments`,
+  `class_attendance`, `notifications`, `test_submissions`, etc.:
+  `(SELECT account_status FROM user_profiles WHERE auth_user_id = auth.uid()) = 'active'`.
+- Or add a single helper SQL function `public.is_fully_claimed()` and
+  reference it from every relevant SELECT policy.
+- The `_renderRTCBankHelper` admin path is unaffected (admin/teacher
+  user_types bypass these checks).
+
 ### Minor / future
 - Duplicate-options in some practice generators (~100 cases, cosmetic only —
   both copies render and clicking either still registers correctly)
