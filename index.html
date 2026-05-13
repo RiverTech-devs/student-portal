@@ -756,6 +756,17 @@
 
                     <!-- Games Section -->
                     <div id="games-section" class="hidden">
+                        <!-- Compact RTC balance display — shown to students on tabs
+                             that don't include the dashboard (especially PIN-only
+                             students, who never see the dashboard). -->
+                        <div class="rtc-mini-card" data-student-only style="display: none; align-items: center; gap: 12px; max-width: 900px; margin: 0 auto 16px; padding: 12px 16px; background: linear-gradient(135deg, var(--card) 0%, rgba(155, 89, 182, 0.08) 100%); border: 1px solid rgba(155, 89, 182, 0.3); border-radius: 10px;">
+                            <div style="font-size: 28px;">💰</div>
+                            <div style="flex: 1;">
+                                <div style="font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;">River Tech Currency</div>
+                                <div style="font-size: 22px; font-weight: bold; color: #9b59b6;" class="js-rtc-mini-display">0</div>
+                            </div>
+                            <button class="btn btn-secondary" onclick="window.portal.loadRTCBalance(true)" title="Refresh balance" style="padding: 6px 12px; font-size: 16px;">⟳</button>
+                        </div>
                         <div id="game-selection">
                             <h2>🎮 Educational Games</h2>
                             <div class="game-list">
@@ -873,6 +884,14 @@
 
                     <!-- Skills Section -->
                     <div id="skills-section" class="hidden">
+                        <div class="rtc-mini-card" data-student-only style="display: none; align-items: center; gap: 12px; max-width: 900px; margin: 0 auto 16px; padding: 12px 16px; background: linear-gradient(135deg, var(--card) 0%, rgba(155, 89, 182, 0.08) 100%); border: 1px solid rgba(155, 89, 182, 0.3); border-radius: 10px;">
+                            <div style="font-size: 28px;">💰</div>
+                            <div style="flex: 1;">
+                                <div style="font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;">River Tech Currency</div>
+                                <div style="font-size: 22px; font-weight: bold; color: #9b59b6;" class="js-rtc-mini-display">0</div>
+                            </div>
+                            <button class="btn btn-secondary" onclick="window.portal.loadRTCBalance(true)" title="Refresh balance" style="padding: 6px 12px; font-size: 16px;">⟳</button>
+                        </div>
                         <h2>🌟 Skill Trees</h2>
                         <div class="subject-tabs" style="display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap;">
                             <button class="btn btn-primary skill-tree-btn" data-subject="Math" style="margin-bottom: 10px;">
@@ -1048,6 +1067,9 @@
                     } else if (event.data.action === 'progressUpdated') {
                         // Refresh Mathletics progress display
                         setTimeout(() => this.updateMathleticsProgress(), 1000);
+                        // Games often award RTC alongside progress — refresh
+                        // the balance so students see their earnings.
+                        setTimeout(() => this.loadRTCBalance(), 1200);
                     }
                 });
                 
@@ -1171,6 +1193,14 @@
                         this.loadStudentDashboard();
                         setTimeout(() => this.updateMathleticsProgress(), 500);
                     }
+                }
+
+                // Reveal the compact RTC card on Games/Skills tabs for students,
+                // and fetch the current balance. For PIN-only students this is
+                // the only place RTC is ever shown.
+                if (userType === 'student') {
+                    this.showRTCMiniCards();
+                    this.loadRTCBalance();
                 }
 
                 this.showTab('dashboard');
@@ -2281,9 +2311,11 @@
                 // Special handling
                 if (tabName === 'skills') {
                     this.showSkillsTab();
+                    this.loadRTCBalance();
                 } else if (tabName === 'games') {
                     // Refresh game cards when navigating to games
                     setTimeout(() => this.addGameCardListeners(), 100);
+                    this.loadRTCBalance();
                 }
             }
 
@@ -2373,16 +2405,60 @@
                         .eq('id', profileId)
                         .maybeSingle();
 
-                    const rtcEl = document.getElementById('rtc-balance');
-                    if (rtcEl && profile) {
-                        rtcEl.textContent = (profile.rtc_balance || 0).toLocaleString();
-                    }
+                    if (profile) this.updateRTCDisplay(profile.rtc_balance || 0);
 
                 } catch (error) {
                     console.error('Error loading student stats:', error);
                     const classCountEl = document.getElementById('active-classes-count');
                     if (classCountEl) {
                         classCountEl.textContent = '0';
+                    }
+                }
+            }
+
+            // Update every RTC balance display in the DOM in one place — the
+            // dashboard's #rtc-balance card and the compact mini-cards shown on
+            // tabs PIN-only students can reach (Games, Skills).
+            updateRTCDisplay(balance) {
+                const text = (balance || 0).toLocaleString();
+                const rtcEl = document.getElementById('rtc-balance');
+                if (rtcEl) rtcEl.textContent = text;
+                document.querySelectorAll('.js-rtc-mini-display').forEach(el => {
+                    el.textContent = text;
+                });
+            }
+
+            // Show the compact RTC card on Games/Skills tabs only for students.
+            // Hidden by default so parents/teachers never see it.
+            showRTCMiniCards() {
+                const userInfo = this.auth.getUserInfo();
+                if (userInfo.profile?.user_type !== 'student') return;
+                document.querySelectorAll('.rtc-mini-card[data-student-only]').forEach(el => {
+                    el.style.display = 'flex';
+                });
+            }
+
+            async loadRTCBalance(showFeedback = false) {
+                try {
+                    const userInfo = this.auth.getUserInfo();
+                    if (userInfo.profile?.user_type !== 'student') return;
+                    const profileId = userInfo.profile?.id;
+                    if (!profileId) return;
+                    const { data: profile, error } = await this.auth.supabase
+                        .from('user_profiles')
+                        .select('rtc_balance')
+                        .eq('id', profileId)
+                        .maybeSingle();
+                    if (error) throw error;
+                    const balance = profile?.rtc_balance || 0;
+                    this.updateRTCDisplay(balance);
+                    if (showFeedback) {
+                        window.PortalUI.showNotification(`Balance: ${balance.toLocaleString()} RTC`, 'success');
+                    }
+                } catch (error) {
+                    console.error('Error loading RTC balance:', error);
+                    if (showFeedback) {
+                        window.PortalUI.showNotification('Could not refresh RTC balance', 'error');
                     }
                 }
             }
@@ -4183,8 +4259,7 @@
                     const { data, error } = await this.auth.supabase.rpc('rtc_bank_deposit', { p_amount: amount });
                     if (error) throw error;
                     if (!data.success) throw new Error(data.error);
-                    const rtcEl = document.getElementById('rtc-balance');
-                    if (rtcEl) rtcEl.textContent = data.new_wallet_balance.toLocaleString();
+                    this.updateRTCDisplay(data.new_wallet_balance);
                     window.PortalUI.showNotification(`Deposited ${amount} RTC to bank`, 'success');
                     this.openBankModal();
                 } catch (error) {
@@ -4207,8 +4282,7 @@
                     const { data, error } = await this.auth.supabase.rpc('rtc_bank_withdraw', { p_amount: amount });
                     if (error) throw error;
                     if (!data.success) throw new Error(data.error);
-                    const rtcEl = document.getElementById('rtc-balance');
-                    if (rtcEl) rtcEl.textContent = data.new_wallet_balance.toLocaleString();
+                    this.updateRTCDisplay(data.new_wallet_balance);
                     const taxMsg = data.tax > 0 ? ` (Tax: ${data.tax} RTC)` : ' (Tax-free!)';
                     window.PortalUI.showNotification(`Withdrew ${amount} RTC from bank${taxMsg}`, 'success');
                     this.openBankModal();
@@ -4336,8 +4410,7 @@
                     const { data, error } = await this.auth.supabase.rpc('rtc_purchase_privilege', { p_privilege_id: privilegeId });
                     if (error) throw error;
                     if (!data.success) throw new Error(data.error);
-                    const rtcEl = document.getElementById('rtc-balance');
-                    if (rtcEl) rtcEl.textContent = data.new_balance.toLocaleString();
+                    this.updateRTCDisplay(data.new_balance);
                     window.PortalUI.showNotification('Privilege purchased!', 'success');
                     this.openRTCStore();
                 } catch (error) {
