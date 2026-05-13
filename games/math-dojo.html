@@ -2948,32 +2948,39 @@ function getSkillPrerequisites(domain) {
     return dojoPrereqs;
 }
 
-// Check if a skill is unlocked (prerequisites mastered)
+// Check if a skill is unlocked (prerequisites mastered).
+//
+// Order of checks matters: if the cached state is already in an unlocked
+// bucket, trust it. Otherwise — including when state === 'locked' or when
+// no entry exists yet — evaluate prerequisite mastery DIRECTLY. The cached
+// state can lag behind reality whenever mastery is recorded outside of an
+// in-dojo session (belt test placement, math tree viewer, mathletics,
+// Supabase backfill via SKILL_DATA_FOR_DOGO), because none of those paths
+// reliably run triggerDependentUnlocks. Reading from prereqs every time
+// keeps the grid correct without depending on the cascade ever firing.
 function isSkillUnlocked(domain) {
     const treeSkillName = getTreeSkillName(domain);
     const skillData = skillTreeData.skills[treeSkillName];
 
-    // Debug logging
-    if (!skillData) {
-        console.log(`isSkillUnlocked: ${domain} -> ${treeSkillName} - NO DATA in skillTreeData.skills`);
-    }
-
-    // If we have explicit state data, use it
     if (skillData && skillData.state) {
         const unlockedStates = ['activated', 'mastered', 'needs_review', 'available', 'in_progress'];
-        return unlockedStates.includes(skillData.state);
+        if (unlockedStates.includes(skillData.state)) return true;
+        // Fall through for 'locked' / unknown — we'll re-check prereqs below.
     }
 
-    // No skill data - check if this is a root skill (no prerequisites)
     const prereqs = MATH_CONNECTIONS
         .filter(([from, to]) => to === treeSkillName)
         .map(([from]) => from);
 
-    // Root skills (no prerequisites) are always available
+    // Root skills (no prerequisites) are always available.
     if (prereqs.length === 0) return true;
 
-    // Non-root skills without explicit data are locked
-    return false;
+    // Unlock the moment every prerequisite is mastered or activated, even
+    // if this skill's own cached state hasn't been updated yet.
+    return prereqs.every(p => {
+        const s = skillTreeData.skills[p];
+        return s && (s.state === 'mastered' || s.state === 'activated');
+    });
 }
 
 // Get the state of a skill from tree data
