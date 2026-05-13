@@ -48,6 +48,48 @@ For per-session commit-by-commit detail, see `git log`. This file is the
   `profiles.role` (should be `user_profiles.user_type`) — production has
   aliases or these were created via SQL editor
 
+### `protect_user_profile_columns` trigger must stay SECURITY INVOKER
+
+This trigger gates direct UPDATEs to protected `user_profiles` columns
+(`rtc_balance`, `user_type`, `account_status`, `can_login`,
+`enrollment_type`). It must be defined **without** `SECURITY DEFINER` so
+that `current_user` reflects the actual caller:
+
+| Call path                                  | `current_user`       | Branch    |
+|--------------------------------------------|----------------------|-----------|
+| Direct PostgREST UPDATE (student/parent)   | `authenticated`/`anon` | restrict |
+| Inside a SECURITY DEFINER RPC (rtc_bank_deposit, process_rtc_transaction, admin_set_rtc_balance, etc.) | function owner (e.g. `postgres`) | bypass |
+
+If anyone redefines the trigger function with `SECURITY DEFINER`,
+`current_user` becomes the function owner regardless of how it was
+invoked — the bypass branch fires for *every* caller, including a
+direct PostgREST UPDATE, and students can edit their own
+`rtc_balance` straight from the browser. Or worse: the SECURITY
+DEFINER variant typically also removes the `current_user NOT IN
+('authenticated','anon')` check, in which case the trigger reverts the
+wallet debit *inside* `rtc_bank_deposit` and students get a free copy
+of the deposited RTC in their bank balance.
+
+History to watch out for:
+- `zz_fix_protect_profile_trigger_invoker_v2.sql` (2026-ish) was the
+  original canonical fix. Several earlier `zz_fix_user_profiles_*`
+  migrations and later cleanups *re-define* the function as SECURITY
+  DEFINER and sort alphabetically AFTER the v2 fix, silently
+  re-introducing the bug on fresh deploys.
+- `zzz_fix_protect_profile_invoker_canonical.sql` re-applies the
+  SECURITY INVOKER body and uses a `zzz_` prefix so it sorts after
+  every `zz_*` file. This is the version your DB should currently be
+  running. Verify with:
+  ```sql
+  SELECT prosecdef FROM pg_proc
+  WHERE proname = 'protect_user_profile_columns';
+  -- prosecdef = false (i.e. 'f') is correct. 't' means the exploit is open.
+  ```
+
+If a future migration ever needs to change this trigger, copy the
+function body from `zzz_fix_protect_profile_invoker_canonical.sql`
+verbatim and name the migration to sort after `zzz_*`.
+
 ### PIN-login edge function must be deployed with verify_jwt = false
 
 The `pin-login` function is anonymously callable — students don't have
