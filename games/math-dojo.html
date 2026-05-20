@@ -3372,18 +3372,135 @@ function showNotification(message) {
 // BELT TEST → SKILL TREE SYNC
 // ========================================
 
+// ----- GAP-PROBE VERIFICATION CONFIG -----
+// After the adaptive placement test converges, we probe a stratified
+// sample of skills in lower tiers that the student wasn't directly
+// tested on. This replaces the old behavior of bulk-marking every
+// lower-tier domain `mastered` (which fabricated evidence the student
+// never produced — a student who passed Algebra got credited with
+// counting, fractions, and ratios without ever answering one).
+//
+// 8 skills × 2 questions = up to 16 extra questions (~4-6 min). Tighter
+// and we lose discrimination; looser and the test becomes a slog.
+// Unprobed lower-tier skills are marked `available` (not `mastered`)
+// so the student can fill them in via normal practice.
+const GAP_PROBE_BUDGET = 8;
+const GAP_PROBE_QUESTIONS_PER = 2;
+const GAP_PROBE_DISTANCE_DECAY = 1.3;
+
+function buildGapProbeQueue(placementTier) {
+    if (placementTier <= 1) return [];
+    const candidates = [];
+    for (let t = 1; t < placementTier; t++) {
+        const tierData = TIERS[t];
+        if (!tierData || !tierData.domains) continue;
+        const tierGens = generators[t] || {};
+        const tierScores = state.domainScores[t] || {};
+        for (const domain of tierData.domains) {
+            // Need a working generator to ask a real question
+            if (!tierGens[domain]) continue;
+            // Skip if already directly tested (≥2 questions) in initial pass
+            const ds = tierScores[domain];
+            if (ds && ds.total >= 2) continue;
+            const distance = placementTier - t;
+            const weight = 1 / Math.pow(distance, GAP_PROBE_DISTANCE_DECAY);
+            candidates.push({ tier: t, domain, weight });
+        }
+    }
+    if (candidates.length === 0) return [];
+    const budget = Math.min(GAP_PROBE_BUDGET, candidates.length);
+    return weightedSampleWithoutReplacement(candidates, budget).map(c => ({
+        tier: c.tier,
+        domain: c.domain,
+        questionsRemaining: GAP_PROBE_QUESTIONS_PER
+    }));
+}
+
+// Efraimidis–Spirakis weighted reservoir sampling without replacement.
+function weightedSampleWithoutReplacement(items, k) {
+    if (k >= items.length) return items.slice();
+    return items
+        .map(it => ({ item: it, key: Math.pow(Math.random(), 1 / Math.max(it.weight, 1e-6)) }))
+        .sort((a, b) => b.key - a.key)
+        .slice(0, k)
+        .map(x => x.item);
+}
+
+function computeProvisionalPlacementTier() {
+    let placement = 1;
+    for (let t = 1; t <= 10; t++) {
+        const s = state.tierScores[t];
+        if (s && s.total >= 2 && s.correct / s.total >= 0.6) placement = t;
+    }
+    return placement;
+}
+
+function startGapProbePhase() {
+    const provisional = computeProvisionalPlacementTier();
+    state.gapProbeQueue = buildGapProbeQueue(provisional);
+    state.gapProbeIndex = 0;
+    state.gapProbeStats = { questionsAsked: 0, probedDomains: new Set() };
+    state.placementPhase = 'gap_probe';
+    // Tag probed domains so results UI can distinguish them from directly-tested ones
+    for (const entry of state.gapProbeQueue) {
+        state.gapProbeStats.probedDomains.add(`${entry.tier}::${entry.domain}`);
+    }
+    if (state.gapProbeQueue.length === 0) {
+        finalizePlacementTest();
+        return;
+    }
+    showNotification(`🔍 Verifying ${state.gapProbeQueue.length} prerequisite skill${state.gapProbeQueue.length === 1 ? '' : 's'}…`);
+    loadQuestion();
+}
+
+function getNextGapProbeQuestion() {
+    while (state.gapProbeIndex < state.gapProbeQueue.length) {
+        const entry = state.gapProbeQueue[state.gapProbeIndex];
+        if (entry.questionsRemaining > 0) {
+            entry.questionsRemaining--;
+            state.gapProbeStats.questionsAsked++;
+            const q = generateQuestion(entry.tier, entry.domain);
+            if (q) return q;
+            // Generator hiccup — skip remaining for this skill rather than loop forever
+            entry.questionsRemaining = 0;
+        }
+        state.gapProbeIndex++;
+    }
+    return null;
+}
+
+function isGapProbeComplete() {
+    return state.gapProbeQueue.every(e => e.questionsRemaining === 0);
+}
+
+function gapProbeRemaining() {
+    return state.gapProbeQueue.reduce((sum, e) => sum + e.questionsRemaining, 0);
+}
+
+function finalizePlacementTest() {
+    state.placementPhase = 'complete';
+    finishPlacementUI();
+}
+
 // Apply belt test results to skill tree
 // Returns object with lists of mastered, activated, and inferred skills
 function applyBeltTestToTree() {
     const results = {
-        mastered: [],      // Skills with 100% accuracy
-        activated: [],     // Skills with ≥70% accuracy
-        inProgress: [],    // Skills attempted but below threshold
-        inferred: [],      // Prerequisites auto-unlocked
+        mastered: [],       // Skills with 100% accuracy (directly tested)
+        activated: [],      // Skills with ≥70% accuracy (directly tested)
+        inProgress: [],     // Skills attempted but below threshold
+        verifiedGaps: [],   // Skills the gap-probe phase exposed as actual gaps
+        verifiedPass: [],   // Skills the gap-probe phase confirmed
+        unverified: [],     // Lower-tier skills below placement, not yet probed → available
+        inferred: [],       // Direct prereqs of mastered skills, marked activated
         totalSkillsUpdated: 0
     };
 
-    // Process each tested domain
+    const probedKey = state.gapProbeStats && state.gapProbeStats.probedDomains
+        ? state.gapProbeStats.probedDomains
+        : new Set();
+
+    // Process each tested domain (initial test + gap-probe both write here)
     for (let tier = 1; tier <= 10; tier++) {
         const domains = state.domainScores[tier];
         if (!domains) continue;
@@ -3393,24 +3510,25 @@ function applyBeltTestToTree() {
 
             const accuracy = Math.round((scores.correct / scores.total) * 100);
             const treeSkillName = getTreeSkillName(domain);
+            const wasProbed = probedKey.has(`${tier}::${domain}`);
 
-            // Determine new state based on thresholds
             let newState = null;
             let newMastery = accuracy;
 
             if (accuracy === 100 && scores.total >= 2) {
-                // 100% accuracy with at least 2 questions = mastered
                 newState = 'mastered';
                 newMastery = 100;
-                results.mastered.push({ skill: treeSkillName, domain, tier, accuracy, questions: scores.total });
+                results.mastered.push({ skill: treeSkillName, domain, tier, accuracy, questions: scores.total, probed: wasProbed });
+                if (wasProbed) results.verifiedPass.push({ skill: treeSkillName, domain, tier, accuracy });
             } else if (accuracy >= 70 && scores.total >= 2) {
-                // ≥70% accuracy with at least 2 questions = activated
                 newState = 'activated';
-                results.activated.push({ skill: treeSkillName, domain, tier, accuracy, questions: scores.total });
+                results.activated.push({ skill: treeSkillName, domain, tier, accuracy, questions: scores.total, probed: wasProbed });
+                if (wasProbed) results.verifiedPass.push({ skill: treeSkillName, domain, tier, accuracy });
             } else if (scores.total >= 1) {
-                // Attempted but below threshold = in_progress
                 newState = 'in_progress';
-                results.inProgress.push({ skill: treeSkillName, domain, tier, accuracy, questions: scores.total });
+                results.inProgress.push({ skill: treeSkillName, domain, tier, accuracy, questions: scores.total, probed: wasProbed });
+                // A probed skill that came back below 70% is an actual evidence-backed gap
+                if (wasProbed) results.verifiedGaps.push({ skill: treeSkillName, domain, tier, accuracy, questions: scores.total });
             }
 
             if (newState) {
@@ -3420,7 +3538,9 @@ function applyBeltTestToTree() {
         }
     }
 
-    // Infer prerequisites: if a skill is mastered/activated, prerequisites should be too
+    // Conservative prereq inference: only direct (1-hop) prereqs of MASTERED skills
+    // get marked `activated` (not `mastered`). Deep transitive inference is dropped
+    // because it was the main source of phantom mastery.
     const inferredSkills = inferPrerequisiteMastery(results.mastered, results.activated);
     results.inferred = inferredSkills;
     results.totalSkillsUpdated += inferredSkills.length;
@@ -3432,12 +3552,13 @@ function applyBeltTestToTree() {
         if (s.total >= 2 && s.correct / s.total >= 0.6) placementTier = t;
     }
 
-    // Unlock all skills in tiers below the placement tier
-    // This ensures placing at Algebra unlocks foundational skills like counting, addition, etc.
+    // Lower-tier domains we never directly tested or probed → mark `available`
+    // (unlocked, but not credited as mastered). Student can verify them through
+    // normal practice. This replaces the prior bulk-mastery behavior.
     if (placementTier > 1) {
-        const lowerTierSkills = unlockLowerTierSkills(placementTier);
-        results.inferred = results.inferred.concat(lowerTierSkills);
-        results.totalSkillsUpdated += lowerTierSkills.length;
+        const unverified = markUnprobedLowerTiersAsAvailable(placementTier);
+        results.unverified = unverified;
+        results.totalSkillsUpdated += unverified.length;
     }
 
     // Save to localStorage for tree to pick up
@@ -3549,83 +3670,54 @@ function triggerDependentUnlocks(masteredSkillName) {
     }
 }
 
-// Unlock all skills in tiers below the placement tier
-// This ensures that placing at Algebra unlocks all foundational skills like counting, addition, etc.
-function unlockLowerTierSkills(placementTier) {
-    const unlocked = [];
-
-    // For each tier below the placement tier
+// Mark domains in tiers below placement that were neither directly tested
+// nor gap-probed as `available` — unlocked but not credited as mastered.
+// The student fills these in via normal practice; we no longer fabricate
+// mastery just because they passed a higher tier.
+function markUnprobedLowerTiersAsAvailable(placementTier) {
+    const marked = [];
     for (let tier = 1; tier < placementTier; tier++) {
         const tierData = TIERS[tier];
         if (!tierData || !tierData.domains) continue;
-
-        // Get all domains in this tier and unlock them
+        const tierScores = state.domainScores[tier] || {};
         for (const domain of tierData.domains) {
+            const ds = tierScores[domain];
+            // Skip anything with direct evidence — the per-domain loop already handled it
+            if (ds && ds.total > 0) continue;
             const treeSkillName = getTreeSkillName(domain);
-
-            // Check if not already mastered
             const currentState = skillTreeData.skills[treeSkillName]?.state;
-            if (currentState !== 'mastered') {
-                updateSkillInTree(treeSkillName, 'mastered', 100);
-                unlocked.push({ skill: treeSkillName, domain, tier, newState: 'mastered' });
+            // Only promote `locked`/undefined → `available`. Never downgrade existing progress.
+            if (!currentState || currentState === 'locked') {
+                updateSkillInTree(treeSkillName, 'available', 0);
+                marked.push({ skill: treeSkillName, domain, tier, newState: 'available' });
             }
         }
     }
-
-    return unlocked;
+    return marked;
 }
 
-// Infer that prerequisites are mastered if higher-level skills are mastered
+// Mark DIRECT (1-hop) prereqs of mastered skills as `activated`. Deep
+// transitive inference is intentionally NOT done — passing derivatives
+// doesn't prove you can add fractions, and the gap-probe phase is where
+// lower-tier evidence comes from.
 function inferPrerequisiteMastery(masteredSkills, activatedSkills) {
     const inferred = [];
-    const processedSkills = new Set();
+    const processed = new Set();
 
-    // Helper to get all prerequisites recursively
-    function getAllPrereqs(skillName, visited = new Set()) {
-        if (visited.has(skillName)) return [];
-        visited.add(skillName);
-
-        const directPrereqs = MATH_CONNECTIONS
+    function getDirectPrereqs(skillName) {
+        return MATH_CONNECTIONS
             .filter(([from, to]) => to === skillName)
             .map(([from]) => from);
-
-        let allPrereqs = [...directPrereqs];
-        for (const prereq of directPrereqs) {
-            allPrereqs = allPrereqs.concat(getAllPrereqs(prereq, visited));
-        }
-        return [...new Set(allPrereqs)];
     }
 
-    // For each mastered skill, mark all prerequisites as mastered
     for (const { skill } of masteredSkills) {
-        const prereqs = getAllPrereqs(skill);
-        for (const prereq of prereqs) {
-            if (!processedSkills.has(prereq)) {
-                processedSkills.add(prereq);
-
-                // Check if not already mastered
-                const currentState = skillTreeData.skills[prereq]?.state;
-                if (currentState !== 'mastered') {
-                    updateSkillInTree(prereq, 'mastered', 100);
-                    inferred.push({ skill: prereq, inferredFrom: skill, newState: 'mastered' });
-                }
-            }
-        }
-    }
-
-    // For each activated skill, mark prerequisites as at least activated
-    for (const { skill, accuracy } of activatedSkills) {
-        const prereqs = getAllPrereqs(skill);
-        for (const prereq of prereqs) {
-            if (!processedSkills.has(prereq)) {
-                processedSkills.add(prereq);
-
-                // Check if not already mastered or activated
-                const currentState = skillTreeData.skills[prereq]?.state;
-                if (currentState !== 'mastered' && currentState !== 'activated') {
-                    updateSkillInTree(prereq, 'activated', Math.max(accuracy, 70));
-                    inferred.push({ skill: prereq, inferredFrom: skill, newState: 'activated' });
-                }
+        for (const prereq of getDirectPrereqs(skill)) {
+            if (processed.has(prereq)) continue;
+            processed.add(prereq);
+            const currentState = skillTreeData.skills[prereq]?.state;
+            if (currentState !== 'mastered' && currentState !== 'activated') {
+                updateSkillInTree(prereq, 'activated', 70);
+                inferred.push({ skill: prereq, inferredFrom: skill, newState: 'activated' });
             }
         }
     }
@@ -3638,12 +3730,29 @@ function renderBeltTestTreeResults(results) {
     let html = '<div class="tree-sync-results">';
     html += '<h3 style="color: var(--amber-400); margin-bottom: 1rem;">🌳 Skill Tree Updated</h3>';
 
+    // Gaps surface first — they're the most actionable signal.
+    if (results.verifiedGaps && results.verifiedGaps.length > 0) {
+        html += '<div class="result-section">';
+        html += '<h4 style="color: var(--rose-400);">⚠️ Gaps Found (Verified)</h4>';
+        html += '<p style="color: var(--slate-400); font-size: 0.85rem; margin: 0.25rem 0 0.5rem;">These prerequisite skills were tested and need work before advancing.</p>';
+        html += '<div class="skill-chips">';
+        for (const s of results.verifiedGaps) {
+            html += `<span class="skill-chip in-progress" style="border-color: var(--rose-400);">T${s.tier} · ${s.domain} (${s.accuracy}%)</span>`;
+        }
+        html += '</div></div>';
+    }
+
     if (results.mastered.length > 0) {
+        const directly = results.mastered.filter(s => !s.probed);
+        const viaProbe = results.mastered.filter(s => s.probed);
         html += '<div class="result-section">';
         html += '<h4 style="color: var(--emerald-400);">✓ Mastered (100%)</h4>';
         html += '<div class="skill-chips">';
-        for (const s of results.mastered) {
+        for (const s of directly) {
             html += `<span class="skill-chip mastered">${s.domain}</span>`;
+        }
+        for (const s of viaProbe) {
+            html += `<span class="skill-chip mastered" title="Confirmed via verification">${s.domain} ✓</span>`;
         }
         html += '</div></div>';
     }
@@ -3653,21 +3762,18 @@ function renderBeltTestTreeResults(results) {
         html += '<h4 style="color: var(--cyan-400);">◐ Activated (≥70%)</h4>';
         html += '<div class="skill-chips">';
         for (const s of results.activated) {
-            html += `<span class="skill-chip activated">${s.domain} (${s.accuracy}%)</span>`;
+            const badge = s.probed ? ' ✓' : '';
+            html += `<span class="skill-chip activated">${s.domain} (${s.accuracy}%)${badge}</span>`;
         }
         html += '</div></div>';
     }
 
     if (results.inferred.length > 0) {
         html += '<div class="result-section">';
-        html += '<h4 style="color: var(--violet-400);">↑ Prerequisites Inferred</h4>';
+        html += '<h4 style="color: var(--violet-400);">↑ Direct Prereqs Activated</h4>';
+        html += '<p style="color: var(--slate-400); font-size: 0.85rem; margin: 0.25rem 0 0.5rem;">One-step prerequisites of mastered skills, marked for review.</p>';
         html += '<div class="skill-chips">';
-        const masteredInferred = results.inferred.filter(s => s.newState === 'mastered');
-        const activatedInferred = results.inferred.filter(s => s.newState === 'activated');
-        for (const s of masteredInferred.slice(0, 8)) {
-            html += `<span class="skill-chip inferred-mastered">${s.skill}</span>`;
-        }
-        for (const s of activatedInferred.slice(0, 8)) {
+        for (const s of results.inferred.slice(0, 16)) {
             html += `<span class="skill-chip inferred-activated">${s.skill}</span>`;
         }
         if (results.inferred.length > 16) {
@@ -3677,11 +3783,29 @@ function renderBeltTestTreeResults(results) {
     }
 
     if (results.inProgress.length > 0) {
+        // Filter out probed gaps already shown above
+        const remaining = results.inProgress.filter(s => !s.probed);
+        if (remaining.length > 0) {
+            html += '<div class="result-section">';
+            html += '<h4 style="color: var(--slate-400);">○ Needs Practice</h4>';
+            html += '<div class="skill-chips">';
+            for (const s of remaining) {
+                html += `<span class="skill-chip in-progress">${s.domain} (${s.accuracy}%)</span>`;
+            }
+            html += '</div></div>';
+        }
+    }
+
+    if (results.unverified && results.unverified.length > 0) {
         html += '<div class="result-section">';
-        html += '<h4 style="color: var(--slate-400);">○ Needs Practice</h4>';
+        html += `<h4 style="color: var(--slate-400);">◌ Unlocked, Not Yet Verified (${results.unverified.length})</h4>`;
+        html += '<p style="color: var(--slate-400); font-size: 0.85rem; margin: 0.25rem 0 0.5rem;">Lower-tier skills not directly tested. They\'re available to practice — mastery will be earned through play, not assumed.</p>';
         html += '<div class="skill-chips">';
-        for (const s of results.inProgress) {
-            html += `<span class="skill-chip in-progress">${s.domain} (${s.accuracy}%)</span>`;
+        for (const s of results.unverified.slice(0, 12)) {
+            html += `<span class="skill-chip" style="background: var(--slate-700); border: 1px dashed var(--slate-500); color: var(--slate-300);">${s.domain}</span>`;
+        }
+        if (results.unverified.length > 12) {
+            html += `<span class="skill-chip more">+${results.unverified.length - 12} more</span>`;
         }
         html += '</div></div>';
     }
@@ -3703,6 +3827,11 @@ let state = { mode: null, currentTier: 5, selectedTiers: [], history: [], tierSc
     completedSubSkills: {},
     // Domain coverage tracking for placement test
     testedDomains: {},
+    // Belt test phases: 'initial' (adaptive tier search) → 'gap_probe' (verify lower tiers) → 'complete'
+    placementPhase: 'initial',
+    gapProbeQueue: [],
+    gapProbeIndex: 0,
+    gapProbeStats: { questionsAsked: 0, probedDomains: new Set() },
     // Sparring Arena state
     arenaSelectionMode: 'tier',
     selectedSkills: [],
@@ -34690,6 +34819,10 @@ function initScores() {
 
 function startPlacementTest() {
     initScores();
+    state.placementPhase = 'initial';
+    state.gapProbeQueue = [];
+    state.gapProbeIndex = 0;
+    state.gapProbeStats = { questionsAsked: 0, probedDomains: new Set() };
     startSessionTracking('placement');
     setupTestUI(false);
     document.getElementById('placement-setup-screen').classList.remove('active');
@@ -35166,11 +35299,28 @@ function getAdaptiveTier() {
 }
 
 function loadQuestion() {
+    // Gap-probe phase: just pull the next probe question from the queue.
+    // Convergence/adaptive logic doesn't apply — we're verifying specific skills.
+    if (state.mode === 'placement' && state.placementPhase === 'gap_probe') {
+        if (isGapProbeComplete()) {
+            finalizePlacementTest();
+            return;
+        }
+        const q = getNextGapProbeQuestion();
+        if (!q) { finalizePlacementTest(); return; }
+        state.currentQuestion = q;
+        state.selectedAnswer = null;
+        renderQuestion();
+        startTimer();
+        updateProgress();
+        return;
+    }
+
     // Placement test: dynamic length based on convergence (min 20, max 40)
     const minQuestions = 20;
     const maxQuestions = 40;
 
-    if (state.mode === 'placement') {
+    if (state.mode === 'placement' && state.placementPhase === 'initial') {
         // Check if we've converged on a stable tier
         if (state.history.length >= minQuestions) {
             const hasConverged = checkPlacementConvergence();
@@ -36694,7 +36844,13 @@ function stopTimer() { if (state.timerInterval) { clearInterval(state.timerInter
 function updateProgress() {
     document.getElementById('question-number').textContent = state.history.length + 1;
     document.getElementById('correct-count').textContent = state.history.filter(h => h.correct).length;
-    document.getElementById('current-tier-display').textContent = `Tier ${state.currentQuestion.tier} — ${TIERS[state.currentQuestion.tier].name}`;
+    const tierDisplay = document.getElementById('current-tier-display');
+    if (state.mode === 'placement' && state.placementPhase === 'gap_probe') {
+        const remaining = gapProbeRemaining();
+        tierDisplay.textContent = `🔍 Verifying Tier ${state.currentQuestion.tier} — ${state.currentQuestion.domain} (${remaining} left)`;
+    } else {
+        tierDisplay.textContent = `Tier ${state.currentQuestion.tier} — ${TIERS[state.currentQuestion.tier].name}`;
+    }
     
     if (state.mode === 'testing' && state.history.length > 0) {
         const c = state.history.filter(h => h.correct).length;
@@ -36915,6 +37071,18 @@ function endTest() {
         return;
     }
 
+    // Placement: if the adaptive phase just converged, run the gap-probe phase
+    // before showing results. Once gap-probe completes, finalizePlacementTest()
+    // routes back through finishPlacementUI() to display.
+    if (state.mode === 'placement' && state.placementPhase === 'initial') {
+        startGapProbePhase();
+        return;
+    }
+
+    finishPlacementUI();
+}
+
+function finishPlacementUI() {
     // End session tracking and send batched update
     endSessionTracking();
 
@@ -36937,11 +37105,11 @@ function endTest() {
             treeSyncCard.style.display = 'block';
             treeSyncContainer.innerHTML = renderBeltTestTreeResults(treeResults);
 
-            // Show notification
-            const masteredCount = treeResults.mastered.length + treeResults.inferred.filter(s => s.newState === 'mastered').length;
-            if (masteredCount > 0) {
-                showNotification(`🎉 ${masteredCount} skills mastered!`);
-            }
+            // Notify about both confirmed mastery and any gaps the probe surfaced
+            const masteredCount = treeResults.mastered.length;
+            const gapCount = treeResults.verifiedGaps.length;
+            if (masteredCount > 0) showNotification(`🎉 ${masteredCount} skill${masteredCount === 1 ? '' : 's'} mastered!`);
+            if (gapCount > 0) showNotification(`⚠️ ${gapCount} gap${gapCount === 1 ? '' : 's'} found in prerequisites`);
         } else {
             treeSyncCard.style.display = 'none';
         }
