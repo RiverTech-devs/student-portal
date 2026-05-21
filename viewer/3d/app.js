@@ -1156,7 +1156,21 @@ function updateHover(e) {
       state.hoveredNode = hitKey;
       canvas.style.cursor = 'pointer';
       const depthLabel = node.isRoot ? 'Root' : (node.isLeaf ? 'Apex' : `Depth ${node.depth}`);
-      tooltip.innerHTML = `<span style="color:${node.domain.color}">${node.data.name}</span><br><span class="tooltip-tier">${depthLabel} · ${node.domain.name}</span>`;
+      // Phase 2 BKT — append Bayesian P% and a needs-review hint when
+      // progress data is attached to the node.
+      const prog = node.data.progress;
+      let pSuffix = '';
+      if (prog) {
+        const p = typeof prog.p_mastered === 'number'
+          ? prog.p_mastered
+          : (typeof prog.mastery_score === 'number' ? prog.mastery_score / 100 : null);
+        if (p !== null) {
+          const eff = getEffectiveState3D(prog);
+          const reviewHint = eff === 'needs_review' ? ' · needs review' : '';
+          pSuffix = ` · ${Math.round(p * 100)}%${reviewHint}`;
+        }
+      }
+      tooltip.innerHTML = `<span style="color:${node.domain.color}">${node.data.name}</span><br><span class="tooltip-tier">${depthLabel} · ${node.domain.name}${pSuffix}</span>`;
       tooltip.classList.remove('hidden');
     }
     tooltip.style.left = (e.clientX + 16) + 'px';
@@ -2089,6 +2103,44 @@ const STATE_COLORS = {
   needs_review: new THREE.Color(0xef4444),
 };
 
+// Phase 2 BKT — pick a node color from the Bayesian p_mastered band when
+// it's available, falling back to the discrete state color. The band
+// thresholds line up with the state transitions so the gradient never
+// disagrees with the badge a student sees in the dojo / tree UI.
+function getMasteryBandColor3D(entry) {
+  if (entry && typeof entry.p_mastered === 'number') {
+    const p = entry.p_mastered;
+    if (p >= 0.85) return STATE_COLORS.mastered;
+    if (p >= 0.60) return STATE_COLORS.activated;
+    if (p >= 0.30) return STATE_COLORS.in_progress;
+    if (p >= 0.05) return STATE_COLORS.available;
+    return STATE_COLORS.locked;
+  }
+  return STATE_COLORS[entry && entry.state] || STATE_COLORS.locked;
+}
+
+// Effective state — promotes mastered/activated to needs_review when the
+// Bayesian probability has decayed below the activated threshold. Same
+// rule as the 2D viewer's getEffectiveState so the two UIs agree.
+function getEffectiveState3D(entry) {
+  if (!entry || !entry.state) return 'locked';
+  const s = entry.state;
+  if (s !== 'mastered' && s !== 'activated') return s;
+  if (typeof entry.p_mastered === 'number' && entry.p_mastered < 0.60) {
+    return 'needs_review';
+  }
+  return s;
+}
+
+// One-stop color lookup combining effective state + BKT band — used by
+// the node-color path so a stale-mastered node renders red (the
+// needs_review warning color) instead of falsely showing gold.
+function nodeColorFor3D(entry) {
+  const eff = getEffectiveState3D(entry);
+  if (eff === 'needs_review') return STATE_COLORS.needs_review;
+  return getMasteryBandColor3D(entry);
+}
+
 let currentProgress = null;
 let lastAppliedNodeCount = 0;
 
@@ -2103,7 +2155,9 @@ function applyProgressToNodes(progressByName) {
     matched++;
     // Boost glow color so the state is visible despite the prototype's
     // light-blue emissive overwhelming the diffuse channel on the core.
-    const baseColor = STATE_COLORS[p.state] || STATE_COLORS.locked;
+    // Phase 2: color follows p_mastered band (or state fallback) with a
+    // needs_review override when a mastered skill has decayed.
+    const baseColor = nodeColorFor3D(p);
     const glowColor = baseColor.clone().multiplyScalar(6.0); // additive-blended; bright halo
     if (entry.coreInst && entry.instanceIndex !== undefined) {
       entry.coreInst.setColorAt(entry.instanceIndex, baseColor);
@@ -2135,7 +2189,11 @@ function applyProgressToEdges(progressByName) {
     const entry = state.nodeMap.get(key);
     if (!entry) return null;
     const legacyName = entry.data.legacy_name || entry.data.name;
-    return progressByName[legacyName]?.state || null;
+    const p = progressByName[legacyName];
+    if (!p) return null;
+    // Use effective state so an edge from a "mastered" skill whose
+    // p_mastered has decayed below 0.60 doesn't keep its gold color.
+    return getEffectiveState3D(p);
   };
 
   state.intraDomainLines.forEach(mesh => {
@@ -2184,10 +2242,12 @@ function applyProgressToParentCards(progressByName) {
     const p = progressByName[legacyName];
     card.classList.remove('pv-state-locked','pv-state-available','pv-state-in_progress','pv-state-activated','pv-state-mastered','pv-state-needs_review');
     if (!p) return;
-    card.classList.add('pv-state-' + p.state);
+    // Effective state so cards reflect BKT decay alongside the discrete badge.
+    const eff = getEffectiveState3D(p);
+    card.classList.add('pv-state-' + eff);
     const dot = card.querySelector('.pv-card-dot');
     if (dot) {
-      const stateColor = STATE_COLORS[p.state];
+      const stateColor = nodeColorFor3D(p);
       if (stateColor) dot.style.background = '#' + stateColor.getHexString();
     }
   });
