@@ -53,7 +53,9 @@ function extractGenerators(src) {
     let lineStart = src.lastIndexOf('\n', i) + 1;
     let currentTier = null;
     const tierHeaderRe = /^\s+(\d+):\s*\{/;
-    const genKeyRe = /^\s+([A-Z][A-Za-z0-9 ()&-]*?):\s*\(\s*\)\s*=>/;
+    // Match bare identifier keys (Counting) OR quoted string keys ("Place Value").
+    const genKeyBareRe = /^\s+([A-Z][A-Za-z0-9]*?):\s*\(\s*\)\s*=>/;
+    const genKeyQuotedRe = /^\s+"([^"]+)":\s*\(\s*\)\s*=>/;
 
     function skipString(quote) {
         i++;
@@ -88,10 +90,29 @@ function extractGenerators(src) {
         if (ch === '\n') { lineStart = i + 1; continue; }
         if (ch === '/' && src[i + 1] === '/') { skipLineComment(); continue; }
         if (ch === '/' && src[i + 1] === '*') { skipBlockComment(); continue; }
+
+        // Generator-key detection MUST run before generic string-skipping,
+        // because quoted keys (`"Place Value": () => {`) start with a `"`
+        // that would otherwise be consumed as a string literal.
+        if (depth === 2 && (ch === '"' || /[A-Z]/.test(ch))) {
+            const prefix = src.slice(lineStart, i);
+            if (/^\s*$/.test(prefix)) {
+                const line = getLine();
+                const m = ch === '"' ? line.match(genKeyQuotedRe) : line.match(genKeyBareRe);
+                if (m && currentTier !== null) {
+                    const domain = m[1].trim();
+                    if (!result[currentTier].includes(domain)) {
+                        result[currentTier].push(domain);
+                    }
+                    i = lineStart + m[0].length - 1;
+                    continue;
+                }
+            }
+        }
+
         if (ch === '"' || ch === "'" || ch === '`') { skipString(ch); i--; continue; }
 
         if (ch === '{') {
-            // Before incrementing, check if THIS line is a tier header at depth 1.
             if (depth === 1) {
                 const line = getLine();
                 const m = line.match(tierHeaderRe);
@@ -108,28 +129,6 @@ function extractGenerators(src) {
             if (depth === 0) break;
             if (depth === 1) currentTier = null;
             continue;
-        }
-
-        // Only consider generator-key lines at depth 2 (inside a tier block,
-        // not inside a generator's body). Check at the FIRST non-whitespace
-        // character of each line. After matching, DON'T skip the line — let
-        // the body's `{` increment depth naturally so we don't desync.
-        if (depth === 2 && /[A-Z]/.test(ch)) {
-            const prefix = src.slice(lineStart, i);
-            if (/^\s*$/.test(prefix)) {
-                const line = getLine();
-                const m = line.match(genKeyRe);
-                if (m && currentTier !== null) {
-                    const domain = m[1].trim();
-                    if (!result[currentTier].includes(domain)) {
-                        result[currentTier].push(domain);
-                    }
-                    // Advance i past the matched key. m[0] is relative to
-                    // lineStart (the line slice), so absolute end of match
-                    // is lineStart + m[0].length. -1 for the for-loop's i++.
-                    i = lineStart + m[0].length - 1;
-                }
-            }
         }
     }
     return result;

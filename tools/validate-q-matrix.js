@@ -66,7 +66,8 @@ function extractGenerators(src) {
     let lineStart = src.lastIndexOf('\n', i) + 1;
     let currentTier = null;
     const tierHeaderRe = /^\s+(\d+):\s*\{/;
-    const genKeyRe = /^\s+([A-Z][A-Za-z0-9 ()&-]*?):\s*\(\s*\)\s*=>/;
+    const genKeyBareRe = /^\s+([A-Z][A-Za-z0-9]*?):\s*\(\s*\)\s*=>/;
+    const genKeyQuotedRe = /^\s+"([^"]+)":\s*\(\s*\)\s*=>/;
 
     function skipString(quote) {
         i++;
@@ -100,6 +101,23 @@ function extractGenerators(src) {
         if (ch === '\n') { lineStart = i + 1; continue; }
         if (ch === '/' && src[i + 1] === '/') { skipLine(); continue; }
         if (ch === '/' && src[i + 1] === '*') { skipBlock(); continue; }
+        // Generator-key detection MUST run before generic string-skipping
+        // (otherwise quoted keys get consumed as plain strings).
+        if (depth === 2 && (ch === '"' || /[A-Z]/.test(ch))) {
+            const prefix = src.slice(lineStart, i);
+            if (/^\s*$/.test(prefix)) {
+                const line = getLine();
+                const m = ch === '"' ? line.match(genKeyQuotedRe) : line.match(genKeyBareRe);
+                if (m && currentTier !== null) {
+                    const domain = m[1].trim();
+                    if (!result[currentTier].includes(domain)) {
+                        result[currentTier].push(domain);
+                    }
+                    i = lineStart + m[0].length - 1;
+                    continue;
+                }
+            }
+        }
         if (ch === '"' || ch === "'" || ch === '`') { skipString(ch); i--; continue; }
         if (ch === '{') {
             if (depth === 1) {
@@ -117,20 +135,6 @@ function extractGenerators(src) {
             if (depth === 0) break;
             if (depth === 1) currentTier = null;
             continue;
-        }
-        if (depth === 2 && /[A-Z]/.test(ch)) {
-            const prefix = src.slice(lineStart, i);
-            if (/^\s*$/.test(prefix)) {
-                const line = getLine();
-                const m = line.match(genKeyRe);
-                if (m && currentTier !== null) {
-                    const domain = m[1].trim();
-                    if (!result[currentTier].includes(domain)) {
-                        result[currentTier].push(domain);
-                    }
-                    i = lineStart + m[0].length - 1;
-                }
-            }
         }
     }
     return result;
@@ -161,10 +165,35 @@ for (const tier of Object.keys(generators)) {
 }
 const qMatrixKeys = new Set(Object.keys(qMatrix));
 
-// 1. Generators without Q-matrix entries
+// Separate coarse vs granular entries. A granular key has the shape
+// T{tier}::{domain}::{subType} — three `::`-separated segments.
+const granularByCoarse = new Map(); // coarse-key → [granular keys]
+const coarseKeySet = new Set();
+for (const k of qMatrixKeys) {
+    const segments = k.split('::');
+    if (segments.length >= 3) {
+        const coarse = `${segments[0]}::${segments.slice(1, -1).join('::')}`;
+        if (!granularByCoarse.has(coarse)) granularByCoarse.set(coarse, []);
+        granularByCoarse.get(coarse).push(k);
+    } else {
+        coarseKeySet.add(k);
+    }
+}
+
+// 1. Every generator must be covered by AT LEAST one entry — either the
+//    coarse key, or one or more granular sub-type keys.
 for (const k of generatorKeys) {
-    if (!qMatrixKeys.has(k)) {
+    const hasCoarse = coarseKeySet.has(k);
+    const hasGranular = granularByCoarse.has(k);
+    if (!hasCoarse && !hasGranular) {
         err(`Missing Q_MATRIX entry for generator: ${k}`);
+    }
+}
+
+// 1b. Orphan granular: granular key whose parent generator doesn't exist
+for (const coarse of granularByCoarse.keys()) {
+    if (!generatorKeys.has(coarse)) {
+        warn(`Granular keys exist for non-existent generator: ${coarse}`);
     }
 }
 
@@ -201,8 +230,9 @@ for (const [k, entry] of Object.entries(qMatrix)) {
     }
 }
 
-// 4. Orphan Q-matrix entries
-for (const k of qMatrixKeys) {
+// 4. Orphan Q-matrix entries (coarse keys with no matching generator;
+//    granular keys are already checked above via parent-generator lookup)
+for (const k of coarseKeySet) {
     if (!generatorKeys.has(k)) {
         warn(`Orphan Q_MATRIX entry (no matching generator): ${k}`);
     }
@@ -217,13 +247,16 @@ for (const entry of Object.values(qMatrix)) {
 }
 
 if (!quiet || errors.length > 0) {
+    const covered = [...generatorKeys].filter(k => coarseKeySet.has(k) || granularByCoarse.has(k)).length;
+    const withGranular = [...generatorKeys].filter(k => granularByCoarse.has(k)).length;
     console.log('Q-matrix validation');
     console.log('===================');
-    console.log(`Generators:        ${generatorKeys.size}`);
-    console.log(`Q_MATRIX entries:  ${qMatrixKeys.size}`);
-    console.log(`Curriculum titles: ${titles.size}`);
-    console.log(`Coverage:          ${generatorKeys.size === 0 ? 0 : Math.round(100 * [...generatorKeys].filter(k => qMatrixKeys.has(k)).length / generatorKeys.size)}%`);
-    console.log(`By confidence:     auto=${byConfidence.auto}, manual=${byConfidence.manual}, placeholder=${byConfidence.placeholder}${byConfidence.other ? `, other=${byConfidence.other}` : ''}`);
+    console.log(`Generators:          ${generatorKeys.size}`);
+    console.log(`Q_MATRIX entries:    ${qMatrixKeys.size} (coarse=${coarseKeySet.size}, granular=${qMatrixKeys.size - coarseKeySet.size})`);
+    console.log(`Curriculum titles:   ${titles.size}`);
+    console.log(`Coverage:            ${generatorKeys.size === 0 ? 0 : Math.round(100 * covered / generatorKeys.size)}%`);
+    console.log(`Sub-type split:      ${withGranular}/${generatorKeys.size} generators have granular tags`);
+    console.log(`By confidence:       auto=${byConfidence.auto}, manual=${byConfidence.manual}, placeholder=${byConfidence.placeholder}${byConfidence.other ? `, other=${byConfidence.other}` : ''}`);
     if (errors.length) {
         console.log(`\nERRORS (${errors.length}):`);
         for (const e of errors) console.log(`  ✗ ${e}`);
