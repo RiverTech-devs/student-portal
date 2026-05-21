@@ -3269,12 +3269,64 @@ function requestTreeHighlight(domain) {
 // Slip/guess defaults are literature standard (Corbett & Anderson 1995);
 // they should be recalibrated from real response data once we have a few
 // thousand sessions logged (this is the Phase 2 follow-up).
+//
+// The prior is no longer flat — bktPriorFor(skillName) picks one of three
+// levels based on the prereq graph (MATH_CONNECTIONS):
+//   PRIOR_PREREQS_MET    (0.30) — every direct prereq has P > 0.7
+//   PRIOR_SIBLING_MASTERED (0.15) — shares a prereq with an already-mastered skill
+//   PRIOR_COLD           (0.05) — no evidence anywhere up the graph
+// Reaching "all prereqs P > 0.7" means a small head-start is warranted;
+// being a sibling of something mastered suggests the student is probably
+// in the same area but unproven; cold-start gets the most conservative
+// estimate so the first few questions actually move the needle.
 const BKT_PARAMS = {
-    SLIP: 0.10,             // P(wrong | mastered)
-    GUESS: 0.20,            // P(right | not mastered)
-    PRIOR: 0.10,            // Default P for a never-before-seen skill
-    SECONDARY_WEIGHT: 0.5,  // Apply half the delta to secondary skills
+    SLIP: 0.10,                    // P(wrong | mastered)
+    GUESS: 0.20,                   // P(right | not mastered)
+    PRIOR_COLD: 0.05,              // No prereq evidence; first encounter
+    PRIOR_SIBLING_MASTERED: 0.15,  // ≥1 sibling skill (shares a prereq) is mastered
+    PRIOR_PREREQS_MET: 0.30,       // All direct prereqs have P > 0.7
+    SECONDARY_WEIGHT: 0.5,         // Apply half the delta to secondary skills
 };
+
+// Raw stored probability for a skill — does NOT recursively apply a
+// prior. Used internally by bktPriorFor to inspect the graph state
+// without triggering re-entry into the prior logic. Missing skill → 0
+// (treated as "no evidence yet", which is the safe default for the
+// "all prereqs P > 0.7" check).
+function _rawStoredP(skillName) {
+    const skill = skillTreeData.skills[skillName];
+    if (!skill) return 0;
+    if (typeof skill.p_mastered === 'number') return skill.p_mastered;
+    if (typeof skill.mastery_score === 'number') {
+        return Math.max(0, Math.min(1, skill.mastery_score / 100));
+    }
+    return 0;
+}
+
+// Compute the prior for a skill we haven't seen evidence on. Walks one
+// hop up MATH_CONNECTIONS (direct prereqs) and one hop sideways via a
+// shared prereq (siblings). Returns one of the three PRIOR_* levels.
+function bktPriorFor(skillName) {
+    const directPrereqs = MATH_CONNECTIONS
+        .filter(([from, to]) => to === skillName)
+        .map(([from]) => from);
+    if (directPrereqs.length === 0) return BKT_PARAMS.PRIOR_COLD;
+    // Rule 1: every direct prereq shows mastery evidence (P > 0.7)
+    if (directPrereqs.every(p => _rawStoredP(p) > 0.7)) {
+        return BKT_PARAMS.PRIOR_PREREQS_MET;
+    }
+    // Rule 2: any sibling (other dependent of a shared prereq) is mastered
+    const siblings = new Set();
+    for (const prereq of directPrereqs) {
+        for (const [from, to] of MATH_CONNECTIONS) {
+            if (from === prereq && to !== skillName) siblings.add(to);
+        }
+    }
+    for (const sib of siblings) {
+        if (_rawStoredP(sib) >= 0.85) return BKT_PARAMS.PRIOR_SIBLING_MASTERED;
+    }
+    return BKT_PARAMS.PRIOR_COLD;
+}
 
 // Core BKT posterior update.
 //   On correct:  P' = P·(1-SLIP) / [P·(1-SLIP) + (1-P)·GUESS]
@@ -3313,13 +3365,13 @@ function stateFromP(p) {
 
 function getMasteryProbability(skillName) {
     const skill = skillTreeData.skills[skillName];
-    if (!skill) return BKT_PARAMS.PRIOR;
+    if (!skill) return bktPriorFor(skillName);
     if (typeof skill.p_mastered === 'number') return skill.p_mastered;
     // Bootstrap from the legacy integer mastery_score on first BKT touch
     if (typeof skill.mastery_score === 'number' && skill.mastery_score > 0) {
         return Math.min(0.99, Math.max(0.01, skill.mastery_score / 100));
     }
-    return BKT_PARAMS.PRIOR;
+    return bktPriorFor(skillName);
 }
 
 // Persist the updated probability to the in-memory skill tree. Keeps the
