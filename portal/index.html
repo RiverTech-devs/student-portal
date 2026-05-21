@@ -25733,10 +25733,11 @@
         const linksSection = document.getElementById('rc-class-links-section');
         if (!classExclusion || !classList) return;
 
-        // Reset the transient link state — links are per generation, not persisted.
-        // The student just changed (or we re-loaded), so previous pairings are stale.
+        // Clear in-memory state. We'll restore from localStorage below once
+        // the enrollment list is known (so stale class IDs get filtered out).
         this.reportCardClassLinks = [];
         this.reportCardClassNamesById = {};
+        this.reportCardCurrentStudentId = studentId;
         this.toggleReportCardClassLinkForm(false);
         this.renderReportCardClassLinkChips();
 
@@ -25753,14 +25754,31 @@
             return;
           }
 
+          // Load saved options for this student (excluded class IDs + class links).
+          const saved = this.loadReportCardOptionsFromStorage(studentId);
+          const savedExcluded = new Set((saved && Array.isArray(saved.excludedClassIds)) ? saved.excludedClassIds : []);
+          const validClassIds = new Set(enrollments.map(e => e.class_id));
+
           classList.innerHTML = '';
           enrollments.forEach(e => {
             if (!e.classes) return;
+            const isChecked = !savedExcluded.has(e.class_id);
             const label = document.createElement('label');
             label.style.cssText = 'font-size: 13px; cursor: pointer; white-space: nowrap;';
-            label.innerHTML = `<input type="checkbox" class="rc-class-checkbox" value="${e.class_id}" checked> ${e.classes.name}`;
+            label.innerHTML = `<input type="checkbox" class="rc-class-checkbox" value="${e.class_id}"${isChecked ? ' checked' : ''}> ${e.classes.name}`;
             classList.appendChild(label);
           });
+
+          // Persist whenever any class checkbox toggles. Event delegation so
+          // we don't have to wire a listener per checkbox.
+          if (!classList._rcChangeListenerAttached) {
+            classList.addEventListener('change', (ev) => {
+              if (ev.target && ev.target.classList && ev.target.classList.contains('rc-class-checkbox')) {
+                this.saveReportCardOptions();
+              }
+            });
+            classList._rcChangeListenerAttached = true;
+          }
 
           classExclusion.style.display = 'block';
 
@@ -25781,6 +25799,20 @@
               intoSel.appendChild(optI);
             });
           }
+
+          // Restore saved class links — filter out any that reference a
+          // class the student is no longer enrolled in (enrollment changed
+          // since last save).
+          if (saved && Array.isArray(saved.classLinks)) {
+            this.reportCardClassLinks = saved.classLinks.filter(l =>
+              l && typeof l === 'object' &&
+              validClassIds.has(l.fromClassId) &&
+              validClassIds.has(l.intoClassId) &&
+              l.fromClassId !== l.intoClassId
+            );
+            this.renderReportCardClassLinkChips();
+          }
+
           if (linksSection) {
             // Only show when there are ≥2 enrollments — otherwise there's
             // nothing to link.
@@ -25790,6 +25822,44 @@
           console.error('Error loading class list for report card:', error);
           classExclusion.style.display = 'none';
           if (linksSection) linksSection.style.display = 'none';
+        }
+      }
+
+      // Read previously-saved options for a student. Returns null if none
+      // saved or the blob is unparseable.
+      loadReportCardOptionsFromStorage(studentId) {
+        if (!studentId) return null;
+        try {
+          const raw = localStorage.getItem(`report_card_options_${studentId}`);
+          if (!raw) return null;
+          const parsed = JSON.parse(raw);
+          return parsed && typeof parsed === 'object' ? parsed : null;
+        } catch (e) {
+          return null;
+        }
+      }
+
+      // Snapshot the current options panel (excluded classes + class links)
+      // into localStorage, keyed by the student currently loaded. Called on
+      // every checkbox toggle and link add/remove so changes persist
+      // immediately — no "save" button to forget.
+      saveReportCardOptions() {
+        const studentId = this.reportCardCurrentStudentId
+          || document.getElementById('report-student')?.value;
+        if (!studentId || studentId === 'all') return;
+        try {
+          const excludedClassIds = [];
+          document.querySelectorAll('.rc-class-checkbox').forEach(cb => {
+            if (!cb.checked) excludedClassIds.push(cb.value);
+          });
+          const payload = {
+            excludedClassIds,
+            classLinks: this.reportCardClassLinks || [],
+            savedAt: Date.now()
+          };
+          localStorage.setItem(`report_card_options_${studentId}`, JSON.stringify(payload));
+        } catch (e) {
+          console.warn('Failed to save report card options:', e);
         }
       }
 
@@ -25840,12 +25910,14 @@
         this.reportCardClassLinks.push({ fromClassId: fromId, intoClassId: intoId });
         this.toggleReportCardClassLinkForm(false);
         this.renderReportCardClassLinkChips();
+        this.saveReportCardOptions();
       }
 
       removeReportCardClassLink(fromId) {
         if (!this.reportCardClassLinks) return;
         this.reportCardClassLinks = this.reportCardClassLinks.filter(l => l.fromClassId !== fromId);
         this.renderReportCardClassLinkChips();
+        this.saveReportCardOptions();
       }
 
       renderReportCardClassLinkChips() {
@@ -26201,8 +26273,9 @@
           if (!cb.checked) excludedClassIds.push(cb.value);
         });
 
-        // Pass through any class-link pairs the admin set up for this generation.
-        // Transient: not persisted, not auto-loaded next time.
+        // Pass through any class-link pairs the admin set up. The pairs
+        // (and the include-class toggles) are persisted to localStorage
+        // per student so re-opening the same student restores them.
         const classLinks = (this.reportCardClassLinks || []).slice();
 
         this.generateReportCard(studentSelect.value, upToQuarterId, { columnVisibility, excludedClassIds, classLinks });
