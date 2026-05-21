@@ -225,8 +225,8 @@ for (const [k, entry] of Object.entries(qMatrix)) {
     if (typeof entry.discrimination !== 'number' || entry.discrimination < 0) {
         warn(`Q_MATRIX[${k}].discrimination (${entry.discrimination}) is not a non-negative number`);
     }
-    if (!['auto', 'manual', 'placeholder'].includes(entry.confidence)) {
-        warn(`Q_MATRIX[${k}].confidence "${entry.confidence}" should be one of: auto, manual, placeholder`);
+    if (!['auto', 'calibrated', 'manual', 'placeholder'].includes(entry.confidence)) {
+        warn(`Q_MATRIX[${k}].confidence "${entry.confidence}" should be one of: auto, calibrated, manual, placeholder`);
     }
 }
 
@@ -239,10 +239,10 @@ for (const k of coarseKeySet) {
 }
 
 // ---------- Coverage summary ----------
-const byConfidence = { auto: 0, manual: 0, placeholder: 0, other: 0 };
+const byConfidence = { auto: 0, calibrated: 0, manual: 0, placeholder: 0, other: 0 };
 for (const entry of Object.values(qMatrix)) {
     const c = entry?.confidence;
-    if (c === 'auto' || c === 'manual' || c === 'placeholder') byConfidence[c]++;
+    if (c === 'auto' || c === 'calibrated' || c === 'manual' || c === 'placeholder') byConfidence[c]++;
     else byConfidence.other++;
 }
 
@@ -256,7 +256,7 @@ if (!quiet || errors.length > 0) {
     console.log(`Curriculum titles:   ${titles.size}`);
     console.log(`Coverage:            ${generatorKeys.size === 0 ? 0 : Math.round(100 * covered / generatorKeys.size)}%`);
     console.log(`Sub-type split:      ${withGranular}/${generatorKeys.size} generators have granular tags`);
-    console.log(`By confidence:       auto=${byConfidence.auto}, manual=${byConfidence.manual}, placeholder=${byConfidence.placeholder}${byConfidence.other ? `, other=${byConfidence.other}` : ''}`);
+    console.log(`By confidence:       auto=${byConfidence.auto}, calibrated=${byConfidence.calibrated}, manual=${byConfidence.manual}, placeholder=${byConfidence.placeholder}${byConfidence.other ? `, other=${byConfidence.other}` : ''}`);
     if (errors.length) {
         console.log(`\nERRORS (${errors.length}):`);
         for (const e of errors) console.log(`  ✗ ${e}`);
