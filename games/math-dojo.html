@@ -3251,7 +3251,125 @@ function requestTreeHighlight(domain) {
 }
 
 // ========================================
-// BATCHED SESSION UPDATES (Phase 2)
+// BAYESIAN KNOWLEDGE TRACING (BKT)
+// ========================================
+// Per-question Bayesian update of the probability that the student has
+// mastered a skill. Replaces the discrete-only mastery_score progression
+// with a continuous estimate that better handles slip (master answers
+// wrong) and guess (non-master answers right).
+//
+// The integer mastery_score is kept in sync (= round(p*100)) so legacy UI
+// and the existing portal-side persistence keep working without changes.
+// Discrete state still upgrades monotonically — BKT doesn't yank a
+// student's mastered status off them on one wrong answer.
+//
+// Source of truth for tags: Q_MATRIX[q.generatorKey]. Primary skill gets
+// a full BKT update; each secondary skill gets a half-weighted update.
+//
+// Slip/guess defaults are literature standard (Corbett & Anderson 1995);
+// they should be recalibrated from real response data once we have a few
+// thousand sessions logged (this is the Phase 2 follow-up).
+const BKT_PARAMS = {
+    SLIP: 0.10,             // P(wrong | mastered)
+    GUESS: 0.20,            // P(right | not mastered)
+    PRIOR: 0.10,            // Default P for a never-before-seen skill
+    SECONDARY_WEIGHT: 0.5,  // Apply half the delta to secondary skills
+};
+
+// Core BKT posterior update.
+//   On correct:  P' = P·(1-SLIP) / [P·(1-SLIP) + (1-P)·GUESS]
+//   On incorrect: P' = P·SLIP    / [P·SLIP    + (1-P)·(1-GUESS)]
+function bktUpdate(currentP, correct) {
+    const { SLIP, GUESS } = BKT_PARAMS;
+    if (correct) {
+        const num = currentP * (1 - SLIP);
+        const denom = num + (1 - currentP) * GUESS;
+        return denom > 0 ? num / denom : currentP;
+    } else {
+        const num = currentP * SLIP;
+        const denom = num + (1 - currentP) * (1 - GUESS);
+        return denom > 0 ? num / denom : currentP;
+    }
+}
+
+// Weighted update for secondary skills — the question exercises them but
+// not as primarily as the primary skill, so we apply only a fraction of
+// the full delta. weight=1.0 is full update, weight=0.5 is half-credit.
+function bktUpdateWeighted(currentP, correct, weight) {
+    const fullP = bktUpdate(currentP, correct);
+    return currentP + (fullP - currentP) * weight;
+}
+
+// Discrete-state derivation from probability. Used to keep the existing
+// `state` column populated for legacy UI. State upgrades only (caller
+// enforces that downstream).
+function stateFromP(p) {
+    if (p >= 0.85) return 'mastered';
+    if (p >= 0.60) return 'activated';
+    if (p >= 0.30) return 'in_progress';
+    if (p >= 0.05) return 'available';
+    return 'locked';
+}
+
+function getMasteryProbability(skillName) {
+    const skill = skillTreeData.skills[skillName];
+    if (!skill) return BKT_PARAMS.PRIOR;
+    if (typeof skill.p_mastered === 'number') return skill.p_mastered;
+    // Bootstrap from the legacy integer mastery_score on first BKT touch
+    if (typeof skill.mastery_score === 'number' && skill.mastery_score > 0) {
+        return Math.min(0.99, Math.max(0.01, skill.mastery_score / 100));
+    }
+    return BKT_PARAMS.PRIOR;
+}
+
+// Persist the updated probability to the in-memory skill tree. Keeps the
+// legacy mastery_score and state fields in sync. State upgrades only — a
+// single wrong answer shouldn't visually demote a student who'd already
+// earned mastered status; the underlying p_mastered captures the dip.
+function setMasteryProbability(skillName, newP, timestamp) {
+    if (!skillTreeData.skills[skillName]) skillTreeData.skills[skillName] = {};
+    const skill = skillTreeData.skills[skillName];
+    skill.p_mastered = newP;
+    skill.last_evidence_at = timestamp;
+    skill.mastery_score = Math.round(newP * 100);
+    const derivedState = stateFromP(newP);
+    const rank = { 'locked': 0, 'available': 1, 'in_progress': 2, 'activated': 3, 'needs_review': 3, 'mastered': 4 };
+    if (rank[derivedState] > (rank[skill.state] || 0)) {
+        skill.state = derivedState;
+        if (derivedState === 'mastered' && !skill.mastered_at) {
+            skill.mastered_at = timestamp;
+        }
+    }
+}
+
+// Apply BKT updates to all skills the answered question tags. The question
+// must have q.skillTags populated (set by generateQuestion from Q_MATRIX).
+// Untagged questions are silently ignored — they fall back to the older
+// per-domain aggregation path.
+function applyBktToTaggedSkills(q, correct) {
+    if (!q || !q.skillTags || !q.skillTags.primary_skill) return [];
+    const now = new Date().toISOString();
+    const updates = [];
+    const primary = q.skillTags.primary_skill;
+    const oldPrimary = getMasteryProbability(primary);
+    const newPrimary = bktUpdate(oldPrimary, correct);
+    setMasteryProbability(primary, newPrimary, now);
+    updates.push({ skill: primary, weight: 1, oldP: oldPrimary, newP: newPrimary });
+    for (const sec of (q.skillTags.secondary_skills || [])) {
+        const oldP = getMasteryProbability(sec);
+        const newP = bktUpdateWeighted(oldP, correct, BKT_PARAMS.SECONDARY_WEIGHT);
+        setMasteryProbability(sec, newP, now);
+        updates.push({ skill: sec, weight: BKT_PARAMS.SECONDARY_WEIGHT, oldP, newP });
+    }
+    // Track which skills were touched this session so endSessionTracking
+    // can include their fresh p_mastered values in the persistence payload.
+    if (!sessionData.bktTouched) sessionData.bktTouched = new Set();
+    for (const u of updates) sessionData.bktTouched.add(u.skill);
+    return updates;
+}
+
+// ========================================
+// BATCHED SESSION UPDATES
 // ========================================
 
 // Session tracking for batched updates
@@ -3305,7 +3423,8 @@ function endSessionTracking(options = {}) {
         userId: getUserId(),
         sessionDuration,
         mode: sessionData.mode,
-        skillResults: []
+        skillResults: [],
+        bktUpdates: []   // Phase 2 — per-skill probability values for persistence
     };
 
     // Compile skill results
@@ -3320,6 +3439,22 @@ function endSessionTracking(options = {}) {
             avgTime: data.total > 0 ? Math.round(data.totalTime / data.total) : 0,
             accuracy: data.total > 0 ? Math.round((data.correct / data.total) * 100) : 0
         });
+    }
+
+    // Compile BKT updates — one entry per curriculum skill the session
+    // touched (via primary or secondary tags). The parent uses these to
+    // persist p_mastered + last_evidence_at into skill_progress.
+    if (sessionData.bktTouched && sessionData.bktTouched.size > 0) {
+        for (const skillName of sessionData.bktTouched) {
+            const skill = skillTreeData.skills[skillName];
+            if (!skill || typeof skill.p_mastered !== 'number') continue;
+            batchedUpdate.bktUpdates.push({
+                skill: skillName,
+                p_mastered: skill.p_mastered,
+                last_evidence_at: skill.last_evidence_at || new Date().toISOString(),
+                derivedState: stateFromP(skill.p_mastered)
+            });
+        }
     }
 
     // Write to localStorage for tree to pick up
@@ -3360,7 +3495,7 @@ function endSessionTracking(options = {}) {
 
     saveSkillTreeData();
 
-    // Reset session
+    // Reset session (preserve sessionData shape — bktTouched is recreated on first BKT update next session)
     sessionData = { startTime: null, questions: [], skillProgress: {}, mode: null };
 }
 
@@ -3991,10 +4126,27 @@ function sendSessionResults() {
         }
     }
 
+    // Phase 2 BKT — collect per-curriculum-skill probability updates so
+    // the portal can persist p_mastered + last_evidence_at to skill_progress.
+    const bktUpdates = [];
+    if (sessionData.bktTouched && sessionData.bktTouched.size > 0) {
+        for (const skillName of sessionData.bktTouched) {
+            const skill = skillTreeData.skills[skillName];
+            if (!skill || typeof skill.p_mastered !== 'number') continue;
+            bktUpdates.push({
+                skill: skillName,
+                p_mastered: skill.p_mastered,
+                last_evidence_at: skill.last_evidence_at || new Date().toISOString(),
+                derivedState: stateFromP(skill.p_mastered)
+            });
+        }
+    }
+
     window.parent.postMessage({
         type: 'DOGO_SESSION_COMPLETE',
         mode: state.mode,
         skillProgress: skillProgress,
+        bktUpdates: bktUpdates,
         gapLog: state.gapLog.map(g => ({
             ...g,
             skill: getSkillTreeName(g.domain)
@@ -38036,6 +38188,11 @@ function submitAnswer() {
     // Record for batched session tracking
     recordQuestionResult(q.domain, q.tier, correct, time, q.generatorKey, q.skillTags);
 
+    // Phase 2 BKT — update per-skill probability for every tagged skill.
+    // Fires on every answered question regardless of mode (placement,
+    // gap-probe, sparring arena, learning center, retention gauntlet).
+    applyBktToTaggedSkills(q, correct);
+
     // Record for retention gauntlet streak tracking
     if (state.mode === 'retention') {
         recordRetentionResult(correct);
@@ -38154,6 +38311,9 @@ function submitIDK() {
     // Send progress update to Skill Tree (IDK counts as incorrect)
     const ds = state.domainScores[q.tier][q.domain];
     sendSkillProgress(q.domain, q.tier, ds.correct, ds.total, time);
+
+    // BKT also treats IDK as incorrect — the student didn't demonstrate the skill.
+    applyBktToTaggedSkills(q, false);
 
     // Log as gap immediately
     if (!state.gapLog.find(g => g.tier === q.tier && g.domain === q.domain))

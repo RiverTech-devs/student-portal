@@ -2776,14 +2776,31 @@
 
       // Handle full session results from Math Dojo
       async handleDogoSessionComplete(data) {
-        const { mode, skillProgress, gapLog } = data;
-        console.log(`Portal received Dojo session complete: ${skillProgress.length} skills`);
+        const { mode, skillProgress, gapLog, bktUpdates = [] } = data;
+        console.log(`Portal received Dojo session complete: ${skillProgress.length} skills, ${bktUpdates.length} BKT updates`);
 
         if (this.userInfo?.profile?.user_type !== 'student') return;
 
         try {
-          // Batch update all skills from the session
+          // Phase 2 — apply BKT updates first. These carry the per-skill
+          // Bayesian probability and take priority over the legacy per-domain
+          // aggregate mastery_score for any skill they cover.
+          const bktSkillNames = new Set();
+          for (const bu of bktUpdates) {
+            const masteryScore = Math.round(bu.p_mastered * 100);
+            await this.upsertSkillProgress(
+              bu.skill, 'Math',
+              masteryScore, bu.derivedState,
+              bu.p_mastered, bu.last_evidence_at
+            );
+            bktSkillNames.add(bu.skill);
+          }
+
+          // Legacy per-domain aggregate — only for skills BKT didn't already
+          // cover. With current Q-matrix coverage this is typically empty,
+          // but keep the path for safety / future generators without tags.
           for (const sp of skillProgress) {
+            if (bktSkillNames.has(sp.skill)) continue;
             await this.upsertSkillProgress(sp.skill, 'Math', sp.masteryScore, sp.skillState);
           }
 
@@ -2961,8 +2978,11 @@
         }
       }
 
-      // Upsert skill progress to database
-      async upsertSkillProgress(skillName, subject, masteryScore, state) {
+      // Upsert skill progress to database.
+      // Phase 2: extra optional params carry the Bayesian (BKT) per-skill
+      // probability and the evidence timestamp. Older callers passing 4 args
+      // still work unchanged — p_mastered just doesn't get written then.
+      async upsertSkillProgress(skillName, subject, masteryScore, state, pMastered = null, lastEvidenceAt = null) {
         const userId = this.userInfo?.user?.id;
         if (!userId) return;
 
@@ -2970,22 +2990,26 @@
         let dbState = state;
         if (state === 'activated') dbState = 'mastered'; // Map activated to mastered
 
+        const row = {
+          user_id: userId,
+          subject: subject,
+          skill_name: skillName,
+          state: dbState,
+          mastery_score: masteryScore,
+          practice_count: this.auth.supabase.rpc ? undefined : 1, // Increment handled separately
+          last_practiced: new Date().toISOString(),
+          mastered_at: dbState === 'mastered' ? new Date().toISOString() : null,
+          updated_at: new Date().toISOString()
+        };
+        if (pMastered !== null && typeof pMastered === 'number') {
+          row.p_mastered = Math.max(0, Math.min(1, pMastered));
+          row.last_evidence_at = lastEvidenceAt || new Date().toISOString();
+        }
+
         const { error } = await this.supabaseQuery(() =>
           this.auth.supabase
             .from('skill_progress')
-            .upsert({
-              user_id: userId,
-              subject: subject,
-              skill_name: skillName,
-              state: dbState,
-              mastery_score: masteryScore,
-              practice_count: this.auth.supabase.rpc ? undefined : 1, // Increment handled separately
-              last_practiced: new Date().toISOString(),
-              mastered_at: dbState === 'mastered' ? new Date().toISOString() : null,
-              updated_at: new Date().toISOString()
-            }, {
-              onConflict: 'user_id,subject,skill_name'
-            })
+            .upsert(row, { onConflict: 'user_id,subject,skill_name' })
         );
 
         if (error) {
