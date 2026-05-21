@@ -1425,13 +1425,18 @@
                     const progress = {};
                     Object.keys(this.SKILL_TREE).forEach(skillName => {
                         const skill = this.SKILL_TREE[skillName];
-                        progress[skillName] = {
+                        const entry = {
                             state: skill.state,
                             mastery_score: skill.mastery_score || 0,
                             last_practiced: skill.last_practiced,
                             practice_count: skill.practice_count || 0,
                             decay_rate: skill.decay_rate || 14
                         };
+                        // Phase 2 BKT fields — only include when present so
+                        // we don't pollute legacy consumers with undefineds.
+                        if (typeof skill.p_mastered === 'number') entry.p_mastered = skill.p_mastered;
+                        if (skill.last_evidence_at) entry.last_evidence_at = skill.last_evidence_at;
+                        progress[skillName] = entry;
                     });
 
                     localStorage.setItem('math_skill_states', JSON.stringify({
@@ -3261,6 +3266,14 @@
                     this.SKILL_TREE[name].practice_count = progressData.practice_count || 0;
                     this.SKILL_TREE[name].decay_rate = progressData.decay_rate || 14;
                     this.SKILL_TREE[name].mastered_at = progressData.mastered_at;
+                    // Phase 2 BKT — pass through when present so the ring can
+                    // color by p_mastered and the tooltip can show raw P%.
+                    if (typeof progressData.p_mastered === 'number') {
+                        this.SKILL_TREE[name].p_mastered = progressData.p_mastered;
+                    }
+                    if (progressData.last_evidence_at) {
+                        this.SKILL_TREE[name].last_evidence_at = progressData.last_evidence_at;
+                    }
                   }
                 }
               });
@@ -4074,12 +4087,24 @@
             }
 
             // === TOOLTIP HANDLING ===
-            // Simple tooltip - just shows skill name on hover
+            // Shows skill name + Bayesian P% when available. The percentage
+            // helps teachers/admins see fine-grained progress that the
+            // discrete badge alone hides.
             showTooltipForNode(node, skillName) {
                 const tooltip = document.getElementById('tooltip');
                 if (!tooltip) return;
 
-                tooltip.textContent = skillName;
+                const skill = this.SKILL_TREE[skillName];
+                let label = skillName;
+                if (skill && (typeof skill.p_mastered === 'number' || typeof skill.mastery_score === 'number')) {
+                    const p = this.getNormalizedMastery(skill);
+                    const pct = Math.round(p * 100);
+                    // Add a subtle "needs review" hint when relevant
+                    const eff = this.getEffectiveState(skill);
+                    const reviewBadge = eff === 'needs_review' ? ' · needs review' : '';
+                    label = `${skillName} — ${pct}%${reviewBadge}`;
+                }
+                tooltip.textContent = label;
 
                 const rect = node.getBoundingClientRect();
                 tooltip.style.display = 'block';
@@ -4415,7 +4440,8 @@
 
             createSkillNode(name, skill) {
                 const node = document.createElement('div');
-                let className = `skill-node ${skill.type || ''} ${skill.state}`;
+                const effectiveState = this.getEffectiveState(skill);
+                let className = `skill-node ${skill.type || ''} ${effectiveState}`;
 
                 // Add special class for root nodes in Programming and Robotics
                 if (skill.type === 'root' && (this.currentSubject === 'Programming' || this.currentSubject === 'Robotics' || this.currentSubject === 'Technology')) {
@@ -4489,9 +4515,12 @@
                 
                 node.style.cssText = nodeStyles;
 
-                // Add mastery progress ring for non-locked skills
-                if (skill.state !== 'locked' && skill.mastery_score !== undefined) {
-                    const masteryRing = this.createMasteryRing(skill.mastery_score);
+                // Add mastery progress ring for non-locked skills. The ring
+                // now reads p_mastered (Phase 2 BKT) when available; legacy
+                // mastery_score remains the fallback for un-touched rows.
+                if (skill.state !== 'locked' &&
+                    (skill.mastery_score !== undefined || skill.p_mastered !== undefined)) {
+                    const masteryRing = this.createMasteryRing(skill);
                     node.appendChild(masteryRing);
                 }
 
@@ -4523,19 +4552,75 @@
                 return node;
             }
 
-            createMasteryRing(masteryScore) {
+            // Normalize a skill to a probability-of-mastery value in [0, 1].
+            // Prefer the Bayesian p_mastered when present (Phase 2); fall
+            // back to the legacy integer mastery_score / 100 for rows the
+            // BKT pipeline hasn't touched yet.
+            getNormalizedMastery(skill) {
+                if (!skill) return 0;
+                if (typeof skill.p_mastered === 'number') return Math.max(0, Math.min(1, skill.p_mastered));
+                if (typeof skill.mastery_score === 'number') return Math.max(0, Math.min(1, skill.mastery_score / 100));
+                return 0;
+            }
+
+            // Effective state for rendering — promotes mastered/activated to
+            // needs_review when evidence has gone stale. Combines the legacy
+            // linear-decay check (days since last_practiced) with the BKT
+            // path (p_mastered dropped below 0.60). The underlying `state`
+            // column on skill_progress is never demoted; this is display-only.
+            getEffectiveState(skill) {
+                if (!skill || !skill.state) return 'locked';
+                const state = skill.state;
+                if (state !== 'mastered' && state !== 'activated') return state;
+                // BKT path: explicit probability check
+                if (typeof skill.p_mastered === 'number' && skill.p_mastered < 0.60) {
+                    return 'needs_review';
+                }
+                // Legacy linear-decay path
+                if (skill.last_practiced) {
+                    const daysSince = this.getDaysSincePractice(skill.last_practiced);
+                    const decayRate = skill.decay_rate || 14;
+                    if (daysSince > decayRate) {
+                        const decayAmount = (daysSince - decayRate) * 5;
+                        const effectiveMastery = Math.max(0, (skill.mastery_score || 100) - decayAmount);
+                        if (effectiveMastery < 70) return 'needs_review';
+                    }
+                }
+                return state;
+            }
+
+            // Pick the ring's progress-stroke color from the probability.
+            // Coarse band mapping so the color steps land where students see
+            // a state change anyway — keeps the visual language consistent
+            // with the badge while exposing finer signal in the ring fill.
+            getMasteryRingColor(p) {
+                if (p >= 0.85) return '#ffd700';  // gold — mastered
+                if (p >= 0.60) return '#4ade80';  // emerald — activated
+                if (p >= 0.30) return '#22d3ee';  // cyan — in_progress
+                if (p >= 0.05) return '#60a5fa';  // slate-blue — available
+                return '#64748b';                 // gray — cold prior / locked-ish
+            }
+
+            createMasteryRing(skill) {
                 const ring = document.createElement('div');
                 ring.className = 'mastery-ring';
 
+                // Backwards compat: callers used to pass a raw number. If
+                // we got a number, wrap it as a skill-shaped object.
+                if (typeof skill === 'number') skill = { mastery_score: skill };
+
+                const p = this.getNormalizedMastery(skill);
                 const circumference = 2 * Math.PI * 23; // radius ~23 for 50px node
-                const offset = circumference - (masteryScore / 100) * circumference;
+                const offset = circumference - p * circumference;
+                const color = this.getMasteryRingColor(p);
 
                 ring.innerHTML = `
                     <svg viewBox="0 0 58 58">
                         <circle class="bg" cx="29" cy="29" r="23" />
                         <circle class="progress" cx="29" cy="29" r="23"
                             stroke-dasharray="${circumference}"
-                            stroke-dashoffset="${offset}" />
+                            stroke-dashoffset="${offset}"
+                            style="stroke: ${color};" />
                     </svg>
                 `;
 
@@ -4590,20 +4675,10 @@
                 if (node) {
                     const skill = this.SKILL_TREE[skillName];
 
-                    // Determine effective state based on decay
-                    let effectiveState = skill.state;
-                    if ((skill.state === 'mastered' || skill.state === 'activated') && skill.last_practiced) {
-                        const daysSince = this.getDaysSincePractice(skill.last_practiced);
-                        const decayRate = skill.decay_rate || 14;
-                        if (daysSince > decayRate) {
-                            // Calculate decayed mastery
-                            const decayAmount = (daysSince - decayRate) * 5;
-                            const effectiveMastery = Math.max(0, (skill.mastery_score || 100) - decayAmount);
-                            if (effectiveMastery < 70) {
-                                effectiveState = 'needs_review';
-                            }
-                        }
-                    }
+                    // Effective state combines BKT decay (p_mastered) and the
+                    // legacy linear-decay path. Logic lives in getEffectiveState
+                    // so createSkillNode and updateNode stay in sync.
+                    const effectiveState = this.getEffectiveState(skill);
 
                     let className = `skill-node ${skill.type || ''} ${effectiveState}`;
 
@@ -4625,20 +4700,22 @@
 
                     node.className = className;
 
-                    // Update mastery ring if present
+                    // Update mastery ring if present. Both the fill and the
+                    // color follow p_mastered now (or mastery_score as fallback).
                     const existingRing = node.querySelector('.mastery-ring');
-                    if (skill.mastery_score !== undefined && skill.state !== 'locked') {
+                    const hasMastery = skill.mastery_score !== undefined || skill.p_mastered !== undefined;
+                    if (hasMastery && skill.state !== 'locked') {
                         if (existingRing) {
-                            // Update existing ring
+                            const p = this.getNormalizedMastery(skill);
                             const circumference = 2 * Math.PI * 23;
-                            const offset = circumference - (skill.mastery_score / 100) * circumference;
+                            const offset = circumference - p * circumference;
                             const progressCircle = existingRing.querySelector('.progress');
                             if (progressCircle) {
                                 progressCircle.setAttribute('stroke-dashoffset', offset);
+                                progressCircle.style.stroke = this.getMasteryRingColor(p);
                             }
                         } else {
-                            // Add new ring
-                            const masteryRing = this.createMasteryRing(skill.mastery_score);
+                            const masteryRing = this.createMasteryRing(skill);
                             node.appendChild(masteryRing);
                         }
                     } else if (existingRing && skill.state === 'locked') {
