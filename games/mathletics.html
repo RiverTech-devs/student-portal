@@ -1162,7 +1162,10 @@
                     timeSpent: timeSpent,
                     timestamp: Date.now()
                 });
-                
+
+                // Phase 2 BKT — every problem in Mathletics tests Multiplication.
+                this.applyBkt('Multiplication', isCorrect);
+
                 if (isCorrect) {
                     this.currentSession.correctStreak++;
                     this.currentSession.isProcessingAnswer = true; // Lock submissions
@@ -1371,7 +1374,9 @@
                         duration: Math.round(totalTime),
                         totalScore: score,
                         problemsSolved: correctResponses.length,
-                        totalProblems: this.currentSession.responses.length
+                        totalProblems: this.currentSession.responses.length,
+                        // Phase 2 — per-skill Bayesian probability updates from BKT
+                        bktUpdates: this.getBktUpdates()
                     }, '*');
 
                     console.log('📊 Reported skill progress to portal:', { score, skills });
@@ -1879,6 +1884,70 @@
                     el.classList.add('hidden');
                 });
             }
+
+            // ============================================================
+            // Phase 2 BKT — Bayesian Knowledge Tracing for Mathletics.
+            // Every problem in this game tests the curriculum skill
+            // "Multiplication". We apply the standard BKT update per
+            // response and ship a bktUpdates payload alongside the
+            // existing GAME_SESSION_COMPLETE message so the portal can
+            // persist p_mastered + last_evidence_at.
+            //
+            // Slip/guess defaults match math-dojo (Corbett & Anderson).
+            // We seed p_mastered from the parent's SKILL_DATA_RESPONSE so
+            // a student who already has evidence elsewhere doesn't reset
+            // to cold prior each Mathletics session.
+            // ============================================================
+
+            bktUpdate(p, correct) {
+                const SLIP = 0.10, GUESS = 0.20;
+                if (correct) {
+                    const num = p * (1 - SLIP);
+                    return num / (num + (1 - p) * GUESS);
+                }
+                const num = p * SLIP;
+                return num / (num + (1 - p) * (1 - GUESS));
+            }
+
+            applyBkt(skillName, correct) {
+                if (!skillName) return;
+                if (!this.bktState) this.bktState = { skillP: {}, touched: new Set() };
+                const current = typeof this.bktState.skillP[skillName] === 'number'
+                    ? this.bktState.skillP[skillName]
+                    : 0.05; // cold prior — replaced once SKILL_DATA_RESPONSE arrives
+                this.bktState.skillP[skillName] = this.bktUpdate(current, correct);
+                this.bktState.touched.add(skillName);
+            }
+
+            seedBktFromParent(progress) {
+                if (!progress) return;
+                if (!this.bktState) this.bktState = { skillP: {}, touched: new Set() };
+                for (const [skillName, data] of Object.entries(progress)) {
+                    if (data && typeof data.p_mastered === 'number') {
+                        this.bktState.skillP[skillName] = data.p_mastered;
+                    } else if (data && typeof data.mastery_score === 'number' && data.mastery_score > 0) {
+                        this.bktState.skillP[skillName] = Math.max(0.01, Math.min(0.99, data.mastery_score / 100));
+                    }
+                }
+            }
+
+            getBktUpdates() {
+                if (!this.bktState || this.bktState.touched.size === 0) return [];
+                const now = new Date().toISOString();
+                return Array.from(this.bktState.touched).map(skill => {
+                    const p = this.bktState.skillP[skill];
+                    let derivedState = 'available';
+                    if (p >= 0.85) derivedState = 'mastered';
+                    else if (p >= 0.60) derivedState = 'activated';
+                    else if (p >= 0.30) derivedState = 'in_progress';
+                    return { skill, p_mastered: p, last_evidence_at: now, derivedState };
+                });
+            }
+
+            requestSkillSeed() {
+                if (window.parent === window) return;
+                window.parent.postMessage({ type: 'REQUEST_SKILL_DATA', subject: 'Math' }, '*');
+            }
         }
         
         // Global functions for button clicks
@@ -1933,8 +2002,13 @@
         // Initialize when DOM is loaded
         document.addEventListener('DOMContentLoaded', function() {
             window.mathletics = new Mathletics();
+            // Phase 2 BKT — ask the parent for the student's current skill
+            // progress so BKT doesn't reset to cold prior every session.
+            if (window.mathletics && window.mathletics.requestSkillSeed) {
+                window.mathletics.requestSkillSeed();
+            }
         });
-        
+
         // Handle messages from parent window (when embedded)
         window.addEventListener('message', function(event) {
             if (event.data.action === 'init' && event.data.authData) {
@@ -1944,6 +2018,12 @@
                 document.body.classList.add('fullscreen-mode');
             } else if (event.data.type === 'FULLSCREEN_EXIT') {
                 document.body.classList.remove('fullscreen-mode');
+            } else if (event.data.type === 'SKILL_DATA_RESPONSE' && event.data.subject === 'Math') {
+                // Phase 2 BKT seed — bootstrap our local skillP map from the
+                // student's existing p_mastered so we continue, not restart.
+                if (window.mathletics && window.mathletics.seedBktFromParent) {
+                    window.mathletics.seedBktFromParent(event.data.progress);
+                }
             }
         });
     </script>

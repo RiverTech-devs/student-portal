@@ -4489,6 +4489,18 @@
         let ascensionController;
 
         // Game State
+        // Mathspire card `skillRequired` strings → canonical curriculum_nodes titles.
+        // Cards with skillRequired = null (basic +, basic -) don't credit any skill —
+        // they're foundational and would dominate the signal.
+        const MATHSPIRE_SKILL_TO_CURRICULUM = {
+            'multiplication': 'Multiplication',
+            'division': 'Division',
+            'exponents': 'Exponents',
+            'roots': 'Square Roots',
+            'parentheses': 'Order of Operations',
+            'factorial': 'Combinations'
+        };
+
         class Game {
             constructor(seed, selectedAscension = 0) {
                 // Parse URL parameters for homework assignments
@@ -4498,6 +4510,14 @@
                 this.sessionStartTime = Date.now();
                 this.combatsWon = 0;
                 this.cardsPlayed = { attack: 0, skill: 0, power: 0, utility: 0 };
+
+                // Phase 2 BKT — per-skill Bayesian probability state. Each
+                // successful equation evaluation credits the unique skills
+                // represented by its cards (positive BKT update). Failed
+                // evaluations (invalid equations) apply a negative update.
+                // Seeded from the parent's SKILL_DATA_RESPONSE so progress
+                // continues across sessions.
+                this.bktState = { skillP: {}, touched: new Set() };
 
                 if (this.homeworkId) {
                     console.log(`📝 Homework assignment mode: ${this.homeworkId}`);
@@ -6622,8 +6642,14 @@
                 
                 try {
                     const baseResult = this.calculateEquation(equationToEvaluate);
-                    
-                    if (baseResult === null || isNaN(baseResult) || !isFinite(baseResult)) {
+                    const equationValid = !(baseResult === null || isNaN(baseResult) || !isFinite(baseResult));
+
+                    // Phase 2 BKT — credit (or demerit) each unique curriculum
+                    // skill represented by the cards in this equation, based
+                    // on whether the equation evaluated to a valid number.
+                    this.applyBktForEquation(equationToEvaluate, equationValid);
+
+                    if (!equationValid) {
                         // Invalid equation - return non-temp cards to hand, discard temp cards
                         alert('⚠️ Invalid equation! Cards returned to hand.');
                         this.currentEquation.forEach(cardId => {
@@ -9762,11 +9788,80 @@
                         totalScore: score,
                         floorsCleared: floorsCleared,
                         victory: victory,
-                        ascensionLevel: this.ascensionLevel
+                        ascensionLevel: this.ascensionLevel,
+                        // Phase 2 — per-skill Bayesian probability updates from
+                        // equation evaluations during this run.
+                        bktUpdates: this.getBktUpdates()
                     }, '*');
 
                     console.log('📊 Reported skill progress to portal:', { score, victory, floorsCleared });
                 }
+            }
+
+            // ============================================================
+            // Phase 2 BKT helpers (Mathspire). Equation-level rather than
+            // per-question — when an equation evaluates successfully, every
+            // unique curriculum skill represented by its cards gets a
+            // positive Bayesian update. An invalid equation applies a
+            // negative update (the student tried but didn't build something
+            // valid). Cards without skillRequired (basic + / -) don't
+            // contribute — they're too foundational.
+            // ============================================================
+
+            bktUpdate(p, correct) {
+                const SLIP = 0.10, GUESS = 0.20;
+                if (correct) {
+                    const num = p * (1 - SLIP);
+                    return num / (num + (1 - p) * GUESS);
+                }
+                const num = p * SLIP;
+                return num / (num + (1 - p) * (1 - GUESS));
+            }
+
+            applyBkt(skillName, correct) {
+                if (!skillName) return;
+                const current = typeof this.bktState.skillP[skillName] === 'number'
+                    ? this.bktState.skillP[skillName]
+                    : 0.05;
+                this.bktState.skillP[skillName] = this.bktUpdate(current, correct);
+                this.bktState.touched.add(skillName);
+            }
+
+            // Walk an equation and credit each unique curriculum skill
+            // represented by its cards' skillRequired tags.
+            applyBktForEquation(equationCards, success) {
+                const skills = new Set();
+                for (const cardId of equationCards) {
+                    const card = CARD_DATABASE[cardId];
+                    if (!card || !card.skillRequired) continue;
+                    const canonical = MATHSPIRE_SKILL_TO_CURRICULUM[card.skillRequired];
+                    if (canonical) skills.add(canonical);
+                }
+                for (const skill of skills) this.applyBkt(skill, success);
+            }
+
+            seedBktFromParent(progress) {
+                if (!progress) return;
+                for (const [skillName, data] of Object.entries(progress)) {
+                    if (data && typeof data.p_mastered === 'number') {
+                        this.bktState.skillP[skillName] = data.p_mastered;
+                    } else if (data && typeof data.mastery_score === 'number' && data.mastery_score > 0) {
+                        this.bktState.skillP[skillName] = Math.max(0.01, Math.min(0.99, data.mastery_score / 100));
+                    }
+                }
+            }
+
+            getBktUpdates() {
+                if (!this.bktState || this.bktState.touched.size === 0) return [];
+                const now = new Date().toISOString();
+                return Array.from(this.bktState.touched).map(skill => {
+                    const p = this.bktState.skillP[skill];
+                    let derivedState = 'available';
+                    if (p >= 0.85) derivedState = 'mastered';
+                    else if (p >= 0.60) derivedState = 'activated';
+                    else if (p >= 0.30) derivedState = 'in_progress';
+                    return { skill, p_mastered: p, last_evidence_at: now, derivedState };
+                });
             }
 
             copySeed() {
@@ -10053,6 +10148,20 @@
         var game = new Game();
         window.game = game;
         console.log('Game instance created');
+
+        // Phase 2 BKT — request the student's current skill_progress so the
+        // equation-evaluation BKT updates start from their accumulated
+        // evidence (not cold prior).
+        if (window.parent && window.parent !== window) {
+            window.parent.postMessage({ type: 'REQUEST_SKILL_DATA', subject: 'Math' }, '*');
+            window.addEventListener('message', function(event) {
+                if (event.data && event.data.type === 'SKILL_DATA_RESPONSE' && event.data.subject === 'Math') {
+                    if (window.game && window.game.seedBktFromParent) {
+                        window.game.seedBktFromParent(event.data.progress);
+                    }
+                }
+            });
+        }
 
         // Exit fullscreen handler (doesn't require game instance)
         window.exitFullscreenHandler = function exitFullscreenHandler() {

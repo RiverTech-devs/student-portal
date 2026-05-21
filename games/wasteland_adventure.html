@@ -3210,9 +3210,12 @@
             if (!skillSystem.supabase || !skillSystem.currentUser) return;
 
             try {
+                // Phase 2: also pull p_mastered + last_evidence_at so BKT
+                // continues from the student's accumulated evidence instead
+                // of resetting to cold prior every Wasteland session.
                 const { data, error } = await skillSystem.supabase
                     .from('skill_progress')
-                    .select('skill_name, state, mastery_score')
+                    .select('skill_name, state, mastery_score, p_mastered, last_evidence_at')
                     .eq('user_id', skillSystem.currentUser.id)
                     .eq('subject', 'Math')
                     .in('state', ['available', 'in_progress', 'mastered', 'activated']);
@@ -3226,7 +3229,9 @@
                         skillSystem.playerSkills[skill.skill_name] = {
                             available: true,
                             mastery: skill.mastery_score || 0,
-                            state: skill.state
+                            state: skill.state,
+                            p_mastered: typeof skill.p_mastered === 'number' ? skill.p_mastered : undefined,
+                            last_evidence_at: skill.last_evidence_at
                         };
                     });
                 }
@@ -3318,6 +3323,86 @@
             return '9-12';
         }
 
+        // ============================================================
+        // Phase 2 BKT — Bayesian Knowledge Tracing for Wasteland Adventure.
+        // Wasteland writes per-question (no session-end concept), so BKT
+        // also persists per-question. The local playerSkills map carries
+        // p_mastered between questions; applyBktAndPersist updates both
+        // the in-memory value and the skill_progress row.
+        //
+        // Some game branches log to "Basic Multiplication" / "Basic Division"
+        // which aren't canonical curriculum_nodes titles. Normalize to the
+        // canonical name so all evidence consolidates onto the same row.
+        // ============================================================
+        const WASTELAND_TO_CANONICAL = {
+            'Basic Multiplication': 'Multiplication',
+            'Basic Division': 'Division'
+        };
+
+        function canonicalSkillName(name) {
+            return WASTELAND_TO_CANONICAL[name] || name;
+        }
+
+        function bktUpdateProb(p, correct) {
+            const SLIP = 0.10, GUESS = 0.20;
+            if (correct) {
+                const num = p * (1 - SLIP);
+                return num / (num + (1 - p) * GUESS);
+            }
+            const num = p * SLIP;
+            return num / (num + (1 - p) * (1 - GUESS));
+        }
+
+        function stateFromP(p) {
+            if (p >= 0.85) return 'mastered';
+            if (p >= 0.60) return 'activated';
+            if (p >= 0.30) return 'in_progress';
+            if (p >= 0.05) return 'available';
+            return 'locked';
+        }
+
+        async function applyBktAndPersist(skillName, correct) {
+            if (!skillSystem.supabase || !skillSystem.currentUser || skillSystem.isGuestMode) return;
+            const canonical = canonicalSkillName(skillName);
+            const entry = skillSystem.playerSkills[canonical] || skillSystem.playerSkills[skillName];
+            // Start point: existing p_mastered, or bootstrap from mastery_score,
+            // or cold prior. Stay clamped to (0.01, 0.99) so the update math
+            // is well-conditioned.
+            let p = entry && typeof entry.p_mastered === 'number'
+                ? entry.p_mastered
+                : (entry && entry.mastery > 0
+                    ? Math.max(0.01, Math.min(0.99, entry.mastery / 100))
+                    : 0.05);
+            p = bktUpdateProb(p, correct);
+            // Cache the new value in memory so the next question uses it
+            if (!skillSystem.playerSkills[canonical]) {
+                skillSystem.playerSkills[canonical] = { available: true, mastery: 0 };
+            }
+            skillSystem.playerSkills[canonical].p_mastered = p;
+            skillSystem.playerSkills[canonical].mastery = Math.round(p * 100);
+
+            try {
+                const now = new Date().toISOString();
+                const { error } = await skillSystem.supabase
+                    .from('skill_progress')
+                    .upsert({
+                        user_id: skillSystem.currentUser.id,
+                        subject: 'Math',
+                        skill_name: canonical,
+                        state: stateFromP(p),
+                        mastery_score: Math.round(p * 100),
+                        p_mastered: p,
+                        last_evidence_at: now,
+                        last_practiced: now,
+                        decay_steps_applied: 0,
+                        updated_at: now
+                    }, { onConflict: 'user_id,subject,skill_name' });
+                if (error) console.error('🎮 BKT upsert error:', error);
+            } catch (err) {
+                console.error('🎮 BKT persist failed:', err);
+            }
+        }
+
         // Log a practice session to Supabase
         async function logPracticeSession(skillName, correct, problemData) {
             skillSystem.problemsAttempted++;
@@ -3327,11 +3412,15 @@
                 return; // Don't log for guests
             }
 
+            // Phase 2 BKT — fire and forget; the Bayesian update doesn't
+            // need to block the existing practice-session insert.
+            applyBktAndPersist(skillName, correct);
+
             try {
                 const sessionData = {
                     user_id: skillSystem.currentUser.id,
                     subject: 'Math',
-                    skill_name: skillName,
+                    skill_name: canonicalSkillName(skillName),
                     source_type: 'game',
                     game_id: 'wasteland_adventure',
                     score: correct ? 100 : 0,

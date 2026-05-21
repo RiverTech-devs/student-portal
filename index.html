@@ -4830,6 +4830,13 @@
                     const now = new Date().toISOString();
                     const rows = [];
 
+                    // Phase 2 BKT — index by skill name so legacy upserts can
+                    // pick up p_mastered + last_evidence_at + decay reset.
+                    const bktBySkill = {};
+                    for (const bu of (data.bktUpdates || [])) {
+                        if (bu && bu.skill) bktBySkill[bu.skill] = bu;
+                    }
+
                     Object.entries(data.skillProgress).forEach(([skillName, progress]) => {
                         // Update local
                         if (!this.skillProgress['Math']) this.skillProgress['Math'] = {};
@@ -4841,7 +4848,7 @@
                             practice_count: (this.skillProgress['Math'][skillName]?.practice_count || 0) + (progress.total || 1)
                         };
 
-                        rows.push({
+                        const row = {
                             user_id: userId,
                             subject: 'Math',
                             skill_name: skillName,
@@ -4850,8 +4857,36 @@
                             last_practiced: now,
                             practice_count: this.skillProgress['Math'][skillName].practice_count,
                             updated_at: now
-                        });
+                        };
+                        // Layer BKT data on top when this skill has it.
+                        const bu = bktBySkill[skillName];
+                        if (bu) {
+                            row.p_mastered = Math.max(0, Math.min(1, bu.p_mastered || 0));
+                            row.last_evidence_at = bu.last_evidence_at || now;
+                            row.mastery_score = Math.round(row.p_mastered * 100);
+                            row.state = bu.derivedState || row.state;
+                            row.decay_steps_applied = 0;
+                        }
+                        rows.push(row);
                     });
+
+                    // Skills BKT touched that the legacy per-domain loop missed
+                    // (typically secondary skills). Push them as their own rows.
+                    for (const [skill, bu] of Object.entries(bktBySkill)) {
+                        if (data.skillProgress[skill]) continue;
+                        rows.push({
+                            user_id: userId,
+                            subject: 'Math',
+                            skill_name: skill,
+                            state: bu.derivedState || 'in_progress',
+                            mastery_score: Math.round((bu.p_mastered || 0) * 100),
+                            p_mastered: Math.max(0, Math.min(1, bu.p_mastered || 0)),
+                            last_evidence_at: bu.last_evidence_at || now,
+                            last_practiced: now,
+                            decay_steps_applied: 0,
+                            updated_at: now
+                        });
+                    }
 
                     if (rows.length > 0) {
                         const deduped = Array.from(
@@ -5395,7 +5430,7 @@
 
             // Handle complete game session with multiple skill updates
             async handleGameSessionComplete(data) {
-                const { gameId, subject, skills, duration, totalScore } = data;
+                const { gameId, subject, skills, duration, totalScore, bktUpdates = [] } = data;
 
                 if (!this.portal.auth.isAuthenticated()) return;
 
@@ -5418,6 +5453,30 @@
                                 duration_seconds: duration,
                                 started_at: new Date().toISOString()
                             });
+                    }
+
+                    // Phase 2 BKT — persist p_mastered for any skill the game's
+                    // BKT pipeline touched. Resets decay_steps_applied to 0 so
+                    // the decay job treats this as fresh evidence.
+                    if (bktUpdates.length > 0) {
+                        const now = new Date().toISOString();
+                        const bktRows = bktUpdates.map(bu => ({
+                            user_id: userId,
+                            subject: subject,
+                            skill_name: bu.skill,
+                            state: bu.derivedState || 'in_progress',
+                            mastery_score: Math.round((bu.p_mastered || 0) * 100),
+                            p_mastered: Math.max(0, Math.min(1, bu.p_mastered || 0)),
+                            last_evidence_at: bu.last_evidence_at || now,
+                            last_practiced: now,
+                            decay_steps_applied: 0,
+                            updated_at: now
+                        }));
+                        const { error: bktErr } = await this.portal.auth.supabase
+                            .from('skill_progress')
+                            .upsert(bktRows, { onConflict: 'user_id,subject,skill_name' });
+                        if (bktErr) console.error('Failed to save BKT updates from game:', bktErr);
+                        else console.log(`✅ Saved ${bktRows.length} BKT updates from ${gameId}`);
                     }
 
                     // Refresh progress
