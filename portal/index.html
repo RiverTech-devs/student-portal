@@ -25560,6 +25560,23 @@
                   <label style="display: block; margin-bottom: 5px; font-weight: bold;">Include Classes</label>
                   <div id="rc-class-list" style="display: flex; flex-wrap: wrap; gap: 8px; max-height: 120px; overflow-y: auto;"></div>
                 </div>
+                <div id="rc-class-links-section" style="display: none; margin-top: 12px;">
+                  <label style="display: block; margin-bottom: 5px; font-weight: bold;">
+                    Link Classes
+                    <span style="font-weight: normal; color: var(--muted); font-size: 12px;">
+                      &mdash; merge two same-subject classes into one row for this report only
+                    </span>
+                  </label>
+                  <div id="rc-link-chips" style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px;"></div>
+                  <div id="rc-link-form" style="display: none; gap: 6px; align-items: center; flex-wrap: wrap; padding: 8px; background: var(--bg); border-radius: 6px; margin-bottom: 8px;">
+                    <select id="rc-link-from" style="flex: 1; min-width: 160px; padding: 6px; font-size: 13px;"><option value="">From class…</option></select>
+                    <span style="color: var(--muted);">→</span>
+                    <select id="rc-link-into" style="flex: 1; min-width: 160px; padding: 6px; font-size: 13px;"><option value="">Into class…</option></select>
+                    <button class="btn btn-primary" onclick="app.saveReportCardClassLink()" style="padding: 6px 12px; font-size: 13px;">Save</button>
+                    <button class="btn btn-secondary" onclick="app.toggleReportCardClassLinkForm(false)" style="padding: 6px 12px; font-size: 13px;">Cancel</button>
+                  </div>
+                  <button id="rc-link-add-btn" class="btn btn-secondary" onclick="app.toggleReportCardClassLinkForm(true)" style="padding: 6px 12px; font-size: 13px;">+ Add link</button>
+                </div>
               </div>
             </div>
 
@@ -25664,6 +25681,10 @@
               } else {
                 const classExclusion = document.getElementById('rc-class-exclusion');
                 if (classExclusion) classExclusion.style.display = 'none';
+                const linksSection = document.getElementById('rc-class-links-section');
+                if (linksSection) linksSection.style.display = 'none';
+                // Drop any transient links so they don't leak to a different student.
+                this.reportCardClassLinks = [];
               }
             });
           }
@@ -25709,7 +25730,15 @@
       async loadReportCardClassList(studentId) {
         const classExclusion = document.getElementById('rc-class-exclusion');
         const classList = document.getElementById('rc-class-list');
+        const linksSection = document.getElementById('rc-class-links-section');
         if (!classExclusion || !classList) return;
+
+        // Reset the transient link state — links are per generation, not persisted.
+        // The student just changed (or we re-loaded), so previous pairings are stale.
+        this.reportCardClassLinks = [];
+        this.reportCardClassNamesById = {};
+        this.toggleReportCardClassLinkForm(false);
+        this.renderReportCardClassLinkChips();
 
         try {
           const { data: enrollments } = await this.auth.supabase
@@ -25720,6 +25749,7 @@
 
           if (!enrollments || enrollments.length === 0) {
             classExclusion.style.display = 'none';
+            if (linksSection) linksSection.style.display = 'none';
             return;
           }
 
@@ -25733,10 +25763,109 @@
           });
 
           classExclusion.style.display = 'block';
+
+          // Populate the Link Classes selects and remember names for chip rendering.
+          const fromSel = document.getElementById('rc-link-from');
+          const intoSel = document.getElementById('rc-link-into');
+          if (fromSel && intoSel) {
+            fromSel.innerHTML = '<option value="">From class…</option>';
+            intoSel.innerHTML = '<option value="">Into class…</option>';
+            enrollments.forEach(e => {
+              if (!e.classes) return;
+              this.reportCardClassNamesById[e.class_id] = e.classes.name;
+              const optF = document.createElement('option');
+              optF.value = e.class_id; optF.textContent = e.classes.name;
+              fromSel.appendChild(optF);
+              const optI = document.createElement('option');
+              optI.value = e.class_id; optI.textContent = e.classes.name;
+              intoSel.appendChild(optI);
+            });
+          }
+          if (linksSection) {
+            // Only show when there are ≥2 enrollments — otherwise there's
+            // nothing to link.
+            linksSection.style.display = enrollments.length >= 2 ? 'block' : 'none';
+          }
         } catch (error) {
           console.error('Error loading class list for report card:', error);
           classExclusion.style.display = 'none';
+          if (linksSection) linksSection.style.display = 'none';
         }
+      }
+
+      // ============================================================
+      // Report card class linking (transient — per generation only).
+      // The admin uses this when a student transitioned between two
+      // same-subject classes mid-year. Pairs are stored in memory,
+      // applied during the next report-card generation, and cleared
+      // whenever the student selector changes.
+      // ============================================================
+
+      toggleReportCardClassLinkForm(show) {
+        const form = document.getElementById('rc-link-form');
+        const btn = document.getElementById('rc-link-add-btn');
+        if (form) form.style.display = show ? 'flex' : 'none';
+        if (btn) btn.style.display = show ? 'none' : 'inline-block';
+        if (show) {
+          const fromSel = document.getElementById('rc-link-from');
+          const intoSel = document.getElementById('rc-link-into');
+          if (fromSel) fromSel.value = '';
+          if (intoSel) intoSel.value = '';
+        }
+      }
+
+      saveReportCardClassLink() {
+        const fromId = document.getElementById('rc-link-from')?.value;
+        const intoId = document.getElementById('rc-link-into')?.value;
+        if (!fromId || !intoId) {
+          this.showNotification('Pick both a "from" and "into" class', 'error');
+          return;
+        }
+        if (fromId === intoId) {
+          this.showNotification('From and Into must be different classes', 'error');
+          return;
+        }
+        if (!this.reportCardClassLinks) this.reportCardClassLinks = [];
+        // Each class can only be the "from" side once per generation.
+        if (this.reportCardClassLinks.some(l => l.fromClassId === fromId)) {
+          this.showNotification('That class is already linked. Remove the existing link first.', 'error');
+          return;
+        }
+        // Detect circular link (A→B with B→A already added) — admin asked
+        // for explicit ambiguity-avoidance; refuse the chain.
+        if (this.reportCardClassLinks.some(l => l.fromClassId === intoId && l.intoClassId === fromId)) {
+          this.showNotification('That would create a circular link. Remove the other one first.', 'error');
+          return;
+        }
+        this.reportCardClassLinks.push({ fromClassId: fromId, intoClassId: intoId });
+        this.toggleReportCardClassLinkForm(false);
+        this.renderReportCardClassLinkChips();
+      }
+
+      removeReportCardClassLink(fromId) {
+        if (!this.reportCardClassLinks) return;
+        this.reportCardClassLinks = this.reportCardClassLinks.filter(l => l.fromClassId !== fromId);
+        this.renderReportCardClassLinkChips();
+      }
+
+      renderReportCardClassLinkChips() {
+        const chips = document.getElementById('rc-link-chips');
+        if (!chips) return;
+        const links = this.reportCardClassLinks || [];
+        const names = this.reportCardClassNamesById || {};
+        if (links.length === 0) {
+          chips.innerHTML = '<span style="color: var(--muted); font-size: 12px; font-style: italic;">No links yet</span>';
+          return;
+        }
+        chips.innerHTML = links.map(l => {
+          const fromName = names[l.fromClassId] || l.fromClassId;
+          const intoName = names[l.intoClassId] || l.intoClassId;
+          return `
+            <span style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 12px; font-size: 12px;">
+              <span>${this.escapeHtml(fromName)} → ${this.escapeHtml(intoName)}</span>
+              <button onclick="app.removeReportCardClassLink('${l.fromClassId}')" style="background: none; border: none; color: var(--muted); cursor: pointer; padding: 0 2px; font-size: 14px; line-height: 1;" title="Remove link">×</button>
+            </span>`;
+        }).join('');
       }
 
       async generateGradeReport() {
@@ -26072,7 +26201,11 @@
           if (!cb.checked) excludedClassIds.push(cb.value);
         });
 
-        this.generateReportCard(studentSelect.value, upToQuarterId, { columnVisibility, excludedClassIds });
+        // Pass through any class-link pairs the admin set up for this generation.
+        // Transient: not persisted, not auto-loaded next time.
+        const classLinks = (this.reportCardClassLinks || []).slice();
+
+        this.generateReportCard(studentSelect.value, upToQuarterId, { columnVisibility, excludedClassIds, classLinks });
       }
 
       async generateReportCard(studentId, upToQuarterId = null, options = {}) {
@@ -26294,8 +26427,92 @@
               finalGradeLetter: '', // Only filled at end of year
               honorsCollege: honorsCollege,
               gradePoints: baseGPA,
-              weightedGP: weightedGPA
+              weightedGP: weightedGPA,
+              _classId: cls.id  // For class-link merging below
             });
+          }
+
+          // ============================================================
+          // Apply transient class links — merge pairs of courses the admin
+          // marked as the same continuing course. Linked pairs collapse to
+          // one row; quarter columns combine (the "into" class wins when
+          // both have a grade for the same quarter — admin chose the
+          // direction so this is unambiguous).
+          // ============================================================
+          const classLinks = (options.classLinks || []);
+          if (classLinks.length > 0) {
+            // Build the from→into rewrite map
+            const linkMap = {};
+            for (const l of classLinks) linkMap[l.fromClassId] = l.intoClassId;
+
+            for (const subjectName of Object.keys(subjectGroups)) {
+              const group = subjectGroups[subjectName];
+              // Bucket courses by their effective (post-link) class id
+              const byEffectiveId = new Map();
+              for (const course of group.courses) {
+                const effectiveId = linkMap[course._classId] || course._classId;
+                if (!byEffectiveId.has(effectiveId)) byEffectiveId.set(effectiveId, []);
+                byEffectiveId.get(effectiveId).push({ course, originalId: course._classId, effectiveId });
+              }
+              // For each bucket with more than one course, merge
+              const mergedCourses = [];
+              for (const [effectiveId, entries] of byEffectiveId) {
+                if (entries.length === 1) {
+                  mergedCourses.push(entries[0].course);
+                  continue;
+                }
+                // The "into" course (the target of the link) keeps its
+                // metadata (name, credits, honors marker). Fall back to
+                // the first entry if no exact match (shouldn't happen
+                // given how the bucket was built, but be defensive).
+                const intoEntry = entries.find(e => e.originalId === effectiveId) || entries[0];
+                const base = intoEntry.course;
+                const merged = {
+                  courseName: base.courseName,
+                  credits: base.credits,
+                  quarters: {},
+                  finalGradeLetter: base.finalGradeLetter,
+                  honorsCollege: base.honorsCollege,
+                  gradePoints: null,
+                  weightedGP: null,
+                  _classId: base._classId,
+                  _mergedFromClassIds: entries.filter(e => e.originalId !== effectiveId).map(e => e.originalId)
+                };
+                // Quarter-by-quarter combine. The "into" course's quarter
+                // grade wins over any "from" course's grade for the same
+                // quarter; otherwise fill in from whichever has data.
+                for (const entry of entries) {
+                  for (const [qKey, qData] of Object.entries(entry.course.quarters || {})) {
+                    if (entry.originalId === effectiveId) {
+                      // Into-side always wins
+                      merged.quarters[qKey] = qData;
+                    } else if (!merged.quarters[qKey]) {
+                      // From-side fills only if the into-side has no grade for this quarter
+                      merged.quarters[qKey] = qData;
+                    }
+                  }
+                }
+                // Recompute GPA from the merged quarters using the same
+                // weighting the per-course loop above used.
+                let gpaWeightedSum = 0, gpaTotalWeight = 0;
+                for (const [q, data] of Object.entries(merged.quarters)) {
+                  if (data.rawTotal != null) {
+                    const qNum = parseInt(q.replace('Q', ''));
+                    const weight = this.quarterWeights[qNum] || 0.25;
+                    const qGPA = this.percentageToGPA(data.rawTotal);
+                    if (qGPA !== null) {
+                      gpaWeightedSum += qGPA * weight;
+                      gpaTotalWeight += weight;
+                    }
+                  }
+                }
+                merged.gradePoints = gpaTotalWeight > 0 ? gpaWeightedSum / gpaTotalWeight : null;
+                const modifier = this.getCourseWeightModifier(base.honorsCollege === 'H' ? 'honors' : base.honorsCollege === 'AP' ? 'ap' : base.honorsCollege === 'C' ? 'dual_credit' : null);
+                merged.weightedGP = merged.gradePoints !== null ? Math.min(merged.gradePoints + modifier, 5.0) : null;
+                mergedCourses.push(merged);
+              }
+              group.courses = mergedCourses;
+            }
           }
 
           // Sort subject groups by standard order
