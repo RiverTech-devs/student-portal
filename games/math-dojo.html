@@ -2297,6 +2297,31 @@ const AnswerInterpreter = {
                     return { correct: true, matchType: 'equivalent' };
                 }
             }
+            // Absolute-value solution typed without "or": students write "-4,4"
+            // or "4,-4" which the detector misclassifies as eigenvalues. Both
+            // structures store values: [a,b], so accept the set-equal match.
+            if (expectedNorm.type === 'absolute_value_solution' && userNorm.type === 'eigenvalues') {
+                const expSorted = [...expectedNorm.values].sort((a,b) => a-b);
+                const userSorted = [...userNorm.values].sort((a,b) => a-b);
+                if (expSorted[0] === userSorted[0] && expSorted[1] === userSorted[1]) {
+                    return { correct: true, matchType: 'equivalent' };
+                }
+            }
+            // Money ↔ number equivalence. parseMoney returns CENTS while
+            // number parsing is unit-agnostic. Accept both directions:
+            //   - expected number 0.40 vs user "$0.40" or "40 cents" (40 cents)
+            //   - expected "$0.40" (40 cents) vs user "0.40" or "0.4"
+            // Match when the dollar values agree to two-cent tolerance.
+            if ((expectedNorm.type === 'number' && userNorm.type === 'money') ||
+                (expectedNorm.type === 'money' && userNorm.type === 'number')) {
+                const moneyCents = expectedNorm.type === 'money' ? expectedNorm.value : userNorm.value;
+                const numberVal = expectedNorm.type === 'number' ? expectedNorm.value : userNorm.value;
+                // numberVal might be either dollars (0.4) or cents (40); accept either reading
+                if (Math.abs(numberVal * 100 - moneyCents) < 1 ||
+                    Math.abs(numberVal - moneyCents) < 1) {
+                    return { correct: true, matchType: 'equivalent' };
+                }
+            }
             // Text fallback for calculus expressions
             if (['integral_constant', 'power_expression', 'trig_expression', 'exponential_expression', 'log_expression', 'gradient_expression', 'fraction_expression'].includes(expectedNorm.type)) {
                 const expClean = expectedNorm.normalized || expectedNorm.original.toLowerCase().replace(/\s/g, '');
@@ -8938,8 +8963,11 @@ const generators = {
                 const nName = n === 2 ? "semiannually" : n === 4 ? "quarterly" : "monthly";
                 const t = 1;
                 const A = Math.round(P * Math.pow(1 + r/(100*n), n*t));
-                return { subType: type, question: `$${P} at ${r}% compounded ${nName} for 1 year. Final amount?`, answer: A, type: "procedural",
-                    explanation: `A = P(1 + r/n)^(nt) = ${P}(1 + ${r/100}/${n})^${n} ≈ $${A}` };
+                // Earlier wording "${r}% compounded monthly" was ambiguous —
+                // students read it as "${r}% per month" and computed P*(1+r)^12
+                // instead of P*(1+r/12)^12. Make the annual-rate intent explicit.
+                return { subType: type, question: `$${P} at ${r}% annual interest, compounded ${nName}, for 1 year. Final amount?`, answer: A, type: "procedural",
+                    explanation: `Annual rate ${r}% divided into ${n} periods/year. A = P(1 + r/n)^(nt) = ${P}(1 + ${r/100}/${n})^${n} ≈ $${A}` };
             } else {
                 return { subType: type, question: `Which formula calculates compound interest?`, answer: "A = P(1 + r/n)^(nt)", type: "conceptual",
                     options: ["A = P(1 + r/n)^(nt)", "A = P + Prt", "A = P × r × t", "A = P(1 + rt)"],
@@ -11997,10 +12025,18 @@ const generators = {
             let available = getUnlockedSubSkillTypes('10_Linear Algebra', subSkillToType, subSkillOrder);
             const type = pick(available);
             if (type === "eigenvalue") {
+                // Rotate between asking about the scalar (λ) and the vector (v)
+                // so students can't just pick the option matching the skill name.
+                const askAboutScalar = pick([true, false]);
                 const a = rand(2, 5);
-                return { subType: type, question: `If Av = ${a}v, then ${a} is called a(n)...`, answer: "eigenvalue", type: "conceptual",
-                    options: ["eigenvalue", "eigenvector", "determinant", "trace"],
-                    explanation: `When Av = λv, λ (here ${a}) is an eigenvalue and v is an eigenvector.` };
+                if (askAboutScalar) {
+                    return { subType: type, question: `If Av = ${a}v with v ≠ 0, then ${a} is called a(n)...`, answer: "eigenvalue", type: "conceptual",
+                        options: ["eigenvalue", "eigenvector", "determinant", "trace"],
+                        explanation: `When Av = λv, the scalar λ (here ${a}) is an eigenvalue and the nonzero vector v is its eigenvector.` };
+                }
+                return { subType: type, question: `If Av = ${a}v with v ≠ 0, then v is called a(n)...`, answer: "eigenvector", type: "conceptual",
+                    options: ["eigenvector", "eigenvalue", "determinant", "trace"],
+                    explanation: `When Av = λv, v is the eigenvector (the vector that only gets scaled, not rotated). λ is the eigenvalue.` };
             } else if (type === "span") {
                 return { subType: type, question: `Vectors ⟨1,0⟩ and ⟨0,1⟩ span...`, answer: "ℝ²", type: "conceptual",
                     options: ["ℝ²", "ℝ", "ℝ³", "a line"],
@@ -12017,9 +12053,17 @@ const generators = {
             let available = getUnlockedSubSkillTypes('10_Eigenvalues', subSkillToType, subSkillOrder);
             const type = pick(available);
             if (type === "definition") {
-                return { subType: type, question: `In Av = λv, what is λ called?`, answer: "eigenvalue", type: "conceptual",
-                    options: ["eigenvalue", "eigenvector", "determinant", "inverse"],
-                    explanation: `λ is the eigenvalue. It's the scalar by which the eigenvector v is scaled under transformation A.` };
+                // Rotate the question between asking about λ vs v so students
+                // can't auto-cheese by picking the option matching the skill name.
+                const askAboutScalar = pick([true, false]);
+                if (askAboutScalar) {
+                    return { subType: type, question: `In Av = λv (with v ≠ 0), what is λ called?`, answer: "eigenvalue", type: "conceptual",
+                        options: ["eigenvalue", "eigenvector", "determinant", "inverse"],
+                        explanation: `λ is the eigenvalue — the scalar by which the eigenvector v is stretched (or flipped) under the transformation A.` };
+                }
+                return { subType: type, question: `In Av = λv (with v ≠ 0), what is v called?`, answer: "eigenvector", type: "conceptual",
+                    options: ["eigenvector", "eigenvalue", "determinant", "inverse"],
+                    explanation: `v is the eigenvector — a direction that A only scales (it doesn't rotate or shear). λ is the matching eigenvalue.` };
             } else if (type === "calculate_2x2") {
                 // Simple 2x2 diagonal matrix
                 const a = rand(1, 4), b = rand(1, 4);
@@ -36237,8 +36281,18 @@ function setVisualAnswer(value) {
 }
 
 function compareVisualAnswer(userAnswer, expectedAnswer, type) {
-    if (type === 'numberline' || type === 'clock') {
+    if (type === 'numberline') {
         return Math.abs(userAnswer - expectedAnswer) < 0.01;
+    }
+    if (type === 'clock') {
+        // userAnswer and expectedAnswer are { hour, minute } objects.
+        // The old code subtracted them as numbers (→ NaN) and rejected
+        // every clock answer.
+        if (!userAnswer || !expectedAnswer) return false;
+        // 12 and 0 should both count as "12 o'clock" for the hour hand
+        const userHour = userAnswer.hour % 12;
+        const expHour = expectedAnswer.hour % 12;
+        return userHour === expHour && userAnswer.minute === expectedAnswer.minute;
     }
     if (type === 'coordinate') {
         if (typeof expectedAnswer === 'string') {
