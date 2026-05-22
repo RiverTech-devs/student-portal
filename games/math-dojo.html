@@ -36317,20 +36317,27 @@ function handleWeeklyMasteriesResponse(skills) {
     const CATEGORY_LABEL = { recent: 'Recent', touch_on: 'Touch up', retention: 'Long-term recall' };
     const CATEGORY_COLOR = { recent: 'var(--emerald-400)', touch_on: 'var(--amber-400)', retention: 'var(--sky-400)' };
 
-    const seen = new Set();
-    const unique = [];
+    // The parent may intentionally repeat skills to pad the lineup up to 21
+    // slots when the student has fewer than 21 mappable mastered skills.
+    // Each slot is an independent gauntlet entry, so we DON'T dedupe here —
+    // we just drop unmappable skills.
+    const lineup = [];
+    let skippedUnmappable = 0;
+    const unmappableNames = new Set();
     for (const s of skills) {
         const candidate = s.skill || s.domain;
-        if (!candidate) continue;
+        if (!candidate) { skippedUnmappable++; continue; }
         // Prefer s.domain if it's already a Dojo key. Otherwise inverse-map
         // s.skill (the skill_progress legacy_name) to its Dojo domain.
         let dojoDomain = (s.domain && DOJO_TO_TREE_SKILL[s.domain] !== undefined)
             ? s.domain
             : (invMap[candidate] || (DOJO_TO_TREE_SKILL[candidate] !== undefined ? candidate : null));
-        if (!dojoDomain) continue;                // unknown skill; skip rather than ask untaught questions
-        if (seen.has(dojoDomain)) continue;
-        seen.add(dojoDomain);
-        unique.push({
+        if (!dojoDomain) {
+            skippedUnmappable++;
+            unmappableNames.add(candidate);
+            continue;
+        }
+        lineup.push({
             skill: s.skill || dojoDomain,
             domain: dojoDomain,
             tier: s.tier || 1,
@@ -36338,9 +36345,23 @@ function handleWeeklyMasteriesResponse(skills) {
         });
     }
 
-    retentionState.skills = unique.map(s => ({ ...s, streak: 0, fails: 0, cleared: false, failed: false }));
+    // Build the unique-by-domain list for display + RTC projection.
+    const uniqueByDomain = [];
+    const seenDomains = new Set();
+    for (const s of lineup) {
+        if (seenDomains.has(s.domain)) continue;
+        seenDomains.add(s.domain);
+        uniqueByDomain.push(s);
+    }
 
-    if (unique.length === 0) {
+    console.log(`🥋 Gauntlet received ${skills.length} slots → ${lineup.length} valid, ${skippedUnmappable} skipped (${uniqueByDomain.length} unique skills)`);
+    if (unmappableNames.size > 0) {
+        console.log('  ↳ unmappable skill names:', [...unmappableNames]);
+    }
+
+    retentionState.skills = lineup.map(s => ({ ...s, streak: 0, fails: 0, cleared: false, failed: false }));
+
+    if (lineup.length === 0) {
         info.textContent = '';
         container.innerHTML = '';
         empty.style.display = 'block';
@@ -36348,14 +36369,18 @@ function handleWeeklyMasteriesResponse(skills) {
         return;
     }
 
-    // Project max RTC by summing per-category rates over eligible skills.
-    const byCat = unique.reduce((acc, s) => { acc[s.category] = (acc[s.category] || 0) + 1; return acc; }, {});
+    // Project max RTC over UNIQUE skills only — the per-skill 24h cooldown
+    // means repeated slots for the same skill can't pay twice.
+    const byCat = uniqueByDomain.reduce((acc, s) => { acc[s.category] = (acc[s.category] || 0) + 1; return acc; }, {});
     const projectedRtc =
         (byCat.recent    || 0) * RTC_PER_CATEGORY.recent   +
         (byCat.touch_on  || 0) * RTC_PER_CATEGORY.touch_on +
         (byCat.retention || 0) * RTC_PER_CATEGORY.retention;
-    info.innerHTML = `<strong style="color:var(--rose-300)">${unique.length}</strong> skill${unique.length === 1 ? '' : 's'} to defend. Max reward: <strong style="color:var(--amber-400)">${projectedRtc} RTC</strong>.<br><span style="font-size:0.8rem;color:var(--slate-500)">Per-skill rates: <strong style="color:var(--emerald-400)">${RTC_PER_CATEGORY.recent} recent</strong> &middot; <strong style="color:var(--amber-400)">${RTC_PER_CATEGORY.touch_on} touch up</strong> &middot; <strong style="color:var(--sky-400)">${RTC_PER_CATEGORY.retention} long-term</strong>. Each cleared skill goes on a 24h cooldown &mdash; you can grind every Math skill you own, but a skill seen within 24 hours won&rsquo;t pay again.</span>`;
-    container.innerHTML = `<div class="gauntlet-skill-list">${unique.map(s => {
+    const slotsLabel = lineup.length === uniqueByDomain.length
+        ? `<strong style="color:var(--rose-300)">${uniqueByDomain.length}</strong> skill${uniqueByDomain.length === 1 ? '' : 's'} to defend`
+        : `<strong style="color:var(--rose-300)">${uniqueByDomain.length}</strong> unique skill${uniqueByDomain.length === 1 ? '' : 's'} across <strong style="color:var(--rose-300)">${lineup.length}</strong> rounds`;
+    info.innerHTML = `${slotsLabel}. Max reward: <strong style="color:var(--amber-400)">${projectedRtc} RTC</strong>.<br><span style="font-size:0.8rem;color:var(--slate-500)">Per-skill rates: <strong style="color:var(--emerald-400)">${RTC_PER_CATEGORY.recent} recent</strong> &middot; <strong style="color:var(--amber-400)">${RTC_PER_CATEGORY.touch_on} touch up</strong> &middot; <strong style="color:var(--sky-400)">${RTC_PER_CATEGORY.retention} long-term</strong>. Each cleared skill goes on a 24h cooldown &mdash; repeated rounds defend the same skill but only pay once per day.</span>`;
+    container.innerHTML = `<div class="gauntlet-skill-list">${uniqueByDomain.map(s => {
         const lbl = CATEGORY_LABEL[s.category] || '';
         const col = CATEGORY_COLOR[s.category] || 'var(--slate-400)';
         const badge = lbl ? `<span style="color:${col};font-size:0.7rem;font-weight:600;margin-left:0.5rem;">${lbl}</span>` : '';
@@ -36473,9 +36498,30 @@ function endRetentionGauntlet(reason) {
     stopTimer();
     endSessionTracking();
 
-    const cleared = retentionState.skills.filter(s => s.cleared);
-    const failed = retentionState.skills.filter(s => !s.cleared); // anything not cleared gets demoted
-    failed.forEach(s => { s.failed = true; });
+    const slotsCleared = retentionState.skills.filter(s => s.cleared);
+    const slotsNotCleared = retentionState.skills.filter(s => !s.cleared); // anything not cleared gets demoted
+    slotsNotCleared.forEach(s => { s.failed = true; });
+
+    // The lineup can include padded repeats (same skill across multiple
+    // slots when the student has fewer than 21 mappable mastered skills).
+    // For the parent payload — which drives skill_progress + RTC — collapse
+    // to one entry per unique skill name. A skill counts as cleared if ANY
+    // of its slots cleared (lenient: padded repeats shouldn't undo a clear
+    // the student already earned in an earlier round).
+    const aggregate = (arr) => {
+        const seen = new Set();
+        const out = [];
+        for (const s of arr) {
+            const key = s.skill || s.domain;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            out.push({ skill: s.skill, domain: s.domain, tier: s.tier, category: s.category });
+        }
+        return out;
+    };
+    const clearedKeys = new Set(slotsCleared.map(s => s.skill || s.domain));
+    const uniqueCleared = aggregate(slotsCleared);
+    const uniqueFailed = aggregate(slotsNotCleared.filter(s => !clearedKeys.has(s.skill || s.domain)));
 
     // Tell parent to update skill_progress (demotions) + award per-category RTC + log session.
     // Parent decides the actual RTC amount (per-skill 24h cooldown) and posts it back.
@@ -36484,8 +36530,8 @@ function endRetentionGauntlet(reason) {
             type: 'DOGO_GAUNTLET_COMPLETE',
             // Forward category so the parent can pay per-category rates
             // (recent=3, touch_on=2, retention=1).
-            cleared: cleared.map(s => ({ skill: s.skill, domain: s.domain, tier: s.tier, category: s.category })),
-            failed:  failed.map(s  => ({ skill: s.skill, domain: s.domain, tier: s.tier, category: s.category })),
+            cleared: uniqueCleared,
+            failed:  uniqueFailed,
             questionsAsked: retentionState.questionsAsked,
             correctCount: retentionState.correctCount,
             durationMs: retentionState.startTime ? Date.now() - retentionState.startTime : 0,
@@ -36494,10 +36540,10 @@ function endRetentionGauntlet(reason) {
         }, '*');
     }
 
-    renderRetentionResults(cleared, failed, reason);
+    renderRetentionResults(uniqueCleared, uniqueFailed, slotsCleared, slotsNotCleared, reason);
 }
 
-function renderRetentionResults(cleared, failed, reason) {
+function renderRetentionResults(uniqueCleared, uniqueFailed, slotsCleared, slotsNotCleared, reason) {
     document.getElementById('test-screen').classList.remove('active');
     const results = document.getElementById('results-screen');
     results.classList.add('active');
@@ -36510,6 +36556,7 @@ function renderRetentionResults(cleared, failed, reason) {
 
     const totalQ = retentionState.questionsAsked;
     const acc = totalQ > 0 ? Math.round((retentionState.correctCount / totalQ) * 100) : 0;
+    const totalUnique = uniqueCleared.length + uniqueFailed.length;
 
     // Relabel the "Unknown" stat as "Demoted" for this mode
     const idkLabel = document.querySelector('#stat-idk + .stat-label, #stat-idk ~ .stat-label');
@@ -36523,13 +36570,14 @@ function renderRetentionResults(cleared, failed, reason) {
     // Reuse the stat boxes
     const statTotal = document.getElementById('stat-total'); if (statTotal) statTotal.textContent = totalQ;
     const statCorrect = document.getElementById('stat-correct'); if (statCorrect) statCorrect.textContent = retentionState.correctCount;
-    const statIdk = document.getElementById('stat-idk'); if (statIdk) statIdk.textContent = failed.length;
+    const statIdk = document.getElementById('stat-idk'); if (statIdk) statIdk.textContent = uniqueFailed.length;
     const statAcc = document.getElementById('stat-accuracy'); if (statAcc) statAcc.textContent = acc + '%';
 
-    // Replace tier breakdown with skill breakdown
+    // Replace tier breakdown with per-unique-skill breakdown (dedupe padded repeats).
     const bd = document.getElementById('tier-breakdown');
     if (bd) {
-        bd.innerHTML = retentionState.skills.map(s => {
+        const allUnique = [...uniqueCleared.map(s => ({ ...s, cleared: true })), ...uniqueFailed.map(s => ({ ...s, cleared: false }))];
+        bd.innerHTML = allUnique.map(s => {
             const cls = s.cleared ? 'good' : 'poor';
             const label = s.cleared ? '✓ Cleared' : '✗ Demoted';
             return `<div class="tier-row"><span class="tier-label">${escapeHtml(s.skill)}</span><div class="tier-bar"><div class="tier-fill ${cls}" style="width:${s.cleared ? 100 : 0}%"></div></div><span class="tier-score">${label}</span></div>`;
@@ -36539,13 +36587,17 @@ function renderRetentionResults(cleared, failed, reason) {
     // Recommendations card
     const recs = document.getElementById('recommendations');
     if (recs) {
+        const padded = retentionState.skills.length !== totalUnique;
         let html = '';
-        html += `<div class="rec-item"><div class="rec-icon">🔥</div><div class="rec-content"><h4>Gauntlet ${reason === 'complete' ? 'Complete' : 'Forfeited'}</h4><p>Cleared ${cleared.length} of ${retentionState.skills.length} skills.</p></div></div>`;
+        const summary = padded
+            ? `Cleared ${uniqueCleared.length} of ${totalUnique} unique skills (${slotsCleared.length}/${retentionState.skills.length} rounds).`
+            : `Cleared ${uniqueCleared.length} of ${totalUnique} skills.`;
+        html += `<div class="rec-item"><div class="rec-icon">🔥</div><div class="rec-content"><h4>Gauntlet ${reason === 'complete' ? 'Complete' : 'Forfeited'}</h4><p>${summary}</p></div></div>`;
         // RTC line is populated asynchronously via GAUNTLET_RTC_RESULT from the parent
         // (actual amount depends on today's completion count + per-skill 24h cooldowns).
         html += `<div class="rec-item" id="gauntlet-rtc-line"><div class="rec-icon">🪙</div><div class="rec-content"><h4>RTC Reward</h4><p>Calculating…</p></div></div>`;
-        if (failed.length > 0) {
-            html += `<div class="rec-item"><div class="rec-icon">⚠️</div><div class="rec-content"><h4>${failed.length} Skill${failed.length === 1 ? '' : 's'} Demoted</h4><p>Re-train in Training Grounds or Sparring Arena to earn them back: ${failed.slice(0, 3).map(s => escapeHtml(s.skill)).join(', ')}${failed.length > 3 ? '...' : ''}.</p></div></div>`;
+        if (uniqueFailed.length > 0) {
+            html += `<div class="rec-item"><div class="rec-icon">⚠️</div><div class="rec-content"><h4>${uniqueFailed.length} Skill${uniqueFailed.length === 1 ? '' : 's'} Demoted</h4><p>Re-train in Training Grounds or Sparring Arena to earn them back: ${uniqueFailed.slice(0, 3).map(s => escapeHtml(s.skill)).join(', ')}${uniqueFailed.length > 3 ? '...' : ''}.</p></div></div>`;
         }
         recs.innerHTML = html;
     }
