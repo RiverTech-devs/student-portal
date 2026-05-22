@@ -7112,6 +7112,7 @@
             <button class="sd-tab" onclick="app.switchStudentTab(this, 'sd-notes')">Notes (${studentNotes.length})</button>
             <button class="sd-tab" onclick="app.switchStudentTab(this, 'sd-skills'); app.loadStudentSkillsTab('${student.id}')">Skill Trees</button>
             <button class="sd-tab" onclick="app.switchStudentTab(this, 'sd-activity'); app.loadStudentWeeklyActivity('${student.id}')">Weekly Activity</button>
+            <button class="sd-tab" onclick="app.switchStudentTab(this, 'sd-activity-log'); app.loadStudentActivityLog('${student.id}', '${(student.email || '').replace(/'/g, '&#39;')}')">Activity Log</button>
           </div>
 
           <!-- Tab: Overview -->
@@ -7396,6 +7397,25 @@
               Loading weekly activity...
             </div>
           </div>
+
+          <!-- Tab: Activity Log (comprehensive audit timeline) -->
+          <div class="sd-panel" id="sd-activity-log">
+            <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px;">
+              <label style="font-size: 12px; color: var(--muted);">Range:</label>
+              <select id="activity-log-range" onchange="app.loadStudentActivityLog(app._currentStudentDetailsId, app._currentStudentDetailsEmail)"
+                      style="padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font-size: 12px;">
+                <option value="7">Last 7 days</option>
+                <option value="30" selected>Last 30 days</option>
+                <option value="90">Last 90 days</option>
+                <option value="365">Last year</option>
+                <option value="0">All time</option>
+              </select>
+              <div id="activity-log-filters" style="display: flex; gap: 6px; flex-wrap: wrap; margin-left: 8px;"></div>
+            </div>
+            <div id="student-activity-log-content" style="font-size: 13px; color: var(--muted); text-align: center; padding: 20px;">
+              Loading activity log...
+            </div>
+          </div>
         `;
 
         return html;
@@ -7673,6 +7693,275 @@
           console.error('Error loading student weekly activity:', err);
           container.innerHTML = '<div style="text-align:center;padding:20px;color:var(--danger);">Error loading weekly activity.</div>';
         }
+      }
+
+      // ============================================================
+      // Student Activity Log — comprehensive per-student timeline that
+      // merges RTC, practice, strikes, notifications, notes, attendance,
+      // grades, and email events into one chronological feed for audits.
+      // ============================================================
+      async loadStudentActivityLog(studentId, studentEmail) {
+        const container = document.getElementById('student-activity-log-content');
+        if (!container) return;
+        this._currentStudentDetailsEmail = studentEmail || this._currentStudentDetailsEmail || '';
+        container.innerHTML = '<div style="text-align:center;padding:30px;color:var(--muted);">Loading activity…</div>';
+
+        const rangeDays = parseInt(document.getElementById('activity-log-range')?.value || '30', 10);
+        const sinceIso = rangeDays > 0 ? new Date(Date.now() - rangeDays * 86400000).toISOString() : null;
+        const sinceDate = rangeDays > 0 ? new Date(Date.now() - rangeDays * 86400000).toISOString().slice(0, 10) : null;
+
+        // Build queries. Each returns a list of normalized event objects:
+        // { ts, type, icon, color, title, detail, meta }. Failures degrade
+        // silently per-source so one broken table doesn't kill the view.
+        const sb = this.auth.supabase;
+        const limit = 200;
+        const queries = [
+          (async () => {
+            let q = sb.from('rtc_transactions')
+              .select('amount, transaction_type, description, created_at, reference_type')
+              .eq('user_id', studentId)
+              .order('created_at', { ascending: false })
+              .limit(limit);
+            if (sinceIso) q = q.gte('created_at', sinceIso);
+            const { data } = await q;
+            return (data || []).map(r => ({
+              ts: r.created_at,
+              type: 'rtc',
+              icon: r.amount >= 0 ? '🪙' : '💸',
+              color: r.amount >= 0 ? '#10b981' : '#ef4444',
+              title: `${r.amount >= 0 ? '+' : ''}${r.amount} RTC · ${r.transaction_type}`,
+              detail: r.description || '',
+              meta: r.reference_type
+            }));
+          })(),
+          (async () => {
+            let q = sb.from('math_dojo_sessions')
+              .select('mode, total_questions, total_correct, accuracy, duration_seconds, created_at')
+              .eq('user_id', studentId)
+              .order('created_at', { ascending: false })
+              .limit(limit);
+            if (sinceIso) q = q.gte('created_at', sinceIso);
+            const { data } = await q;
+            return (data || []).map(r => ({
+              ts: r.created_at,
+              type: 'practice',
+              icon: '🥋',
+              color: '#3b82f6',
+              title: `Math Dojo · ${r.mode || 'practice'}`,
+              detail: `${r.total_correct || 0}/${r.total_questions || 0} correct (${r.accuracy || 0}%)${r.duration_seconds ? ' · ' + Math.round((r.duration_seconds || 0) / 60) + ' min' : ''}`,
+              meta: null
+            }));
+          })(),
+          (async () => {
+            let q = sb.from('skill_practice_sessions')
+              .select('subject, skill_name, score, correct_count, total_count, source_type, game_id, started_at')
+              .eq('user_id', studentId)
+              .order('started_at', { ascending: false })
+              .limit(limit);
+            if (sinceIso) q = q.gte('started_at', sinceIso);
+            const { data } = await q;
+            return (data || []).map(r => ({
+              ts: r.started_at,
+              type: 'practice',
+              icon: r.source_type === 'game' ? '🎮' : '✏️',
+              color: '#3b82f6',
+              title: `${r.source_type === 'game' ? r.game_id : 'Skill practice'} · ${r.skill_name || r.subject || '—'}`,
+              detail: `Score ${r.score || 0}${r.total_count ? ` (${r.correct_count || 0}/${r.total_count})` : ''}`,
+              meta: r.source_type
+            }));
+          })(),
+          (async () => {
+            let q = sb.from('student_strikes')
+              .select('reason, issued_by, created_at')
+              .eq('student_id', studentId)
+              .order('created_at', { ascending: false })
+              .limit(limit);
+            if (sinceIso) q = q.gte('created_at', sinceIso);
+            const { data } = await q;
+            return (data || []).map(r => ({
+              ts: r.created_at,
+              type: 'strike',
+              icon: '⚠️',
+              color: '#ef4444',
+              title: 'Disciplinary strike',
+              detail: r.reason || '',
+              meta: null
+            }));
+          })(),
+          (async () => {
+            let q = sb.from('notifications')
+              .select('type, title, message, created_at, is_read')
+              .eq('user_id', studentId)
+              .order('created_at', { ascending: false })
+              .limit(limit);
+            if (sinceIso) q = q.gte('created_at', sinceIso);
+            const { data } = await q;
+            return (data || []).map(r => ({
+              ts: r.created_at,
+              type: 'notification',
+              icon: '🔔',
+              color: '#8b5cf6',
+              title: r.title || r.type,
+              detail: r.message || '',
+              meta: r.is_read ? 'read' : 'unread'
+            }));
+          })(),
+          (async () => {
+            let q = sb.from('student_notes')
+              .select('sentiment, category, custom_category, note, teacher_id, created_at, classes(name)')
+              .eq('student_id', studentId)
+              .order('created_at', { ascending: false })
+              .limit(limit);
+            if (sinceIso) q = q.gte('created_at', sinceIso);
+            const { data } = await q;
+            return (data || []).map(r => ({
+              ts: r.created_at,
+              type: 'note',
+              icon: r.sentiment === 'positive' ? '👍' : r.sentiment === 'negative' ? '👎' : '📝',
+              color: r.sentiment === 'positive' ? '#10b981' : r.sentiment === 'negative' ? '#f59e0b' : '#64748b',
+              title: `Note · ${r.custom_category || r.category}`,
+              detail: r.note || '',
+              meta: r.classes?.name || null
+            }));
+          })(),
+          (async () => {
+            let q = sb.from('class_attendance')
+              .select('status, date, notes, classes(name)')
+              .eq('student_id', studentId)
+              .order('date', { ascending: false })
+              .limit(limit);
+            if (sinceDate) q = q.gte('date', sinceDate);
+            const { data } = await q;
+            const statusIcon = { present: '✅', absent: '❌', late: '⏰', left_early: '🚪', late_left_early: '⏰🚪' };
+            return (data || []).map(r => ({
+              // class_attendance only has DATE, not TIMESTAMP — use noon for stable sort
+              ts: r.date + 'T12:00:00Z',
+              type: 'attendance',
+              icon: statusIcon[r.status] || '📅',
+              color: r.status === 'present' ? '#10b981' : r.status === 'absent' ? '#ef4444' : '#f59e0b',
+              title: `Attendance · ${r.status.replace(/_/g, ' ')}`,
+              detail: (r.classes?.name || '') + (r.notes ? ` — ${r.notes}` : ''),
+              meta: null
+            }));
+          })(),
+          (async () => {
+            let q = sb.from('homework_assignments')
+              .select('title, assignment_type, final_score, updated_at, due_date')
+              .eq('student_id', studentId)
+              .not('final_score', 'is', null)
+              .order('updated_at', { ascending: false })
+              .limit(limit);
+            if (sinceIso) q = q.gte('updated_at', sinceIso);
+            const { data } = await q;
+            return (data || []).map(r => ({
+              ts: r.updated_at,
+              type: 'grade',
+              icon: '🎓',
+              color: r.final_score >= 80 ? '#10b981' : r.final_score >= 60 ? '#f59e0b' : '#ef4444',
+              title: `Graded · ${r.title || 'assignment'}`,
+              detail: `Score ${r.final_score}% · ${r.assignment_type || ''}`,
+              meta: null
+            }));
+          })(),
+          (async () => {
+            if (!studentEmail) return [];
+            let q = sb.from('email_log')
+              .select('email_type, subject, status, sent_at')
+              .eq('recipient_email', studentEmail)
+              .order('sent_at', { ascending: false })
+              .limit(limit);
+            if (sinceIso) q = q.gte('sent_at', sinceIso);
+            const { data } = await q;
+            return (data || []).map(r => ({
+              ts: r.sent_at,
+              type: 'email',
+              icon: '📧',
+              color: r.status === 'success' ? '#3b82f6' : '#ef4444',
+              title: `Email · ${r.email_type}`,
+              detail: r.subject || '',
+              meta: r.status === 'success' ? null : 'failed'
+            }));
+          })()
+        ];
+
+        let allEvents;
+        try {
+          const results = await Promise.all(queries.map(p => p.catch(err => { console.warn('Activity log source failed:', err); return []; })));
+          allEvents = results.flat().filter(e => e.ts).sort((a, b) => (a.ts > b.ts ? -1 : a.ts < b.ts ? 1 : 0));
+        } catch (err) {
+          container.innerHTML = `<div style="color:var(--danger);padding:20px;text-align:center;">Error loading activity log: ${err.message}</div>`;
+          return;
+        }
+
+        // Build filter chips. Persist active set on the app instance so
+        // re-renders (range changes) keep the user's selection.
+        if (!this._activityLogFilters) {
+          this._activityLogFilters = new Set(['rtc', 'practice', 'strike', 'notification', 'note', 'attendance', 'grade', 'email']);
+        }
+        const FILTERS = [
+          { key: 'rtc', label: '🪙 RTC' },
+          { key: 'practice', label: '🥋 Practice' },
+          { key: 'strike', label: '⚠️ Strikes' },
+          { key: 'notification', label: '🔔 Notifications' },
+          { key: 'note', label: '📝 Notes' },
+          { key: 'attendance', label: '📅 Attendance' },
+          { key: 'grade', label: '🎓 Grades' },
+          { key: 'email', label: '📧 Emails' }
+        ];
+        const counts = allEvents.reduce((m, e) => { m[e.type] = (m[e.type] || 0) + 1; return m; }, {});
+        const filterStrip = document.getElementById('activity-log-filters');
+        if (filterStrip) {
+          filterStrip.innerHTML = FILTERS.map(f => {
+            const on = this._activityLogFilters.has(f.key);
+            const n = counts[f.key] || 0;
+            return `<button onclick="app.toggleActivityLogFilter('${f.key}')" style="padding: 4px 9px; font-size: 11px; border-radius: 99px; border: 1px solid var(--border); background: ${on ? 'var(--accent)' : 'var(--bg)'}; color: ${on ? 'white' : 'var(--muted)'}; cursor: pointer; opacity: ${n === 0 ? '0.5' : '1'};">${f.label} <span style="opacity:0.7;">${n}</span></button>`;
+          }).join('');
+        }
+
+        const visible = allEvents.filter(e => this._activityLogFilters.has(e.type));
+        if (visible.length === 0) {
+          container.innerHTML = `<div style="text-align:center;padding:30px;color:var(--muted);font-style:italic;">No activity in this range${allEvents.length > 0 ? ' for the selected categories' : ''}.</div>`;
+          return;
+        }
+
+        // Group by day for readability
+        const byDay = new Map();
+        for (const ev of visible) {
+          const day = (ev.ts || '').slice(0, 10);
+          if (!byDay.has(day)) byDay.set(day, []);
+          byDay.get(day).push(ev);
+        }
+
+        const esc = (s) => String(s || '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+        let html = `<div style="max-height: 480px; overflow-y: auto; padding-right: 4px;">`;
+        for (const [day, evs] of byDay) {
+          const d = new Date(day + 'T12:00:00Z');
+          const dayLabel = d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+          html += `<div style="font-size: 11px; color: var(--muted); font-weight: 600; margin: 14px 0 6px; text-transform: uppercase; letter-spacing: 0.5px;">${dayLabel} <span style="color: var(--border);">·</span> <span style="font-weight: 400;">${evs.length} event${evs.length === 1 ? '' : 's'}</span></div>`;
+          for (const ev of evs) {
+            const t = new Date(ev.ts).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+            html += `
+              <div style="display: grid; grid-template-columns: 60px 28px 1fr; gap: 10px; align-items: start; padding: 8px 10px; border-left: 3px solid ${ev.color}; background: var(--bg); margin-bottom: 4px; border-radius: 4px;">
+                <div style="font-size: 11px; color: var(--muted); padding-top: 2px;">${t}</div>
+                <div style="font-size: 16px;">${ev.icon}</div>
+                <div>
+                  <div style="font-size: 13px; color: var(--text); font-weight: 500;">${esc(ev.title)}${ev.meta ? ` <span style="font-size: 10px; color: var(--muted); margin-left: 6px;">${esc(ev.meta)}</span>` : ''}</div>
+                  ${ev.detail ? `<div style="font-size: 12px; color: var(--muted); margin-top: 2px;">${esc(ev.detail)}</div>` : ''}
+                </div>
+              </div>
+            `;
+          }
+        }
+        html += `</div>`;
+        html += `<div style="font-size: 11px; color: var(--muted); margin-top: 10px; text-align: right;">${visible.length} of ${allEvents.length} event${allEvents.length === 1 ? '' : 's'} shown · ${rangeDays === 0 ? 'all time' : `last ${rangeDays} day${rangeDays === 1 ? '' : 's'}`}</div>`;
+        container.innerHTML = html;
+      }
+
+      toggleActivityLogFilter(key) {
+        if (!this._activityLogFilters) return;
+        if (this._activityLogFilters.has(key)) this._activityLogFilters.delete(key);
+        else this._activityLogFilters.add(key);
+        this.loadStudentActivityLog(this._currentStudentDetailsId, this._currentStudentDetailsEmail);
       }
 
       async openStudentSkillTree(studentId) {
