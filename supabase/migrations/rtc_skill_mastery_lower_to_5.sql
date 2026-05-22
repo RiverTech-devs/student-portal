@@ -70,7 +70,7 @@ BEGIN
     ) THEN
       PERFORM public.process_rtc_transaction(
         p_user_id := v_user_row.user_id,
-        p_amount := -(v_user_row.award_count * 45),
+        p_amount := (-(v_user_row.award_count * 45))::INTEGER,
         p_transaction_type := 'admin_adjustment',
         p_description := 'Skill mastery reward corrected from 50 to 5 (' || v_user_row.award_count || ' past awards)',
         p_reference_id := 'mastery_revert_2026_05_22:' || v_user_row.user_id::TEXT,
