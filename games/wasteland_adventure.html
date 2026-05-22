@@ -3268,28 +3268,6 @@
             return skillSystem.playerSkills[skillName]?.mastery || 0;
         }
 
-        // Check if player has any skill in a category
-        function hasSkillCategory(category) {
-            if (skillSystem.isGuestMode) return true;
-
-            for (const [skillName, mapping] of Object.entries(SKILL_MAPPING)) {
-                if (mapping.category === category && hasSkill(skillName)) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        // Get the skill name for a category
-        function getSkillForCategory(category) {
-            for (const [skillName, mapping] of Object.entries(SKILL_MAPPING)) {
-                if (mapping.category === category) {
-                    return skillName;
-                }
-            }
-            return null;
-        }
-
         // Grade level order for comparison
         const GRADE_ORDER = ['K', 'K-1', '1', '2', '3', '4', '5', '5-6', '6', '7', '7-8', '8', '9', '9-12', '10', '11', '12'];
 
@@ -3481,80 +3459,6 @@
             updateXPDisplay();
         }
 
-        // Get available solution options for a challenge
-        function getSolutionOptions(challenge) {
-            // challenge = {
-            //   title: "Locked Door",
-            //   options: [
-            //     { id: 'force', label: 'Force it open', skill: 'Basic Subtraction', problem: {...} },
-            //     { id: 'pick', label: 'Pick the lock', skill: 'Multiplication', problem: {...} },
-            //     ...
-            //   ]
-            // }
-
-            return challenge.options.map(option => {
-                const available = hasSkill(option.skill);
-                const mastery = getSkillMastery(option.skill);
-
-                return {
-                    ...option,
-                    available: available,
-                    mastery: mastery,
-                    locked: !available,
-                    masteryBonus: mastery >= 80 // Mastered skills might get bonuses
-                };
-            });
-        }
-
-        // Display solution options UI (Fallout-style)
-        function showSolutionOptions(challenge, onSelect) {
-            const options = getSolutionOptions(challenge);
-
-            let html = '<div class="solution-options">';
-            html += '<h3 class="solution-title">' + challenge.title + '</h3>';
-            html += '<p class="solution-description">' + (challenge.description || 'Choose your approach:') + '</p>';
-
-            options.forEach((opt, index) => {
-                const statusClass = opt.locked ? 'locked' : (opt.masteryBonus ? 'mastered' : 'available');
-                const statusIcon = opt.locked ? '🔒' : (opt.masteryBonus ? '⭐' : '✓');
-
-                html += '<div class="solution-option ' + statusClass + '" data-index="' + index + '">';
-                html += '<div class="option-header">';
-                html += '<span class="option-icon">' + statusIcon + '</span>';
-                html += '<span class="option-label">' + opt.label + '</span>';
-                html += '</div>';
-                html += '<div class="option-skill">';
-                html += 'Requires: <strong>' + opt.skill + '</strong>';
-                if (opt.locked) {
-                    html += ' <span class="skill-locked">(Not Unlocked)</span>';
-                } else if (opt.masteryBonus) {
-                    html += ' <span class="skill-mastered">(Mastered - Bonus!)</span>';
-                }
-                html += '</div>';
-                if (!opt.locked && opt.preview) {
-                    html += '<div class="option-preview">' + opt.preview + '</div>';
-                }
-                html += '</div>';
-            });
-
-            html += '</div>';
-
-            // Show in a modal/popup
-            const overlay = document.createElement('div');
-            overlay.className = 'solution-overlay';
-            overlay.innerHTML = html;
-            document.body.appendChild(overlay);
-
-            // Add click handlers
-            overlay.querySelectorAll('.solution-option:not(.locked)').forEach(el => {
-                el.addEventListener('click', function() {
-                    const index = parseInt(this.dataset.index);
-                    document.body.removeChild(overlay);
-                    onSelect(options[index]);
-                });
-            });
-        }
-
         // ============================================
         // VISUAL MATH SYSTEM (K-2 Support)
         // ============================================
@@ -3587,17 +3491,6 @@
             var dollars = Math.floor(cents / 100);
             var remainingCents = Math.abs(cents % 100);
             return '$' + dollars + '.' + (remainingCents < 10 ? '0' : '') + remainingCents;
-        }
-
-        // Parse money string like "$5.25" or "5.25" to cents
-        function parseMoney(str) {
-            if (typeof str === 'number') return Math.round(str * 100);
-            str = str.replace('$', '').trim();
-            var parts = str.split('.');
-            var dollars = parseInt(parts[0]) || 0;
-            var cents = parseInt(parts[1]) || 0;
-            if (parts[1] && parts[1].length === 1) cents *= 10; // Handle "5.5" as $5.50
-            return dollars * 100 + cents;
         }
 
         // Create a visual math problem overlay
@@ -4195,14 +4088,6 @@
             }, 1500);
         }
 
-        // Close visual math without submitting
-        function closeVisualMath() {
-            const overlay = document.getElementById('visual-math-overlay');
-            if (overlay && overlay.parentElement) {
-                document.body.removeChild(overlay);
-            }
-        }
-
         // Helper: Generate a K-2 appropriate math problem
         function generateVisualMathProblem(category, difficulty) {
             // difficulty: 'K', '1', '2'
@@ -4729,11 +4614,6 @@
             openDrinkMenu();
         }
 
-        // Legacy function - now redirects to startExploration
-        function leaveBase() {
-            startExploration();
-        }
-
         // ============ FIELD CAMPING SYSTEM ============
         // Allows players to set up camp in the field using camping equipment
 
@@ -4830,13 +4710,35 @@
                 context: 'camping',
                 onSuccess: function() {
                     gameState.player.vitals.energy = Math.min(100, gameState.player.vitals.energy + totalRest);
-                    // Small hunger/thirst drain from time passing
+                    // Small hunger/thirst drain from time passing — track potential overflow
+                    var vitalsAtZero = [];
+                    if (gameState.player.vitals.hunger - 5 < 0) vitalsAtZero.push('hunger');
+                    if (gameState.player.vitals.thirst - 8 < 0) vitalsAtZero.push('thirst');
                     gameState.player.vitals.hunger = Math.max(0, gameState.player.vitals.hunger - 5);
                     gameState.player.vitals.thirst = Math.max(0, gameState.player.vitals.thirst - 8);
 
                     // Degrade camping equipment
                     degradeCampingEquipment('Camping Set', 5);
                     if (hasSleepingBag()) degradeCampingEquipment('Sleeping Bag', 3);
+
+                    updateVitalsDisplay();
+                    checkSurvivalRecovery();
+
+                    var continueFn = function() {
+                        openFieldCamp();
+                    };
+
+                    // If rest would have pushed vitals under 0, fire saves first
+                    if (vitalsAtZero.length > 0) {
+                        triggerSurvivalSaves(vitalsAtZero, 0);
+                        var origCloseSave = closePopup;
+                        closePopup = function() {
+                            document.getElementById('popup-overlay').classList.remove('active');
+                            closePopup = origCloseSave;
+                            continueFn();
+                        };
+                        return;
+                    }
 
                     showPopup(
                         '<strong>😴 RESTED!</strong><br><br>' +
@@ -4847,20 +4749,40 @@
                         'success',
                         'WELL RESTED'
                     );
-                    updateVitalsDisplay();
 
                     var originalClose = closePopup;
                     closePopup = function() {
                         document.getElementById('popup-overlay').classList.remove('active');
                         closePopup = originalClose;
-                        openFieldCamp();
+                        continueFn();
                     };
                 },
                 onFailure: function() {
                     var partialRest = Math.floor(totalRest / 2);
                     gameState.player.vitals.energy = Math.min(100, gameState.player.vitals.energy + partialRest);
+                    var vitalsAtZero = [];
+                    if (gameState.player.vitals.hunger - 5 < 0) vitalsAtZero.push('hunger');
+                    if (gameState.player.vitals.thirst - 8 < 0) vitalsAtZero.push('thirst');
                     gameState.player.vitals.hunger = Math.max(0, gameState.player.vitals.hunger - 5);
                     gameState.player.vitals.thirst = Math.max(0, gameState.player.vitals.thirst - 8);
+
+                    updateVitalsDisplay();
+                    checkSurvivalRecovery();
+
+                    var continueFn = function() {
+                        openFieldCamp();
+                    };
+
+                    if (vitalsAtZero.length > 0) {
+                        triggerSurvivalSaves(vitalsAtZero, 0);
+                        var origCloseSave = closePopup;
+                        closePopup = function() {
+                            document.getElementById('popup-overlay').classList.remove('active');
+                            closePopup = origCloseSave;
+                            continueFn();
+                        };
+                        return;
+                    }
 
                     showPopup(
                         '<strong>Restless Sleep</strong><br><br>' +
@@ -4869,13 +4791,12 @@
                         'info',
                         'POOR REST'
                     );
-                    updateVitalsDisplay();
 
                     var originalClose = closePopup;
                     closePopup = function() {
                         document.getElementById('popup-overlay').classList.remove('active');
                         closePopup = originalClose;
-                        openFieldCamp();
+                        continueFn();
                     };
                 }
             });
@@ -5399,6 +5320,8 @@
                     gameState.player.hp += hpRecovery;
                     updateBaseUI();
                     updateInventoryDisplay();
+                    updateVitalsDisplay();
+                    updateBasePlayerStats();
                     checkSurvivalRecovery();
                     showPopup(
                         '<strong>Well Rested!</strong><br><br>' +
@@ -5412,6 +5335,8 @@
                     // Partial rest
                     gameState.player.vitals.energy = Math.min(100, currentEnergy + Math.floor(restAmount / 2));
                     updateBaseUI();
+                    updateVitalsDisplay();
+                    updateBasePlayerStats();
                     checkSurvivalRecovery();
                     showPopup('Restless sleep... Only partial recovery.', 'info', 'POOR REST');
                 }
@@ -7744,18 +7669,6 @@
             showChallengeByType(type, onComplete);
         }
 
-        // Get summary of player's math progress this session
-        function getSessionStats() {
-            return {
-                problemsAttempted: skillSystem.problemsAttempted,
-                problemsCorrect: skillSystem.problemsCorrect,
-                accuracy: skillSystem.problemsAttempted > 0 ?
-                    Math.round((skillSystem.problemsCorrect / skillSystem.problemsAttempted) * 100) : 0,
-                sessionDuration: skillSystem.sessionStartTime ?
-                    Math.round((new Date() - skillSystem.sessionStartTime) / 1000 / 60) : 0
-            };
-        }
-
         // Initialize on page load
         document.addEventListener('DOMContentLoaded', function() {
             initializeSkillSystem();
@@ -8736,17 +8649,6 @@
             dismissTutorialTip();
         }
 
-        function enableTutorial() {
-            tutorialState.enabled = true;
-            saveTutorialState();
-        }
-
-        function resetTutorial() {
-            tutorialState.enabled = true;
-            tutorialState.shownTips = {};
-            saveTutorialState();
-        }
-
         // ============ GUIDE / HELP SYSTEM ============
         function openGuide(tabId) {
             document.getElementById('guide-overlay').classList.add('active');
@@ -8829,7 +8731,8 @@
                         bestStreak: gameState.player.bestStreak,
                         totalCorrect: gameState.player.totalCorrect,
                         totalAttempted: gameState.player.totalAttempted,
-                        vitals: gameState.player.vitals
+                        vitals: gameState.player.vitals,
+                        survivalStrikes: gameState.player.survivalStrikes || 0
                     },
                     base: {
                         established: baseState.established,
@@ -8937,6 +8840,7 @@
                         energy: 100,
                         warmth: 75
                     };
+                    gameState.player.survivalStrikes = saveData.player.survivalStrikes || 0;
                 }
 
                 // Restore base state
@@ -9107,13 +9011,6 @@
             durability1: false,
             durability2: false
         };
-
-        function resetRevealedStats() {
-            revealedStats.weight = false;
-            revealedStats.durability1 = false;
-            revealedStats.durability2 = false;
-            updateInventoryDisplay();
-        }
 
         function calculateWeightCheck() {
             // Build weight calculation problem
@@ -10127,19 +10024,6 @@
             });
         }
 
-        // Check if weapon needs repair warning
-        function getWeaponDurabilityWarning() {
-            var dur1 = gameState.player.weaponDurability ? gameState.player.weaponDurability.slot1 : 100;
-            var dur2 = gameState.player.weaponDurability ? gameState.player.weaponDurability.slot2 : 100;
-
-            if (dur1 <= 25 || dur2 <= 25) {
-                return 'critical';
-            } else if (dur1 <= 50 || dur2 <= 50) {
-                return 'warning';
-            }
-            return null;
-        }
-
         // ============ MEAT SPOILAGE SYSTEM ============
         // Raw meat and cooked meat spoil over time
 
@@ -10219,16 +10103,6 @@
             }
 
             gameState.player.meatTimestamps = newTimestamps;
-        }
-
-        // Mark new meat with timestamp
-        function markMeatAcquired(itemName) {
-            if (itemName === 'Raw Meat' || itemName === 'Cooked Meat') {
-                if (!gameState.player.meatTimestamps) {
-                    gameState.player.meatTimestamps = {};
-                }
-                reindexMeatTimestamps();
-            }
         }
 
         // ============ WEAPON ACQUISITION CHOICE ============
@@ -15098,22 +14972,6 @@
             return 1.0;
         }
 
-        // Get vitals status text for combat UI
-        function getVitalsStatusText() {
-            if (!gameState.player.vitals) return '';
-
-            var v = gameState.player.vitals;
-            var status = [];
-
-            if (v.hunger < 30) status.push('🍖 Hungry');
-            if (v.thirst < 30) status.push('💧 Thirsty');
-            if (v.energy < 30) status.push('😴 Exhausted');
-            if (v.warmth < 30) status.push('🥶 Cold');
-            if (v.warmth > 80) status.push('🥵 Hot');
-
-            return status.join(' | ');
-        }
-
         // Open eat menu - show available food items
         function openEatMenu() {
             var foodItems = gameState.player.inventory.filter(function(item) {
@@ -15249,13 +15107,19 @@
                         gameState.player.vitals[e.vital] = e.newValue;
                     });
                     if (consumable.hp) {
-                        gameState.player.hp = Math.max(1, Math.min(gameState.player.maxHp, gameState.player.hp + consumable.hp));
+                        gameState.player.hp = Math.max(0, Math.min(gameState.player.maxHp, gameState.player.hp + consumable.hp));
                     }
 
                     updateInventoryDisplay();
                     updateVitalsDisplay();
                     if (travelState.atBase) updateBasePlayerStats();
                     checkSurvivalRecovery();
+
+                    // Negative-HP food (e.g. raw meat) can now actually kill
+                    if (gameState.player.hp <= 0 && !gameState.combat) {
+                        defeat();
+                        return;
+                    }
 
                     var resultMsg = 'You consumed ' + itemName + '!<br><br>';
                     effects.forEach(function(e) {
@@ -15279,100 +15143,6 @@
                     if (travelState.atBase) updateBasePlayerStats();
                     checkSurvivalRecovery();
                     showPopup('Wrong calculation! You only absorbed half the nutrients.', 'error', 'REDUCED EFFECT');
-                }
-            });
-        }
-
-        // Try to sleep/rest
-        function tryToSleep() {
-            if (gameState.combat) {
-                showPopup('You cannot sleep during combat!', 'error', 'CANNOT REST');
-                return;
-            }
-
-            var energy = gameState.player.vitals.energy;
-            var hunger = gameState.player.vitals.hunger;
-            var thirst = gameState.player.vitals.thirst;
-
-            // Check if too hungry/thirsty to sleep well
-            var warnings = [];
-            if (hunger < 20) warnings.push('You\'re too hungry to sleep well.');
-            if (thirst < 20) warnings.push('You\'re too thirsty to rest properly.');
-
-            var restAmount = 40; // Base rest recovery
-            if (warnings.length > 0) restAmount = 20; // Reduced if hungry/thirsty
-
-            var html = '<strong>💤 REST</strong><br><br>';
-
-            if (energy >= 90) {
-                html += 'You\'re not tired enough to sleep.';
-                html += '<br><br><button class="btn" onclick="closePopup()">OK</button>';
-                showPopup(html, 'info', 'REST');
-                return;
-            }
-
-            if (warnings.length > 0) {
-                html += '<span style="color: #ffa500;">' + warnings.join('<br>') + '</span><br><br>';
-            }
-
-            html += 'Current energy: ' + Math.round(energy) + '<br>';
-            html += 'Rest will restore: +' + restAmount + ' energy<br>';
-            html += 'Time passes: vitals will decay slightly<br><br>';
-            html += '<button class="btn" onclick="performRest(' + restAmount + ')">REST NOW</button> ';
-            html += '<button class="btn" onclick="closePopup()">CANCEL</button>';
-
-            showPopup(html, 'info', 'REST');
-        }
-
-        // Perform rest action
-        function performRest(restAmount) {
-            closePopup();
-
-            var currentEnergy = gameState.player.vitals.energy;
-            var newEnergy = Math.min(100, currentEnergy + restAmount);
-
-            requireCalculation({
-                title: '💤 RESTING',
-                description: 'You settle down to rest...<br><br>Current energy: ' + Math.round(currentEnergy) + '<br>Rest bonus: +' + restAmount,
-                formula: Math.round(currentEnergy) + ' + ' + restAmount + ' = ? (max 100)',
-                answer: newEnergy,
-                skill: 'Basic Addition',
-                context: 'vitals',
-                onSuccess: function() {
-                    gameState.player.vitals.energy = newEnergy;
-
-                    // Time passes - vitals decay
-                    gameState.player.vitals.hunger = Math.max(0, gameState.player.vitals.hunger - 10);
-                    gameState.player.vitals.thirst = Math.max(0, gameState.player.vitals.thirst - 15);
-
-                    // Warmth normalizes toward 50
-                    if (gameState.player.vitals.warmth > 50) {
-                        gameState.player.vitals.warmth = Math.max(50, gameState.player.vitals.warmth - 10);
-                    }
-
-                    // Small HP recovery if well-fed
-                    if (gameState.player.vitals.hunger > 50 && gameState.player.vitals.thirst > 50) {
-                        gameState.player.hp = Math.min(gameState.player.maxHp, gameState.player.hp + 10);
-                    }
-
-                    updateInventoryDisplay();
-
-                    showPopup(
-                        'You feel rested!<br><br>' +
-                        '💤 Energy: +' + restAmount + '<br>' +
-                        '🍖 Hunger: -10<br>' +
-                        '💧 Thirst: -15',
-                        'success',
-                        'RESTED'
-                    );
-                },
-                onFailure: function() {
-                    // Restless sleep - less effective
-                    gameState.player.vitals.energy = Math.min(100, currentEnergy + Math.floor(restAmount / 2));
-                    gameState.player.vitals.hunger = Math.max(0, gameState.player.vitals.hunger - 10);
-                    gameState.player.vitals.thirst = Math.max(0, gameState.player.vitals.thirst - 15);
-                    updateInventoryDisplay();
-                    showPopup('Restless sleep... Only partial recovery.', 'error', 'POOR REST');
                 }
             });
         }
@@ -16359,8 +16129,8 @@
         
         function generateSneakProblem() {
             var grade = getPlayerGradeLevel();
-            var question, answer, xpReward;
-            
+            var question, answer, xpReward, successChance;
+
             if (grade === 'K-1') {
                 var stealth = Math.floor(Math.random() * 5) + 3;
                 var noise = Math.floor(Math.random() * 3) + 1;
@@ -16370,6 +16140,8 @@
                 question += 'Noise you made: ' + noise + '<br><br>';
                 question += '<strong>' + stealth + ' - ' + noise + ' = ?</strong>';
                 xpReward = 8;
+                // K-1: scale the stealth advantage to a % (clamped 30-90)
+                successChance = Math.max(30, Math.min(90, 40 + answer * 10));
             } else if (grade === '2') {
                 var base = 50;
                 var bonus = Math.floor(Math.random() * 20) + 10;
@@ -16381,6 +16153,7 @@
                 question += 'Enemy alertness: -' + penalty + '%<br><br>';
                 question += '<strong>' + base + ' + ' + bonus + ' - ' + penalty + ' = ?</strong>';
                 xpReward = 12;
+                successChance = answer; // Answer IS the success %
             } else if (grade === '3') {
                 var enemies = Math.floor(Math.random() * 4) + 2;
                 var detectChance = Math.floor(Math.random() * 10) + 5;
@@ -16390,6 +16163,7 @@
                 question += 'Each has ' + detectChance + '% detection chance<br><br>';
                 question += 'Total detection risk:<br><strong>' + enemies + ' × ' + detectChance + ' = ?</strong>';
                 xpReward = 15;
+                successChance = Math.max(10, Math.min(95, 100 - answer)); // Inverse of detection risk
             } else if (grade === '4') {
                 var base = 60;
                 var modifier = Math.floor(Math.random() * 5) + 2;
@@ -16400,6 +16174,7 @@
                 question += 'Difficulty multiplier: ' + modifier + ' × 5 = ' + penalty + '<br><br>';
                 question += 'Final chance:<br><strong>' + base + ' - ' + penalty + ' = ?</strong>';
                 xpReward = 20;
+                successChance = answer; // Answer IS the success %
             } else if (grade === '5-6') {
                 var base = 80;
                 var reduction = 25;
@@ -16411,6 +16186,7 @@
                 question += reduction + '% of ' + base + ' = ' + amount + '<br>';
                 question += '<strong>' + base + ' - ' + amount + ' = ?</strong>';
                 xpReward = 25;
+                successChance = answer; // Answer IS the success %
             } else {
                 var perception = Math.floor(Math.random() * 5) + 3;
                 var stealth = Math.floor(Math.random() * 5) + 5;
@@ -16422,9 +16198,11 @@
                 question += '√(' + perception + '² + ' + stealth + '²) = √' + distSquared + '<br><br>';
                 question += '<strong>= ? (round to 1 decimal)</strong>';
                 xpReward = 30;
+                // Larger detection vector = lower success. Anchor 70% at distance 8.
+                successChance = Math.max(20, Math.min(90, Math.round(100 - answer * 4)));
             }
-            
-            return { question: question, answer: answer, xpReward: xpReward };
+
+            return { question: question, answer: answer, xpReward: xpReward, successChance: successChance };
         }
         
         function generateFleeProblem() {
@@ -16516,12 +16294,14 @@
                 if (correct) {
                     var xpText = awardXP(gameState.currentProblem.xpReward, 'sneak math');
                     var roll = Math.random() * 100;
-                    if (roll < 55) {
+                    var chance = gameState.currentProblem.successChance != null ? gameState.currentProblem.successChance : 55;
+                    if (roll < chance) {
                         // Check if we're at a location - if so, can still search but enemies remain
                         var atLocation = gameState.inLocation && currentLocation;
                         showPopup(
                             '<strong>🤫 SNEAKED PAST!</strong><br><br>' +
-                            'You successfully avoided the enemy!' +
+                            'You successfully avoided the enemy!<br>' +
+                            '<span style="color: #888;">Roll: ' + Math.floor(roll) + ' vs ' + chance + '%</span>' +
                             (atLocation ? '<br><span style="color: #ff0;">You can search quickly, but enemies are still here!</span>' : '') +
                             '<br><br>' + xpText,
                             'success',
@@ -16539,7 +16319,7 @@
                             }
                         };
                     } else {
-                        showExplorationMessage('Detected despite good math! Roll: ' + Math.floor(roll), 'error');
+                        showExplorationMessage('Detected despite good math! Roll: ' + Math.floor(roll) + ' vs ' + chance + '%', 'error');
                         setTimeout(startCombat, 1500);
                     }
                 } else {
@@ -16737,100 +16517,6 @@
                 default:
                     gameState.combat.xpTracker.combat.push(entry);
             }
-        }
-        
-        // Get consolidated XP summary for end of combat
-        function getCombatXPSummary() {
-            if (!gameState.combat || !gameState.combat.xpTracker) {
-                return { total: 0, breakdown: [], formula: '0' };
-            }
-            
-            var tracker = gameState.combat.xpTracker;
-            var breakdown = [];
-            var formulaParts = [];
-            var total = 0;
-            
-            // Tactics XP (movement, positioning)
-            if (tracker.tactics.length > 0) {
-                var tacticsXP = tracker.tactics.reduce(function(sum, e) { return sum + e.amount; }, 0);
-                var tacticsCount = tracker.tactics.length;
-                var tacticsAvg = Math.round(tacticsXP / tacticsCount);
-                breakdown.push({
-                    category: '🚶 Tactics',
-                    count: tacticsCount,
-                    perItem: tacticsAvg,
-                    subtotal: tacticsXP,
-                    details: tracker.tactics.map(function(e) { return e.reason; }).join(', ')
-                });
-                formulaParts.push(tacticsCount + '×' + tacticsAvg);
-                total += tacticsXP;
-            }
-            
-            // Combat XP (attacks, damage)
-            if (tracker.combat.length > 0) {
-                var combatXP = tracker.combat.reduce(function(sum, e) { return sum + e.amount; }, 0);
-                var combatCount = tracker.combat.length;
-                var combatAvg = Math.round(combatXP / combatCount);
-                breakdown.push({
-                    category: '⚔️ Combat',
-                    count: combatCount,
-                    perItem: combatAvg,
-                    subtotal: combatXP,
-                    details: tracker.combat.map(function(e) { return e.reason; }).join(', ')
-                });
-                formulaParts.push(combatCount + '×' + combatAvg);
-                total += combatXP;
-            }
-            
-            // Special XP (hazards, traps, medkits)
-            if (tracker.special.length > 0) {
-                var specialXP = tracker.special.reduce(function(sum, e) { return sum + e.amount; }, 0);
-                var specialCount = tracker.special.length;
-                var specialAvg = Math.round(specialXP / specialCount);
-                breakdown.push({
-                    category: '💥 Special',
-                    count: specialCount,
-                    perItem: specialAvg,
-                    subtotal: specialXP,
-                    details: tracker.special.map(function(e) { return e.reason; }).join(', ')
-                });
-                formulaParts.push(specialCount + '×' + specialAvg);
-                total += specialXP;
-            }
-            
-            // Defense XP (surviving enemy attacks)
-            if (tracker.defense.length > 0) {
-                var defenseXP = tracker.defense.reduce(function(sum, e) { return sum + e.amount; }, 0);
-                var defenseCount = tracker.defense.length;
-                var defenseAvg = Math.round(defenseXP / defenseCount);
-                breakdown.push({
-                    category: '🛡️ Defense',
-                    count: defenseCount,
-                    perItem: defenseAvg,
-                    subtotal: defenseXP,
-                    details: tracker.defense.map(function(e) { return e.reason; }).join(', ')
-                });
-                formulaParts.push(defenseCount + '×' + defenseAvg);
-                total += defenseXP;
-            }
-            
-            // Victory bonus is always 50
-            var victoryBonus = 50;
-            breakdown.push({
-                category: '🏆 Victory',
-                count: 1,
-                perItem: victoryBonus,
-                subtotal: victoryBonus,
-                details: 'Enemy defeated'
-            });
-            formulaParts.push(victoryBonus);
-            total += victoryBonus;
-            
-            return {
-                total: total,
-                breakdown: breakdown,
-                formula: formulaParts.join(' + ')
-            };
         }
         
         function renderGrid() {
@@ -17131,14 +16817,6 @@
             }
         }
 
-        // Check if enemy should be defeated (helper for damage checks)
-        function checkEnemyDefeated(enemy, newHP) {
-            if (newHP <= 0) {
-                return handleEnemyDefeat(enemy);
-            }
-            return false;
-        }
-        
         function calculateLineOfSight(x1, y1, x2, y2) {
             // Bresenham's line algorithm to find cells between player and enemy
             var cellsInPath = [];
@@ -17806,10 +17484,21 @@
             var py = gameState.combat.player.y;
             var ex = gameState.combat.enemy.x;
             var ey = gameState.combat.enemy.y;
-            
+
             // Get active weapon
             var weapon = getActiveWeapon();
-            
+
+            // Block attacks with destroyed weapons (durability 0)
+            if (getActiveWeaponDurability() <= 0) {
+                showCombatMessage(
+                    '<strong>Weapon Destroyed!</strong><br><br>' +
+                    weapon.name + ' is broken and cannot fire.<br><br>' +
+                    'Switch weapons or repair at camp before attacking.',
+                    'error'
+                );
+                return;
+            }
+
             // Check ammo for ranged weapons
             if (weapon.ammoType) {
                 var currentAmmo = gameState.player.ammo[weapon.ammoType] || 0;
@@ -19493,7 +19182,7 @@
                                     },
                                     onFailure: function() {
                                         var extraDmg = Math.floor(reducedDmg * 0.5);
-                                        gameState.player.hp = currentHP - reducedDmg - extraDmg;
+                                        gameState.player.hp = Math.max(0, currentHP - reducedDmg - extraDmg);
                                         updateCombatUI();
                                         updateInventoryDisplay();
                                         showPopup('<strong>Miscalculated!</strong><br>Took ' + extraDmg + ' extra damage!<br>HP: ' + currentHP + ' → ' + gameState.player.hp, 'error', 'CRITICAL');
@@ -19545,7 +19234,7 @@
                                     },
                                     onFailure: function() {
                                         var extraDmg = Math.floor(baseDmg * 0.5);
-                                        gameState.player.hp = currentHP - baseDmg - extraDmg;
+                                        gameState.player.hp = Math.max(0, currentHP - baseDmg - extraDmg);
                                         updateCombatUI();
                                         updateInventoryDisplay();
                                         if (gameState.player.hp <= 0) {
@@ -19609,7 +19298,7 @@
                             },
                             onFailure: function() {
                                 var extraDmg = Math.floor(finalDmg * 0.5);
-                                gameState.player.hp = currentHP - finalDmg - extraDmg;
+                                gameState.player.hp = Math.max(0, currentHP - finalDmg - extraDmg);
                                 updateCombatUI();
                                 updateInventoryDisplay();
 
@@ -20106,22 +19795,6 @@
         
         function closePopup() {
             document.getElementById('popup-overlay').classList.remove('active');
-        }
-        
-        var pendingPopupCallback = null;
-        
-        function showPopupWithCallback(content, type, title, callback) {
-            showPopup(content, type, title);
-            pendingPopupCallback = callback;
-        }
-        
-        function closePopupWithCallback() {
-            document.getElementById('popup-overlay').classList.remove('active');
-            if (pendingPopupCallback) {
-                var cb = pendingPopupCallback;
-                pendingPopupCallback = null;
-                cb();
-            }
         }
         
         // Keyboard support
