@@ -41321,13 +41321,16 @@ function renderQuestion() {
                 ${qNeedsGeq ? `<button type="button" class="btn btn-secondary" style="${sBtnStyle}" onclick="insertTestSymbol('≥')" title="Greater than or equal (or type &gt;=)">≥</button>` : ''}
                 ${qNeedsNeq ? `<button type="button" class="btn btn-secondary" style="${sBtnStyle}" onclick="insertTestSymbol('≠')" title="Not equal (or type !=)">≠</button>` : ''}
             </div>` : '';
+        // Derive a smart placeholder from the question's expected answer so the student
+        // knows what format we're looking for (e.g. "e.g., 25π", "(3, 5)", "DNE").
+        const qPlaceholder = getSmartPlaceholder({ answer: q.answer, acceptableAnswers: q.acceptableAnswers }) || 'Type your answer';
         inputDiv.innerHTML = `
             ${symRow}
             <div style="display: flex; align-items: center; gap: 12px;">
                 <label style="font-size: 1.1rem; color: var(--slate-300); white-space: nowrap;">Your answer:</label>
                 <input type="text" id="typed-answer-input" class="typed-answer-input"
-                       style="flex: 1; max-width: 200px; padding: 12px 16px; font-size: 1.2rem; background: var(--slate-700); border: 2px solid var(--slate-600); border-radius: 10px; color: white; outline: none; text-align: center;"
-                       placeholder="Type your answer"
+                       style="flex: 1; max-width: 260px; padding: 12px 16px; font-size: 1.2rem; background: var(--slate-700); border: 2px solid var(--slate-600); border-radius: 10px; color: white; outline: none; text-align: center;"
+                       placeholder="${qPlaceholder}"
                        autocomplete="off"
                        inputmode="text">
             </div>
@@ -42702,67 +42705,265 @@ function showGuidedCompletion() {
 // Derive a smart placeholder based on the expected answer type
 function getSmartPlaceholder(step) {
     const answer = String(step.answer || '').toLowerCase().trim();
+    const rawAnswer = String(step.answer || '').trim();
     const acceptableAnswers = step.acceptableAnswers || [];
+    const allAnswers = [rawAnswer, ...acceptableAnswers].join(' ');
 
-    // Check if answer is a fraction (contains /)
-    if (answer.includes('/') && !answer.includes(':')) {
-        return 'e.g., 3/4';
+    // ---- Compound notation (check these BEFORE the simpler patterns) ----
+
+    // Coordinate pair: (x, y) — e.g. "(3, 5)", "(-2, 4)"
+    if (/^\(-?\d+(\.\d+)?\s*,\s*-?\d+(\.\d+)?\)$/.test(rawAnswer)) {
+        return 'e.g., (3, 5) — include the parentheses and comma';
     }
 
-    // Check if answer is a time (contains :)
+    // Vector notation: ⟨a, b⟩ or <a, b>
+    if (/^[⟨<]-?\d+(\.\d+)?\s*,\s*-?\d+(\.\d+)?[⟩>]$/.test(rawAnswer)) {
+        return 'e.g., ⟨3, 5⟩ or (3, 5) — comma-separated';
+    }
+
+    // Complex number: a + bi or a - bi
+    if (/[+\-]\s*\d*i\b/.test(allAnswers) || /\bi\^?\d*\b/.test(allAnswers)) {
+        return 'e.g., 3 + 2i (include the i)';
+    }
+
+    // Simple variable assignment: "x = -2" or "y = 7" (variable, equals, number)
+    if (/^[a-z]\s*=\s*-?\d+(\.\d+)?$/i.test(rawAnswer)) {
+        return 'e.g., x = -2 (or just -2)';
+    }
+
+    // Multiple comma-separated variable assignments — distinguish "same var, two
+    // solutions" from "two vars, one value each" by comparing the variable letters.
+    const varAssign = rawAnswer.match(/^([a-z])\s*=\s*-?\d+(\.\d+)?\s*,\s*([a-z])\s*=\s*-?\d+(\.\d+)?$/i);
+    if (varAssign) {
+        if (varAssign[1].toLowerCase() === varAssign[3].toLowerCase()) {
+            return 'e.g., x = 2, x = 5 (list both solutions)';
+        }
+        return 'e.g., x = 5, y = 3';
+    }
+
+    // Function form like y = mx + b
+    if (/^y\s*=\s*[\-\d]?\d*[a-z]/i.test(rawAnswer)) {
+        return 'e.g., y = 2x + 3';
+    }
+
+    // Equation with operators on both sides
+    if (/^[a-z\d\s+\-*\/^]+=\s*[a-z\d\s+\-*\/^()]+$/i.test(rawAnswer) && /=/.test(rawAnswer)) {
+        return 'e.g., a² + b² = c² (write the full equation)';
+    }
+
+    // Factored polynomial: (x+a)(x-b)
+    if (/^\(x[+\-]\d+\)\(x[+\-]\d+\)$/.test(rawAnswer.replace(/\s/g, ''))) {
+        return 'e.g., (x+3)(x-4) (factored form)';
+    }
+
+    // Polynomial / algebraic expression: contains a variable with operators
+    if (/[a-z][\^²³⁴]|\d+[a-z]|[a-z]\s*[+\-]\s*\d/i.test(rawAnswer) && /[+\-*/]/.test(rawAnswer) && !/^[a-z]\s*=\s*-?\d/i.test(rawAnswer)) {
+        return 'e.g., 2x + 3 (use ^ for powers)';
+    }
+
+    // Function evaluation: "f(5) = 17" style
+    if (/^[a-z]\(\d+\)\s*=/.test(rawAnswer)) {
+        return 'e.g., f(5) = 17 or just 17';
+    }
+
+    // ---- Time formats ----
+
+    // Hours-and-minutes phrase: "2 hours 30 minutes"
+    if (/\d+\s*hours?\s*\d+\s*min/i.test(allAnswers)) {
+        return 'e.g., 2 hours 30 minutes';
+    }
+
+    // Time (contains :)
     if (answer.includes(':')) {
         return 'e.g., 3:30';
     }
 
-    // Check if answer is yes/no type
-    if (['yes', 'no', 'yeah', 'yep', 'nope'].includes(answer)) {
+    // ---- Fractions and mixed numbers ----
+
+    // Mixed number: "1 1/2"
+    if (/^\d+\s+\d+\/\d+$/.test(rawAnswer)) {
+        return 'e.g., 1 1/2 (whole space fraction)';
+    }
+
+    // Fraction (contains /)
+    if (answer.includes('/') && !answer.includes(':')) {
+        return 'e.g., 3/4';
+    }
+
+    // ---- Money ----
+
+    // Cents: "60¢" or "60 cents"
+    if (/¢|cents?\b/.test(allAnswers)) {
+        return 'e.g., 60 or 60¢';
+    }
+
+    // Dollars: "$1.25"
+    if (/\$\d/.test(rawAnswer)) {
+        return 'e.g., $1.25';
+    }
+
+    // ---- Inequalities and intervals ----
+
+    // Interval notation: [a, b] or (a, ∞)
+    if (/^[\[(]-?[\d∞]+\s*,\s*-?[\d∞]+[\])]$/.test(rawAnswer) || /[\[(].*∞.*[\])]/.test(rawAnswer)) {
+        return 'e.g., [0, 5] or (-∞, 3)';
+    }
+
+    // Inequality: "x > 5" or "x ≤ 3"
+    if (/[<>≤≥]/.test(rawAnswer) || /x\s*(less than|greater than|at most|at least)/i.test(allAnswers)) {
+        return 'e.g., x < 5 (use <, >, <=, or >=)';
+    }
+
+    // ---- Boolean / direction / classification ----
+
+    // Yes/no type
+    if (['yes', 'no', 'yeah', 'yep', 'nope', 'true', 'false'].includes(answer)) {
         return 'yes or no';
     }
 
-    // Check if answer is a direction
-    if (['left', 'right', 'up', 'down'].includes(answer)) {
-        return 'left or right';
+    // Direction
+    if (['left', 'right', 'up', 'down', 'north', 'south', 'east', 'west'].includes(answer)) {
+        return 'e.g., left, right, up, down';
     }
 
-    // Check if answer is round up/down
+    // Round up/down
     if (answer.includes('round')) {
         return 'round up or round down';
     }
 
-    // Check if answer is even/odd
+    // Even/odd
     if (['even', 'odd'].includes(answer)) {
         return 'even or odd';
     }
 
-    // Check if answer is an operation
+    // Operation
     if (['add', 'subtract', 'multiply', 'divide', 'addition', 'subtraction', 'multiplication', 'division'].includes(answer)) {
         return 'e.g., multiply';
     }
 
-    // Check if answer contains π or pi
+    // Prime / composite
+    if (['prime', 'composite'].includes(answer)) {
+        return 'prime or composite';
+    }
+
+    // Converge / diverge
+    if (['converge', 'converges', 'diverge', 'diverges'].includes(answer)) {
+        return 'converges or diverges';
+    }
+
+    // Max / min / saddle
+    if (['max', 'min', 'maximum', 'minimum', 'saddle', 'local max', 'local min', 'local maximum', 'local minimum'].includes(answer)) {
+        return 'e.g., max, min, or saddle';
+    }
+
+    // Shape names
+    if (['square', 'circle', 'triangle', 'rectangle', 'cube', 'sphere', 'cylinder', 'cone', 'pyramid', 'pentagon', 'hexagon', 'parallelogram', 'rhombus', 'trapezoid'].includes(answer)) {
+        return 'Name the shape';
+    }
+
+    // Conic name
+    if (['circle', 'ellipse', 'parabola', 'hyperbola'].includes(answer)) {
+        return 'circle, ellipse, parabola, or hyperbola';
+    }
+
+    // Coin name
+    if (['penny', 'nickel', 'dime', 'quarter', 'pennies', 'nickels', 'dimes', 'quarters'].includes(answer)) {
+        return 'penny, nickel, dime, or quarter';
+    }
+
+    // DNE / does not exist
+    if (['dne', "doesn't exist", "does not exist"].includes(answer)) {
+        return 'DNE (does not exist)';
+    }
+
+    // ---- Symbols and special characters ----
+
+    // Contains π or pi
     if (/π|pi/i.test(answer)) {
         return 'e.g., 25pi or 25π';
     }
 
-    // Check if answer contains exponents (² or ^2)
-    if (/[²³⁴⁵⁶]|\^[2-9]/.test(answer)) {
-        return 'Use ^2 for squared (e.g., a^2)';
+    // Square root √ or sqrt
+    if (/√|sqrt/i.test(allAnswers)) {
+        return 'e.g., 2√3 or 2sqrt(3)';
     }
 
-    // Check if any acceptable answer has units (like "26 units")
-    const hasUnits = acceptableAnswers.some(a => /\d+\s*(units?|cm|m|ft|in|inches|feet|cents?|¢|\$)/.test(a));
-    if (hasUnits) {
+    // Cube root ∛ or cbrt
+    if (/∛|cbrt/i.test(allAnswers)) {
+        return 'e.g., 2∛5 or 2cbrt(5)';
+    }
+
+    // Degree (angle)
+    if (/°|degrees?\b/i.test(allAnswers)) {
+        return 'e.g., 30° or 30 degrees';
+    }
+
+    // Exponents
+    if (/[²³⁴⁵⁶]|\^[2-9]/.test(answer)) {
+        return 'Use ^2 for squared (e.g., x^2)';
+    }
+
+    // Percentage
+    if (/%|percent/.test(allAnswers)) {
+        return 'e.g., 25% or 25';
+    }
+
+    // ---- Units ----
+
+    // Specific common units
+    if (/\d+\s*(inches?|in\b)/.test(allAnswers)) return 'e.g., 12 or 12 inches';
+    if (/\d+\s*(feet|foot|ft\b)/.test(allAnswers)) return 'e.g., 3 or 3 feet';
+    if (/\d+\s*(cm|centimeters?)/.test(allAnswers)) return 'e.g., 25 or 25 cm';
+    if (/\d+\s*(meters?|m\b)/.test(allAnswers)) return 'e.g., 2 or 2 m';
+    if (/\d+\s*(grams?|g\b)/.test(allAnswers)) return 'e.g., 500 or 500 g';
+    if (/\d+\s*(kg|kilograms?)/.test(allAnswers)) return 'e.g., 3 or 3 kg';
+    if (/\d+\s*(pounds?|lb\b|lbs\b)/.test(allAnswers)) return 'e.g., 5 or 5 lb';
+    if (/\d+\s*(ounces?|oz\b)/.test(allAnswers)) return 'e.g., 16 or 16 oz';
+    if (/\d+\s*(cups?\b)/.test(allAnswers)) return 'e.g., 2 or 2 cups';
+    if (/\d+\s*(pints?|pt\b)/.test(allAnswers)) return 'e.g., 4 or 4 pints';
+    if (/\d+\s*(quarts?|qt\b)/.test(allAnswers)) return 'e.g., 4 or 4 quarts';
+    if (/\d+\s*(gallons?|gal\b)/.test(allAnswers)) return 'e.g., 2 or 2 gallons';
+    if (/\d+\s*(ml|milliliters?)/.test(allAnswers)) return 'e.g., 250 or 250 mL';
+    if (/\d+\s*(liters?|L\b)/.test(allAnswers)) return 'e.g., 2 or 2 L';
+
+    // Generic units catch-all
+    if (acceptableAnswers.some(a => /\d+\s*(units?|cm|m|ft|in|inches|feet|cents?|¢|\$|kg|lb|oz)/.test(a))) {
         return 'Enter a number (with or without units)';
     }
 
-    // Check if it's a pure number
-    if (/^-?\d+(\.\d+)?$/.test(answer)) {
+    // ---- Pure numbers ----
+
+    // Negative number
+    if (/^-\d+(\.\d+)?$/.test(answer)) {
+        return 'e.g., -5 (include the minus sign)';
+    }
+
+    // Decimal
+    if (/^-?\d+\.\d+$/.test(answer)) {
+        return 'e.g., 3.14 (a decimal)';
+    }
+
+    // Single digit
+    if (/^[0-9]$/.test(answer)) {
+        return 'Enter a digit (0-9)';
+    }
+
+    // Plain integer
+    if (/^-?\d+$/.test(answer)) {
         return 'Enter a number';
     }
 
-    // Check if it's asking for a digit
-    if (/^[0-9]$/.test(answer)) {
-        return 'Enter a digit (0-9)';
+    // Multi-number list (e.g., "1, 2, 3, 4, 6, 12")
+    if (/^\d+(\s*,\s*\d+){2,}$/.test(rawAnswer)) {
+        return 'comma-separated list, e.g., 1, 2, 3';
+    }
+
+    // Multi-word phrase answer (3+ words, all letters/spaces) — give the student a
+    // hint that they need to type a short phrase, with the example shape based on
+    // the actual answer length so they don't guess at a one-word reply.
+    if (/^[a-z]+(\s+[a-z]+){1,4}$/i.test(rawAnswer) && rawAnswer.split(/\s+/).length >= 2) {
+        const wordCount = rawAnswer.split(/\s+/).length;
+        return `Type a ${wordCount}-word phrase`;
     }
 
     // Default
