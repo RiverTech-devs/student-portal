@@ -7298,9 +7298,12 @@
                 </div>
               ` : ''}
               <!-- Active Privileges -->
-              <div id="sd-active-privileges" style="margin-bottom: 10px;">
-                <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px; width: 100%;" onclick="app.loadStudentPrivileges('${student.id}')">
+              <div id="sd-active-privileges" style="margin-bottom: 10px; display: flex; gap: 6px;">
+                <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px; flex: 1;" onclick="app.loadStudentPrivileges('${student.id}')">
                   🎫 View Active Privileges
+                </button>
+                <button class="btn" style="padding: 6px 12px; font-size: 12px; background: #8e44ad; color: #fff; border: none; border-radius: 6px;" onclick="app.openPrivilegeManager('${student.id}')">
+                  ⚙️ Manage
                 </button>
               </div>
               <!-- Transaction History -->
@@ -8112,50 +8115,61 @@
         container.innerHTML = '<div style="text-align: center; padding: 10px; color: var(--muted);">Loading privileges...</div>';
 
         try {
-          const { data, error } = await this.supabaseQuery(() => this.auth.supabase
-            .from('rtc_student_privileges')
-            .select('*, privilege:rtc_privileges(name, icon, description)')
-            .eq('student_id', studentId)
-            .eq('is_active', true)
-            .gt('expires_at', new Date().toISOString()));
-
+          const { data, error } = await this.auth.supabase
+            .rpc('rtc_admin_list_student_privileges', { p_student_id: studentId });
           if (error) throw error;
-          const privileges = data || [];
+          if (data && !data.success) throw new Error(data.error);
+          const privileges = (data && data.grants) || [];
 
           if (privileges.length === 0) {
             container.innerHTML = `
               <div style="background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 12px;">
                 <div style="font-size: 13px; font-weight: 600; margin-bottom: 6px;">🎫 Active Privileges</div>
                 <p style="color: var(--muted); font-style: italic; font-size: 12px; margin: 0;">No active privileges.</p>
+                <button class="btn" style="margin-top: 8px; padding: 6px 12px; font-size: 12px; background: #8e44ad; color: #fff; border: none; border-radius: 6px;" onclick="app.openPrivilegeManager('${studentId}')">⚙️ Manage</button>
               </div>`;
             return;
           }
 
           const privilegeCards = privileges.map(p => {
-            const daysLeft = Math.ceil((new Date(p.expires_at) - new Date()) / (1000 * 60 * 60 * 24));
-            const expiresDate = new Date(p.expires_at).toLocaleDateString();
+            let rightText, rightColor, expiresLine = '';
+            if (p.is_permanent) {
+              rightText = 'Permanent';
+              rightColor = '#2980b9';
+            } else {
+              const daysLeft = Math.max(0, Math.ceil((new Date(p.expires_at) - new Date()) / (1000 * 60 * 60 * 24)));
+              rightText = `${daysLeft}d left`;
+              rightColor = daysLeft <= 3 ? 'var(--danger)' : '#8e44ad';
+              expiresLine = `<div style="font-size: 11px; color: var(--muted);">Expires ${new Date(p.expires_at).toLocaleDateString()}</div>`;
+            }
+            const srcBadge = p.source === 'granted'
+              ? '<span style="background: #8e44ad; color: #fff; padding: 1px 6px; border-radius: 8px; font-size: 10px; margin-left: 6px;">Granted</span>'
+              : '';
             return `<div style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; background: var(--bg); border-radius: 6px; border: 1px solid var(--border);">
-              <span style="font-size: 20px;">${p.privilege?.icon || '⭐'}</span>
+              <span style="font-size: 20px;">${p.icon || '⭐'}</span>
               <div style="flex: 1; min-width: 0;">
-                <div style="font-weight: 600; font-size: 13px;">${p.privilege?.name || 'Privilege'}</div>
-                <div style="font-size: 11px; color: var(--muted);">${p.privilege?.description || ''}</div>
+                <div style="font-weight: 600; font-size: 13px;">${this._escapeHtml(p.name || 'Privilege')}${srcBadge}</div>
+                <div style="font-size: 11px; color: var(--muted);">${this._escapeHtml(p.description || '')}</div>
               </div>
               <div style="text-align: right; flex-shrink: 0;">
-                <div style="font-size: 13px; font-weight: 600; color: ${daysLeft <= 3 ? 'var(--danger)' : '#8e44ad'};">${daysLeft}d left</div>
-                <div style="font-size: 11px; color: var(--muted);">Expires ${expiresDate}</div>
+                <div style="font-size: 13px; font-weight: 600; color: ${rightColor};">${rightText}</div>
+                ${expiresLine}
               </div>
             </div>`;
           }).join('');
 
           container.innerHTML = `
             <div style="background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 12px;">
-              <div style="font-size: 13px; font-weight: 600; margin-bottom: 8px;">🎫 Active Privileges (${privileges.length})</div>
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                <div style="font-size: 13px; font-weight: 600;">🎫 Active Privileges (${privileges.length})</div>
+                <button class="btn" style="padding: 4px 10px; font-size: 11px; background: #8e44ad; color: #fff; border: none; border-radius: 4px;" onclick="app.openPrivilegeManager('${studentId}')">⚙️ Manage</button>
+              </div>
               <div style="display: flex; flex-direction: column; gap: 6px;">
                 ${privilegeCards}
               </div>
             </div>`;
         } catch (e) {
-          container.innerHTML = `<div style="color: var(--danger); font-size: 12px; padding: 8px;">Failed to load privileges.</div>`;
+          container.innerHTML = `<div style="color: var(--danger); font-size: 12px; padding: 8px;">Failed to load privileges: ${this._escapeHtml(e.message || e)}</div>`;
         }
       }
 
@@ -36270,9 +36284,10 @@
               </div>
             </td>
             <td style="padding: 6px 10px; text-align: center;">
-              <div style="display: flex; gap: 4px; justify-content: center;">
+              <div style="display: flex; gap: 4px; justify-content: center; flex-wrap: wrap;">
                 <button class="btn btn-primary" style="padding: 4px 10px; font-size: 11px;" onclick="app.quickAwardRTC('${s.id}')">Award</button>
                 <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 11px;" onclick="app.quickSetRTC('${s.id}')">Set</button>
+                <button class="btn" style="padding: 4px 10px; font-size: 11px; background: #8e44ad; color: #fff; border: none; border-radius: 4px;" title="Manage privileges" onclick="app.openPrivilegeManager('${s.id}')">🎫</button>
               </div>
             </td>
           </tr>
@@ -37314,6 +37329,303 @@
       }
     }
 
+    // ==================== PRIVILEGE MANAGER MODAL ====================
+    // Used by teachers & admins to grant or revoke privileges for a student.
+
+    async openPrivilegeManager(studentId) {
+      this._privMgrStudentId = studentId;
+
+      let studentName = '';
+      try {
+        if (this._rtcStudents) {
+          const s = this._rtcStudents.find(x => x.id === studentId);
+          if (s) studentName = `${s.first_name} ${s.last_name}`;
+        }
+        if (!studentName) {
+          const { data } = await this.auth.supabase
+            .from('user_profiles')
+            .select('first_name, last_name')
+            .eq('id', studentId)
+            .maybeSingle();
+          if (data) studentName = `${data.first_name} ${data.last_name}`;
+        }
+      } catch (e) { /* non-fatal */ }
+      this._privMgrStudentName = studentName || 'Student';
+
+      // Catalog: prefer cached list; otherwise pull from rtc_privileges (RLS allows teacher/admin)
+      let catalog = this._rtcPrivileges;
+      if (!catalog || catalog.length === 0) {
+        try {
+          const { data } = await this.auth.supabase
+            .from('rtc_privileges')
+            .select('id, name, icon, description, duration_days, is_active, sort_order')
+            .order('sort_order', { ascending: true })
+            .order('name', { ascending: true });
+          catalog = data || [];
+          this._rtcPrivileges = catalog;
+        } catch (e) {
+          catalog = [];
+        }
+      }
+      this._privMgrCatalog = catalog;
+
+      const existing = document.getElementById('priv-mgr-modal-overlay');
+      if (existing) existing.remove();
+
+      const modal = document.createElement('div');
+      modal.id = 'priv-mgr-modal-overlay';
+      modal.style.cssText = 'position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.65); z-index: 10050; display: flex; align-items: center; justify-content: center; padding: 16px; box-sizing: border-box;';
+      modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+
+      const catalogOptions = (catalog || []).filter(p => p.is_active).map(p =>
+        `<option value="${p.id}" data-duration="${p.duration_days}">${p.icon || '🎖️'} ${p.name} (${p.duration_days}d default)</option>`
+      ).join('');
+
+      modal.innerHTML = `
+        <div style="background: var(--card); border-radius: 12px; max-width: 600px; width: 100%; max-height: calc(100vh - 32px); display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,0.4);">
+          <div style="display: flex; justify-content: space-between; align-items: center; padding: 16px 22px; border-bottom: 1px solid var(--border);">
+            <div>
+              <h3 style="margin: 0; font-size: 17px; color: #8e44ad;">🎫 Manage Privileges</h3>
+              <div style="font-size: 12px; color: var(--muted); margin-top: 2px;">${this._escapeHtml(this._privMgrStudentName)}</div>
+            </div>
+            <button onclick="document.getElementById('priv-mgr-modal-overlay').remove()" style="background: none; border: none; font-size: 24px; cursor: pointer; color: var(--muted); line-height: 1;">×</button>
+          </div>
+
+          <div style="flex: 1; overflow-y: auto; padding: 16px 22px;">
+            <div style="font-weight: 600; font-size: 13px; margin-bottom: 8px;">Active grants</div>
+            <div id="priv-mgr-active-list" style="margin-bottom: 18px;">
+              <div style="text-align: center; padding: 14px; color: var(--muted); font-size: 13px;">
+                <div class="loading-spinner" style="display: inline-block;"></div>
+              </div>
+            </div>
+
+            <div style="border-top: 1px solid var(--border); padding-top: 14px;">
+              <div style="font-weight: 600; font-size: 13px; margin-bottom: 10px;">Grant a privilege</div>
+
+              <div style="margin-bottom: 10px;">
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px;">
+                  <input type="checkbox" id="priv-mgr-custom-toggle" onchange="app._togglePrivMgrCustom()">
+                  <span>Define ad-hoc (not in catalog)</span>
+                </label>
+              </div>
+
+              <div id="priv-mgr-catalog-fields" style="margin-bottom: 10px;">
+                <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Select privilege</label>
+                <select id="priv-mgr-catalog-select" onchange="app._privMgrSyncDuration()" style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+                  <option value="">-- choose --</option>
+                  ${catalogOptions || '<option value="" disabled>No catalog privileges defined</option>'}
+                </select>
+              </div>
+
+              <div id="priv-mgr-custom-fields" style="display: none; margin-bottom: 10px;">
+                <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                  <div style="flex: 0 0 70px;">
+                    <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Icon</label>
+                    <input type="text" id="priv-mgr-custom-icon" value="🎖️" maxlength="4" style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); text-align: center; box-sizing: border-box; font-size: 16px;">
+                  </div>
+                  <div style="flex: 1;">
+                    <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Name *</label>
+                    <input type="text" id="priv-mgr-custom-name" placeholder="e.g. Front of Lunch Line" style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); box-sizing: border-box;">
+                  </div>
+                </div>
+                <div>
+                  <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Description (optional)</label>
+                  <input type="text" id="priv-mgr-custom-desc" placeholder="What this privilege allows" style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); box-sizing: border-box;">
+                </div>
+              </div>
+
+              <div style="display: flex; gap: 10px; align-items: end; flex-wrap: wrap; margin-bottom: 10px;">
+                <div style="flex: 0 0 110px;">
+                  <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Duration (days)</label>
+                  <input type="number" id="priv-mgr-duration" min="1" value="7" style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); box-sizing: border-box;">
+                </div>
+                <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 13px; padding-bottom: 8px;">
+                  <input type="checkbox" id="priv-mgr-permanent" onchange="app._togglePrivMgrPermanent()">
+                  <span>Permanent</span>
+                </label>
+                <div style="flex: 1; min-width: 160px;">
+                  <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Reason (optional)</label>
+                  <input type="text" id="priv-mgr-reason" placeholder="Why are you granting this?" style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); box-sizing: border-box;">
+                </div>
+              </div>
+
+              <button class="btn btn-primary" style="width: 100%; padding: 10px; background: #8e44ad; color: #fff; border: none; border-radius: 6px; font-weight: 600;" onclick="app.grantPrivilegeFromManager()">
+                Grant Privilege
+              </button>
+            </div>
+          </div>
+        </div>
+      `;
+
+      document.body.appendChild(modal);
+
+      await this._refreshPrivilegeManager();
+    }
+
+    _togglePrivMgrCustom() {
+      const isCustom = document.getElementById('priv-mgr-custom-toggle')?.checked;
+      const catalogFields = document.getElementById('priv-mgr-catalog-fields');
+      const customFields = document.getElementById('priv-mgr-custom-fields');
+      if (catalogFields) catalogFields.style.display = isCustom ? 'none' : '';
+      if (customFields) customFields.style.display = isCustom ? '' : 'none';
+    }
+
+    _togglePrivMgrPermanent() {
+      const isPerm = document.getElementById('priv-mgr-permanent')?.checked;
+      const dur = document.getElementById('priv-mgr-duration');
+      if (dur) { dur.disabled = !!isPerm; dur.style.opacity = isPerm ? '0.5' : '1'; }
+    }
+
+    _privMgrSyncDuration() {
+      const sel = document.getElementById('priv-mgr-catalog-select');
+      const dur = document.getElementById('priv-mgr-duration');
+      if (!sel || !dur) return;
+      const opt = sel.options[sel.selectedIndex];
+      const d = parseInt(opt?.dataset?.duration);
+      if (d > 0) dur.value = d;
+    }
+
+    _escapeHtml(s) {
+      if (s == null) return '';
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    async _refreshPrivilegeManager() {
+      const list = document.getElementById('priv-mgr-active-list');
+      if (!list) return;
+      const studentId = this._privMgrStudentId;
+      if (!studentId) return;
+
+      try {
+        const { data, error } = await this.auth.supabase
+          .rpc('rtc_admin_list_student_privileges', { p_student_id: studentId });
+        if (error) throw error;
+        if (data && !data.success) throw new Error(data.error);
+
+        const grants = (data && data.grants) || [];
+        if (grants.length === 0) {
+          list.innerHTML = '<div style="text-align: center; padding: 14px; color: var(--muted); font-size: 13px;">No active privileges.</div>';
+          return;
+        }
+
+        list.innerHTML = grants.map(g => {
+          const isPerm = !!g.is_permanent;
+          const isGranted = g.source === 'granted';
+          const timeBadge = isPerm
+            ? '<span style="background: #2980b9; color: #fff; padding: 2px 8px; border-radius: 10px; font-size: 11px;">Permanent</span>'
+            : `<span style="background: var(--accent); color: #fff; padding: 2px 8px; border-radius: 10px; font-size: 11px;">${Math.max(0, Math.ceil((new Date(g.expires_at) - new Date()) / 86400000))}d left</span>`;
+          const srcBadge = isGranted
+            ? '<span style="background: #8e44ad; color: #fff; padding: 2px 8px; border-radius: 10px; font-size: 11px;">Granted</span>'
+            : '<span style="background: #95a5a6; color: #fff; padding: 2px 8px; border-radius: 10px; font-size: 11px;">Purchased</span>';
+          const grantedByLine = isGranted && g.granted_by_name
+            ? `<div style="font-size: 11px; color: var(--muted); margin-top: 2px;">Granted by ${this._escapeHtml(g.granted_by_name)}${g.grant_reason ? ' — ' + this._escapeHtml(g.grant_reason) : ''}</div>`
+            : '';
+          return `
+            <div style="display: flex; align-items: center; gap: 10px; padding: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 6px;">
+              <div style="font-size: 24px;">${g.icon || '🎖️'}</div>
+              <div style="flex: 1; min-width: 0;">
+                <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+                  <strong style="font-size: 13px;">${this._escapeHtml(g.name)}</strong>
+                  ${timeBadge}
+                  ${srcBadge}
+                </div>
+                ${g.description ? `<div style="font-size: 11px; color: var(--muted); margin-top: 2px;">${this._escapeHtml(g.description)}</div>` : ''}
+                ${grantedByLine}
+              </div>
+              <button class="btn" style="padding: 4px 10px; font-size: 11px; background: var(--danger); color: #fff; border: none; border-radius: 4px;" onclick="app.revokePrivilegeFromManager('${g.id}')">Revoke</button>
+            </div>
+          `;
+        }).join('');
+      } catch (e) {
+        list.innerHTML = `<div style="color: var(--danger); padding: 10px; font-size: 12px;">Failed to load grants: ${this._escapeHtml(e.message || e)}</div>`;
+      }
+    }
+
+    async grantPrivilegeFromManager() {
+      const studentId = this._privMgrStudentId;
+      if (!studentId) return;
+
+      const isCustom = document.getElementById('priv-mgr-custom-toggle')?.checked;
+      const isPerm = document.getElementById('priv-mgr-permanent')?.checked;
+      const duration = isPerm ? null : parseInt(document.getElementById('priv-mgr-duration')?.value);
+      const reason = document.getElementById('priv-mgr-reason')?.value?.trim() || null;
+
+      let privilegeId = null;
+      let customName = null;
+      let customIcon = null;
+      let customDescription = null;
+
+      if (isCustom) {
+        customName = document.getElementById('priv-mgr-custom-name')?.value?.trim();
+        if (!customName) { this.showNotification('Name is required for an ad-hoc privilege', 'error'); return; }
+        customIcon = document.getElementById('priv-mgr-custom-icon')?.value?.trim() || null;
+        customDescription = document.getElementById('priv-mgr-custom-desc')?.value?.trim() || null;
+      } else {
+        privilegeId = document.getElementById('priv-mgr-catalog-select')?.value || null;
+        if (!privilegeId) { this.showNotification('Pick a privilege from the catalog or check "Define ad-hoc"', 'error'); return; }
+      }
+
+      if (!isPerm && (!duration || duration <= 0)) {
+        this.showNotification('Duration must be a positive number of days (or check Permanent)', 'error');
+        return;
+      }
+
+      try {
+        const { data, error } = await this.auth.supabase.rpc('rtc_grant_privilege', {
+          p_student_id: studentId,
+          p_privilege_id: privilegeId,
+          p_duration_days: duration,
+          p_is_permanent: !!isPerm,
+          p_custom_name: customName,
+          p_custom_icon: customIcon,
+          p_custom_description: customDescription,
+          p_reason: reason
+        });
+        if (error) throw error;
+        if (data && !data.success) throw new Error(data.error);
+
+        this.showNotification(`Granted "${data.name}"${data.is_permanent ? ' (permanent)' : ''}`, 'success');
+
+        // Reset form
+        if (document.getElementById('priv-mgr-reason')) document.getElementById('priv-mgr-reason').value = '';
+        if (isCustom) {
+          document.getElementById('priv-mgr-custom-name').value = '';
+          document.getElementById('priv-mgr-custom-desc').value = '';
+        }
+
+        await this._refreshPrivilegeManager();
+      } catch (e) {
+        console.error('Grant error:', e);
+        this.showNotification('Failed to grant: ' + (e.message || e), 'error');
+      }
+    }
+
+    async revokePrivilegeFromManager(grantId) {
+      let reason = prompt('Reason for revoking (optional):');
+      if (reason === null) return; // cancelled
+      reason = reason.trim() || null;
+
+      try {
+        const { data, error } = await this.auth.supabase.rpc('rtc_revoke_privilege', {
+          p_grant_id: grantId,
+          p_reason: reason
+        });
+        if (error) throw error;
+        if (data && !data.success) throw new Error(data.error);
+
+        this.showNotification('Privilege revoked', 'success');
+        await this._refreshPrivilegeManager();
+      } catch (e) {
+        console.error('Revoke error:', e);
+        this.showNotification('Failed to revoke: ' + (e.message || e), 'error');
+      }
+    }
+
     // ==================== COSMETICS TAB (ADMIN) ====================
 
     _renderRTCCosmeticsTab(container) {
@@ -37836,33 +38148,41 @@
       let grantsHtml = '';
       if (data.grants && data.grants.length > 0) {
         grantsHtml = data.grants.map(g => {
-          const now = new Date();
-          const expires = new Date(g.expires_at);
-          const msLeft = expires - now;
-          const daysLeft = Math.ceil(msLeft / (1000 * 60 * 60 * 24));
-          const hoursLeft = Math.ceil(msLeft / (1000 * 60 * 60));
-          let timeText, timeColor;
-          if (daysLeft > 3) {
-            timeText = daysLeft + ' days left';
-            timeColor = 'var(--success)';
-          } else if (daysLeft > 1) {
-            timeText = daysLeft + ' days left';
-            timeColor = '#e67e22';
-          } else if (hoursLeft > 0) {
-            timeText = hoursLeft + ' hours left';
-            timeColor = 'var(--danger)';
+          let timeText, timeColor, expiryLine = '';
+          if (g.is_permanent) {
+            timeText = 'Permanent';
+            timeColor = '#2980b9';
           } else {
-            timeText = 'Expiring soon';
-            timeColor = 'var(--danger)';
+            const now = new Date();
+            const expires = new Date(g.expires_at);
+            const msLeft = expires - now;
+            const daysLeft = Math.ceil(msLeft / (1000 * 60 * 60 * 24));
+            const hoursLeft = Math.ceil(msLeft / (1000 * 60 * 60));
+            if (daysLeft > 3) {
+              timeText = daysLeft + ' days left';
+              timeColor = 'var(--success)';
+            } else if (daysLeft > 1) {
+              timeText = daysLeft + ' days left';
+              timeColor = '#e67e22';
+            } else if (hoursLeft > 0) {
+              timeText = hoursLeft + ' hours left';
+              timeColor = 'var(--danger)';
+            } else {
+              timeText = 'Expiring soon';
+              timeColor = 'var(--danger)';
+            }
+            expiryLine = `<div style="font-size: 11px; color: var(--muted);">Expires ${expires.toLocaleDateString()}</div>`;
           }
-          const expiryDate = expires.toLocaleDateString();
+          const grantedBadge = g.source === 'granted'
+            ? '<span style="background: #8e44ad; color: #fff; padding: 1px 6px; border-radius: 8px; font-size: 10px; margin-left: 6px;">Granted</span>'
+            : '';
           return `
             <div style="display: flex; align-items: center; gap: 10px; padding: 10px; background: var(--bg); border-radius: 8px; border: 1px solid var(--border);">
               <div style="font-size: 28px;">${g.icon || '🎖️'}</div>
               <div style="flex: 1;">
-                <div style="font-weight: 600;">${g.name}</div>
+                <div style="font-weight: 600;">${g.name}${grantedBadge}</div>
                 <div style="font-size: 12px; color: ${timeColor}; font-weight: 600;">${timeText}</div>
-                <div style="font-size: 11px; color: var(--muted);">Expires ${expiryDate}</div>
+                ${expiryLine}
               </div>
             </div>
           `;
@@ -39050,13 +39370,9 @@
       // Fetch active privileges for this student
       let activePrivileges = [];
       try {
-        const { data } = await this.supabaseQuery(() => this.auth.supabase
-          .from('rtc_student_privileges')
-          .select('*, privilege:rtc_privileges(name, icon, description)')
-          .eq('student_id', studentId)
-          .eq('is_active', true)
-          .gt('expires_at', new Date().toISOString()));
-        activePrivileges = data || [];
+        const { data } = await this.auth.supabase
+          .rpc('rtc_admin_list_student_privileges', { p_student_id: studentId });
+        if (data && data.success) activePrivileges = data.grants || [];
       } catch (e) { /* non-critical */ }
 
       this._irlSelectedStudentPrivileges = activePrivileges;
@@ -39066,9 +39382,17 @@
             <div style="font-weight: 600; margin-bottom: 8px; font-size: 13px;">Active Privileges</div>
             <div style="display: flex; gap: 8px; flex-wrap: wrap;">
               ${activePrivileges.map(p => {
-                const daysLeft = Math.ceil((new Date(p.expires_at) - new Date()) / (1000 * 60 * 60 * 24));
+                let badge, title;
+                if (p.is_permanent) {
+                  badge = '∞';
+                  title = `${p.description || ''} — Permanent`;
+                } else {
+                  const daysLeft = Math.max(0, Math.ceil((new Date(p.expires_at) - new Date()) / (1000 * 60 * 60 * 24)));
+                  badge = `${daysLeft}d`;
+                  title = `${p.description || ''} — Expires in ${daysLeft} day${daysLeft !== 1 ? 's' : ''}`;
+                }
                 return `<span style="display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; background: #8e44ad22; color: #8e44ad; border-radius: 12px; font-size: 12px; font-weight: 500;"
-                  title="${p.privilege?.description || ''} — Expires in ${daysLeft} day${daysLeft !== 1 ? 's' : ''}">${p.privilege?.icon || '⭐'} ${p.privilege?.name || 'Privilege'} <span style="opacity: 0.7;">(${daysLeft}d)</span></span>`;
+                  title="${this._escapeHtml(title)}">${p.icon || '⭐'} ${this._escapeHtml(p.name || 'Privilege')} <span style="opacity: 0.7;">(${badge})</span></span>`;
               }).join('')}
             </div>
           </div>`
