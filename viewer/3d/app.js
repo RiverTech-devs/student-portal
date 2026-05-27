@@ -1401,6 +1401,18 @@ function showInfoPanel(key, node, ancestryKeys, orderedLevels) {
     <div class="info-tier">${depthLabel}</div>
   `;
 
+  // Math Dojo lesson launcher — enabled only when the skill is not locked.
+  if (node.domain.id === 'math') {
+    const eff = getEffectiveState3D(node.data.progress);
+    const isLocked = eff === 'locked';
+    const lessonSkillName = node.data.legacy_name || node.data.name;
+    if (isLocked) {
+      html += `<button class="info-action-btn locked" disabled title="Complete prerequisites to unlock">🔒 Locked — complete prerequisites first</button>`;
+    } else {
+      html += `<button class="info-action-btn" data-action="learn-dojo" data-skill="${lessonSkillName.replace(/"/g, '&quot;')}">📖 Learn in Math Dojo</button>`;
+    }
+  }
+
   // Path from root
   if (!node.isRoot) {
     html += `<div class="info-section"><h4>Path from Root</h4><div class="info-path">`;
@@ -1511,6 +1523,25 @@ function showInfoPanel(key, node, ancestryKeys, orderedLevels) {
       if (state.nodeMap.has(k)) selectNode(k);
     });
   });
+  const learnBtn = content.querySelector('[data-action="learn-dojo"]');
+  if (learnBtn) {
+    learnBtn.addEventListener('click', () => {
+      const skill = learnBtn.getAttribute('data-skill');
+      if (!skill) return;
+      try {
+        localStorage.setItem('tree_lesson_request', JSON.stringify({
+          skill,
+          subject: 'Math',
+          timestamp: Date.now(),
+        }));
+      } catch (e) { /* ignore quota errors — dojo will just open without context */ }
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage({ type: 'OPEN_GAME', gameId: 'math-dojo' }, '*');
+      } else {
+        window.location.href = '../../games/math-dojo.html';
+      }
+    });
+  }
 }
 
 function deselectNode() {
