@@ -40147,6 +40147,7 @@
               e.class_grade = qg.class_grade;
               e.suggested_class_grade = qg.suggested_class_grade;
               e.class_grade_override = qg.class_grade_override || false;
+              e.academic_grade_override = qg.academic_grade_override || false;
               e.teacher_notes = qg.teacher_notes || e.teacher_notes;
             }
           });
@@ -40159,8 +40160,13 @@
                 p_quarter_id: quarter.id
               });
               if (suggestionData && suggestionData[0]) {
-                // Store holistic academic grade (trend 60% + recent 40%)
-                enrollment.academic_grade = suggestionData[0].suggested_grade;
+                // System-computed holistic academic grade (trend 60% + recent 40%).
+                // Keep it for the "reset to system" affordance, but only use it as
+                // the displayed academic grade when the teacher has NOT overridden it.
+                enrollment.system_academic_grade = suggestionData[0].suggested_grade;
+                if (!enrollment.academic_grade_override) {
+                  enrollment.academic_grade = suggestionData[0].suggested_grade;
+                }
                 enrollment.trend_grade = suggestionData[0].trend_grade;
                 enrollment.recent_avg = suggestionData[0].recent_avg;
                 enrollment.assignment_count = suggestionData[0].assignment_count;
@@ -40248,7 +40254,7 @@
           <div style="margin-bottom: 15px; padding: 12px; background: rgba(106, 169, 255, 0.05); border-radius: 8px; border: 1px solid rgba(106, 169, 255, 0.2);">
             <strong>📝 Grading System:</strong><br>
             <small style="color: var(--muted-color);">
-              • <strong>Academic:</strong> Calculated from assignments (trend 60% + recent 40%)<br>
+              • <strong>Academic:</strong> Calculated from assignments (trend 60% + recent 40%) — or override it: type a number or pick a letter<br>
               • <strong>Participation:</strong> Manually set by you (editable)<br>
               • <strong>Suggested Grade:</strong> Academic + Participation combined (${weightLabel} weight)<br>
               • <strong>Final Grade:</strong> You control this - use suggested or set your own<br>
@@ -40274,6 +40280,8 @@
         this.enrollments.forEach(enrollment => {
           const student = enrollment.user_profiles;
           const academicGrade = enrollment.academic_grade?.toFixed(1) || '0.0';
+          const academicOverride = enrollment.academic_grade_override || false;
+          const academicLetter = this.percentageToLetterGrade(parseFloat(academicGrade));
           const participationGrade = enrollment.participation_grade?.toFixed(1) || '';
           const suggestedGrade = enrollment.suggested_class_grade?.toFixed(1) || academicGrade;
           const classGrade = enrollment.class_grade?.toFixed(1) || suggestedGrade;
@@ -40299,10 +40307,35 @@
                 <small style="color: var(--muted-color);">${student.email}</small>
               </td>
               <td style="text-align: center; padding: 12px;">
-                <div style="display: inline-block; padding: 8px 12px; background: rgba(106, 169, 255, 0.1); border-radius: 6px; color: var(--accent); font-weight: 700; font-size: 16px;">
-                  ${academicGrade}
+                <div style="display: flex; flex-direction: column; align-items: center; gap: 4px;">
+                  <div style="display: flex; gap: 4px; align-items: center; justify-content: center;">
+                    <input
+                      type="number"
+                      class="academic-grade-input"
+                      data-enrollment-id="${enrollment.id}"
+                      data-field="academic_grade"
+                      value="${academicGrade}"
+                      placeholder="0-100"
+                      min="0"
+                      max="100"
+                      step="0.1"
+                      onchange="teacherGrades.handleAcademicGradeChange('${enrollment.id}', this.value)"
+                      style="width: 70px; padding: 8px; text-align: center; background: ${academicOverride ? 'rgba(255, 159, 67, 0.15)' : 'rgba(106, 169, 255, 0.1)'}; border: 2px solid ${academicOverride ? 'rgba(255, 159, 67, 0.5)' : 'rgba(106, 169, 255, 0.3)'}; border-radius: 6px; color: var(--accent); font-weight: 700; font-size: 16px;"
+                    >
+                    <select
+                      class="academic-grade-letter-select"
+                      data-enrollment-id="${enrollment.id}"
+                      onchange="teacherGrades.handleAcademicLetterChange('${enrollment.id}', this.value)"
+                      title="Pick a letter grade to set the academic override"
+                      style="padding: 7px 4px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--card-bg); color: var(--text-color); font-weight: 700; cursor: pointer;">
+                      ${['', 'A+', 'A', 'A-', 'B+', 'B', 'B-', 'C+', 'C', 'C-', 'D+', 'D', 'D-', 'F'].map(l => `<option value="${l}" ${(academicOverride && l === academicLetter) ? 'selected' : ''}>${l || 'A–F'}</option>`).join('')}
+                    </select>
+                  </div>
+                  <span class="academic-grade-letter" style="font-weight: 700; font-size: 13px; color: var(--accent);">${academicLetter}</span>
+                  <small class="academic-status" style="color: var(--muted-color); font-size: 10px;">${academicOverride ? 'TEACHER SET' : 'SYSTEM (avg)'}</small>
+                  <button type="button" class="academic-reset-btn" onclick="teacherGrades.clearAcademicOverride('${enrollment.id}')" title="Revert to the system-calculated academic grade"
+                    style="display: ${academicOverride ? 'inline-block' : 'none'}; padding: 1px 6px; font-size: 10px; background: rgba(106, 169, 255, 0.15); border: 1px solid rgba(106, 169, 255, 0.4); border-radius: 4px; color: var(--accent); cursor: pointer;">↺ system</button>
                 </div>
-                <br><small style="color: var(--muted-color); font-size: 10px;">REFERENCE</small>
               </td>
               <td style="text-align: center; padding: 12px;">
                 <input
@@ -40434,6 +40467,94 @@
         }
       }
 
+      letterGradeToPercentage(letter) {
+        // Representative percentage per letter band (matches the banding used
+        // by calculate_quarter_grades for suggested grades).
+        const map = {
+          'A+': 98.5, 'A': 95, 'A-': 91.5,
+          'B+': 88.5, 'B': 85, 'B-': 81.5,
+          'C+': 78.5, 'C': 75, 'C-': 71.5,
+          'D+': 68.5, 'D': 65, 'D-': 61.5,
+          'F': 55
+        };
+        return map[letter] ?? 0;
+      }
+
+      handleAcademicGradeChange(enrollmentId, value) {
+        if (!this.pendingChanges[enrollmentId]) {
+          this.pendingChanges[enrollmentId] = {};
+        }
+        const parsed = parseFloat(value);
+        const grade = (isNaN(parsed) || value === '') ? null : parsed;
+        // Entering a value turns the override on; clearing the field turns it off.
+        const isOverride = grade !== null;
+        this.pendingChanges[enrollmentId].academic_grade = grade;
+        this.pendingChanges[enrollmentId].academic_grade_override = isOverride;
+
+        const row = document.querySelector(`tr[data-enrollment-id="${enrollmentId}"]`);
+        if (!row) return;
+        const input = row.querySelector('.academic-grade-input');
+        const letterSpan = row.querySelector('.academic-grade-letter');
+        const statusSpan = row.querySelector('.academic-status');
+        const resetBtn = row.querySelector('.academic-reset-btn');
+
+        if (input) {
+          input.style.borderColor = isOverride ? 'rgba(255, 159, 67, 0.5)' : 'rgba(106, 169, 255, 0.3)';
+          input.style.background = isOverride ? 'rgba(255, 159, 67, 0.15)' : 'rgba(106, 169, 255, 0.1)';
+        }
+        if (letterSpan && grade !== null) {
+          letterSpan.textContent = this.percentageToLetterGrade(grade);
+        }
+        if (statusSpan) {
+          statusSpan.textContent = isOverride ? 'TEACHER SET' : 'SYSTEM (avg)';
+        }
+        if (resetBtn) {
+          resetBtn.style.display = isOverride ? 'inline-block' : 'none';
+        }
+      }
+
+      handleAcademicLetterChange(enrollmentId, letter) {
+        if (!letter) return;
+        const pct = this.letterGradeToPercentage(letter);
+        const row = document.querySelector(`tr[data-enrollment-id="${enrollmentId}"]`);
+        if (row) {
+          const input = row.querySelector('.academic-grade-input');
+          if (input) input.value = pct.toFixed(1);
+        }
+        this.handleAcademicGradeChange(enrollmentId, pct);
+      }
+
+      clearAcademicOverride(enrollmentId) {
+        if (!this.pendingChanges[enrollmentId]) {
+          this.pendingChanges[enrollmentId] = {};
+        }
+        // Clear the override; calculate_quarter_grades will recompute academic.
+        this.pendingChanges[enrollmentId].academic_grade = null;
+        this.pendingChanges[enrollmentId].academic_grade_override = false;
+
+        const row = document.querySelector(`tr[data-enrollment-id="${enrollmentId}"]`);
+        if (!row) return;
+        const enrollment = this.enrollments.find(e => e.id === enrollmentId);
+        const systemVal = enrollment?.system_academic_grade;
+        const input = row.querySelector('.academic-grade-input');
+        const letterSpan = row.querySelector('.academic-grade-letter');
+        const statusSpan = row.querySelector('.academic-status');
+        const resetBtn = row.querySelector('.academic-reset-btn');
+        const letterSelect = row.querySelector('.academic-grade-letter-select');
+
+        if (input) {
+          if (systemVal !== null && systemVal !== undefined) input.value = systemVal.toFixed(1);
+          input.style.borderColor = 'rgba(106, 169, 255, 0.3)';
+          input.style.background = 'rgba(106, 169, 255, 0.1)';
+        }
+        if (letterSpan && systemVal !== null && systemVal !== undefined) {
+          letterSpan.textContent = this.percentageToLetterGrade(systemVal);
+        }
+        if (statusSpan) statusSpan.textContent = 'SYSTEM (avg)';
+        if (letterSelect) letterSelect.value = '';
+        if (resetBtn) resetBtn.style.display = 'none';
+      }
+
       handleGradeChange(enrollmentId, field, value) {
         if (!this.pendingChanges[enrollmentId]) {
           this.pendingChanges[enrollmentId] = {};
@@ -40477,10 +40598,21 @@
             let teacherNotes = null;
             let classGrade = null;
             let classGradeOverride = null;
+            let academicGrade = null;
+            let academicOverride = null;
 
             if (changes.participation_grade !== undefined) {
               const grade = parseFloat(changes.participation_grade);
               participationGrade = isNaN(grade) || changes.participation_grade === '' ? null : grade;
+            }
+
+            // Handle academic grade override
+            if (changes.academic_grade_override !== undefined) {
+              academicOverride = changes.academic_grade_override;
+              if (academicOverride) {
+                const parsed = parseFloat(changes.academic_grade);
+                academicGrade = isNaN(parsed) ? null : parsed;
+              }
             }
 
             if (changes.teacher_notes !== undefined) {
@@ -40496,6 +40628,16 @@
 
             // Use per-quarter grade storage
             try {
+              // Apply academic override FIRST so the recalc below reads the new flag.
+              if (academicOverride !== null) {
+                await window.app.auth.supabase.rpc('set_academic_grade_override', {
+                  p_enrollment_id: enrollmentId,
+                  p_quarter_id: this.currentQuarterId,
+                  p_academic_grade: academicGrade,
+                  p_override: academicOverride
+                });
+              }
+
               // If teacher set a class grade, use the override function
               if (classGrade !== null) {
                 await window.app.auth.supabase.rpc('set_class_grade_override', {
@@ -40534,6 +40676,9 @@
               if (classGrade !== null) {
                 updateData.class_grade = classGrade;
                 updateData.class_grade_override = classGradeOverride;
+              }
+              if (academicOverride === true && academicGrade !== null) {
+                updateData.academic_grade = academicGrade;
               }
 
               if (Object.keys(updateData).length > 0) {
