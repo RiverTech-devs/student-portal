@@ -369,7 +369,76 @@ const rand = (a,b)=>Math.floor(Math.random()*(b-a+1))+a;
 const pick = arr => arr[rand(0,arr.length-1)];
 function shuffle(a){ a=a.slice(); for(let i=a.length-1;i>0;i--){const j=rand(0,i);[a[i],a[j]]=[a[j],a[i]];} return a; }
 function sampleN(arr,n){ return shuffle(arr).slice(0,n); }
-function norm(s){ return (s||'').toString().trim().toLowerCase().replace(/[.,!?;:"']/g,'').replace(/\s+/g,' '); }
+function norm(s){ return (s||'').toString().trim().toLowerCase().replace(/[.,!?;:"'’“”()\-]/g,' ').replace(/\s+/g,' ').trim(); }
+
+/* =========================================================================
+   TOKENIZED TYPED-ANSWER GRADING
+   Turns a free-typed answer into tokens and decides correctness flexibly,
+   instead of requiring a single exact string. Modes:
+     'exact'    — normalized string must equal an accepted answer (spelling:
+                  typos MUST fail, so no fuzziness).
+     'word'     — single-word / short answers (e.g. a synonym): passes if any
+                  accepted word matches any answer token; order- and
+                  extra-word tolerant, with light typo + stem tolerance.
+     'keywords' — short phrase answers: accept is a list of keyword-sets;
+                  passes if every required token in any one set is present.
+   ========================================================================= */
+const STOPWORDS = new Set(['a','an','the','is','are','am','was','were','be','been','to','of','and','or','it','that','this','these','those','in','on','at','for','as','by','with','its','his','her','their','my','your','our','i','you','we','they','he','she','do','does','did','so','if','then','than','but','not','no','very','just','about','into','from','word','means','meaning','answer']);
+function tokenize(s){ return norm(s).split(' ').filter(Boolean); }
+function lev(a,b){
+  const m=a.length, n=b.length; if(!m) return n; if(!n) return m;
+  let prev=Array.from({length:n+1},(_,i)=>i), cur=new Array(n+1);
+  for(let i=1;i<=m;i++){ cur[0]=i;
+    for(let j=1;j<=n;j++){ cur[j]=Math.min(prev[j]+1, cur[j-1]+1, prev[j-1]+(a[i-1]===b[j-1]?0:1)); }
+    [prev,cur]=[cur,prev];
+  }
+  return prev[n];
+}
+const stem = w => w.replace(/(ing|edly|ed|ies|es|s|ly)$/,'');
+// Fuzzy single-token match: exact, light stem, or 1 edit for words >=5 chars.
+function tokenMatch(userTok, target, fuzzy){
+  if(userTok===target) return true;
+  if(!fuzzy) return false;
+  if(stem(userTok)===stem(target)) return true;
+  const len=Math.max(userTok.length,target.length);
+  if(len>=5 && lev(userTok,target)<=1) return true;
+  return false;
+}
+function checkTyped(input, q){
+  const mode = q.match || 'exact';
+  const accepts = q.accept || [];
+  if(mode==='exact'){
+    const v = norm(input);
+    return accepts.some(a => norm(a) === v);
+  }
+  const userTokens = tokenize(input);
+  const userContent = userTokens.filter(t => !STOPWORDS.has(t));
+  if(mode==='word'){
+    // pass if any accepted answer is satisfied by the user's content tokens
+    return accepts.some(a => {
+      const at = tokenize(a).filter(t => !STOPWORDS.has(t));
+      if(at.length===0) return false;
+      // every content token of the accepted answer must appear in the user's answer
+      return at.every(t => userContent.some(u => tokenMatch(u, t, true)));
+    });
+  }
+  if(mode==='keywords'){
+    // accept: [{all:[...]}, ...] — pass if any set is fully present
+    return accepts.some(set => {
+      const req = (set.all || []).map(norm).filter(Boolean);
+      if(!req.length) return false;
+      return req.every(r => userContent.some(u => tokenMatch(u, r, true)) || userTokens.some(u => tokenMatch(u, r, true)));
+    });
+  }
+  return false;
+}
+// Human-readable list of what would have been accepted (for feedback on a miss).
+function acceptedHint(q){
+  const accepts = q.accept || [];
+  if((q.match||'exact')==='keywords') return accepts.map(s => (s.all||[]).join(' + ')).join('  /  ');
+  return accepts.join(', ');
+}
+
 // Build a multiple-choice question from a correct answer + distractor pool.
 function mc(correct, distractors, n=4){
   const opts = shuffle([correct, ...sampleN(distractors.filter(d=>d!==correct), n-1)]);
@@ -882,6 +951,13 @@ function vocabQ(stage, skill){
   const v = pick(bank);
   const mode = pick(['syn','ant','def','cloze']);
   if (mode === 'syn'){
+    // Half the time, ask the student to TYPE a synonym (graded by the
+    // tokenized matcher against the whole synonym list).
+    if (Math.random() < 0.5){
+      return { skill, prompt:`<b>Type a word</b> that means about the same as <b>${v.w}</b>:`,
+        typed:true, match:'word', accept:v.syn,
+        explanation:`"${v.w}" means "${v.def}". Synonyms include ${v.syn.join(', ')}.`, type:'synonym-typed' };
+    }
     // distractors must NOT be synonyms of v
     const pool = [];
     bank.forEach(o => { if (o !== v) pool.push(...o.syn, ...o.ant); });
@@ -902,6 +978,12 @@ function vocabQ(stage, skill){
     return { skill, prompt:`What does <b>${v.w}</b> mean?`, ...m,
       explanation:`"${v.w}" means "${v.def}".`, type:'definition' };
   } else {
+    // Cloze: half typed (type the missing word), half multiple-choice.
+    if (Math.random() < 0.5){
+      return { skill, prompt:`<b>Type the word</b> that best completes the sentence:<br>"${v.cloze}"`,
+        typed:true, match:'word', accept:[v.w],
+        explanation:`"${v.w}" (${v.def}) fits the sentence best.`, type:'cloze-typed' };
+    }
     const m = mc(v.w, bank.filter(o => o !== v).map(o => o.w));
     return { skill, prompt:`Choose the best word to complete the sentence:<br>"${v.cloze}"`, ...m,
       explanation:`"${v.w}" (${v.def}) fits the sentence best.`, type:'cloze' };
@@ -917,12 +999,17 @@ function spellingQ(stage, skill){
       explanation:`The correct spelling is "${right}".`, type:'spelling' };
   }
   return { skill, prompt:`Type the <b>correct spelling</b> of this misspelled word:<br><b>${wrong}</b>`,
-    typed:true, accept:[right], explanation:`The correct spelling is "${right}".`, type:'spelling-typed' };
+    typed:true, match:'exact', accept:[right], explanation:`The correct spelling is "${right}".`, type:'spelling-typed' };
 }
 function sightWordsQ(stage, skill){
   const bank = CONTENT.sightWords[stage] || CONTENT.sightWords[1];
   const w = pick(bank);
   const scrambled = shuffle(w.split('')).join('');
+  if (Math.random() < 0.5){
+    // Type the unscrambled word — exact match (spelling must be right).
+    return { skill, prompt:`Unscramble these letters into a common word and <b>type it</b>: <b>${scrambled}</b>`,
+      typed:true, match:'exact', accept:[w], explanation:`The word is "${w}".`, type:'sight-typed' };
+  }
   const others = bank.filter(x => x !== w);
   const m = mc(w, others);
   return { skill, prompt:`Read the word, then choose its correct spelling. (Letters seen: <b>${scrambled}</b>)`, ...m,
@@ -957,6 +1044,18 @@ function phonicsQ(stage, skill){
   return bankQ(sets)(stage, skill);
 }
 function decodingQ(stage, skill){
+  // Sometimes ask the student to TYPE the blended word (exact spelling).
+  const blends = [
+    {sounds:'/c/ /a/ /t/', word:'cat'}, {sounds:'/s/ /t/ /o/ /p/', word:'stop'},
+    {sounds:'/f/ /i/ /sh/', word:'fish'}, {sounds:'/d/ /o/ /g/', word:'dog'},
+    {sounds:'/m/ /a/ /p/', word:'map'}, {sounds:'/s/ /u/ /n/', word:'sun'},
+    {sounds:'/b/ /e/ /s/ /t/', word:'best'}, {sounds:'/l/ /a/ /m/ /p/', word:'lamp'},
+  ];
+  if (Math.random() < 0.4){
+    const b = pick(blends);
+    return { skill, prompt:`Blend these sounds and <b>type the word</b>: <b>${b.sounds}</b>`,
+      typed:true, match:'exact', accept:[b.word], explanation:`The blended word is "${b.word}".`, type:'decode-typed' };
+  }
   const sets = [
     {q:'Blend these sounds to make a word: /c/ /a/ /t/',a:'cat',d:['cot','can','cap']},
     {q:'Blend these sounds to make a word: /s/ /t/ /o/ /p/',a:'stop',d:['step','spot','tops']},
@@ -1427,9 +1526,8 @@ function choose(i){
 function submitTyped(){
   if (State.answered) return;
   const i = document.getElementById('typed-input');
-  const val = norm(i.value);
-  const ok = (State.current.accept||[]).some(a=>norm(a)===val);
-  grade(ok, null);
+  if (!i || !norm(i.value)) return; // ignore empty submissions
+  grade(checkTyped(i.value, State.current), null);
 }
 
 function grade(isCorrect, chosenIdx){
@@ -1464,6 +1562,10 @@ function grade(isCorrect, chosenIdx){
   document.getElementById('q-verdict').textContent = isCorrect ? '✓ Correct' : '✗ Not quite';
   let why = q.explanation || '';
   if (!isCorrect && !q.typed) why = `The answer is "<b>${q.options[q.correct]}</b>". ` + why;
+  if (!isCorrect && q.typed) {
+    const hint = acceptedHint(q);
+    if (hint) why = `Accepted: <b>${hint}</b>. ` + why;
+  }
   document.getElementById('q-why').innerHTML = why;
 
   // placement adaptation
