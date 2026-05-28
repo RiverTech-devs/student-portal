@@ -23968,21 +23968,38 @@
               .eq('id', enrollment.id));
           }
       
-          // Recalculate grades
+          // Recalculate grades (legacy per-enrollment recalc; ignores per-quarter
+          // teacher overrides — that's why we layer the snapshot read below).
           await this.supabaseQuery(() => this.auth.supabase.rpc('update_enrollment_grades', {
             p_enrollment_id: enrollment.id
           }));
-      
+
           // Reload enrollment with updated grades
           const { data: updatedEnrollment } = await this.supabaseQuery(() => this.auth.supabase
             .from('class_enrollments')
             .select('*')
             .eq('id', enrollment.id)
             .single());
-      
-          const academicGrade = updatedEnrollment?.academic_grade?.toFixed(1) || '0.0';
-          const participationGrade = updatedEnrollment?.participation_grade?.toFixed(1) || 'Not Set';
-          const classGrade = updatedEnrollment?.class_grade?.toFixed(1) || '0.0';
+
+          // Prefer the per-quarter snapshot — that's where the teacher's
+          // Academic / Class grade overrides actually live. Fall back to the
+          // recalculated enrollment columns when no snapshot exists yet.
+          const { data: quarterSnapshot } = await this.supabaseQuery(() => this.auth.supabase
+            .from('quarter_grade_snapshots')
+            .select('academic_grade, participation_grade, class_grade, teacher_notes')
+            .eq('enrollment_id', enrollment.id)
+            .eq('quarter_id', currentQuarter.id)
+            .maybeSingle());
+
+          const snapAcademic = quarterSnapshot?.academic_grade;
+          const snapParticipation = quarterSnapshot?.participation_grade;
+          const snapClass = quarterSnapshot?.class_grade;
+          const snapNotes = quarterSnapshot?.teacher_notes;
+
+          const academicGrade = (snapAcademic ?? updatedEnrollment?.academic_grade)?.toFixed(1) || '0.0';
+          const participationGrade = (snapParticipation ?? updatedEnrollment?.participation_grade)?.toFixed(1) || 'Not Set';
+          const classGrade = (snapClass ?? updatedEnrollment?.class_grade)?.toFixed(1) || '0.0';
+          const displayTeacherNotes = snapNotes ?? updatedEnrollment?.teacher_notes;
       
           // Load assignments and submissions for detail view
           const { data: assignments } = await this.supabaseQuery(() => this.auth.supabase
@@ -24164,10 +24181,10 @@
                   </div>
                 </div>
                 
-                ${updatedEnrollment?.teacher_notes ? `
+                ${displayTeacherNotes ? `
                   <div style="margin-top: 20px; padding: 15px; background: rgba(106, 169, 255, 0.05); border-radius: 8px; border-left: 3px solid var(--accent);">
                     <strong style="font-size: 12px; color: var(--accent);">📝 Teacher Notes:</strong>
-                    <p style="margin-top: 8px; font-size: 13px; color: var(--text);">${updatedEnrollment.teacher_notes}</p>
+                    <p style="margin-top: 8px; font-size: 13px; color: var(--text);">${displayTeacherNotes}</p>
                   </div>
                 ` : ''}
               </div>
