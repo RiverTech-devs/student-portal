@@ -779,6 +779,15 @@
                                         <span class="tag">All Levels</span>
                                     </div>
                                 </div>
+                                <div class="game-card" data-game="wordsmith" style="border: 2px solid #b8860b;">
+                                    <div class="game-icon">✒️</div>
+                                    <h3>Wordsmith</h3>
+                                    <p>Sharpen your English — vocabulary, grammar, reading, and writing through placement, lessons, and challenges</p>
+                                    <div class="game-tags">
+                                        <span class="tag">Training Center</span>
+                                        <span class="tag">All Levels</span>
+                                    </div>
+                                </div>
                                 <div class="game-card" data-game="mathletics">
                                     <h3>🎯 Mathletics</h3>
                                     <p>Master multiplication facts through adaptive practice</p>
@@ -2482,6 +2491,7 @@
                         .from('math_dojo_sessions')
                         .select('*')
                         .eq('user_id', userId)
+                        .eq('subject', 'Math')
                         .gte('created_at', weekAgo.toISOString())
                         .order('created_at', { ascending: false });
 
@@ -3948,6 +3958,10 @@
                         url: 'games/math-dojo.html',
                         title: '🥋 Math Dojo'
                     },
+                    'wordsmith': {
+                        url: 'games/wordsmith.html',
+                        title: '✒️ Wordsmith'
+                    },
                     'mathletics': {
                         url: 'games/mathletics.html',
                         title: '🎯 Mathletics'
@@ -4592,7 +4606,7 @@
 
                     case 'DOGO_REQUEST_SKILL_DATA':
                         // Dojo requesting skill data on startup - send from Supabase
-                        this.sendSkillDataToDojo(event.source);
+                        this.sendSkillDataToDojo(event.source, event.data.subject || 'Math');
                         break;
 
                     case 'DOGO_SKILL_PROGRESS':
@@ -4622,7 +4636,7 @@
 
                     case 'DOGO_REQUEST_WEEKLY_MASTERIES':
                         // Dojo Retention Gauntlet: asking for skills mastered this week
-                        this.sendWeeklyMasteriesToDojo(event.source);
+                        this.sendWeeklyMasteriesToDojo(event.source, event.data.subject || 'Math');
                         break;
 
                     case 'DOGO_GAUNTLET_COMPLETE':
@@ -4750,20 +4764,21 @@
 
             handleDojoSkillUpdate(data) {
                 console.log('📥 Received skill update from Dojo');
+                const subject = data.subject || 'Math';
 
-                // Update local skill progress for Math
+                // Update local skill progress for the relevant subject
                 if (data.skills) {
                     // Merge into local progress (don't overwrite, merge per-skill)
-                    if (!this.skillProgress['Math']) this.skillProgress['Math'] = {};
+                    if (!this.skillProgress[subject]) this.skillProgress[subject] = {};
                     Object.entries(data.skills).forEach(([name, skill]) => {
-                        this.skillProgress['Math'][name] = {
-                            ...this.skillProgress['Math'][name],
+                        this.skillProgress[subject][name] = {
+                            ...this.skillProgress[subject][name],
                             ...skill
                         };
                     });
 
                     // Save all updated skills to Supabase
-                    this.bulkSaveSkillsToSupabase('Math', data.skills);
+                    this.bulkSaveSkillsToSupabase(subject, data.skills);
                 }
 
                 // Update skills counter
@@ -4774,7 +4789,7 @@
                 if (skillTreeIframe && skillTreeIframe.contentWindow) {
                     skillTreeIframe.contentWindow.postMessage({
                         type: 'SKILL_DATA_RESPONSE',
-                        subject: 'Math',
+                        subject: subject,
                         progress: data.skills,
                         skillTreeData: {}
                     }, '*');
@@ -4782,15 +4797,15 @@
                 }
             }
 
-            sendSkillDataToDojo(source) {
+            sendSkillDataToDojo(source, subject = 'Math') {
                 // Send stored skill progress from Supabase back to Dojo
-                const progress = this.skillProgress['Math'] || {};
-                console.log('📤 Sending skill data to Dojo:', Object.keys(progress).length, 'skills');
+                const progress = this.skillProgress[subject] || {};
+                console.log(`📤 Sending ${subject} skill data to Dojo:`, Object.keys(progress).length, 'skills');
 
                 if (source) {
                     source.postMessage({
                         type: 'SKILL_DATA_FOR_DOGO',
-                        subject: 'Math',
+                        subject: subject,
                         skills: progress
                     }, '*');
                 }
@@ -4799,31 +4814,32 @@
             async saveSkillToSupabase(data) {
                 if (!this.portal.auth.isAuthenticated()) return;
                 try {
+                    const subject = data.subject || 'Math';
                     const userId = this.portal.auth.getUserInfo().profile.id;
                     const now = new Date().toISOString();
                     const skillName = data.skill || data.domain;
                     if (!skillName) return;
 
                     // Update local
-                    if (!this.skillProgress['Math']) this.skillProgress['Math'] = {};
-                    this.skillProgress['Math'][skillName] = {
-                        ...this.skillProgress['Math'][skillName],
+                    if (!this.skillProgress[subject]) this.skillProgress[subject] = {};
+                    this.skillProgress[subject][skillName] = {
+                        ...this.skillProgress[subject][skillName],
                         state: data.skillState || 'activated',
                         mastery_score: data.masteryScore || 0,
                         last_practiced: now,
-                        practice_count: (this.skillProgress['Math'][skillName]?.practice_count || 0) + 1
+                        practice_count: (this.skillProgress[subject][skillName]?.practice_count || 0) + 1
                     };
 
                     const { error } = await this.portal.auth.supabase
                         .from('skill_progress')
                         .upsert({
                             user_id: userId,
-                            subject: 'Math',
+                            subject: subject,
                             skill_name: skillName,
                             state: data.skillState || 'activated',
                             mastery_score: data.masteryScore || 0,
                             last_practiced: now,
-                            practice_count: this.skillProgress['Math'][skillName].practice_count,
+                            practice_count: this.skillProgress[subject][skillName].practice_count,
                             updated_at: now
                         }, { onConflict: 'user_id,subject,skill_name' });
                     if (error) console.error('Failed to save skill progress:', error);
@@ -4835,9 +4851,18 @@
             async handleDojoSessionComplete(data) {
                 if (!this.portal.auth.isAuthenticated() || !data.skillProgress) return;
                 try {
+                    const subject = data.subject || 'Math';
                     const userId = this.portal.auth.getUserInfo().profile.id;
                     const now = new Date().toISOString();
                     const rows = [];
+
+                    // skillProgress is an array of { skill, domain, tier, correct, total,
+                    // masteryScore, skillState }. Normalize defensively in case an older
+                    // sender passes an object map keyed by skill name.
+                    const spList = Array.isArray(data.skillProgress)
+                        ? data.skillProgress
+                        : Object.entries(data.skillProgress).map(([skill, p]) => ({ skill, ...p }));
+                    const seen = new Set();
 
                     // Phase 2 BKT — index by skill name so legacy upserts can
                     // pick up p_mastered + last_evidence_at + decay reset.
@@ -4846,25 +4871,28 @@
                         if (bu && bu.skill) bktBySkill[bu.skill] = bu;
                     }
 
-                    Object.entries(data.skillProgress).forEach(([skillName, progress]) => {
+                    spList.forEach((progress) => {
+                        const skillName = progress.skill || progress.domain;
+                        if (!skillName) return;
+                        seen.add(skillName);
                         // Update local
-                        if (!this.skillProgress['Math']) this.skillProgress['Math'] = {};
-                        this.skillProgress['Math'][skillName] = {
-                            ...this.skillProgress['Math'][skillName],
+                        if (!this.skillProgress[subject]) this.skillProgress[subject] = {};
+                        this.skillProgress[subject][skillName] = {
+                            ...this.skillProgress[subject][skillName],
                             state: progress.skillState || 'activated',
                             mastery_score: progress.masteryScore || 0,
                             last_practiced: now,
-                            practice_count: (this.skillProgress['Math'][skillName]?.practice_count || 0) + (progress.total || 1)
+                            practice_count: (this.skillProgress[subject][skillName]?.practice_count || 0) + (progress.total || 1)
                         };
 
                         const row = {
                             user_id: userId,
-                            subject: 'Math',
+                            subject: subject,
                             skill_name: skillName,
                             state: progress.skillState || 'activated',
                             mastery_score: progress.masteryScore || 0,
                             last_practiced: now,
-                            practice_count: this.skillProgress['Math'][skillName].practice_count,
+                            practice_count: this.skillProgress[subject][skillName].practice_count,
                             updated_at: now
                         };
                         // Layer BKT data on top when this skill has it.
@@ -4882,10 +4910,10 @@
                     // Skills BKT touched that the legacy per-domain loop missed
                     // (typically secondary skills). Push them as their own rows.
                     for (const [skill, bu] of Object.entries(bktBySkill)) {
-                        if (data.skillProgress[skill]) continue;
+                        if (seen.has(skill)) continue;
                         rows.push({
                             user_id: userId,
-                            subject: 'Math',
+                            subject: subject,
                             skill_name: skill,
                             state: bu.derivedState || 'in_progress',
                             mastery_score: Math.round((bu.p_mastered || 0) * 100),
@@ -4910,11 +4938,10 @@
 
                     // Record session for weekly activity tracking
                     try {
-                        const skillEntries = Object.entries(data.skillProgress);
-                        const totalCorrect = skillEntries.reduce((sum, [, sp]) => sum + (sp.correct || 0), 0);
-                        const totalQuestions = skillEntries.reduce((sum, [, sp]) => sum + (sp.total || 0), 0);
-                        const skillDetails = skillEntries.map(([name, sp]) => ({
-                            skill: name, domain: sp.domain, tier: sp.tier,
+                        const totalCorrect = spList.reduce((sum, sp) => sum + (sp.correct || 0), 0);
+                        const totalQuestions = spList.reduce((sum, sp) => sum + (sp.total || 0), 0);
+                        const skillDetails = spList.map((sp) => ({
+                            skill: sp.skill || sp.domain, domain: sp.domain, tier: sp.tier,
                             correct: sp.correct || 0, total: sp.total || 0,
                             mastery: sp.masteryScore || 0, state: sp.skillState
                         }));
@@ -4922,8 +4949,9 @@
                             .from('math_dojo_sessions')
                             .insert({
                                 user_id: userId,
+                                subject: subject,
                                 mode: data.mode || 'testing',
-                                skills_practiced: skillEntries.length,
+                                skills_practiced: spList.length,
                                 total_correct: totalCorrect,
                                 total_questions: totalQuestions,
                                 skill_details: skillDetails
@@ -4939,18 +4967,19 @@
             async handleDojoLessonComplete(data) {
                 if (!this.portal.auth.isAuthenticated()) return;
                 try {
+                    const subject = data.subject || 'Math';
                     const userId = this.portal.auth.getUserInfo().profile.id;
                     const now = new Date().toISOString();
                     const skillName = data.skill || data.domain;
                     if (!skillName) return;
 
                     // Update local
-                    if (!this.skillProgress['Math']) this.skillProgress['Math'] = {};
-                    this.skillProgress['Math'][skillName] = {
+                    if (!this.skillProgress[subject]) this.skillProgress[subject] = {};
+                    this.skillProgress[subject][skillName] = {
                         state: 'mastered',
                         mastery_score: 100,
                         last_practiced: now,
-                        practice_count: (this.skillProgress['Math'][skillName]?.practice_count || 0) + 1,
+                        practice_count: (this.skillProgress[subject][skillName]?.practice_count || 0) + 1,
                         mastered_at: now
                     };
 
@@ -4958,12 +4987,12 @@
                         .from('skill_progress')
                         .upsert({
                             user_id: userId,
-                            subject: 'Math',
+                            subject: subject,
                             skill_name: skillName,
                             state: 'mastered',
                             mastery_score: 100,
                             last_practiced: now,
-                            practice_count: this.skillProgress['Math'][skillName].practice_count,
+                            practice_count: this.skillProgress[subject][skillName].practice_count,
                             mastered_at: now,
                             updated_at: now
                         }, { onConflict: 'user_id,subject,skill_name' });
@@ -4974,7 +5003,7 @@
                 }
             }
 
-            async sendWeeklyMasteriesToDojo(sourceWindow) {
+            async sendWeeklyMasteriesToDojo(sourceWindow, subject = 'Math') {
                 // Build the retention gauntlet line-up from skill_progress, the
                 // authoritative per-skill record of what the student has actually
                 // engaged with. This avoids generating questions on topics the
@@ -4994,7 +5023,7 @@
                         .from('skill_progress')
                         .select('skill_name, state, mastery_score, last_practiced, mastered_at, practice_count')
                         .eq('user_id', userId)
-                        .eq('subject', 'Math');
+                        .eq('subject', subject);
                     if (error) {
                         console.error('Failed to load skill_progress for gauntlet:', error);
                         sourceWindow?.postMessage({ type: 'WEEKLY_MASTERIES_FOR_DOGO', skills: [] }, '*');
@@ -5073,6 +5102,11 @@
             async handleGauntletComplete(data) {
                 if (!this.portal.auth.isAuthenticated()) return;
                 try {
+                    const subject = data.subject || 'Math';
+                    // Per-subject RTC namespace so Math and English 24h cooldowns
+                    // never collide. Math keeps its original 'retention_gauntlet' type.
+                    const refType = subject === 'Math' ? 'retention_gauntlet' : `recall_trials_${subject.toLowerCase()}`;
+                    const label = subject === 'Math' ? 'Retention Gauntlet' : 'Recall Trials';
                     const userId = this.portal.auth.getUserInfo().profile.id;
                     const now = new Date().toISOString();
                     const cleared = Array.isArray(data.cleared) ? data.cleared : [];
@@ -5096,7 +5130,7 @@
                             .from('rtc_transactions')
                             .select('reference_id')
                             .eq('user_id', userId)
-                            .eq('reference_type', 'retention_gauntlet')
+                            .eq('reference_type', refType)
                             .gte('created_at', dayAgo);
                         (recentTx || []).forEach(tx => {
                             // reference_id format: retention:<userId>:<skillName>:<timestamp>
@@ -5117,16 +5151,16 @@
                     if (failed.length > 0) {
                         const rows = failed.map(f => {
                             const name = f.skill || f.domain;
-                            if (!this.skillProgress['Math']) this.skillProgress['Math'] = {};
-                            const prev = this.skillProgress['Math'][name] || {};
-                            this.skillProgress['Math'][name] = {
+                            if (!this.skillProgress[subject]) this.skillProgress[subject] = {};
+                            const prev = this.skillProgress[subject][name] || {};
+                            this.skillProgress[subject][name] = {
                                 ...prev,
                                 state: 'activated',
                                 last_practiced: now
                             };
                             return {
                                 user_id: userId,
-                                subject: 'Math',
+                                subject: subject,
                                 skill_name: name,
                                 state: 'activated',
                                 mastery_score: Math.min(prev.mastery_score || 70, 70),
@@ -5146,12 +5180,12 @@
                     if (cleared.length > 0) {
                         const rows = cleared.map(c => {
                             const name = c.skill || c.domain;
-                            const prev = (this.skillProgress['Math'] && this.skillProgress['Math'][name]) || {};
-                            if (!this.skillProgress['Math']) this.skillProgress['Math'] = {};
-                            this.skillProgress['Math'][name] = { ...prev, state: 'mastered', last_practiced: now };
+                            const prev = (this.skillProgress[subject] && this.skillProgress[subject][name]) || {};
+                            if (!this.skillProgress[subject]) this.skillProgress[subject] = {};
+                            this.skillProgress[subject][name] = { ...prev, state: 'mastered', last_practiced: now };
                             return {
                                 user_id: userId,
-                                subject: 'Math',
+                                subject: subject,
                                 skill_name: name,
                                 state: 'mastered',
                                 mastery_score: Math.max(prev.mastery_score || 0, 90),
@@ -5183,14 +5217,14 @@
                                 p_user_id: userId,
                                 p_amount: amt,
                                 p_transaction_type: 'earn_skill',
-                                p_description: `Retention Gauntlet (${cat}): defended ${skillName}`,
+                                p_description: `${label} (${cat}): defended ${skillName}`,
                                 p_reference_id: refId,
-                                p_reference_type: 'retention_gauntlet'
+                                p_reference_type: refType
                             });
                             if (rtcErr) console.error('Failed to award gauntlet RTC for', skillName, rtcErr);
                             else { actualAwarded += amt; rewardedByCategory[cat] = (rewardedByCategory[cat] || 0) + amt; }
                         }
-                        console.log(`🪙 Awarded ${actualAwarded} RTC for Retention Gauntlet`, rewardedByCategory);
+                        console.log(`🪙 Awarded ${actualAwarded} RTC for ${label}`, rewardedByCategory);
                     }
 
                     // Log session to math_dojo_sessions so the weekly card picks it up
@@ -5203,6 +5237,7 @@
                             .from('math_dojo_sessions')
                             .insert({
                                 user_id: userId,
+                                subject: subject,
                                 mode: 'retention',
                                 skills_practiced: skillDetails.length,
                                 total_correct: Number(data.correctCount) || 0,

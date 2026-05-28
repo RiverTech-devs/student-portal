@@ -2759,25 +2759,32 @@
         });
       }
 
-      // Handle real-time skill progress updates from Math Dojo
+      // Handle real-time skill progress updates from Math Dojo / Wordsmith
       async handleDogoSkillProgress(data) {
         const { skill, domain, tier, correct, total, masteryScore, skillState } = data;
-        console.log(`Portal received Dojo progress: ${skill} - ${masteryScore}%`);
+        const subject = data.subject || 'Math';
+        console.log(`Portal received ${subject} Dojo progress: ${skill} - ${masteryScore}%`);
 
         // Only persist for students
         if (this.userInfo?.profile?.user_type !== 'student') return;
 
         try {
-          await this.upsertSkillProgress(skill, 'Math', masteryScore, skillState);
+          await this.upsertSkillProgress(skill, subject, masteryScore, skillState);
         } catch (err) {
           console.error('Failed to save skill progress:', err);
         }
       }
 
-      // Handle full session results from Math Dojo
+      // Handle full session results from Math Dojo / Wordsmith
       async handleDogoSessionComplete(data) {
-        const { mode, skillProgress, gapLog, bktUpdates = [] } = data;
-        console.log(`Portal received Dojo session complete: ${skillProgress.length} skills, ${bktUpdates.length} BKT updates`);
+        const { mode, gapLog, bktUpdates = [] } = data;
+        const subject = data.subject || 'Math';
+        // skillProgress is an array; normalize defensively in case an older
+        // sender passes an object map keyed by skill name.
+        const skillProgress = Array.isArray(data.skillProgress)
+          ? data.skillProgress
+          : Object.entries(data.skillProgress || {}).map(([skill, p]) => ({ skill, ...p }));
+        console.log(`Portal received ${subject} session complete: ${skillProgress.length} skills, ${bktUpdates.length} BKT updates`);
 
         if (this.userInfo?.profile?.user_type !== 'student') return;
 
@@ -2789,7 +2796,7 @@
           for (const bu of bktUpdates) {
             const masteryScore = Math.round(bu.p_mastered * 100);
             await this.upsertSkillProgress(
-              bu.skill, 'Math',
+              bu.skill, subject,
               masteryScore, bu.derivedState,
               bu.p_mastered, bu.last_evidence_at
             );
@@ -2801,10 +2808,10 @@
           // but keep the path for safety / future generators without tags.
           for (const sp of skillProgress) {
             if (bktSkillNames.has(sp.skill)) continue;
-            await this.upsertSkillProgress(sp.skill, 'Math', sp.masteryScore, sp.skillState);
+            await this.upsertSkillProgress(sp.skill, subject, sp.masteryScore, sp.skillState);
           }
 
-          this.showNotification(`Math practice complete! ${skillProgress.length} skills updated.`, 'success');
+          this.showNotification(`${subject === 'Reading' ? 'English' : subject} practice complete! ${skillProgress.length} skills updated.`, 'success');
 
           // Record session for weekly activity tracking
           try {
@@ -2820,6 +2827,7 @@
               .from('math_dojo_sessions')
               .insert({
                 user_id: userId,
+                subject: subject,
                 mode: mode || 'testing',
                 skills_practiced: skillProgress.length,
                 total_correct: totalCorrect,
@@ -2834,16 +2842,17 @@
         }
       }
 
-      // Handle lesson completion from Math Dojo Learning Center
+      // Handle lesson completion from Math Dojo / Wordsmith Learning Center
       async handleDogoLessonComplete(data) {
         const { skill, domain, tier } = data;
-        console.log(`Portal received Dojo lesson complete: ${skill}`);
+        const subject = data.subject || 'Math';
+        console.log(`Portal received ${subject} lesson complete: ${skill}`);
 
         if (this.userInfo?.profile?.user_type !== 'student') return;
 
         try {
           // Lesson completion = 100% mastery
-          await this.upsertSkillProgress(skill, 'Math', 100, 'mastered');
+          await this.upsertSkillProgress(skill, subject, 100, 'mastered');
           this.showNotification(`Lesson complete! ${skill} mastered!`, 'success');
         } catch (err) {
           console.error('Failed to save lesson completion:', err);
@@ -7608,6 +7617,7 @@
             .from('math_dojo_sessions')
             .select('*')
             .eq('user_id', studentId)
+            .eq('subject', 'Math')
             .gte('created_at', weekAgo.toISOString())
             .order('created_at', { ascending: false });
 
@@ -7739,21 +7749,24 @@
           })(),
           (async () => {
             let q = sb.from('math_dojo_sessions')
-              .select('mode, total_questions, total_correct, accuracy, duration_seconds, created_at')
+              .select('mode, subject, total_questions, total_correct, accuracy, duration_seconds, created_at')
               .eq('user_id', studentId)
               .order('created_at', { ascending: false })
               .limit(limit);
             if (sinceIso) q = q.gte('created_at', sinceIso);
             const { data } = await q;
-            return (data || []).map(r => ({
-              ts: r.created_at,
-              type: 'practice',
-              icon: '🥋',
-              color: '#3b82f6',
-              title: `Math Dojo · ${r.mode || 'practice'}`,
-              detail: `${r.total_correct || 0}/${r.total_questions || 0} correct (${r.accuracy || 0}%)${r.duration_seconds ? ' · ' + Math.round((r.duration_seconds || 0) / 60) + ' min' : ''}`,
-              meta: null
-            }));
+            return (data || []).map(r => {
+              const isEnglish = (r.subject || 'Math') === 'Reading';
+              return {
+                ts: r.created_at,
+                type: 'practice',
+                icon: isEnglish ? '✒️' : '🥋',
+                color: isEnglish ? '#b8860b' : '#3b82f6',
+                title: `${isEnglish ? 'Wordsmith' : 'Math Dojo'} · ${r.mode || 'practice'}`,
+                detail: `${r.total_correct || 0}/${r.total_questions || 0} correct (${r.accuracy || 0}%)${r.duration_seconds ? ' · ' + Math.round((r.duration_seconds || 0) / 60) + ' min' : ''}`,
+                meta: null
+              };
+            });
           })(),
           (async () => {
             let q = sb.from('skill_practice_sessions')
@@ -18323,6 +18336,7 @@
                   <option value="mathspire">🔢 Mathspire - Math Practice</option>
                   <option value="mathletics">🏃 Mathletics - Math Competition</option>
                   <option value="math-dojo">🥋 Math Dojo - Adaptive Math Training</option>
+                  <option value="wordsmith">✒️ Wordsmith - Adaptive English Training</option>
                   <option value="practice-pilot">✈️ Practice Pilot - Multi-Subject</option>
                   <option value="clockwork-defense">⏰ Clockwork Defense - Time/Strategy</option>
                   <option value="dimension-shift">🌀 Dimension Shift - Spatial Reasoning</option>
@@ -18824,6 +18838,7 @@
             'mathspire': 'Mathspire',
             'mathletics': 'Mathletics',
             'math-dojo': 'Math Dojo',
+            'wordsmith': 'Wordsmith',
             'practice-pilot': 'Practice Pilot',
             'clockwork-defense': 'Clockwork Defense',
             'dimension-shift': 'Dimension Shift',
@@ -19871,6 +19886,7 @@
             'mathspire': 'Mathspire',
             'mathletics': 'Mathletics',
             'math-dojo': 'Math Dojo',
+            'wordsmith': 'Wordsmith',
             'practice-pilot': 'Practice Pilot',
             'clockwork-defense': 'Clockwork Defense',
             'dimension-shift': 'Dimension Shift',
