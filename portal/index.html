@@ -15569,12 +15569,17 @@
             });
           }
 
+          // Class default credit value (per-student overrides fall back to this)
+          const classDefaultCredit = classData?.credits ?? 1;
+
           // Build active students HTML
           let activeStudentsHtml = '';
           if (activeEnrollments.length > 0) {
             activeStudentsHtml = activeEnrollments.map(enrollment => {
               const student = studentMap[enrollment.student_id] || {};
               const enrollDate = new Date(enrollment.enrolled_at).toLocaleDateString();
+              const hasCreditOverride = enrollment.credits_override !== null && enrollment.credits_override !== undefined;
+              const effectiveCredit = hasCreditOverride ? Number(enrollment.credits_override) : classDefaultCredit;
 
               return `
                 <div class="list-item">
@@ -15582,9 +15587,13 @@
                     <div class="list-item-title">${student.first_name || 'Unknown'} ${student.last_name || ''}</div>
                     <div class="list-item-meta">
                       ${student.email || ''} • Grade ${student.grade_level || 'N/A'} • Enrolled: ${enrollDate}
+                      • Credit: <strong>${effectiveCredit}</strong>${hasCreditOverride ? ' <span style="color: var(--accent);">(override)</span>' : ''}
                     </div>
                   </div>
                   <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                    <button class="btn btn-secondary small" onclick="app.editCreditOverride('${enrollment.id}', '${classId}', ${hasCreditOverride ? Number(enrollment.credits_override) : 'null'}, ${classDefaultCredit})" title="Override the credit value this student earns for this class">
+                      🎓 Credit
+                    </button>
                     <button class="btn btn-secondary small" onclick="app.showPrivateNotes('${classId}', '${student.id}', '${student.first_name} ${student.last_name}')" title="Private notes only visible to you">
                       🔒 My Notes
                     </button>
@@ -15686,6 +15695,75 @@
         } catch (error) {
           console.error('Error loading students:', error);
           this.showNotification('Error loading students: ' + error.message, 'error');
+        }
+      }
+
+      // Open the per-student credit override editor. currentOverride is the
+      // existing override value (or null if none); defaultCredit is the class's
+      // standard credit value used when no override is set.
+      editCreditOverride(enrollmentId, classId, currentOverride, defaultCredit) {
+        const hasOverride = currentOverride !== null && currentOverride !== undefined;
+        const content = `
+          <div>
+            <p style="color: var(--muted); margin-bottom: 15px;">
+              This class is normally worth <strong>${defaultCredit}</strong> credit${defaultCredit === 1 ? '' : 's'}.
+              Set a different value below to override the credit this student earns, or leave it blank
+              to use the class default. This affects the student's report card and transcript only.
+            </p>
+            <label style="display: block; margin-bottom: 6px; font-weight: 600;">Credit value for this student</label>
+            <input type="number" id="credit-override-input" step="0.25" min="0" max="20"
+              value="${hasOverride ? currentOverride : ''}"
+              placeholder="Default (${defaultCredit})"
+              style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); font-size: 1rem;">
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end; flex-wrap: wrap;">
+              <button class="btn btn-secondary" onclick="app.closeModal('credit-override')">Cancel</button>
+              ${hasOverride ? `<button class="btn btn-secondary" onclick="app.saveCreditOverride('${enrollmentId}', '${classId}', true)">Reset to default (${defaultCredit})</button>` : ''}
+              <button class="btn btn-primary" onclick="app.saveCreditOverride('${enrollmentId}', '${classId}', false)">Save</button>
+            </div>
+          </div>
+        `;
+        this.showModal('credit-override', '🎓 Credit Override', content, true);
+        setTimeout(() => document.getElementById('credit-override-input')?.focus(), 50);
+      }
+
+      // Persist a credit override. clearOverride=true removes the override
+      // (sets credits_override back to NULL so the class default applies).
+      async saveCreditOverride(enrollmentId, classId, clearOverride) {
+        try {
+          let newValue = null;
+          if (!clearOverride) {
+            const raw = document.getElementById('credit-override-input')?.value.trim();
+            if (raw === '' || raw === undefined) {
+              // Blank input means "no override" — fall back to class default.
+              newValue = null;
+            } else {
+              newValue = Number(raw);
+              if (!Number.isFinite(newValue) || newValue < 0) {
+                this.showNotification('Enter a valid non-negative credit value', 'error');
+                return;
+              }
+            }
+          }
+
+          const { error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('class_enrollments')
+            .update({ credits_override: newValue })
+            .eq('id', enrollmentId));
+
+          if (error) throw error;
+
+          this.closeModal('credit-override');
+          this.showNotification(
+            newValue === null ? 'Credit override removed — using class default' : `Credit set to ${newValue} for this student`,
+            'success'
+          );
+
+          // Refresh the roster so the displayed credit updates.
+          const showWithdrawn = document.getElementById('show-withdrawn-toggle')?.checked || false;
+          this.manageStudents(classId, showWithdrawn);
+        } catch (error) {
+          console.error('Error saving credit override:', error);
+          this.showNotification('Error saving credit override: ' + error.message, 'error');
         }
       }
 
@@ -26835,7 +26913,7 @@
 
             subjectGroups[subject].courses.push({
               courseName: cls.name,
-              credits: cls.credits || 1,
+              credits: enrollment.credits_override ?? cls.credits ?? 1,
               quarters: quarterGrades,
               finalGradeLetter: '', // Only filled at end of year
               honorsCollege: honorsCollege,
@@ -26972,7 +27050,7 @@
             currentQuarter: targetQuarter, // The quarter shown on the report card (may be selected end quarter)
             currentGPA: currentGPA,
             gpaHistory: {}, // TODO: Load historical GPA from archived years
-            approxCredits: `${filteredEnrollments.reduce((sum, e) => sum + (e.classes?.credits || 1), 0)} earned`,
+            approxCredits: `${filteredEnrollments.reduce((sum, e) => sum + (e.credits_override ?? e.classes?.credits ?? 1), 0)} earned`,
             subjectGroups: sortedGroups,
             activeQuarters: activeQuarters, // Only includes quarters from Q1 up to target quarter
             columnVisibility: options.columnVisibility || { credits: true, finals: true, hc: true, gp: true, wtgp: true },
@@ -27168,7 +27246,7 @@
               else if (cls.course_weight === 'ap') hcLabel = 'AP';
               else if (cls.course_weight === 'dual_credit') hcLabel = 'C';
 
-              const credits = cls.credits || 1;
+              const credits = enrollment.credits_override ?? cls.credits ?? 1;
               const passed = finalPercentage !== null && finalPercentage >= 60;
 
               courses.push({
