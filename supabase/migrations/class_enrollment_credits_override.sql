@@ -13,6 +13,15 @@
 -- (parent_child_links_admin_policies.sql). Students have no UPDATE policy, so
 -- they cannot alter their own credit value.
 
+-- Ensure the class-level default credit column exists (the classes table was
+-- created outside the migration history). Existing rows default to 1 credit.
+-- Idempotent: safe whether or not the column already exists.
+ALTER TABLE classes
+ADD COLUMN IF NOT EXISTS credits NUMERIC(4,2) DEFAULT 1;
+
+COMMENT ON COLUMN classes.credits IS
+  'Default credit value earned for passing this class. Overridable per student via class_enrollments.credits_override.';
+
 ALTER TABLE class_enrollments
 ADD COLUMN IF NOT EXISTS credits_override NUMERIC(4,2);
 
