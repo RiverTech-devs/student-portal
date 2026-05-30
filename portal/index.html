@@ -41439,8 +41439,34 @@
             return;
           }
 
+          // Only show students presently enrolled (status 'active') or who have a
+          // grade snapshot for THIS quarter — same rule as the Manage Grades modal,
+          // so a student in Q1 but removed before Q2 won't appear under Q2 and
+          // reappears when switching back to Q1.
+          const allEnrollmentIds = enrollments.map(e => e.id);
+          const { data: quarterSnapshots } = await window.app.auth.supabase
+            .from('quarter_grade_snapshots')
+            .select('enrollment_id')
+            .eq('quarter_id', quarter.id)
+            .in('enrollment_id', allEnrollmentIds);
+          const snapshotEnrollmentIds = new Set((quarterSnapshots || []).map(s => s.enrollment_id));
+
+          const visibleEnrollments = enrollments.filter(e =>
+            e.status === 'active' || snapshotEnrollmentIds.has(e.id)
+          );
+
+          if (visibleEnrollments.length === 0) {
+            document.getElementById('gradebook-content').innerHTML = `
+              <div style="text-align: center; padding: 40px; color: var(--muted-color);">
+                <h3>No Students This Quarter</h3>
+                <p>No students are enrolled or have grade data for ${quarter.name}.</p>
+              </div>
+            `;
+            return;
+          }
+
           // Load student profiles
-          const studentIds = enrollments.map(e => e.student_id);
+          const studentIds = visibleEnrollments.map(e => e.student_id);
           const { data: students } = await window.app.auth.supabase
             .from('user_profiles')
             .select('id, first_name, last_name, email')
@@ -41449,18 +41475,18 @@
           const studentMap = {};
           students?.forEach(s => { studentMap[s.id] = s; });
 
-          enrollments.forEach(e => {
+          visibleEnrollments.forEach(e => {
             e.student = studentMap[e.student_id] || { first_name: 'Unknown', last_name: 'User', email: 'N/A' };
           });
 
           // Sort by last name
-          enrollments.sort((a, b) => {
+          visibleEnrollments.sort((a, b) => {
             const nameA = a.student.last_name?.toLowerCase() || '';
             const nameB = b.student.last_name?.toLowerCase() || '';
             return nameA.localeCompare(nameB);
           });
 
-          this.enrollments = enrollments;
+          this.enrollments = visibleEnrollments;
 
           // Load assignments for this quarter
           const { data: assignments } = await window.app.auth.supabase
