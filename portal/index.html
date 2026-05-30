@@ -40274,13 +40274,24 @@
           });
 
           // Only show students who are presently enrolled (status 'active') or who
-          // have grade data recorded for THIS quarter. This hides students who
+          // have REAL grade data recorded for THIS quarter. This hides students who
           // weren't part of the class during the selected quarter — e.g. a student
           // present in Q1 but removed before Q2 won't appear when viewing Q2, but
           // reappears when viewing Q1. Filter before the grade-calc step below so we
           // don't generate snapshots for students who don't belong to this quarter.
+          //
+          // A bare snapshot row isn't enough: calculate_quarter_grades writes a
+          // blank (0) snapshot for every active student the first time a quarter's
+          // grade modal is opened, so a removed student left with one of those
+          // empty rows must NOT keep them visible. A grade of 0 is the codebase's
+          // no-data sentinel (real grades floor at 55), matching the report card.
+          const snapshotHasRealData = (qg) => !!qg && (
+            (qg.class_grade != null && qg.class_grade !== 0) ||
+            (qg.academic_grade != null && qg.academic_grade !== 0) ||
+            (qg.participation_grade != null && qg.participation_grade !== 0)
+          );
           this.enrollments = this.enrollments.filter(e =>
-            e.status === 'active' || quarterGradeMap[e.id]
+            e.status === 'active' || snapshotHasRealData(quarterGradeMap[e.id])
           );
 
           if (this.enrollments.length === 0) {
@@ -41439,20 +41450,31 @@
             return;
           }
 
-          // Only show students presently enrolled (status 'active') or who have a
-          // grade snapshot for THIS quarter — same rule as the Manage Grades modal,
+          // Only show students presently enrolled (status 'active') or who have
+          // REAL grade data for THIS quarter — same rule as the Manage Grades modal,
           // so a student in Q1 but removed before Q2 won't appear under Q2 and
-          // reappears when switching back to Q1.
+          // reappears when switching back to Q1. A bare snapshot isn't enough:
+          // calculate_quarter_grades writes blank (0) snapshots for active students
+          // when a quarter's grade view is first opened, so we require a non-zero
+          // grade (0 is the codebase's no-data sentinel — real grades floor at 55).
           const allEnrollmentIds = enrollments.map(e => e.id);
           const { data: quarterSnapshots } = await window.app.auth.supabase
             .from('quarter_grade_snapshots')
-            .select('enrollment_id')
+            .select('enrollment_id, academic_grade, participation_grade, class_grade')
             .eq('quarter_id', quarter.id)
             .in('enrollment_id', allEnrollmentIds);
-          const snapshotEnrollmentIds = new Set((quarterSnapshots || []).map(s => s.enrollment_id));
+          const realDataEnrollmentIds = new Set(
+            (quarterSnapshots || [])
+              .filter(s =>
+                (s.class_grade != null && s.class_grade !== 0) ||
+                (s.academic_grade != null && s.academic_grade !== 0) ||
+                (s.participation_grade != null && s.participation_grade !== 0)
+              )
+              .map(s => s.enrollment_id)
+          );
 
           const visibleEnrollments = enrollments.filter(e =>
-            e.status === 'active' || snapshotEnrollmentIds.has(e.id)
+            e.status === 'active' || realDataEnrollmentIds.has(e.id)
           );
 
           if (visibleEnrollments.length === 0) {
