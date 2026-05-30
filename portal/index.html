@@ -1936,6 +1936,32 @@
       }
 
       /**
+       * Converts a 4.0-scale GPA back to a letter grade.
+       * Used for the year-end Finals column, which is derived from the
+       * weighted average of the per-quarter GPAs (see generateReportCard).
+       * Thresholds are the midpoints between the discrete GPA values that
+       * percentageToGPA produces. A+ is unrecoverable (A+ and A both map to
+       * 4.0 there), so the ceiling is "A".
+       * @param {number} gpa - GPA on the 4.0 scale
+       * @returns {string} Letter grade, or '' if gpa is null/undefined
+       */
+      gpaToLetter(gpa) {
+        if (gpa === null || gpa === undefined) return '';
+        if (gpa >= 3.85) return 'A';
+        if (gpa >= 3.5) return 'A-';
+        if (gpa >= 3.15) return 'B+';
+        if (gpa >= 2.85) return 'B';
+        if (gpa >= 2.5) return 'B-';
+        if (gpa >= 2.15) return 'C+';
+        if (gpa >= 1.85) return 'C';
+        if (gpa >= 1.5) return 'C-';
+        if (gpa >= 1.15) return 'D+';
+        if (gpa >= 0.85) return 'D';
+        if (gpa >= 0.35) return 'D-';
+        return 'F';
+      }
+
+      /**
        * Gets the GPA modifier for a course weight type
        * @param {string} courseWeight - 'normal', 'honors', 'ap', or 'dual_credit'
        * @returns {number} GPA modifier (0, 0.5, or 1.0)
@@ -26928,11 +26954,18 @@
               }
             }
 
+            // Finals: only meaningful once the full year is in. Derived from the
+            // weighted base GPA (Option A) so it agrees with the GP column rather
+            // than re-averaging raw percentages. Blank unless all four quarters
+            // have an actual grade.
+            const hasAllFourQuarters = [1, 2, 3, 4].every(n => quarterGrades[`Q${n}`]?.rawTotal != null);
+            const finalGradeLetter = (hasAllFourQuarters && baseGPA !== null) ? this.gpaToLetter(baseGPA) : '';
+
             subjectGroups[subject].courses.push({
               courseName: cls.name,
               credits: enrollment.credits_override ?? cls.credits ?? 1,
               quarters: quarterGrades,
-              finalGradeLetter: '', // Only filled at end of year
+              finalGradeLetter: finalGradeLetter,
               honorsCollege: honorsCollege,
               gradePoints: baseGPA,
               weightedGP: weightedGPA,
@@ -27026,6 +27059,10 @@
                 merged.gradePoints = gpaTotalWeight > 0 ? gpaWeightedSum / gpaTotalWeight : null;
                 const modifier = this.getCourseWeightModifier(base.honorsCollege === 'H' ? 'honors' : base.honorsCollege === 'AP' ? 'ap' : base.honorsCollege === 'C' ? 'dual_credit' : null);
                 merged.weightedGP = merged.gradePoints !== null ? Math.min(merged.gradePoints + modifier, 5.0) : null;
+                // Recompute Finals from the merged quarters (base.finalGradeLetter
+                // is stale after combining), same all-four-quarters rule as above.
+                const mergedHasAllFour = [1, 2, 3, 4].every(n => merged.quarters[`Q${n}`]?.rawTotal != null);
+                merged.finalGradeLetter = (mergedHasAllFour && merged.gradePoints !== null) ? this.gpaToLetter(merged.gradePoints) : '';
                 mergedCourses.push(merged);
               }
               group.courses = mergedCourses;
