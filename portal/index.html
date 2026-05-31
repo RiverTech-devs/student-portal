@@ -5696,6 +5696,10 @@
                   <div style="font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;">Total pushes (7d)</div>
                   <div style="font-size: 22px; font-weight: 700; color: #9b59b6;">—</div>
                 </div>
+                <div id="math-tutor-anomalies" style="background: rgba(243, 156, 18, 0.1); border: 1px solid #f39c12; padding: 8px 14px; border-radius: 8px; min-width: 160px;" title="Rows flagged by the dashboard anomaly checks. Click a row to inspect.">
+                  <div style="font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;">🚩 Flagged (7d)</div>
+                  <div style="font-size: 22px; font-weight: 700; color: #f39c12;">—</div>
+                </div>
               </div>
               <div id="math-tutor-recent-list" class="list">
                 <div class="list-item">
@@ -5711,6 +5715,75 @@
           // above; render-on-resolve.
           this.loadMathTutorActivity();
           return html;
+      }
+
+      // ── Phase E v2: anomaly detection ────────────────────────────────
+      // Pure-JS heuristics over a single skill_progress row. Surfaces
+      // suspicious patterns without needing a server-side view yet.
+      // Returns a list of {code, label, severity} objects; empty means
+      // "looks normal". Severity drives the icon color (warn/danger).
+
+      _mathTutorAnomalies(row) {
+        const flags = [];
+        const now = Date.now();
+        const updated = row.updated_at ? new Date(row.updated_at).getTime() : null;
+        const lastPracticed = row.last_practiced ? new Date(row.last_practiced).getTime() : updated;
+        const masteredAt = row.mastered_at ? new Date(row.mastered_at).getTime() : null;
+        const score = row.mastery_score || 0;
+        const practices = row.practice_count || 0;
+
+        // 1. Mastered with too few practices — the observer requires 5+
+        //    confirming observations; anything less is either pre-observer
+        //    data, manual edit, or a client-side bug.
+        if (row.state === 'mastered' && practices < 5) {
+          flags.push({
+            code: 'mastered_low_practice',
+            label: `Mastered with only ${practices} practice${practices === 1 ? '' : 's'}`,
+            severity: 'warn',
+          });
+        }
+        // 2. Mastered very quickly after first practice — flag if
+        //    mastered_at is within 2 minutes of last_practiced (likely
+        //    the same single session). Only valid if both timestamps exist.
+        if (row.state === 'mastered' && masteredAt && lastPracticed) {
+          const delta = Math.abs(lastPracticed - masteredAt);
+          if (delta < 2 * 60 * 1000 && practices < 8) {
+            flags.push({
+              code: 'mastered_too_fast',
+              label: 'Mastered in under 2 minutes',
+              severity: 'warn',
+            });
+          }
+        }
+        // 3. Demoted (score < 60) — the observer demotes below 60% so a
+        //    fresh row at 40 tells the teacher the student is struggling.
+        if (row.state !== 'mastered' && score < 60 && score > 0 && practices >= 5) {
+          flags.push({
+            code: 'struggling',
+            label: `Demoted to ${score}% after ${practices} attempts`,
+            severity: 'warn',
+          });
+        }
+        // 4. Dormant — last_practiced more than 14 days ago.
+        if (lastPracticed && (now - lastPracticed) > 14 * 24 * 60 * 60 * 1000) {
+          const days = Math.floor((now - lastPracticed) / (24 * 60 * 60 * 1000));
+          flags.push({
+            code: 'dormant',
+            label: `Dormant — last practiced ${days}d ago`,
+            severity: 'info',
+          });
+        }
+        return flags;
+      }
+
+      _mathTutorFlagBadge(flags) {
+        if (!flags || !flags.length) return '';
+        const danger = flags.find(f => f.severity === 'danger');
+        const warn = flags.find(f => f.severity === 'warn');
+        const icon = danger ? '🛑' : (warn ? '🚩' : 'ℹ️');
+        const tooltip = flags.map(f => f.label).join(' · ');
+        const safeTip = this._escapeHtml ? this._escapeHtml(tooltip) : tooltip;
+        return `<span title="${safeTip}" style="margin-left:6px; font-size:13px;">${icon}</span>`;
       }
 
       // ── Phase E v0: Math Tutor Activity card ─────────────────────────
@@ -5756,9 +5829,11 @@
           const list = rows || [];
           const activeStudents = new Set(list.map(r => r.user_id));
           const masteryEvents = list.filter(r => r.state === 'mastered');
+          const flaggedCount = list.filter(r => this._mathTutorAnomalies(r).length > 0).length;
           setText('math-tutor-active-students', String(activeStudents.size));
           setText('math-tutor-mastery-7d', String(masteryEvents.length));
           setText('math-tutor-pushes-7d', String(list.length));
+          setText('math-tutor-anomalies', String(flaggedCount));
 
           // Resolve student names in one batch.
           let nameById = new Map();
@@ -5806,10 +5881,13 @@
             const safeName = this._escapeHtml ? this._escapeHtml(studentName) : studentName;
             const safeSubject = this._escapeHtml ? this._escapeHtml(r.subject || '') : (r.subject || '');
             const safeSkill = this._escapeHtml ? this._escapeHtml(r.skill_name || '') : (r.skill_name || '');
+            const flags = this._mathTutorAnomalies(r);
+            const flagBadge = this._mathTutorFlagBadge(flags);
+            const rowBorder = flags.some(f => f.severity === 'warn' || f.severity === 'danger') ? '#f39c12' : borderColor;
             return `
-              <div class="list-item" style="border-left: 3px solid ${borderColor}; cursor: pointer;" onclick="app.openMathTutorStudentModal('${r.user_id}', ${JSON.stringify(studentName)})">
+              <div class="list-item" style="border-left: 3px solid ${rowBorder}; cursor: pointer;" onclick="app.openMathTutorStudentModal('${r.user_id}', ${JSON.stringify(studentName)})">
                 <div class="list-item-content">
-                  <div class="list-item-title">${safeName}</div>
+                  <div class="list-item-title">${safeName}${flagBadge}</div>
                   <div class="list-item-meta">
                     ${safeSubject} ·
                     ${safeSkill} ·
@@ -5892,6 +5970,14 @@
           const lastTouch = list[0]?.updated_at ? new Date(list[0].updated_at).toLocaleString() : '—';
           const clientVersions = Array.from(new Set(list.map(r => r.client_version).filter(Boolean)));
 
+          // Phase E v2: collect anomaly flags across all this student's rows.
+          const allFlags = [];
+          for (const r of list) {
+            for (const f of this._mathTutorAnomalies(r)) {
+              allFlags.push({ ...f, subject: r.subject, skill_name: r.skill_name });
+            }
+          }
+
           // Group by subject.
           const bySubject = {};
           for (const r of list) {
@@ -5915,14 +6001,17 @@
           const subjectSections = subjectOrder.map(subject => {
             const rowsHtml = bySubject[subject].map(r => {
               const isMastered = r.state === 'mastered';
-              const color = isMastered ? '#2ecc71' : (r.state === 'in_progress' ? '#6aa9ff' : '#888');
+              const flags = this._mathTutorAnomalies(r);
+              const flagBadge = this._mathTutorFlagBadge(flags);
+              const baseColor = isMastered ? '#2ecc71' : (r.state === 'in_progress' ? '#6aa9ff' : '#888');
+              const color = flags.some(f => f.severity === 'warn' || f.severity === 'danger') ? '#f39c12' : baseColor;
               const stateLabel = isMastered ? 'Mastered' : (r.state === 'in_progress' ? 'In progress' : (r.state || '—'));
               const lastTs = r.last_practiced || r.updated_at;
               const lastLabel = lastTs ? new Date(lastTs).toLocaleDateString() : '—';
               return `
                 <div class="list-item" style="border-left: 3px solid ${color};">
                   <div class="list-item-content">
-                    <div class="list-item-title">${esc(r.skill_name || '')}</div>
+                    <div class="list-item-title">${esc(r.skill_name || '')}${flagBadge}</div>
                     <div class="list-item-meta">
                       ${stateLabel} · ${r.practice_count || 0} practice${(r.practice_count || 0) === 1 ? '' : 's'} · last ${lastLabel}
                     </div>
@@ -5940,6 +6029,17 @@
               </div>`;
           }).join('');
 
+          // Anomaly summary block (Phase E v2).
+          const anomalyBlock = allFlags.length ? `
+            <div style="border: 1px solid #f39c12; background: rgba(243, 156, 18, 0.08); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px;">
+              <div style="font-weight: 700; color: #a0670a; margin-bottom: 4px;">🚩 ${allFlags.length} flag${allFlags.length === 1 ? '' : 's'} to review</div>
+              <ul style="margin: 0 0 0 18px; padding: 0; color: #6b4a08; font-size: 13px;">
+                ${allFlags.slice(0, 6).map(f => `<li>${esc(f.subject || '')} · ${esc(f.skill_name || '')} — ${esc(f.label)}</li>`).join('')}
+                ${allFlags.length > 6 ? `<li style="color:#a0670a;">+ ${allFlags.length - 6} more in the list below</li>` : ''}
+              </ul>
+            </div>
+          ` : '';
+
           body.innerHTML = `
             <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom: 12px;">
               <div style="background: rgba(46, 204, 113, 0.1); border: 1px solid #2ecc71; padding: 8px 14px; border-radius: 8px; min-width: 130px;">
@@ -5954,10 +6054,15 @@
                 <div style="font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;">Total practices</div>
                 <div style="font-size: 22px; font-weight: 700; color: #9b59b6;">${totalPractice}</div>
               </div>
+              <div style="background: rgba(243, 156, 18, 0.1); border: 1px solid #f39c12; padding: 8px 14px; border-radius: 8px; min-width: 130px;">
+                <div style="font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;">🚩 Flagged</div>
+                <div style="font-size: 22px; font-weight: 700; color: #f39c12;">${allFlags.length}</div>
+              </div>
             </div>
             <div style="font-size: 11px; color: var(--muted); margin-bottom: 6px;">
               Last activity: ${esc(lastTouch)}${clientVersions.length ? ' · client ' + esc(clientVersions.join(', ')) : ''}
             </div>
+            ${anomalyBlock}
             ${subjectSections}
           `;
         } catch (err) {
@@ -6138,7 +6243,7 @@
                   </div>
                   <div style="font-size: 20px;">🧰</div>
                 </a>
-                <a href="https://github.com/RiverTech-devs/student-portal/releases/latest" target="_blank" rel="noopener noreferrer" class="list-item" style="cursor: pointer; border-left: 3px solid #6aa9ff; text-decoration: none; color: inherit;">
+                <a href="https://github.com/RiverTech-devs/student-portal/releases" target="_blank" rel="noopener noreferrer" class="list-item" style="cursor: pointer; border-left: 3px solid #6aa9ff; text-decoration: none; color: inherit;">
                   <div class="list-item-content">
                     <div class="list-item-title" style="color: #6aa9ff;">math-tutor (Windows) <span style="display:inline-block; margin-left:6px; padding:1px 6px; background:#f39c12; color:#fff; font-size:10px; font-weight:700; border-radius:4px; letter-spacing:0.5px; vertical-align:middle;">BETA</span></div>
                     <div class="list-item-meta">Local AI tutor — single-click installer, syncs to your skills. In active development; report issues to your teacher.</div>
