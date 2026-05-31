@@ -5803,13 +5803,16 @@
             })();
             const borderColor = isMastered ? '#2ecc71' : '#6aa9ff';
             const stateLabel = isMastered ? 'Mastered' : (r.state === 'in_progress' ? 'In progress' : r.state);
+            const safeName = this._escapeHtml ? this._escapeHtml(studentName) : studentName;
+            const safeSubject = this._escapeHtml ? this._escapeHtml(r.subject || '') : (r.subject || '');
+            const safeSkill = this._escapeHtml ? this._escapeHtml(r.skill_name || '') : (r.skill_name || '');
             return `
-              <div class="list-item" style="border-left: 3px solid ${borderColor};">
+              <div class="list-item" style="border-left: 3px solid ${borderColor}; cursor: pointer;" onclick="app.openMathTutorStudentModal('${r.user_id}', ${JSON.stringify(studentName)})">
                 <div class="list-item-content">
-                  <div class="list-item-title">${this._escapeHtml ? this._escapeHtml(studentName) : studentName}</div>
+                  <div class="list-item-title">${safeName}</div>
                   <div class="list-item-meta">
-                    ${this._escapeHtml ? this._escapeHtml(r.subject || '') : (r.subject || '')} ·
-                    ${this._escapeHtml ? this._escapeHtml(r.skill_name || '') : (r.skill_name || '')} ·
+                    ${safeSubject} ·
+                    ${safeSkill} ·
                     ${tsLabel}
                   </div>
                 </div>
@@ -5827,6 +5830,146 @@
               <div class="list-item">
                 <div class="list-item-content">
                   <div class="list-item-meta">Couldn't load math-tutor activity.</div>
+                </div>
+              </div>`;
+          }
+        }
+      }
+
+      // ── Phase E v1: per-student drill-down modal ─────────────────────
+      // Opened when a teacher clicks a row in the Math Tutor Activity
+      // card. Shows every skill_progress row for THIS student tagged
+      // source='math-tutor', grouped by subject, with mastery state +
+      // score + practice count + last-practiced. Uses showModal so it
+      // stacks normally on top of the home page.
+
+      async openMathTutorStudentModal(userId, studentName) {
+        const safeName = this._escapeHtml ? this._escapeHtml(studentName) : studentName;
+        const title = `📚 ${safeName} — Math Tutor`;
+        // Open with a loading body; we'll re-render once data lands.
+        const loadingBody = `
+          <div id="math-tutor-modal-body">
+            <div class="list-item">
+              <div class="list-item-content">
+                <div class="list-item-meta">Loading math-tutor history for ${safeName}…</div>
+              </div>
+            </div>
+          </div>
+          <div style="margin-top: 20px; display: flex; justify-content: flex-end;">
+            <button class="btn btn-secondary" onclick="app.closeModal('math-tutor-student-detail')">Close</button>
+          </div>
+        `;
+        this.showModal('math-tutor-student-detail', title, loadingBody);
+
+        try {
+          const { data: rows, error } = await this.auth.supabase
+            .from('skill_progress')
+            .select('subject, skill_name, state, mastery_score, practice_count, last_practiced, updated_at, mastered_at, client_version')
+            .eq('user_id', userId)
+            .eq('source', 'math-tutor')
+            .order('updated_at', { ascending: false })
+            .limit(500);
+          if (error) throw error;
+
+          const body = document.getElementById('math-tutor-modal-body');
+          if (!body) return;
+          const list = rows || [];
+          if (list.length === 0) {
+            body.innerHTML = `
+              <div class="list-item">
+                <div class="list-item-content">
+                  <div class="list-item-meta">No math-tutor activity recorded for this student yet.</div>
+                </div>
+              </div>`;
+            return;
+          }
+
+          // Headline counters.
+          const totalSkills = list.length;
+          const masteredCount = list.filter(r => r.state === 'mastered').length;
+          const inProgressCount = list.filter(r => r.state === 'in_progress').length;
+          const totalPractice = list.reduce((acc, r) => acc + (r.practice_count || 0), 0);
+          const lastTouch = list[0]?.updated_at ? new Date(list[0].updated_at).toLocaleString() : '—';
+          const clientVersions = Array.from(new Set(list.map(r => r.client_version).filter(Boolean)));
+
+          // Group by subject.
+          const bySubject = {};
+          for (const r of list) {
+            const k = r.subject || 'Other';
+            (bySubject[k] = bySubject[k] || []).push(r);
+          }
+          // Sort each subject's rows: mastered first, then by mastery score desc, then by recency.
+          for (const k of Object.keys(bySubject)) {
+            bySubject[k].sort((a, b) => {
+              const am = a.state === 'mastered' ? 1 : 0;
+              const bm = b.state === 'mastered' ? 1 : 0;
+              if (am !== bm) return bm - am;
+              const score = (b.mastery_score || 0) - (a.mastery_score || 0);
+              if (score !== 0) return score;
+              return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
+            });
+          }
+
+          const esc = (s) => this._escapeHtml ? this._escapeHtml(s) : s;
+          const subjectOrder = Object.keys(bySubject).sort();
+          const subjectSections = subjectOrder.map(subject => {
+            const rowsHtml = bySubject[subject].map(r => {
+              const isMastered = r.state === 'mastered';
+              const color = isMastered ? '#2ecc71' : (r.state === 'in_progress' ? '#6aa9ff' : '#888');
+              const stateLabel = isMastered ? 'Mastered' : (r.state === 'in_progress' ? 'In progress' : (r.state || '—'));
+              const lastTs = r.last_practiced || r.updated_at;
+              const lastLabel = lastTs ? new Date(lastTs).toLocaleDateString() : '—';
+              return `
+                <div class="list-item" style="border-left: 3px solid ${color};">
+                  <div class="list-item-content">
+                    <div class="list-item-title">${esc(r.skill_name || '')}</div>
+                    <div class="list-item-meta">
+                      ${stateLabel} · ${r.practice_count || 0} practice${(r.practice_count || 0) === 1 ? '' : 's'} · last ${lastLabel}
+                    </div>
+                  </div>
+                  <div style="display:flex; flex-direction:column; align-items:flex-end; gap:2px;">
+                    <div style="font-size: 11px; font-weight: 700; color: ${color};">${stateLabel}</div>
+                    <div style="font-size: 16px; font-weight: 700;">${r.mastery_score ?? 0}</div>
+                  </div>
+                </div>`;
+            }).join('');
+            return `
+              <div style="margin-top: 16px;">
+                <h4 style="margin: 8px 0; color: var(--accent);">${esc(subject)} <span style="font-weight: 400; color: var(--muted); font-size: 13px;">(${bySubject[subject].length})</span></h4>
+                <div class="list">${rowsHtml}</div>
+              </div>`;
+          }).join('');
+
+          body.innerHTML = `
+            <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom: 12px;">
+              <div style="background: rgba(46, 204, 113, 0.1); border: 1px solid #2ecc71; padding: 8px 14px; border-radius: 8px; min-width: 130px;">
+                <div style="font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;">Skills mastered</div>
+                <div style="font-size: 22px; font-weight: 700; color: #2ecc71;">${masteredCount}</div>
+              </div>
+              <div style="background: rgba(106, 169, 255, 0.1); border: 1px solid var(--accent); padding: 8px 14px; border-radius: 8px; min-width: 130px;">
+                <div style="font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;">In progress</div>
+                <div style="font-size: 22px; font-weight: 700; color: var(--accent);">${inProgressCount}</div>
+              </div>
+              <div style="background: rgba(155, 89, 182, 0.1); border: 1px solid #9b59b6; padding: 8px 14px; border-radius: 8px; min-width: 130px;">
+                <div style="font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;">Total practices</div>
+                <div style="font-size: 22px; font-weight: 700; color: #9b59b6;">${totalPractice}</div>
+              </div>
+            </div>
+            <div style="font-size: 11px; color: var(--muted); margin-bottom: 6px;">
+              Last activity: ${esc(lastTouch)}${clientVersions.length ? ' · client ' + esc(clientVersions.join(', ')) : ''}
+            </div>
+            ${subjectSections}
+          `;
+        } catch (err) {
+          console.warn('openMathTutorStudentModal failed:', err);
+          const body = document.getElementById('math-tutor-modal-body');
+          if (body) {
+            const safeMsg = this._escapeHtml ? this._escapeHtml(err.message || 'unknown error') : (err.message || 'unknown error');
+            body.innerHTML = `
+              <div class="list-item">
+                <div class="list-item-content">
+                  <div class="list-item-title" style="color: var(--warning);">Couldn't load details</div>
+                  <div class="list-item-meta">${safeMsg}</div>
                 </div>
               </div>`;
           }
