@@ -5714,7 +5714,65 @@
           // Kick off the math-tutor activity load — DOM IDs are set
           // above; render-on-resolve.
           this.loadMathTutorActivity();
+          // Phase E v3: subscribe to skill_progress changes so the card
+          // re-renders when a new mastery push lands. Falls back to
+          // 60s polling if Realtime isn't enabled on the table.
+          this._startMathTutorRealtime();
           return html;
+      }
+
+      // ── Phase E v3: realtime subscription ───────────────────────────
+      // Subscribes to UPDATE/INSERT events on skill_progress. We debounce
+      // re-renders (2s) so a burst of pushes from one student doesn't
+      // hammer the dashboard. If realtime fails (table not in the
+      // publication), we drop to a 60s polling interval.
+
+      _startMathTutorRealtime() {
+        // Tear down any previous channel — getTeacherHomeContent may be
+        // called more than once during a session (re-navigation).
+        if (this._mathTutorChannel) {
+          try { this.auth.supabase.removeChannel(this._mathTutorChannel); } catch (_) {}
+          this._mathTutorChannel = null;
+        }
+        if (this._mathTutorPollTimer) {
+          clearInterval(this._mathTutorPollTimer);
+          this._mathTutorPollTimer = null;
+        }
+
+        const refresh = () => {
+          if (this._mathTutorRefreshTimer) clearTimeout(this._mathTutorRefreshTimer);
+          this._mathTutorRefreshTimer = setTimeout(() => {
+            this.loadMathTutorActivity().catch(e => console.warn('mt refresh failed', e));
+          }, 2000);
+        };
+
+        try {
+          this._mathTutorChannel = this.auth.supabase
+            .channel('math-tutor-activity')
+            .on(
+              'postgres_changes',
+              { event: '*', schema: 'public', table: 'skill_progress', filter: 'source=eq.math-tutor' },
+              (_payload) => refresh(),
+            )
+            .subscribe((status) => {
+              if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+                // Realtime unavailable — fall back to slow polling.
+                if (!this._mathTutorPollTimer) {
+                  this._mathTutorPollTimer = setInterval(
+                    () => this.loadMathTutorActivity().catch(() => {}),
+                    60 * 1000,
+                  );
+                }
+              }
+            });
+        } catch (e) {
+          // Realtime support absent — polling fallback.
+          console.warn('math-tutor realtime setup failed, polling:', e);
+          this._mathTutorPollTimer = setInterval(
+            () => this.loadMathTutorActivity().catch(() => {}),
+            60 * 1000,
+          );
+        }
       }
 
       // ── Phase E v2: anomaly detection ────────────────────────────────
