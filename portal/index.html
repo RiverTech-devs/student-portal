@@ -26489,6 +26489,12 @@
                 <div id="rc-class-exclusion" style="display: none;">
                   <label style="display: block; margin-bottom: 5px; font-weight: bold;">Include Classes</label>
                   <div id="rc-class-list" style="display: flex; flex-wrap: wrap; gap: 8px; max-height: 120px; overflow-y: auto;"></div>
+                  <div id="rc-empty-class-form" style="display: none; gap: 6px; align-items: center; margin-top: 8px;">
+                    <input id="rc-empty-class-name" type="text" placeholder="New class name" style="padding: 5px; font-size: 13px; flex: 1; min-width: 140px; max-width: 240px;" onkeydown="if(event.key==='Enter'){event.preventDefault();app.addReportCardEmptyClass();}">
+                    <button class="btn btn-primary" onclick="app.addReportCardEmptyClass()" style="padding: 5px 10px; font-size: 12px;">Add</button>
+                    <button class="btn btn-secondary" onclick="app.toggleReportCardEmptyClassForm(false)" style="padding: 5px 10px; font-size: 12px;">Cancel</button>
+                  </div>
+                  <button id="rc-empty-class-add-btn" class="btn btn-secondary" onclick="app.toggleReportCardEmptyClassForm(true)" style="padding: 5px 10px; font-size: 12px; margin-top: 8px;" title="Add an empty placeholder class to use as a link target">+ Add empty class</button>
                 </div>
                 <div id="rc-class-links-section" style="display: none; margin-top: 12px;">
                   <label style="display: block; margin-bottom: 5px; font-weight: bold;">
@@ -26677,6 +26683,7 @@
         this.reportCardClassNamesById = {};
         this.reportCardCurrentStudentId = studentId;
         this.toggleReportCardClassLinkForm(false);
+        this.toggleReportCardEmptyClassForm(false);
         this.renderReportCardClassLinkChips();
 
         try {
@@ -26695,38 +26702,38 @@
           // Load saved options for this student (excluded class IDs + class links).
           const saved = this.loadReportCardOptionsFromStorage(studentId);
           const savedExcluded = new Set((saved && Array.isArray(saved.excludedClassIds)) ? saved.excludedClassIds : []);
+          // Restore per-student empty ("virtual") classes — placeholder rows
+          // whose only purpose is to be link targets (merge a real class in →
+          // old grades under a new name). Restored before validClassIds so that
+          // links pointing into them survive the validity filter below.
+          this.reportCardVirtualClasses = (saved && Array.isArray(saved.virtualClasses))
+            ? saved.virtualClasses.filter(v => v && v.id && typeof v.name === 'string')
+            : [];
           const validClassIds = new Set(enrollments.map(e => e.class_id));
+          this.reportCardVirtualClasses.forEach(v => validClassIds.add(v.id));
           // Remembered for the suggestion scan (needs the current student's classes).
           this.reportCardValidClassIds = validClassIds;
 
           classList.innerHTML = '';
           enrollments.forEach(e => {
             if (!e.classes) return;
-            const isChecked = !savedExcluded.has(e.class_id);
-            // Each item is a checkbox+name label plus an "open as admin" link.
-            // The link is a sibling of the label (not inside it) so clicking
-            // the arrow opens the class without toggling the checkbox.
-            const item = document.createElement('span');
-            item.style.cssText = 'display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;';
-            const label = document.createElement('label');
-            label.style.cssText = 'font-size: 13px; cursor: pointer;';
-            // Tagged so refreshReportCardExcludedHints() can re-tint live as
-            // checkboxes toggle (purple = some student has this unchecked).
-            label.dataset.classId = e.class_id;
-            label.innerHTML = `<input type="checkbox" class="rc-class-checkbox" value="${e.class_id}"${isChecked ? ' checked' : ''}> ${this.escapeHtml(e.classes.name)}`;
-            const link = document.createElement('a');
-            link.href = 'javascript:void(0)';
-            link.textContent = '↗';
-            link.title = 'Open this class as admin';
-            link.style.cssText = 'font-size: 13px; text-decoration: none; color: var(--accent); cursor: pointer;';
-            link.addEventListener('click', (ev) => {
-              ev.preventDefault();
-              ev.stopPropagation();
-              this.openClassAsAdmin(e.class_id);
+            this.reportCardClassNamesById[e.class_id] = e.classes.name;
+            this.renderReportCardClassItem(classList, {
+              id: e.class_id,
+              name: e.classes.name,
+              isVirtual: false,
+              isChecked: !savedExcluded.has(e.class_id)
             });
-            item.appendChild(label);
-            item.appendChild(link);
-            classList.appendChild(item);
+          });
+          // Render the per-student empty classes after the real ones.
+          this.reportCardVirtualClasses.forEach(v => {
+            this.reportCardClassNamesById[v.id] = v.name;
+            this.renderReportCardClassItem(classList, {
+              id: v.id,
+              name: v.name,
+              isVirtual: true,
+              isChecked: !savedExcluded.has(v.id)
+            });
           });
 
           // Persist whenever any class checkbox toggles. Event delegation so
@@ -26761,6 +26768,12 @@
               fromSel.appendChild(optF);
               const optI = document.createElement('option');
               optI.value = e.class_id; optI.textContent = e.classes.name;
+              intoSel.appendChild(optI);
+            });
+            // Empty classes can only be link targets ("into" side).
+            this.reportCardVirtualClasses.forEach(v => {
+              const optI = document.createElement('option');
+              optI.value = v.id; optI.textContent = v.name + ' (empty)';
               intoSel.appendChild(optI);
             });
           }
@@ -26823,6 +26836,7 @@
           const payload = {
             excludedClassIds,
             classLinks: this.reportCardClassLinks || [],
+            virtualClasses: this.reportCardVirtualClasses || [],
             savedAt: Date.now()
           };
           localStorage.setItem(`report_card_options_${studentId}`, JSON.stringify(payload));
@@ -26929,18 +26943,101 @@
         this.saveReportCardOptions();
       }
 
-      // Apply a suggestion picked from the dropdown. Value is "fromId|intoId".
+      // Apply a suggestion picked from the dropdown. Value is the index into
+      // the suggestion list stashed during render.
       applyReportCardClassLinkSuggestion(value) {
-        if (!value) return;
-        const [fromId, intoId] = value.split('|');
-        // Silent: if the suggestion conflicts (the admin added a competing
-        // link since it was offered) we just refresh the list rather than
-        // popping an error for something they didn't type.
-        if (this.addReportCardClassLinkPair(fromId, intoId, { silent: true })) {
+        if (value === '' || value === null || value === undefined) return;
+        const s = (this._rcLinkSuggestions || [])[parseInt(value, 10)];
+        if (!s) { this.renderReportCardClassLinkSuggestions(); return; }
+        if (s.kind === 'virtual') {
+          // Recreate the empty class by name here, then link the source into
+          // it. A full reload re-renders the list, dropdowns, chips and
+          // suggestions from the freshly-saved state.
+          if (!this.reportCardVirtualClasses) this.reportCardVirtualClasses = [];
+          const id = 'virtual_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+          this.reportCardVirtualClasses.push({ id, name: s.intoName });
+          this.addReportCardClassLinkPair(s.fromClassId, id, { silent: true });
+          this.saveReportCardOptions();
+          this.loadReportCardClassList(this.reportCardCurrentStudentId);
+          return;
+        }
+        // Real → real. Silent: if it conflicts (admin added a competing link
+        // since it was offered) we just refresh rather than erroring.
+        if (this.addReportCardClassLinkPair(s.fromClassId, s.intoClassId, { silent: true })) {
           this.renderReportCardClassLinkChips();
           this.saveReportCardOptions();
         }
         this.renderReportCardClassLinkSuggestions();
+      }
+
+      // Shared renderer for one Include-Classes item: a checkbox+name label,
+      // plus either an "open as admin" arrow (real classes) or a delete ×
+      // (empty/virtual classes). The link/× sits OUTSIDE the label so clicking
+      // it doesn't toggle the checkbox.
+      renderReportCardClassItem(classList, { id, name, isVirtual, isChecked }) {
+        const item = document.createElement('span');
+        item.style.cssText = 'display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;';
+        const label = document.createElement('label');
+        label.style.cssText = 'font-size: 13px; cursor: pointer;';
+        // Tagged so refreshReportCardExcludedHints() can re-tint live.
+        label.dataset.classId = id;
+        const virtualTag = isVirtual ? ' <span style="color: var(--muted); font-size: 11px;">(empty)</span>' : '';
+        label.innerHTML = `<input type="checkbox" class="rc-class-checkbox" value="${id}"${isChecked ? ' checked' : ''}> ${this.escapeHtml(name)}${virtualTag}`;
+        item.appendChild(label);
+        const action = document.createElement('a');
+        action.href = 'javascript:void(0)';
+        action.style.cssText = 'font-size: 13px; text-decoration: none; cursor: pointer;';
+        if (isVirtual) {
+          action.textContent = '×';
+          action.title = 'Delete this empty class';
+          action.style.color = 'var(--danger)';
+          action.style.fontSize = '14px';
+          action.addEventListener('click', (ev) => {
+            ev.preventDefault(); ev.stopPropagation();
+            this.removeReportCardEmptyClass(id);
+          });
+        } else {
+          action.textContent = '↗';
+          action.title = 'Open this class as admin';
+          action.style.color = 'var(--accent)';
+          action.addEventListener('click', (ev) => {
+            ev.preventDefault(); ev.stopPropagation();
+            this.openClassAsAdmin(id);
+          });
+        }
+        item.appendChild(action);
+        classList.appendChild(item);
+      }
+
+      toggleReportCardEmptyClassForm(show) {
+        const form = document.getElementById('rc-empty-class-form');
+        const btn = document.getElementById('rc-empty-class-add-btn');
+        if (form) form.style.display = show ? 'flex' : 'none';
+        if (btn) btn.style.display = show ? 'none' : 'inline-block';
+        if (show) {
+          const input = document.getElementById('rc-empty-class-name');
+          if (input) { input.value = ''; input.focus(); }
+        }
+      }
+
+      addReportCardEmptyClass() {
+        const input = document.getElementById('rc-empty-class-name');
+        const name = (input?.value || '').trim();
+        if (!name) { this.showNotification('Enter a name for the empty class', 'error'); return; }
+        if (!this.reportCardVirtualClasses) this.reportCardVirtualClasses = [];
+        const id = 'virtual_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+        this.reportCardVirtualClasses.push({ id, name });
+        this.toggleReportCardEmptyClassForm(false);
+        this.saveReportCardOptions();
+        this.loadReportCardClassList(this.reportCardCurrentStudentId);
+      }
+
+      removeReportCardEmptyClass(id) {
+        this.reportCardVirtualClasses = (this.reportCardVirtualClasses || []).filter(v => v.id !== id);
+        // Drop any links that referenced the deleted empty class.
+        this.reportCardClassLinks = (this.reportCardClassLinks || []).filter(l => l.fromClassId !== id && l.intoClassId !== id);
+        this.saveReportCardOptions();
+        this.loadReportCardClassList(this.reportCardCurrentStudentId);
       }
 
       // Scan this browser's saved report-card options for OTHER students and
@@ -26952,9 +27049,11 @@
         const currentId = this.reportCardCurrentStudentId;
         const validIds = this.reportCardValidClassIds || new Set();
         const existing = this.reportCardClassLinks || [];
+        const currentVirtualIds = new Set((this.reportCardVirtualClasses || []).map(v => v.id));
         const prefix = 'report_card_options_';
         const seen = new Set();
         const suggestions = [];
+        const fromUsed = (from) => existing.some(e => e.fromClassId === from);
         for (let i = 0; i < localStorage.length; i++) {
           const key = localStorage.key(i);
           if (!key || !key.startsWith(prefix)) continue;
@@ -26962,20 +27061,36 @@
           let parsed;
           try { parsed = JSON.parse(localStorage.getItem(key)); } catch (e) { continue; }
           const links = parsed && Array.isArray(parsed.classLinks) ? parsed.classLinks : [];
+          // The other student's empty classes, so we can tell when an "into" is
+          // virtual and recover the name to recreate it on the current student.
+          const theirVirtuals = {};
+          if (parsed && Array.isArray(parsed.virtualClasses)) {
+            parsed.virtualClasses.forEach(v => { if (v && v.id) theirVirtuals[v.id] = v.name || 'New Class'; });
+          }
           for (const l of links) {
             if (!l || !l.fromClassId || !l.intoClassId) continue;
             const { fromClassId: from, intoClassId: into } = l;
             if (from === into) continue;
-            // Both classes must belong to the current student.
-            if (!validIds.has(from) || !validIds.has(into)) continue;
-            // Skip anything that already exists or would be rejected on apply
-            // (same "from" already used, or the reverse direction present).
-            if (existing.some(e => e.fromClassId === from)) continue;
-            if (existing.some(e => e.fromClassId === into && e.intoClassId === from)) continue;
-            const pairKey = `${from}|${into}`;
-            if (seen.has(pairKey)) continue;
-            seen.add(pairKey);
-            suggestions.push({ fromClassId: from, intoClassId: into });
+            // The current student must have the (real) source class, and that
+            // source must not already be linked here.
+            if (!validIds.has(from) || currentVirtualIds.has(from)) continue;
+            if (fromUsed(from)) continue;
+            if (Object.prototype.hasOwnProperty.call(theirVirtuals, into)) {
+              // "Into" is an empty class on the other student → suggest
+              // recreating it by name here and linking the source into it.
+              const intoName = theirVirtuals[into];
+              const dupKey = `v|${from}|${intoName.toLowerCase()}`;
+              if (seen.has(dupKey)) continue;
+              seen.add(dupKey);
+              suggestions.push({ kind: 'virtual', fromClassId: from, intoName });
+            } else if (validIds.has(into) && !currentVirtualIds.has(into)) {
+              // Both are real classes the current student has.
+              if (existing.some(e => e.fromClassId === into && e.intoClassId === from)) continue; // reverse
+              const dupKey = `r|${from}|${into}`;
+              if (seen.has(dupKey)) continue;
+              seen.add(dupKey);
+              suggestions.push({ kind: 'real', fromClassId: from, intoClassId: into });
+            }
           }
         }
         return suggestions;
@@ -27036,16 +27151,21 @@
         const select = document.getElementById('rc-link-suggestions');
         if (!wrap || !select) return;
         const suggestions = this.getSuggestedReportCardClassLinks();
+        // Stash so applyReportCardClassLinkSuggestion can resolve by index
+        // (names can contain '|', so an index is safer than encoding in value).
+        this._rcLinkSuggestions = suggestions;
         if (suggestions.length === 0) {
           wrap.style.display = 'none';
           return;
         }
         const names = this.reportCardClassNamesById || {};
         const placeholder = '<option value="">💡 Suggested links (used on other students)…</option>';
-        select.innerHTML = placeholder + suggestions.map(s => {
+        select.innerHTML = placeholder + suggestions.map((s, idx) => {
           const fromName = names[s.fromClassId] || s.fromClassId;
-          const intoName = names[s.intoClassId] || s.intoClassId;
-          return `<option value="${s.fromClassId}|${s.intoClassId}">${this.escapeHtml(fromName)} → ${this.escapeHtml(intoName)}</option>`;
+          const intoLabel = s.kind === 'virtual'
+            ? `${this.escapeHtml(s.intoName)} (new empty class)`
+            : this.escapeHtml(names[s.intoClassId] || s.intoClassId);
+          return `<option value="${idx}">${this.escapeHtml(fromName)} → ${intoLabel}</option>`;
         }).join('');
         wrap.style.display = 'block';
       }
@@ -27415,8 +27535,24 @@
         // (and the include-class toggles) are persisted to localStorage
         // per student so re-opening the same student restores them.
         const classLinks = (this.reportCardClassLinks || []).slice();
+        const virtualClasses = (this.reportCardVirtualClasses || []).slice();
 
-        this.generateReportCard(studentSelect.value, upToQuarterId, { columnVisibility, excludedClassIds, classLinks });
+        this.generateReportCard(studentSelect.value, upToQuarterId, { columnVisibility, excludedClassIds, classLinks, virtualClasses });
+      }
+
+      // Normalize a raw class subject into the report card's grouping buckets.
+      // Used both when grouping real enrollments and when placing an injected
+      // empty class so it lands in the same subject group as the class merged
+      // into it (the merge only combines courses within one subject group).
+      normalizeReportCardSubject(raw) {
+        const subject = raw || 'Other';
+        const s = subject.toLowerCase();
+        if (s.includes('math')) return 'Math';
+        if (s.includes('english') || s.includes('language arts')) return 'English';
+        if (s.includes('science')) return 'Science & Tech';
+        if (s.includes('history') || s.includes('social')) return 'Humanities';
+        if (s.includes('health') || s.includes('pe') || s.includes('physical')) return 'Health & PE';
+        return subject;
       }
 
       async generateReportCard(studentId, upToQuarterId = null, options = {}) {
@@ -27533,13 +27669,7 @@
             const cls = enrollment.classes;
             if (!cls) continue;
 
-            let subject = cls.subject || 'Other';
-            // Normalize subject names
-            if (subject.toLowerCase().includes('math')) subject = 'Math';
-            else if (subject.toLowerCase().includes('english') || subject.toLowerCase().includes('language arts')) subject = 'English';
-            else if (subject.toLowerCase().includes('science')) subject = 'Science & Tech';
-            else if (subject.toLowerCase().includes('history') || subject.toLowerCase().includes('social')) subject = 'Humanities';
-            else if (subject.toLowerCase().includes('health') || subject.toLowerCase().includes('pe') || subject.toLowerCase().includes('physical')) subject = 'Health & PE';
+            const subject = this.normalizeReportCardSubject(cls.subject);
 
             if (!subjectGroups[subject]) {
               subjectGroups[subject] = {
@@ -27647,6 +27777,44 @@
               gradePoints: baseGPA,
               weightedGP: weightedGPA,
               _classId: cls.id  // For class-link merging below
+            });
+          }
+
+          // ============================================================
+          // Inject per-student empty ("virtual") classes as placeholder
+          // courses so they can be link targets. When a real class is linked
+          // INTO one, the merge below keeps the empty class's NAME but takes
+          // the real class's grades — "old grades, new name". The empty class
+          // inherits the source class's subject/credits/honors so the only
+          // visible change is the name.
+          // ============================================================
+          const virtualClasses = (options.virtualClasses || []);
+          const excludedSet = new Set(options.excludedClassIds || []);
+          for (const vc of virtualClasses) {
+            if (!vc || !vc.id || excludedSet.has(vc.id)) continue;
+            // The real class being merged into this empty class — used to place
+            // it in the right subject and inherit metadata. With nothing linked
+            // in, the empty class has no purpose on the report, so skip it.
+            const incoming = (options.classLinks || []).find(l => l.intoClassId === vc.id);
+            if (!incoming) continue;
+            const fromEnr = filteredEnrollments.find(e => e.class_id === incoming.fromClassId);
+            if (!fromEnr || !fromEnr.classes) continue;
+            const subject = this.normalizeReportCardSubject(fromEnr.classes.subject);
+            const credits = fromEnr.credits_override ?? fromEnr.classes.credits ?? 1;
+            const cw = fromEnr.classes.course_weight;
+            const honorsCollege = cw === 'honors' ? 'H' : cw === 'ap' ? 'AP' : cw === 'dual_credit' ? 'C' : 'N/A';
+            if (!subjectGroups[subject]) {
+              subjectGroups[subject] = { name: subject, unitsLabel: '', courses: [] };
+            }
+            subjectGroups[subject].courses.push({
+              courseName: vc.name || 'New Class',
+              credits,
+              quarters: {},
+              finalGradeLetter: '',
+              honorsCollege,
+              gradePoints: null,
+              weightedGP: null,
+              _classId: vc.id
             });
           }
 
