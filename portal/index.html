@@ -26624,6 +26624,9 @@
             });
           }
 
+          // Restore the saved (browser-wide) report card column checkboxes.
+          this.loadReportCardColumnPrefs();
+
         } catch (error) {
           console.error('Error loading report filters:', error);
         }
@@ -26696,26 +26699,20 @@
           // Remembered for the suggestion scan (needs the current student's classes).
           this.reportCardValidClassIds = validClassIds;
 
-          // Classes that other students (in this browser) have unchecked —
-          // tinted purple here as a "you may want to uncheck this too" hint.
-          const commonlyExcluded = this.getCommonlyExcludedClassIds();
-
           classList.innerHTML = '';
           enrollments.forEach(e => {
             if (!e.classes) return;
             const isChecked = !savedExcluded.has(e.class_id);
-            const isCommonlyExcluded = commonlyExcluded.has(e.class_id);
             // Each item is a checkbox+name label plus an "open as admin" link.
             // The link is a sibling of the label (not inside it) so clicking
             // the arrow opens the class without toggling the checkbox.
             const item = document.createElement('span');
             item.style.cssText = 'display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;';
             const label = document.createElement('label');
-            label.style.cssText = 'font-size: 13px; cursor: pointer;'
-              + (isCommonlyExcluded ? ' color: #bb86fc; font-weight: 600;' : '');
-            if (isCommonlyExcluded) {
-              label.title = 'Unchecked for other students — may need unchecking here too';
-            }
+            label.style.cssText = 'font-size: 13px; cursor: pointer;';
+            // Tagged so refreshReportCardExcludedHints() can re-tint live as
+            // checkboxes toggle (purple = some student has this unchecked).
+            label.dataset.classId = e.class_id;
             label.innerHTML = `<input type="checkbox" class="rc-class-checkbox" value="${e.class_id}"${isChecked ? ' checked' : ''}> ${this.escapeHtml(e.classes.name)}`;
             const link = document.createElement('a');
             link.href = 'javascript:void(0)';
@@ -26738,12 +26735,17 @@
             classList.addEventListener('change', (ev) => {
               if (ev.target && ev.target.classList && ev.target.classList.contains('rc-class-checkbox')) {
                 this.saveReportCardOptions();
+                // Re-tint live: this student's toggle changes who-has-it-unchecked.
+                this.refreshReportCardExcludedHints();
               }
             });
             classList._rcChangeListenerAttached = true;
           }
 
           classExclusion.style.display = 'block';
+
+          // Initial purple tint pass for the freshly-built list.
+          this.refreshReportCardExcludedHints();
 
           // Populate the Link Classes selects and remember names for chip rendering.
           const fromSel = document.getElementById('rc-link-from');
@@ -26826,6 +26828,49 @@
           localStorage.setItem(`report_card_options_${studentId}`, JSON.stringify(payload));
         } catch (e) {
           console.warn('Failed to save report card options:', e);
+        }
+      }
+
+      // Report Card Columns are remembered browser-wide (NOT per student),
+      // so the chosen column set persists between sessions. Restores saved
+      // state and wires a save-on-change listener (once).
+      loadReportCardColumnPrefs() {
+        const cols = [
+          ['rc-col-credits', 'credits'],
+          ['rc-col-finals', 'finals'],
+          ['rc-col-hc', 'hc'],
+          ['rc-col-gp', 'gp'],
+          ['rc-col-wtgp', 'wtgp']
+        ];
+        let saved = null;
+        try {
+          const raw = localStorage.getItem('report_card_columns');
+          if (raw) saved = JSON.parse(raw);
+        } catch (e) { saved = null; }
+        cols.forEach(([elId, key]) => {
+          const cb = document.getElementById(elId);
+          if (!cb) return;
+          // Apply saved state; default (no saved value) leaves it checked.
+          if (saved && typeof saved[key] === 'boolean') cb.checked = saved[key];
+          if (!cb._rcColListenerAttached) {
+            cb.addEventListener('change', () => this.saveReportCardColumnPrefs());
+            cb._rcColListenerAttached = true;
+          }
+        });
+      }
+
+      saveReportCardColumnPrefs() {
+        try {
+          const payload = {
+            credits: document.getElementById('rc-col-credits')?.checked !== false,
+            finals: document.getElementById('rc-col-finals')?.checked !== false,
+            hc: document.getElementById('rc-col-hc')?.checked !== false,
+            gp: document.getElementById('rc-col-gp')?.checked !== false,
+            wtgp: document.getElementById('rc-col-wtgp')?.checked !== false
+          };
+          localStorage.setItem('report_card_columns', JSON.stringify(payload));
+        } catch (e) {
+          console.warn('Failed to save report card column prefs:', e);
         }
       }
 
@@ -26936,24 +26981,54 @@
         return suggestions;
       }
 
-      // Collect class IDs that have been unchecked (excluded) on OTHER
-      // students in this browser's saved report-card options. Used to tint
-      // those classes purple as a "commonly excluded" hint. Browser-local.
-      getCommonlyExcludedClassIds() {
-        const currentId = this.reportCardCurrentStudentId;
+      // Build a map of classId -> array of student names that currently have
+      // that class unchecked (excluded), across this browser's saved report-
+      // card options. Includes the current student, whose options are saved
+      // on every toggle — so re-reading this gives live state. Browser-local.
+      getExcludedClassStudentMap() {
         const prefix = 'report_card_options_';
-        const excluded = new Set();
+        const nameById = {};
+        (this.reportAllStudents || []).forEach(s => {
+          nameById[s.id] = `${s.first_name || ''} ${s.last_name || ''}`.trim() || 'Unknown student';
+        });
+        const map = {}; // classId -> Set of student names
         for (let i = 0; i < localStorage.length; i++) {
           const key = localStorage.key(i);
           if (!key || !key.startsWith(prefix)) continue;
-          if (key === `${prefix}${currentId}`) continue; // skip the current student
+          const studentId = key.slice(prefix.length);
           let parsed;
           try { parsed = JSON.parse(localStorage.getItem(key)); } catch (e) { continue; }
-          if (parsed && Array.isArray(parsed.excludedClassIds)) {
-            parsed.excludedClassIds.forEach(id => { if (id) excluded.add(id); });
+          if (!parsed || !Array.isArray(parsed.excludedClassIds)) continue;
+          const studentName = nameById[studentId] || 'Unknown student';
+          for (const classId of parsed.excludedClassIds) {
+            if (!classId) continue;
+            if (!map[classId]) map[classId] = new Set();
+            map[classId].add(studentName);
           }
         }
-        return excluded;
+        return map;
+      }
+
+      // Re-tint the Include Classes list: a class name turns purple when at
+      // least one student has it unchecked, and reverts when none do. The
+      // tooltip lists which students. Called on load and on every toggle so
+      // it updates live.
+      refreshReportCardExcludedHints() {
+        const list = document.getElementById('rc-class-list');
+        if (!list) return;
+        const map = this.getExcludedClassStudentMap();
+        list.querySelectorAll('label[data-class-id]').forEach(label => {
+          const names = map[label.dataset.classId] ? Array.from(map[label.dataset.classId]).sort() : [];
+          if (names.length > 0) {
+            label.style.color = '#bb86fc';
+            label.style.fontWeight = '600';
+            label.title = 'Unchecked for: ' + names.join(', ');
+          } else {
+            label.style.color = '';
+            label.style.fontWeight = '';
+            label.title = '';
+          }
+        });
       }
 
       renderReportCardClassLinkSuggestions() {
