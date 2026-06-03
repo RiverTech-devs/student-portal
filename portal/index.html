@@ -26498,6 +26498,11 @@
                     </span>
                   </label>
                   <div id="rc-link-chips" style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px;"></div>
+                  <div id="rc-link-suggestions-wrap" style="display: none; margin-bottom: 8px;">
+                    <select id="rc-link-suggestions" onchange="app.applyReportCardClassLinkSuggestion(this.value)" style="width: 100%; max-width: 360px; padding: 6px; font-size: 13px;">
+                      <option value="">💡 Suggested links (used on other students)…</option>
+                    </select>
+                  </div>
                   <div id="rc-link-form" style="display: none; gap: 6px; align-items: center; flex-wrap: wrap; padding: 8px; background: var(--bg); border-radius: 6px; margin-bottom: 8px;">
                     <select id="rc-link-from" style="flex: 1; min-width: 160px; padding: 6px; font-size: 13px;"><option value="">From class…</option></select>
                     <span style="color: var(--muted);">→</span>
@@ -26688,6 +26693,8 @@
           const saved = this.loadReportCardOptionsFromStorage(studentId);
           const savedExcluded = new Set((saved && Array.isArray(saved.excludedClassIds)) ? saved.excludedClassIds : []);
           const validClassIds = new Set(enrollments.map(e => e.class_id));
+          // Remembered for the suggestion scan (needs the current student's classes).
+          this.reportCardValidClassIds = validClassIds;
 
           classList.innerHTML = '';
           enrollments.forEach(e => {
@@ -26742,6 +26749,9 @@
             );
             this.renderReportCardClassLinkChips();
           }
+
+          // Offer link pairs already saved on other students (browser-local).
+          this.renderReportCardClassLinkSuggestions();
 
           if (linksSection) {
             // Only show when there are ≥2 enrollments — otherwise there's
@@ -26814,39 +26824,116 @@
         }
       }
 
-      saveReportCardClassLink() {
-        const fromId = document.getElementById('rc-link-from')?.value;
-        const intoId = document.getElementById('rc-link-into')?.value;
-        if (!fromId || !intoId) {
-          this.showNotification('Pick both a "from" and "into" class', 'error');
-          return;
-        }
-        if (fromId === intoId) {
-          this.showNotification('From and Into must be different classes', 'error');
-          return;
-        }
+      // Core add + validation, shared by the manual form and the suggestion
+      // dropdown. Returns true if the link was added. When silent, conflicts
+      // fail quietly (used when applying a suggestion that's since become
+      // invalid). Does NOT re-render or persist — callers do that.
+      addReportCardClassLinkPair(fromId, intoId, { silent = false } = {}) {
+        const warn = (msg) => { if (!silent) this.showNotification(msg, 'error'); };
+        if (!fromId || !intoId) { warn('Pick both a "from" and "into" class'); return false; }
+        if (fromId === intoId) { warn('From and Into must be different classes'); return false; }
         if (!this.reportCardClassLinks) this.reportCardClassLinks = [];
         // Each class can only be the "from" side once per generation.
         if (this.reportCardClassLinks.some(l => l.fromClassId === fromId)) {
-          this.showNotification('That class is already linked. Remove the existing link first.', 'error');
-          return;
+          warn('That class is already linked. Remove the existing link first.');
+          return false;
         }
         // Detect circular link (A→B with B→A already added) — admin asked
         // for explicit ambiguity-avoidance; refuse the chain.
         if (this.reportCardClassLinks.some(l => l.fromClassId === intoId && l.intoClassId === fromId)) {
-          this.showNotification('That would create a circular link. Remove the other one first.', 'error');
-          return;
+          warn('That would create a circular link. Remove the other one first.');
+          return false;
         }
         this.reportCardClassLinks.push({ fromClassId: fromId, intoClassId: intoId });
+        return true;
+      }
+
+      saveReportCardClassLink() {
+        const fromId = document.getElementById('rc-link-from')?.value;
+        const intoId = document.getElementById('rc-link-into')?.value;
+        if (!this.addReportCardClassLinkPair(fromId, intoId)) return;
         this.toggleReportCardClassLinkForm(false);
         this.renderReportCardClassLinkChips();
+        this.renderReportCardClassLinkSuggestions();
         this.saveReportCardOptions();
+      }
+
+      // Apply a suggestion picked from the dropdown. Value is "fromId|intoId".
+      applyReportCardClassLinkSuggestion(value) {
+        if (!value) return;
+        const [fromId, intoId] = value.split('|');
+        // Silent: if the suggestion conflicts (the admin added a competing
+        // link since it was offered) we just refresh the list rather than
+        // popping an error for something they didn't type.
+        if (this.addReportCardClassLinkPair(fromId, intoId, { silent: true })) {
+          this.renderReportCardClassLinkChips();
+          this.saveReportCardOptions();
+        }
+        this.renderReportCardClassLinkSuggestions();
+      }
+
+      // Scan this browser's saved report-card options for OTHER students and
+      // surface any class-link pair where the current student is enrolled in
+      // both classes but isn't linked that way yet. Browser-local only — the
+      // links never leave localStorage, so suggestions come from students set
+      // up on this same browser.
+      getSuggestedReportCardClassLinks() {
+        const currentId = this.reportCardCurrentStudentId;
+        const validIds = this.reportCardValidClassIds || new Set();
+        const existing = this.reportCardClassLinks || [];
+        const prefix = 'report_card_options_';
+        const seen = new Set();
+        const suggestions = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          if (!key || !key.startsWith(prefix)) continue;
+          if (key === `${prefix}${currentId}`) continue; // skip the current student
+          let parsed;
+          try { parsed = JSON.parse(localStorage.getItem(key)); } catch (e) { continue; }
+          const links = parsed && Array.isArray(parsed.classLinks) ? parsed.classLinks : [];
+          for (const l of links) {
+            if (!l || !l.fromClassId || !l.intoClassId) continue;
+            const { fromClassId: from, intoClassId: into } = l;
+            if (from === into) continue;
+            // Both classes must belong to the current student.
+            if (!validIds.has(from) || !validIds.has(into)) continue;
+            // Skip anything that already exists or would be rejected on apply
+            // (same "from" already used, or the reverse direction present).
+            if (existing.some(e => e.fromClassId === from)) continue;
+            if (existing.some(e => e.fromClassId === into && e.intoClassId === from)) continue;
+            const pairKey = `${from}|${into}`;
+            if (seen.has(pairKey)) continue;
+            seen.add(pairKey);
+            suggestions.push({ fromClassId: from, intoClassId: into });
+          }
+        }
+        return suggestions;
+      }
+
+      renderReportCardClassLinkSuggestions() {
+        const wrap = document.getElementById('rc-link-suggestions-wrap');
+        const select = document.getElementById('rc-link-suggestions');
+        if (!wrap || !select) return;
+        const suggestions = this.getSuggestedReportCardClassLinks();
+        if (suggestions.length === 0) {
+          wrap.style.display = 'none';
+          return;
+        }
+        const names = this.reportCardClassNamesById || {};
+        const placeholder = '<option value="">💡 Suggested links (used on other students)…</option>';
+        select.innerHTML = placeholder + suggestions.map(s => {
+          const fromName = names[s.fromClassId] || s.fromClassId;
+          const intoName = names[s.intoClassId] || s.intoClassId;
+          return `<option value="${s.fromClassId}|${s.intoClassId}">${this.escapeHtml(fromName)} → ${this.escapeHtml(intoName)}</option>`;
+        }).join('');
+        wrap.style.display = 'block';
       }
 
       removeReportCardClassLink(fromId) {
         if (!this.reportCardClassLinks) return;
         this.reportCardClassLinks = this.reportCardClassLinks.filter(l => l.fromClassId !== fromId);
         this.renderReportCardClassLinkChips();
+        this.renderReportCardClassLinkSuggestions();
         this.saveReportCardOptions();
       }
 
