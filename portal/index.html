@@ -41090,10 +41090,17 @@
         normalized = normalized.replace(new RegExp(`\\b${syn}\\b`, 'g'), 'rtc');
       });
 
-      // Replace common action synonyms
+      // Replace common action synonyms (add side)
       normalized = normalized.replace(/\bgive\b/g, 'add');
       normalized = normalized.replace(/\baward\b/g, 'add');
       normalized = normalized.replace(/\bgrant\b/g, 'add');
+      normalized = normalized.replace(/\breward\b/g, 'add');
+      normalized = normalized.replace(/\b(bump|boost)\b/g, 'add');
+      normalized = normalized.replace(/\bgets\b/g, 'add');     // "charlotte gets 5"
+      normalized = normalized.replace(/\bearns?\b/g, 'add');   // "ava earns 5"
+      // Subtract side
+      normalized = normalized.replace(/\b(dock|penali[sz]e|charge)\b/g, 'remove');
+      // View side
       normalized = normalized.replace(/\bshow me\b/g, 'show');
       normalized = normalized.replace(/\bcheck\b/g, 'show');
       normalized = normalized.replace(/\blook at\b/g, 'show');
@@ -41154,18 +41161,23 @@
         const lastName = (student.last_name || '').toLowerCase();
         let score = 0;
 
+        // Whole-word presence in the sentence (NOT raw substring: "eli" must
+        // not register inside "elijah", which used to tie Eli vs Elijah)
+        const hasWord = (s) => s.length > 2 &&
+          new RegExp('\\b' + s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b').test(normalized);
+
         // Exact full name match in sentence
-        if (normalized.includes(fullName)) {
+        if (hasWord(fullName) || normalized.includes(fullName)) {
           return { student, score: 1.0, ambiguous: false };
         }
 
         // First name match in sentence
-        if (normalized.includes(firstName) && firstName.length > 2) {
+        if (hasWord(firstName)) {
           score = Math.max(score, 0.9);
         }
 
         // Last name match in sentence
-        if (normalized.includes(lastName) && lastName.length > 2) {
+        if (hasWord(lastName)) {
           score = Math.max(score, 0.9);
         }
 
@@ -41178,9 +41190,25 @@
 
           // Exact word match to first or last name
           if (word === firstName || word === lastName) {
-            score = Math.max(score, 0.95);
+            score = Math.max(score, 0.97);
             if (word === firstName) firstHit = true;
             if (word === lastName) lastHit = true;
+          }
+
+          // Prefix match - user typed the START of a name ("eli" -> "elijah",
+          // "char" -> "charlotte"). A real signal (counts toward both-parts
+          // so "eli douglas" resolves to Elijah Douglas), but scored below an
+          // exact part match so an exact name still wins head-to-head
+          // ("eli" alone still picks Eli over Elijah).
+          if (word.length >= 3) {
+            if (firstName.length > word.length && firstName.startsWith(word)) {
+              score = Math.max(score, 0.8);
+              firstHit = true;
+            }
+            if (lastName.length > word.length && lastName.startsWith(word)) {
+              score = Math.max(score, 0.8);
+              lastHit = true;
+            }
           }
 
           // Fuzzy match word to first name
@@ -41380,7 +41408,9 @@
             /list (all|students|everyone)/,
             /show (all|everyone|students)/,
             /who has rtc/,
-            /all students/
+            /all students/,
+            /^\s*(the\s+)?students\s*$/,   // bare "students" / "the students"
+            /\beveryone\b/
           ]
         },
         // VIEW_STATS
