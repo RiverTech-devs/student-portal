@@ -41406,13 +41406,14 @@
       const studentName = args.join(' ');
       this.terminalPrint(`Searching for student: ${studentName}...`, '#6aa9ff');
 
-      // Search by first_name or last_name
+      // Phase 4: Better search - split name and search each part
+      const nameParts = studentName.toLowerCase().split(/\s+/);
+
+      // Get all students and search client-side for better fuzzy matching
       const { data, error} = await this.auth.supabase
         .from('user_profiles')
         .select('id, first_name, last_name, email, rtc_balance, account_status')
-        .eq('user_type', 'student')
-        .or(`first_name.ilike.%${studentName}%,last_name.ilike.%${studentName}%`)
-        .limit(10);
+        .eq('user_type', 'student');
 
       if (error) throw error;
 
@@ -41421,13 +41422,24 @@
         full_name: `${s.first_name || ''} ${s.last_name || ''}`.trim()
       }));
 
-      // Filter by full name match too
-      students = students.filter(s =>
-        s.full_name.toLowerCase().includes(studentName.toLowerCase())
-      );
+      // Filter by matching any part of the name
+      students = students.filter(s => {
+        const fullName = s.full_name.toLowerCase();
+        const firstName = (s.first_name || '').toLowerCase();
+        const lastName = (s.last_name || '').toLowerCase();
+
+        // Check if full name contains search term
+        if (fullName.includes(studentName.toLowerCase())) return true;
+
+        // Check if all parts of search are in the name
+        return nameParts.every(part =>
+          fullName.includes(part) || firstName.includes(part) || lastName.includes(part)
+        );
+      });
 
       if (students.length === 0) {
-        this.terminalPrintError(`No student found matching: ${studentName}`);
+        const suggestions = this._suggestStudents(studentName);
+        this._naturalError(`I couldn't find a student named "${studentName}"`, suggestions);
         return;
       }
 
@@ -41572,7 +41584,8 @@
         .limit(5);
 
       if (!students || students.length === 0) {
-        this.terminalPrintError(`No student found matching: ${studentName}`);
+        const suggestions = this._suggestStudents(studentName);
+        this._naturalError(`I couldn't find a student named "${studentName}"`, suggestions);
         return;
       }
 
@@ -41802,7 +41815,8 @@
       })).filter(s => s.full_name.toLowerCase().includes(studentName.toLowerCase()));
 
       if (students.length === 0) {
-        this.terminalPrintError(`No student found matching: ${studentName}`);
+        const suggestions = this._suggestStudents(studentName);
+        this._naturalError(`I couldn't find a student named "${studentName}"`, suggestions);
         return;
       }
 
@@ -41831,9 +41845,15 @@
       const newBalance = (student.rtc_balance || 0) + amount;
       this._addRecentStudent({...student, rtc_balance: newBalance});
 
-      this.terminalPrint(`✓ Added ${amount} RTC to ${student.full_name}`, '#8bffb0');
-      this.terminalPrint(`  Reason: ${reason}`, '#97a2b0');
-      this.terminalPrint(`  New balance: ${newBalance}`, '#f39c12');
+      // Phase 4: Natural varied responses
+      this._naturalSuccess([
+        `Done! ${student.full_name} now has ${newBalance} RTC (was ${student.rtc_balance || 0})`,
+        `Added ${amount} RTC to ${student.full_name}. New balance: ${newBalance}`,
+        `Nice! ${student.full_name} earned ${amount} RTC. Total: ${newBalance}`
+      ]);
+      if (reason !== 'Terminal award') {
+        this.terminalPrint(`  💬 ${reason}`, '#97a2b0');
+      }
     }
 
     async terminalSetRTC(args) {
@@ -41878,7 +41898,8 @@
       })).filter(s => s.full_name.toLowerCase().includes(studentName.toLowerCase()));
 
       if (students.length === 0) {
-        this.terminalPrintError(`No student found matching: ${studentName}`);
+        const suggestions = this._suggestStudents(studentName);
+        this._naturalError(`I couldn't find a student named "${studentName}"`, suggestions);
         return;
       }
 
@@ -41914,9 +41935,53 @@
 
       this._addRecentStudent({...student, rtc_balance: amount});
 
-      this.terminalPrint(`✓ Set RTC balance for ${student.full_name}`, '#8bffb0');
-      this.terminalPrint(`  Previous: ${currentBalance}`, '#97a2b0');
-      this.terminalPrint(`  New: ${amount}`, '#f39c12');
+      // Phase 4: Natural varied responses
+      const direction = amount > currentBalance ? 'up' : 'down';
+      const emoji = amount > currentBalance ? '📈' : '📉';
+      this._naturalSuccess([
+        `${emoji} Updated ${student.full_name}'s balance: ${currentBalance} → ${amount} RTC`,
+        `Set ${student.full_name} to ${amount} RTC (was ${currentBalance})`,
+        `Done! ${student.full_name} now has ${amount} RTC`
+      ]);
+    }
+
+    // Phase 4: Natural response generation
+    _naturalSuccess(messages) {
+      const variations = Array.isArray(messages) ? messages : [messages];
+      const msg = variations[Math.floor(Math.random() * variations.length)];
+      this.terminalPrint(`✓ ${msg}`, '#8bffb0');
+    }
+
+    _naturalInfo(messages) {
+      const variations = Array.isArray(messages) ? messages : [messages];
+      const msg = variations[Math.floor(Math.random() * variations.length)];
+      this.terminalPrint(`💬 ${msg}`, '#6aa9ff');
+    }
+
+    _naturalError(message, suggestions = []) {
+      this.terminalPrint(`✗ ${message}`, '#ff6a6a');
+
+      if (suggestions.length > 0) {
+        this.terminalPrint(``, '#97a2b0');
+        this.terminalPrint(`Did you mean one of these?`, '#ffd36a');
+        suggestions.forEach(s => {
+          this.terminalPrint(`  • ${s}`, '#97a2b0');
+        });
+      }
+    }
+
+    _suggestStudents(query) {
+      // Phase 4: Smart student suggestions
+      if (!this._terminalAllStudents) return [];
+
+      return this._terminalAllStudents
+        .filter(s => {
+          const name = s.full_name.toLowerCase();
+          const q = query.toLowerCase();
+          return name.includes(q) || this._calculateSimilarity(q, name) > 0.4;
+        })
+        .slice(0, 5)
+        .map(s => s.full_name);
     }
 
     terminalPrint(message, color = '#e6edf3') {
