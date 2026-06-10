@@ -41330,6 +41330,8 @@
           patterns: [
             /(remove|subtract|take|deduct) .* \d+/,
             /(remove|subtract|take|deduct) \d+/,
+            /(^|\s)-\d+/,                  // "-2 from charlotte"
+            /\d+ (rtc )?(from|off)\b/,     // "5 from sam", "5 rtc from sam"
             /minus \d+/
           ],
           requiresStudent: true,
@@ -41340,7 +41342,8 @@
           intent: 'ADD_RTC',
           patterns: [
             /(give|award|add) .* \d+/,
-            /\d+ (to|for) .*/,
+            /(^|\s)\+\d+/,                 // "+2 to charlotte"
+            /\d+ (rtc )?(to|for)\b/,       // "2 to sarah", "2 rtc to sarah"
             /add \d+/
           ],
           requiresStudent: true,
@@ -41415,15 +41418,22 @@
         }
       }
 
+      // Targeted fallback: a clear add/subtract ACTION is present (verb or
+      // +/- sign) with an amount, but a required piece (usually the student)
+      // is missing. Return the intent anyway so _executeIntent can ask for
+      // the specific missing piece instead of a generic "I'm not sure".
+      if (entities.amount) {
+        const subAction = /(^|\s)-\d|\b(remove|subtract|deduct|minus|take)\b/.test(normalized);
+        const addAction = /(^|\s)\+\d|\b(add|plus)\b|\d+ (rtc )?(to|for)\b/.test(normalized);
+        if (subAction) return { intent: 'SUBTRACT_RTC', confidence: 0.7 };
+        if (addAction) return { intent: 'ADD_RTC', confidence: 0.7 };
+      }
+
       // Fallback keyword matching
       if (normalized.includes('rtc') || normalized.includes('balance')) {
         if (entities.student) {
           return { intent: 'VIEW_STUDENT', confidence: 0.7 };
         }
-      }
-
-      if (normalized.includes('add') && entities.amount && entities.student) {
-        return { intent: 'ADD_RTC', confidence: 0.7 };
       }
 
       return null;
@@ -41447,8 +41457,12 @@
             const args = [student.full_name, entities.amount.toString()];
             if (entities.reason) args.push(entities.reason);
             await this.terminalAddRTC(args);
+          } else if (entities.amount) {
+            this.terminalPrintError(`Which student should get ${entities.amount} RTC? Try "give [name] ${entities.amount}".`);
+          } else if (student) {
+            this.terminalPrintError(`How much RTC should I give ${student.full_name}?`);
           } else {
-            this.terminalPrintError('I need a student name and amount');
+            this.terminalPrintError('Tell me a student and an amount, like "give Charlotte 2 RTC".');
           }
           break;
 
@@ -41458,8 +41472,12 @@
             const args = [student.full_name, (-entities.amount).toString()];
             if (entities.reason) args.push(entities.reason);
             await this.terminalAddRTC(args);
+          } else if (entities.amount) {
+            this.terminalPrintError(`Which student should I take ${entities.amount} RTC from? Try "remove ${entities.amount} from [name]".`);
+          } else if (student) {
+            this.terminalPrintError(`How much RTC should I take from ${student.full_name}?`);
           } else {
-            this.terminalPrintError('I need a student name and amount');
+            this.terminalPrintError('Tell me a student and an amount, like "remove 2 from Charlotte".');
           }
           break;
 
