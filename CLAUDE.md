@@ -5,13 +5,25 @@ Follow these rules for every task.
 
 ## Workflow
 1. **Sync first — every new thread/task.** Before making any changes, confirm the local repo matches the online repo: `git fetch origin && git status`. If behind, `git pull origin main` (or rebase local work) before doing anything else. This repo is live-deployed and edited from multiple sessions/devices, so never start work on stale code.
-2. Read and understand the full task before making changes.
-3. Make the requested changes to the codebase.
-4. Run `npm run build` (if available) to verify no build errors. (There is no npm/build step for this project — it's static HTML.)
-5. Stage all changes: `git add -A`
-6. Commit with a clear, descriptive message: `git commit -m "feat: description"` or `fix:`, `refactor:`, etc.
-7. Push to main: `git push origin main`
-8. Write a clear summary of what you did for the outbox.
+2. **Connect to Chrome for live testing.** Also at the start of work, attach to a live Chrome via the DevTools Protocol so you can drive, test, and debug the real site yourself (read console/network, run JS in the page, simulate interactions) instead of only reasoning about the code. See **Live browser testing** below for the exact commands.
+3. Read and understand the full task before making changes.
+4. Make the requested changes to the codebase.
+5. Run `npm run build` (if available) to verify no build errors. (There is no npm/build step for this project — it's static HTML.)
+6. Stage all changes: `git add -A`
+7. Commit with a clear, descriptive message: `git commit -m "feat: description"` or `fix:`, `refactor:`, etc.
+8. Push to main: `git push origin main`
+9. Write a clear summary of what you did for the outbox.
+
+## Live browser testing (Chrome DevTools Protocol)
+At the start of work, connect to a real Chrome so you can operate rivertech.me yourself — drive the UI, read the console/network, and run JS in the page for testing and debugging. No extra deps (Node 24+ has built-in WebSocket/fetch). Reusable scripts live in `/Users/danhegelund/Documents/Claude/debug-tools/` (outside this repo).
+
+1. **Check for / launch a debuggable Chrome** (port 9222). If `curl -s http://127.0.0.1:9222/json` returns targets, one is already running — reuse it. Otherwise launch one (the user logs into the portal manually in the window that appears):
+   `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --remote-debugging-port=9222 --user-data-dir=/tmp/claude-chrome-debug --no-first-run https://rivertech.me/portal/ &`
+2. **Run JS in the page:** `node /Users/danhegelund/Documents/Claude/debug-tools/cdp-eval.js '<expr>' [timeoutMs]` (awaits promises) — use it to invoke portal methods, inspect state, or simulate input.
+3. **Watch console + Supabase network:** `node /Users/danhegelund/Documents/Claude/debug-tools/cdp-monitor.js [seconds]` — streams console messages and request lifecycles, flags requests stuck >5s.
+4. **Bust the CDN cache** when verifying a fresh deploy — GitHub Pages caches HTML up to 10 min: load `/portal/index.html?cb=<anything>`.
+
+If Chrome can't be reached (no display, headless task), note it and fall back to code-level reasoning + the node test harnesses in `debug-tools/`.
 
 ## Commit Message Format
 - `feat: ...` for new features
