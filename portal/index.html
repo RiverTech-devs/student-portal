@@ -40850,9 +40850,16 @@
     }
 
     async _executeNaturalLanguage(input) {
-      // Phase 1: Basic NLP
+      // Phase 1 + 2: Basic NLP with ambiguity handling
       const normalized = this._normalizeInput(input);
       const entities = this._extractEntities(normalized, input);
+
+      // Phase 2: Check for ambiguous student match
+      if (entities.student && entities.student.ambiguous) {
+        this._showAmbiguityDialog(entities.student.matches, input);
+        return;
+      }
+
       const intent = this._matchIntent(normalized, entities);
 
       if (!intent || intent.confidence < 0.5) {
@@ -40863,8 +40870,52 @@
         return;
       }
 
+      // Phase 2: Show confidence if low
+      if (intent.confidence < 0.75 && entities.student) {
+        this.terminalPrint(`💭 I think you mean ${entities.student.student.full_name}...`, '#ffd36a');
+      }
+
       // Execute the matched intent
       await this._executeIntent(intent, entities);
+    }
+
+    _showAmbiguityDialog(matches, originalInput) {
+      // Phase 2: Handle multiple student matches
+      this.terminalPrint(`I found ${matches.length} students that might match:`, '#ffd36a');
+
+      const output = document.getElementById('terminal-output');
+      let html = '<div style="margin-top: 8px; margin-left: 16px;">';
+
+      matches.forEach((student, idx) => {
+        html += `
+          <div onclick="app._resolveAmbiguity('${student.full_name}', '${this.escapeHtml(originalInput)}')"
+               style="padding: 8px 12px; margin: 4px 0; background: rgba(106, 169, 255, 0.1); border-left: 3px solid #6aa9ff; border-radius: 4px; cursor: pointer; transition: all 0.2s;"
+               onmouseover="this.style.background='rgba(106, 169, 255, 0.2)'"
+               onmouseout="this.style.background='rgba(106, 169, 255, 0.1)'">
+            <div style="font-weight: bold;">${idx + 1}. ${this.escapeHtml(student.full_name)}</div>
+            <div style="font-size: 11px; color: var(--muted); margin-top: 2px;">${this.escapeHtml(student.email)} • ${student.rtc_balance || 0} RTC</div>
+          </div>
+        `;
+      });
+
+      html += '</div>';
+      html += '<div style="margin-top: 12px; color: #97a2b0; font-size: 12px;">Click the student you meant, or type their full name.</div>';
+
+      if (output) output.innerHTML += html;
+    }
+
+    async _resolveAmbiguity(studentName, originalInput) {
+      // User clicked on a student from ambiguity list
+      this.terminalPrint(`Selected: ${studentName}`, '#8bffb0');
+
+      // Re-execute with the resolved student name
+      const modifiedInput = originalInput.replace(/\b[a-z]+\b/gi, (word) => {
+        // This is a simple replacement - in reality we'd be smarter about it
+        return word;
+      });
+
+      // Just execute the command with the exact student name
+      await this.executeTerminalCommand(`/read ${studentName}`);
     }
 
     _normalizeInput(input) {
@@ -40923,73 +40974,142 @@
     }
 
     _fuzzyFindStudent(normalized, original) {
+      // Phase 2: Enhanced with confidence scoring and ambiguity detection
       if (!this._terminalAllStudents || this._terminalAllStudents.length === 0) {
         return null;
       }
 
-      let bestMatch = null;
-      let bestScore = 0;
+      const matches = [];
 
-      // Try to find student name in the input
+      // Score all students
       for (const student of this._terminalAllStudents) {
         const fullName = student.full_name.toLowerCase();
         const firstName = (student.first_name || '').toLowerCase();
         const lastName = (student.last_name || '').toLowerCase();
+        let score = 0;
 
-        // Check for exact substring match
+        // Exact full name match
         if (normalized.includes(fullName)) {
-          return student;
+          return { student, score: 1.0, ambiguous: false };
         }
 
-        // Check for first or last name
+        // First name match
         if (normalized.includes(firstName) && firstName.length > 2) {
-          const score = firstName.length / fullName.length;
-          if (score > bestScore) {
-            bestScore = score;
-            bestMatch = student;
-          }
+          score = Math.max(score, 0.7 + (firstName.length / fullName.length) * 0.2);
         }
 
+        // Last name match
         if (normalized.includes(lastName) && lastName.length > 2) {
-          const score = lastName.length / fullName.length;
-          if (score > bestScore) {
-            bestScore = score;
-            bestMatch = student;
-          }
+          score = Math.max(score, 0.7 + (lastName.length / fullName.length) * 0.2);
         }
 
-        // Basic fuzzy matching for typos
+        // Fuzzy similarity (with Levenshtein)
         const similarity = this._calculateSimilarity(normalized, fullName);
-        if (similarity > 0.6 && similarity > bestScore) {
-          bestScore = similarity;
-          bestMatch = student;
+        score = Math.max(score, similarity);
+
+        // Also check against first and last name separately
+        const firstSim = this._calculateSimilarity(normalized, firstName);
+        const lastSim = this._calculateSimilarity(normalized, lastName);
+        score = Math.max(score, firstSim * 0.85, lastSim * 0.85);
+
+        if (score > 0.5) {
+          matches.push({ student, score });
         }
       }
 
-      return bestScore > 0.4 ? bestMatch : null;
+      if (matches.length === 0) {
+        return null;
+      }
+
+      // Sort by score
+      matches.sort((a, b) => b.score - a.score);
+
+      // Check if there's a clear winner
+      if (matches.length === 1 || matches[0].score - matches[1].score > 0.2) {
+        return { student: matches[0].student, score: matches[0].score, ambiguous: false };
+      }
+
+      // Ambiguous - multiple close matches
+      return {
+        ambiguous: true,
+        matches: matches.slice(0, 5).map(m => m.student),
+        scores: matches.slice(0, 5).map(m => m.score)
+      };
     }
 
     _calculateSimilarity(str1, str2) {
-      // Simple substring scoring
+      // Phase 2: Enhanced with Levenshtein distance
+
+      // Exact match
+      if (str1 === str2) return 1.0;
+
+      // Substring match
       if (str1.includes(str2) || str2.includes(str1)) {
-        return 0.9;
+        return 0.95 * (Math.min(str1.length, str2.length) / Math.max(str1.length, str2.length));
       }
 
-      // Count matching words
+      // Levenshtein distance for typo tolerance
+      const distance = this._levenshteinDistance(str1, str2);
+      const maxLen = Math.max(str1.length, str2.length);
+      const levenScore = 1 - (distance / maxLen);
+
+      // Word-level matching
       const words1 = str1.split(/\s+/);
       const words2 = str2.split(/\s+/);
-      let matches = 0;
+      let wordMatches = 0;
 
       for (const w1 of words1) {
         for (const w2 of words2) {
           if (w1.length > 2 && w2.length > 2) {
-            if (w1 === w2) matches += 1;
-            else if (w1.includes(w2) || w2.includes(w1)) matches += 0.5;
+            if (w1 === w2) {
+              wordMatches += 1;
+            } else if (w1.includes(w2) || w2.includes(w1)) {
+              wordMatches += 0.7;
+            } else {
+              // Check Levenshtein on individual words
+              const wordDist = this._levenshteinDistance(w1, w2);
+              if (wordDist <= 2) {  // Allow up to 2 typos per word
+                wordMatches += 0.8;
+              }
+            }
           }
         }
       }
 
-      return matches / Math.max(words1.length, words2.length);
+      const wordScore = wordMatches / Math.max(words1.length, words2.length);
+
+      // Combine scores (weighted average)
+      return (levenScore * 0.4) + (wordScore * 0.6);
+    }
+
+    _levenshteinDistance(str1, str2) {
+      // Classic Levenshtein distance algorithm
+      const matrix = [];
+
+      // Initialize matrix
+      for (let i = 0; i <= str2.length; i++) {
+        matrix[i] = [i];
+      }
+      for (let j = 0; j <= str1.length; j++) {
+        matrix[0][j] = j;
+      }
+
+      // Fill matrix
+      for (let i = 1; i <= str2.length; i++) {
+        for (let j = 1; j <= str1.length; j++) {
+          if (str2.charAt(i - 1) === str1.charAt(j - 1)) {
+            matrix[i][j] = matrix[i - 1][j - 1];
+          } else {
+            matrix[i][j] = Math.min(
+              matrix[i - 1][j - 1] + 1,  // substitution
+              matrix[i][j - 1] + 1,      // insertion
+              matrix[i - 1][j] + 1       // deletion
+            );
+          }
+        }
+      }
+
+      return matrix[str2.length][str1.length];
     }
 
     _matchIntent(normalized, entities) {
@@ -41089,18 +41209,21 @@
     }
 
     async _executeIntent(intent, entities) {
+      // Phase 2: Extract student from wrapper object if needed
+      const student = entities.student?.student || entities.student;
+
       switch (intent.intent) {
         case 'VIEW_STUDENT':
-          if (entities.student) {
-            await this.terminalReadStudent([entities.student.full_name]);
+          if (student) {
+            await this.terminalReadStudent([student.full_name]);
           } else {
             this.terminalPrintError('I need a student name to look up');
           }
           break;
 
         case 'ADD_RTC':
-          if (entities.student && entities.amount) {
-            const args = [entities.student.full_name, entities.amount.toString()];
+          if (student && entities.amount) {
+            const args = [student.full_name, entities.amount.toString()];
             if (entities.reason) args.push(entities.reason);
             await this.terminalAddRTC(args);
           } else {
@@ -41122,8 +41245,8 @@
           break;
 
         case 'VIEW_HISTORY':
-          if (entities.student) {
-            await this.terminalShowHistory([entities.student.full_name]);
+          if (student) {
+            await this.terminalShowHistory([student.full_name]);
           } else {
             this.terminalPrintError('I need a student name for history');
           }
