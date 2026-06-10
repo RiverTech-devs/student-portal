@@ -73,7 +73,14 @@ class PortalAuth {
             this._authUnsubscribe = null;
         }
 
-        const { data: { subscription } } = this.supabase.auth.onAuthStateChange(async (event, session) => {
+        // DEADLOCK WARNING: this callback is dispatched while supabase-js
+        // holds its internal auth lock. Any supabase call made (and awaited)
+        // inside it queues behind that lock, which only releases when the
+        // callback returns -> the call never resolves and EVERY query on the
+        // page freezes behind it. SIGNED_IN re-fires on every tab return, so
+        // this was the "frozen buttons after switching tabs" bug. Keep the
+        // callback synchronous and defer supabase work with setTimeout(0).
+        const { data: { subscription } } = this.supabase.auth.onAuthStateChange((event, session) => {
             console.log('🔐 Auth state changed:', event);
 
             if (event === 'PASSWORD_RECOVERY') {
@@ -84,8 +91,11 @@ class PortalAuth {
                 this.showPasswordResetForm();
             } else if (event === 'SIGNED_IN' && session) {
                 this.currentUser = session.user;
-                await this.loadUserProfile();
-                this.notifyAuthChange('SIGNED_IN');
+                setTimeout(() => {
+                    this.loadUserProfile()
+                        .then(() => this.notifyAuthChange('SIGNED_IN'))
+                        .catch(err => console.warn('Profile load after SIGNED_IN failed:', err));
+                }, 0);
             } else if (event === 'SIGNED_OUT') {
                 this.currentUser = null;
                 this.userProfile = null;
