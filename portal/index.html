@@ -2697,14 +2697,27 @@
           await debouncedSessionCheck('interval');
         }, 30000);
 
-        // Handle tab visibility changes - auto refresh when switching back to active tab
+        // Handle tab visibility changes. Browsers only freeze the Supabase
+        // client's internals after several minutes of throttling (Chrome's
+        // intensive throttling starts at ~5 min hidden), so short tab
+        // switches are safe — only reload after a long absence where the
+        // frozen-client bug can actually occur.
+        const RELOAD_AFTER_HIDDEN_MS = 3 * 60 * 1000;
         document.addEventListener('visibilitychange', async () => {
           if (document.hidden) {
             // Track when tab was hidden
             this._tabHiddenAt = Date.now();
           } else {
-            // Tab became visible - auto refresh immediately
-            window.location.reload();
+            const hiddenFor = this._tabHiddenAt ? Date.now() - this._tabHiddenAt : 0;
+            if (hiddenFor > RELOAD_AFTER_HIDDEN_MS) {
+              // Long absence - client may be frozen, full reload is the
+              // reliable recovery (see Nov 2025 reconnect attempts)
+              window.location.reload();
+            } else {
+              // Short absence - session check + resubscribe realtime
+              debouncedSessionCheck('visibility');
+              try { this.setupNotificationSubscription(); } catch (e) {}
+            }
           }
         });
 
