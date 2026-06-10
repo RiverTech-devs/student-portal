@@ -40920,6 +40920,10 @@
         await this.terminalSetRTC(args);
       } else if (cmd === '/history') {
         await this.terminalShowHistory(args);
+      } else if (cmd === '/attendance') {
+        await this.terminalShowAttendance(args.join(' '), {});
+      } else if (cmd === '/undo') {
+        await this.terminalUndoRTC();
 
       // Analytics commands
       } else if (cmd === '/stats') {
@@ -40997,7 +41001,7 @@
       }
 
       const lastStudent = this._nlpContext.lastStudent;
-      const pronouns = ['him', 'her', 'them', 'they', 'he', 'she'];
+      const pronouns = ['him', 'her', 'hers', 'his', 'them', 'their', 'theirs', 'they', 'he', 'she'];
 
       let resolved = normalized;
       for (const pronoun of pronouns) {
@@ -41013,7 +41017,8 @@
       const followUpWords = [
         'history', 'transactions', 'balance', 'rtc',
         'add', 'give', 'award', 'set', 'remove', 'subtract', 'take',
-        'show', 'view', 'read', 'check', 'info', 'lookup', 'again'
+        'show', 'view', 'read', 'check', 'info', 'lookup', 'again',
+        'attendance', 'absent', 'absences', 'tardy', 'present'
       ];
 
       // Check if the command contains action words but no student name
@@ -41110,6 +41115,10 @@
       normalized = normalized.replace(/who's/g, 'who is');
       normalized = normalized.replace(/how's/g, 'how is');
 
+      // Strip possessive 's so "eli's" / "charlotte's" match the name
+      // (runs after the contraction expansions above)
+      normalized = normalized.replace(/['’]s\b/g, '');
+
       return normalized;
     }
 
@@ -41118,28 +41127,64 @@
         student: null,
         amount: null,
         reason: null,
-        count: null
+        count: null,
+        subject: null,
+        sinceDate: null,
+        sinceLabel: null
       };
 
-      // Extract numbers
-      const numbers = normalized.match(/\b\d+\b/g);
-      if (numbers && numbers.length > 0) {
-        entities.amount = parseInt(numbers[0]);
-        if (numbers.length > 1) {
-          entities.count = parseInt(numbers[1]);
-        }
+      // Extract numbers — but NEVER treat a number that's part of a time
+      // phrase ("last 5 weeks", "3 days ago") as an RTC amount. This is a
+      // safety guard: "give eli's attendance over the last 5 weeks" must not
+      // award 5 RTC.
+      const timeUnit = /^(day|days|week|weeks|month|months|year|years|hour|hours|minute|minutes|term|terms|quarter|quarters|semester|semesters)$/;
+      const toks = normalized.split(/\s+/);
+      for (let i = 0; i < toks.length; i++) {
+        const m = toks[i].match(/^[+-]?(\d+)$/);
+        if (!m) continue;
+        const next = (toks[i + 1] || '').replace(/[^a-z]/g, '');
+        if (timeUnit.test(next)) continue;           // skip "5 weeks"
+        const val = parseInt(m[1]);
+        if (entities.amount === null) entities.amount = val;
+        else if (entities.count === null) entities.count = val;
       }
 
       // Extract student name using fuzzy matching
       entities.student = this._fuzzyFindStudent(normalized, original);
 
-      // Extract reason (text after amount or action words)
+      // Extract reason (text after action words)
       const reasonMatch = original.match(/(?:for|because|reason:?)\s+(.+)/i);
       if (reasonMatch) {
         entities.reason = reasonMatch[1].trim();
       }
 
+      // Subject for attendance/grade scoping ("in math") — first word after
+      // "in" that isn't a filler word.
+      const subjMatch = normalized.match(/\bin\s+([a-z][a-z]+)\b/);
+      if (subjMatch && !['the', 'his', 'her', 'their', 'last', 'past', 'this'].includes(subjMatch[1])) {
+        entities.subject = subjMatch[1];
+      }
+
+      // Timeframe ("last 5 weeks", "past 3 days", "this month", "last week")
+      const tf = this._parseTimeframe(normalized);
+      if (tf) { entities.sinceDate = tf.sinceDate; entities.sinceLabel = tf.label; }
+
       return entities;
+    }
+
+    _parseTimeframe(normalized) {
+      const dayMs = 86400000;
+      const unitDays = { day: 1, days: 1, week: 7, weeks: 7, month: 30, months: 30, year: 365, years: 365 };
+      let days = null, label = null;
+      let m = normalized.match(/(?:last|past|previous)\s+(\d+)\s+(day|days|week|weeks|month|months|year|years)/);
+      if (m) { days = parseInt(m[1]) * unitDays[m[2]]; label = `last ${m[1]} ${m[2]}`; }
+      else if ((m = normalized.match(/(?:this|last|past)\s+(week|month|year)/))) {
+        days = unitDays[m[1]]; label = `${m[0]}`;
+      } else if (/\btoday\b/.test(normalized)) { days = 1; label = 'today'; }
+      if (days === null) return null;
+      const since = new Date(Date.now() - days * dayMs);
+      const iso = since.toISOString().slice(0, 10);
+      return { sinceDate: iso, label };
     }
 
     _fuzzyFindStudent(normalized, original) {
@@ -41370,7 +41415,26 @@
     }
 
     _matchIntent(normalized, entities) {
+      // Safety guard: when the message is about attendance/grades and does NOT
+      // mention RTC currency, never let it trigger a balance change. Stops
+      // "give eli's attendance in math over the last 5 weeks" from awarding RTC.
+      // (gold/coins/points are already normalized to "rtc" upstream.)
+      const hasInfoNoun = /\b(attendance|attendances|absent|absence|absences|tardy|tardies|tardiness|grade|grades|gpa|score|scores)\b/.test(normalized);
+      const hasCurrency = /\brtc\b/.test(normalized);
+      const blockMutation = hasInfoNoun && !hasCurrency;
+
       const patterns = [
+        // UNDO_RTC (uses context, no student/amount needed)
+        {
+          intent: 'UNDO_RTC',
+          patterns: [
+            /\bundo\b/,
+            /\brevert\b/,
+            /take (that|it) back/,
+            /never ?mind/,
+            /scratch that/
+          ]
+        },
         // SUBTRACT_RTC (most specific verbs first - order matters, the
         // VIEW_STUDENT catch-alls below would shadow these)
         {
@@ -41396,6 +41460,17 @@
           ],
           requiresStudent: true,
           requiresAmount: true
+        },
+        // VIEW_ATTENDANCE (before VIEW_STUDENT so "show eli's attendance" works)
+        {
+          intent: 'VIEW_ATTENDANCE',
+          patterns: [
+            /attendance/,
+            /\b(absent|absence|absences)\b/,
+            /\b(tardy|tardies|tardiness)\b/,
+            /(miss|missed|skipped) (class|classes|school|days)/
+          ],
+          requiresStudent: true
         },
         // VIEW_HISTORY (before VIEW_STUDENT so "show john's history" works)
         {
@@ -41455,6 +41530,8 @@
       ];
 
       for (const pattern of patterns) {
+        // Safety: don't allow an info-question to mutate balances
+        if (blockMutation && (pattern.intent === 'ADD_RTC' || pattern.intent === 'SUBTRACT_RTC')) continue;
         for (const regex of pattern.patterns) {
           if (regex.test(normalized)) {
             // Check if required entities are present
@@ -41473,7 +41550,7 @@
       // +/- sign) with an amount, but a required piece (usually the student)
       // is missing. Return the intent anyway so _executeIntent can ask for
       // the specific missing piece instead of a generic "I'm not sure".
-      if (entities.amount) {
+      if (entities.amount && !blockMutation) {
         const subAction = /(^|\s)-\d|\b(remove|subtract|deduct|minus|take)\b/.test(normalized);
         const addAction = /(^|\s)\+\d|\b(add|plus)\b|\d+ (rtc )?(to|for)\b/.test(normalized);
         if (subAction) return { intent: 'SUBTRACT_RTC', confidence: 0.7 };
@@ -41560,6 +41637,22 @@
           }
           break;
 
+        case 'VIEW_ATTENDANCE':
+          if (student) {
+            await this.terminalShowAttendance(student.full_name, {
+              subject: entities.subject,
+              sinceDate: entities.sinceDate,
+              sinceLabel: entities.sinceLabel
+            });
+          } else {
+            this.terminalPrintError('Whose attendance? Tell me a student name.');
+          }
+          break;
+
+        case 'UNDO_RTC':
+          await this.terminalUndoRTC();
+          break;
+
         default:
           this.terminalPrintError('I understood that, but something went wrong');
       }
@@ -41574,6 +41667,8 @@
   <div style="color: #6b5236; font-size: 13px; line-height: 1.8; margin-left: 12px;">
     • "How much gold does [student] have?"<br>
     • "Give [student] 50 RTC for great work"<br>
+    • "What's [student]'s attendance in math this month?"<br>
+    • "Undo that" (reverses my last RTC change)<br>
     • "Show me the top 10 students"<br>
     • "What's John's transaction history?"<br>
     • "List all active students"
@@ -41587,7 +41682,9 @@
     <code style="background: rgba(61, 40, 23, 0.12); padding: 2px 6px; border-radius: 3px;">/add</code>,
     <code style="background: rgba(61, 40, 23, 0.12); padding: 2px 6px; border-radius: 3px;">/stats</code>,
     <code style="background: rgba(61, 40, 23, 0.12); padding: 2px 6px; border-radius: 3px;">/top</code>,
-    <code style="background: rgba(61, 40, 23, 0.12); padding: 2px 6px; border-radius: 3px;">/history</code>, etc.
+    <code style="background: rgba(61, 40, 23, 0.12); padding: 2px 6px; border-radius: 3px;">/history</code>,
+    <code style="background: rgba(61, 40, 23, 0.12); padding: 2px 6px; border-radius: 3px;">/attendance</code>,
+    <code style="background: rgba(61, 40, 23, 0.12); padding: 2px 6px; border-radius: 3px;">/undo</code>, etc.
   </div>
 </div>
 
@@ -41837,6 +41934,114 @@
       if (output) output.innerHTML += html;
     }
 
+    async terminalShowAttendance(name, opts = {}) {
+      const students = await this._findStudentsByName(name, 'id, first_name, last_name');
+      if (!students || students.length === 0) {
+        const suggestions = this._suggestStudents(name);
+        this._naturalError(`I couldn't find a student named "${name}"`, suggestions);
+        return;
+      }
+      if (students.length > 1) {
+        this.terminalPrint(`Found ${students.length} matches. Please be more specific.`, '#ffd36a');
+        return;
+      }
+      const student = students[0];
+      const fullName = student.full_name || `${student.first_name || ''} ${student.last_name || ''}`.trim();
+
+      // Default window: last 30 days
+      const sinceDate = opts.sinceDate || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+      const sinceLabel = opts.sinceLabel || 'last 30 days';
+
+      let q = this.auth.supabase
+        .from('class_attendance')
+        .select('status, date, notes, classes(name, subject)')
+        .eq('student_id', student.id)
+        .gte('date', sinceDate)
+        .order('date', { ascending: false })
+        .limit(100);
+      const { data, error } = await q;
+      if (error) throw error;
+
+      let records = data || [];
+      // Subject filter ("in math") — match against class name or subject
+      if (opts.subject) {
+        const subj = opts.subject.toLowerCase();
+        records = records.filter(r => {
+          const n = (r.classes?.name || '').toLowerCase();
+          const s = (r.classes?.subject || '').toLowerCase();
+          return n.includes(subj) || s.includes(subj);
+        });
+      }
+
+      const scope = (opts.subject ? `${opts.subject} · ` : '') + sinceLabel;
+      if (records.length === 0) {
+        this.terminalPrint(`No attendance records for ${fullName} (${scope}).`, '#ffd36a');
+        return;
+      }
+
+      const counts = { present: 0, absent: 0, late: 0, left_early: 0, late_left_early: 0 };
+      records.forEach(r => { counts[r.status] = (counts[r.status] || 0) + 1; });
+      const total = records.length;
+      const presentPct = Math.round((counts.present / total) * 100);
+      const statusIcon = { present: '✅', absent: '❌', late: '⏰', left_early: '🚪', late_left_early: '⏰🚪' };
+
+      const output = document.getElementById('terminal-output');
+      let html = `
+<div style="margin-top: 12px; color: #8bffb0; font-weight: bold;">📅 Attendance - ${this.escapeHtml(fullName)}</div>
+<div style="color: #97a2b0; font-size: 11px; margin: 2px 0 8px;">${this.escapeHtml(scope)} · ${total} record${total !== 1 ? 's' : ''} · ${presentPct}% present</div>
+<div style="font-size: 12px; margin-bottom: 8px;">
+  <span style="color:#8bffb0;">✅ ${counts.present} present</span> &nbsp;
+  <span style="color:#ff6a6a;">❌ ${counts.absent} absent</span> &nbsp;
+  <span style="color:#ffd36a;">⏰ ${counts.late} late</span> &nbsp;
+  <span style="color:#ffd36a;">🚪 ${counts.left_early + counts.late_left_early} left early</span>
+</div>
+<div style="font-size: 12px;">`;
+      records.slice(0, 12).forEach(r => {
+        const color = r.status === 'present' ? '#8bffb0' : r.status === 'absent' ? '#ff6a6a' : '#ffd36a';
+        const date = new Date(r.date + 'T12:00:00Z').toLocaleDateString();
+        const cls = r.classes?.name ? ` · ${this.escapeHtml(r.classes.name)}` : '';
+        const note = r.notes ? ` — ${this.escapeHtml(r.notes)}` : '';
+        html += `
+          <div style="padding: 6px 8px; margin: 3px 0; background: rgba(255,255,255,0.02); border-left: 3px solid ${color}; border-radius: 4px;">
+            <span style="color:${color};">${statusIcon[r.status] || '📅'} ${r.status.replace(/_/g, ' ')}</span>
+            <span style="color:#6aa9ff; font-size: 11px;">${date}</span>${cls}${note}
+          </div>`;
+      });
+      html += '</div>';
+      if (output) output.innerHTML += html;
+    }
+
+    async terminalUndoRTC() {
+      const last = this._nlpContext?.lastTransaction;
+      if (!last) {
+        this.terminalPrintError("There's nothing recent to undo. I can only undo an RTC change I just made.");
+        return;
+      }
+
+      // rtc_transactions is an append-only ledger — undo posts a compensating
+      // reverse transaction rather than deleting the original.
+      const reverse = -last.amount;
+      const { data: txData, error } = await this.auth.supabase.rpc('process_rtc_transaction', {
+        p_user_id: last.studentId,
+        p_amount: reverse,
+        p_transaction_type: 'admin_adjustment',
+        p_description: `Undo of ${last.amount > 0 ? '+' : ''}${last.amount} RTC${last.txId ? ' (txn ' + last.txId + ')' : ''}`,
+        p_reference_id: last.txId || null,
+        p_reference_type: 'undo'
+      });
+      if (error) throw error;
+
+      const newBalance = last.balanceAfter + reverse;
+      this._addRecentStudent({ id: last.studentId, full_name: last.studentName, rtc_balance: newBalance });
+      this._naturalSuccess([
+        `Undone — reversed ${last.amount > 0 ? '+' : ''}${last.amount} RTC for ${last.studentName}. Balance is back to ${newBalance}.`,
+        `Reverted that ${last.amount > 0 ? 'award' : 'deduction'}. ${last.studentName} is back to ${newBalance} RTC.`
+      ]);
+
+      // Only the most recent action can be undone, and only once
+      this._nlpContext.lastTransaction = null;
+    }
+
     async terminalShowStats() {
       this.terminalPrint('Loading statistics...', '#6aa9ff');
 
@@ -42026,6 +42231,17 @@
 
       const newBalance = (student.rtc_balance || 0) + amount;
       this._addRecentStudent({...student, rtc_balance: newBalance});
+
+      // Remember this transaction so "undo that" can reverse it
+      if (!this._nlpContext) this._nlpContext = {};
+      this._nlpContext.lastTransaction = {
+        studentId: student.id,
+        studentName: student.full_name,
+        amount,
+        balanceAfter: newBalance,
+        txId: txData?.transaction_id || null,
+        timestamp: Date.now()
+      };
 
       // Phase 4: Natural varied responses (different phrasing for subtractions)
       if (amount < 0) {
