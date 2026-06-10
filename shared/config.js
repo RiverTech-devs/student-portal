@@ -542,6 +542,10 @@ class PortalUI {
         const isPinOnlyStudent = userType === 'student'
             && userInfo.profile?.account_status === 'inactive';
 
+        // Riven's avatar lives in shared/, whose relative path depends on which app is rendering the nav
+        const sharedPath = currentApp === 'portal' ? '../shared' : './shared';
+        const rivenIcon = `<span style="display: inline-flex; width: 18px; height: 18px; border-radius: 50%; overflow: hidden; vertical-align: middle; border: 1px solid #d97a3a;"><img src="${sharedPath}/riven-avatar.jpg" alt="" style="width: 100%; height: 100%; object-fit: cover; object-position: 53% 16%; transform: scale(2.1); transform-origin: 53% 16%;"></span>`;
+
         // Define all nav items — each knows which app it belongs to
         const allItems = [
             { icon: '🏠', label: 'Dashboard', app: 'main', section: 'dashboard', roles: ['student', 'parent', 'teacher', 'admin'] },
@@ -557,7 +561,7 @@ class PortalUI {
             { icon: '🏆', label: 'Activities', app: 'portal', section: 'activities', roles: ['student', 'teacher', 'admin', 'parent'] },
 
             { icon: '🏦', label: 'Bank Helper', app: 'portal', section: 'rtc-bank-helper', roles: ['teacher', 'admin'] },
-            { icon: '🤖', label: 'Riven', app: 'portal', section: 'teacher-terminal', roles: ['teacher', 'admin'] },
+            { icon: rivenIcon, label: 'Riven', app: 'portal', section: 'teacher-terminal', roles: ['teacher', 'admin'] },
             { icon: '🛒', label: 'IRL Store', app: 'portal', section: 'irl-purchases', roles: ['teacher', 'admin'] },
             { icon: '👤', label: 'Profile', app: 'portal', section: 'profile', roles: ['student', 'teacher', 'admin', 'parent'] },
             { icon: '🔑', label: 'Admin', app: 'portal', section: 'admin-dashboard', roles: ['admin'] },
