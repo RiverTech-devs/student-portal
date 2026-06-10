@@ -575,7 +575,7 @@ class PortalUI {
 
         // Riven's avatar lives in shared/, whose relative path depends on which app is rendering the nav
         const sharedPath = currentApp === 'portal' ? '../shared' : './shared';
-        const rivenIcon = `<span style="display: inline-flex; width: 18px; height: 18px; border-radius: 50%; overflow: hidden; vertical-align: middle; border: 1px solid #d97a3a;"><img src="${sharedPath}/riven-avatar.jpg" alt="" style="width: 100%; height: 100%; object-fit: cover; object-position: 53% 16%; transform: scale(2.1); transform-origin: 53% 16%;"></span>`;
+        const rivenIcon = `<span style="display: inline-flex; width: 18px; height: 18px; border-radius: 50%; overflow: hidden; vertical-align: middle; border: 1px solid #d97a3a;"><img src="${sharedPath}/riven-avatar.jpg" alt="" style="width: 100%; height: 100%; object-fit: cover; object-position: 53% 17%; transform: scale(1.8); transform-origin: 53% 17%;"></span>`;
 
         // Define all nav items — each knows which app it belongs to
         const allItems = [
