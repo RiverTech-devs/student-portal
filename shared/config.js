@@ -39,7 +39,14 @@ class PortalAuth {
                 auth: {
                     autoRefreshToken: true,
                     persistSession: true,
-                    detectSessionInUrl: true
+                    detectSessionInUrl: true,
+                    // Bypass the Navigator LockManager. The default lock can
+                    // deadlock when a tab is hidden mid-token-refresh, which
+                    // freezes EVERY query behind it on tab return (the
+                    // "frozen buttons" bug the old always-reload papered
+                    // over). Tradeoff: rare multi-tab refresh races, which
+                    // Supabase tolerates via its 10s token reuse window.
+                    lock: async (_name, _acquireTimeout, fn) => await fn()
                 }
             });
 
@@ -297,7 +304,14 @@ class PortalAuth {
                 auth: {
                     autoRefreshToken: true,
                     persistSession: true,
-                    detectSessionInUrl: true
+                    detectSessionInUrl: true,
+                    // Bypass the Navigator LockManager. The default lock can
+                    // deadlock when a tab is hidden mid-token-refresh, which
+                    // freezes EVERY query behind it on tab return (the
+                    // "frozen buttons" bug the old always-reload papered
+                    // over). Tradeoff: rare multi-tab refresh races, which
+                    // Supabase tolerates via its 10s token reuse window.
+                    lock: async (_name, _acquireTimeout, fn) => await fn()
                 }
             });
 
@@ -342,7 +356,14 @@ class PortalAuth {
                 auth: {
                     autoRefreshToken: true,
                     persistSession: true,
-                    detectSessionInUrl: true
+                    detectSessionInUrl: true,
+                    // Bypass the Navigator LockManager. The default lock can
+                    // deadlock when a tab is hidden mid-token-refresh, which
+                    // freezes EVERY query behind it on tab return (the
+                    // "frozen buttons" bug the old always-reload papered
+                    // over). Tradeoff: rare multi-tab refresh races, which
+                    // Supabase tolerates via its 10s token reuse window.
+                    lock: async (_name, _acquireTimeout, fn) => await fn()
                 }
             });
 
