@@ -2714,9 +2714,13 @@
               // reliable recovery (see Nov 2025 reconnect attempts)
               window.location.reload();
             } else {
-              // Short absence - session check + resubscribe realtime
-              debouncedSessionCheck('visibility');
-              try { this.setupNotificationSubscription(); } catch (e) {}
+              // Short absence - do NOTHING. Running session checks or
+              // realtime resubscribes here contends for the supabase-js
+              // auth lock at the exact moment its own tab-return recovery
+              // runs, which can freeze every query behind the lock.
+              // supabaseQuery's timeout has a reload fallback if the
+              // client turns out to be frozen anyway.
+              this._tabReturnedAt = Date.now();
             }
           }
         });
@@ -4301,6 +4305,16 @@
 
           return new Promise(async (resolve, reject) => {
               const timeout = setTimeout(() => {
+                  // A query hanging shortly after a tab return means the
+                  // Supabase client's auth lock froze during the hide -
+                  // reload to recover (this is what the old unconditional
+                  // visibilitychange reload was papering over)
+                  const sinceReturn = this._tabReturnedAt ? Date.now() - this._tabReturnedAt : Infinity;
+                  if (sinceReturn < 30000 && !this._recoveryReloadPending) {
+                      this._recoveryReloadPending = true;
+                      try { window.app.showNotification('Connection frozen — reloading...', 'error'); } catch (e) {}
+                      setTimeout(() => window.location.reload(), 800);
+                  }
                   reject(new Error('Query timeout'));
               }, timeoutMs);
 
