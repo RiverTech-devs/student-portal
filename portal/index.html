@@ -37500,8 +37500,22 @@
     }
 
     async halveAllRTC() {
-      // Operate on ALL active students (not just the filtered/searched view) — this is a year-wide rollover.
-      const students = this._rtcStudents || [];
+      // Year-wide rollover: fetch EVERY student (including past/inactive), not just the
+      // active set held in _rtcStudents, so no balance is left un-halved.
+      let students;
+      try {
+        const res = await this.supabaseQuery(() => this.auth.supabase
+          .from('user_profiles')
+          .select('id, first_name, last_name, rtc_balance')
+          .eq('user_type', 'student'));
+        if (res.error) throw res.error;
+        students = res.data || [];
+      } catch (e) {
+        console.error('Error loading students for RTC rollover:', e);
+        this.showNotification('Error loading students: ' + e.message, 'error');
+        return;
+      }
+
       const affected = students.filter(s => (s.rtc_balance || 0) > 0);
 
       if (affected.length === 0) {
@@ -37538,6 +37552,9 @@
           if (data && !data.success) throw new Error(data.error);
 
           student.rtc_balance = newBalance;
+          // Keep the on-screen active set (_rtcStudents) in sync so the table/stats re-render correctly.
+          const local = (this._rtcStudents || []).find(s => s.id === student.id);
+          if (local) local.rtc_balance = newBalance;
           const balEl = document.getElementById('rtc-bal-' + student.id);
           if (balEl) balEl.textContent = newBalance;
           success++;
