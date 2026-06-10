@@ -40373,89 +40373,401 @@
       const section = document.getElementById('teacher-terminal-section');
       if (!section) { console.error('Terminal section not found'); return; }
 
-      // Initialize terminal history if not exists
+      // Initialize terminal state
       if (!this._terminalHistory) this._terminalHistory = [];
       if (!this._terminalHistoryIndex) this._terminalHistoryIndex = -1;
+      if (!this._terminalRecentStudents) this._terminalRecentStudents = [];
+      this._terminalCommandPaletteOpen = false;
+      this._terminalAutocompleteResults = [];
+      this._terminalAutocompleteIndex = -1;
+
+      // Load all students for autocomplete
+      await this._loadTerminalStudents();
 
       section.innerHTML = `
-        <div style="max-width: 1200px; margin: 0 auto; padding: 20px;">
-          <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px;">
-            <button class="btn btn-secondary" onclick="app.showSection('home')" style="padding: 6px 12px;">← Back</button>
-            <h2 style="margin: 0;">⌨️ Teacher Terminal</h2>
-          </div>
-
-          <div class="card" style="padding: 12px 16px; margin-bottom: 16px; border-left: 3px solid var(--accent); font-size: 13px; color: var(--muted);">
-            Command-line interface for managing student data. Type <code style="background: var(--bg); padding: 2px 6px; border-radius: 3px;">/help</code> to see available commands.
-          </div>
-
-          <div class="card" style="padding: 0; margin-bottom: 16px; background: #0a0e14; border: 1px solid #1a2330; font-family: 'Monaco', 'Menlo', 'Consolas', monospace; font-size: 13px;">
-            <div id="terminal-output" style="padding: 16px; min-height: 400px; max-height: 500px; overflow-y: auto; color: #e6edf3;">
-              <div style="color: #8bffb0; margin-bottom: 8px;">River Tech Terminal v1.0</div>
-              <div style="color: #97a2b0; margin-bottom: 16px;">Type /help for available commands</div>
+        <div style="max-width: 1400px; margin: 0 auto; padding: 20px;">
+          <!-- Header -->
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;">
+            <div style="display: flex; align-items: center; gap: 12px;">
+              <button class="btn btn-secondary" onclick="app.showSection('home')" style="padding: 6px 12px;">← Back</button>
+              <h2 style="margin: 0;">⌨️ Terminal</h2>
             </div>
-            <div style="display: flex; align-items: center; padding: 12px 16px; border-top: 1px solid #1a2330; background: #0c1118;">
-              <span style="color: #6aa9ff; margin-right: 8px;">$</span>
+            <button onclick="app.toggleTerminalPalette()" class="btn" style="padding: 8px 16px; font-size: 13px;">
+              <span style="opacity: 0.7; margin-right: 6px;">⌘K</span> Command Palette
+            </button>
+          </div>
+
+          <!-- Command Palette Modal -->
+          <div id="terminal-palette" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.8); z-index: 10000; padding: 20px;" onclick="if(event.target === this) app.closeTerminalPalette()">
+            <div style="max-width: 700px; margin: 60px auto; background: var(--card); border-radius: 12px; overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,0.5);">
+              <!-- Search Input -->
+              <div style="padding: 16px; border-bottom: 1px solid var(--border);">
+                <input
+                  type="text"
+                  id="palette-search"
+                  placeholder="Search students, commands, or type to filter..."
+                  style="width: 100%; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); font-size: 15px;"
+                  oninput="app.filterPalette(this.value)"
+                  onkeydown="app.handlePaletteKeydown(event)"
+                >
+              </div>
+              <!-- Results -->
+              <div id="palette-results" style="max-height: 500px; overflow-y: auto;"></div>
+            </div>
+          </div>
+
+          <!-- Quick Actions Grid -->
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 16px;">
+            <button onclick="app.terminalQuickAction('list')" class="card" style="padding: 16px; text-align: left; cursor: pointer; border: 1px solid var(--border); transition: all 0.2s;" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
+              <div style="font-size: 24px; margin-bottom: 4px;">👥</div>
+              <div style="font-weight: 600; margin-bottom: 2px;">View Students</div>
+              <div style="font-size: 12px; color: var(--muted);">List all students</div>
+            </button>
+            <button onclick="app.terminalQuickAction('stats')" class="card" style="padding: 16px; text-align: left; cursor: pointer; border: 1px solid var(--border); transition: all 0.2s;" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
+              <div style="font-size: 24px; margin-bottom: 4px;">📊</div>
+              <div style="font-weight: 600; margin-bottom: 2px;">Statistics</div>
+              <div style="font-size: 12px; color: var(--muted);">View RTC stats</div>
+            </button>
+            <button onclick="app.terminalQuickAction('recent')" class="card" style="padding: 16px; text-align: left; cursor: pointer; border: 1px solid var(--border); transition: all 0.2s;" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
+              <div style="font-size: 24px; margin-bottom: 4px;">🕐</div>
+              <div style="font-weight: 600; margin-bottom: 2px;">Recent</div>
+              <div style="font-size: 12px; color: var(--muted);">Recently viewed</div>
+            </button>
+            <button onclick="app.terminalQuickAction('help')" class="card" style="padding: 16px; text-align: left; cursor: pointer; border: 1px solid var(--border); transition: all 0.2s;" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
+              <div style="font-size: 24px; margin-bottom: 4px;">❓</div>
+              <div style="font-weight: 600; margin-bottom: 2px;">Help</div>
+              <div style="font-size: 12px; color: var(--muted);">Command list</div>
+            </button>
+          </div>
+
+          <!-- Terminal Output & Input -->
+          <div class="card" style="padding: 0; margin-bottom: 16px; background: #0a0e14; border: 1px solid #1a2330; font-family: 'Monaco', 'Menlo', 'Consolas', monospace; font-size: 13px; position: relative;">
+            <div id="terminal-output" style="padding: 16px; min-height: 300px; max-height: 500px; overflow-y: auto; color: #e6edf3;">
+              <div style="color: #8bffb0; margin-bottom: 8px; font-weight: bold;">River Tech Terminal v2.0</div>
+              <div style="color: #97a2b0; margin-bottom: 4px;">Type /help or click Quick Actions above</div>
+              <div style="color: #6aa9ff; margin-bottom: 16px; font-size: 12px;">💡 Press Ctrl+K for command palette • Tab for autocomplete</div>
+            </div>
+
+            <!-- Autocomplete Dropdown -->
+            <div id="terminal-autocomplete" style="display: none; position: absolute; bottom: 60px; left: 16px; right: 16px; background: var(--card); border: 1px solid var(--accent); border-radius: 6px; max-height: 200px; overflow-y: auto; z-index: 100; box-shadow: 0 -4px 12px rgba(0,0,0,0.3);"></div>
+
+            <!-- Input Line -->
+            <div style="display: flex; align-items: center; padding: 12px 16px; border-top: 1px solid #1a2330; background: #0c1118; position: relative;">
+              <span style="color: #6aa9ff; margin-right: 8px; user-select: none;">$</span>
               <input
                 type="text"
                 id="terminal-input"
                 autocomplete="off"
-                placeholder="Enter command..."
-                style="flex: 1; background: transparent; border: none; outline: none; color: #e6edf3; font-family: inherit; font-size: inherit;"
+                placeholder="Type command or student name..."
+                style="flex: 1; background: transparent; border: none; outline: none; color: #e6edf3; font-family: inherit; font-size: inherit; min-width: 0;"
+                oninput="app.handleTerminalInput(event)"
                 onkeydown="app.handleTerminalKeydown(event)"
               >
+              <div id="terminal-suggestions" style="position: absolute; right: 16px; top: 50%; transform: translateY(-50%); font-size: 11px; color: var(--muted); pointer-events: none;"></div>
             </div>
           </div>
 
-          <div class="card" style="padding: 12px 16px; background: var(--surface-bg); border: 1px solid var(--surface-border);">
-            <details>
-              <summary style="cursor: pointer; font-weight: 600; color: var(--text); padding: 4px 0;">📖 Quick Reference</summary>
-              <div style="margin-top: 12px; font-size: 13px; color: var(--muted); line-height: 1.8;">
-                <div style="margin-bottom: 8px;"><code style="background: var(--bg); padding: 2px 6px; border-radius: 3px; color: #6aa9ff;">/help</code> — Show all available commands</div>
-                <div style="margin-bottom: 8px;"><code style="background: var(--bg); padding: 2px 6px; border-radius: 3px; color: #6aa9ff;">/read &lt;student&gt;</code> — Display student information (RTC balance, status, etc.)</div>
-                <div style="margin-bottom: 8px;"><code style="background: var(--bg); padding: 2px 6px; border-radius: 3px; color: #6aa9ff;">/add &lt;student&gt; &lt;amount&gt; [reason]</code> — Add RTC to student's balance</div>
-                <div style="margin-bottom: 8px;"><code style="background: var(--bg); padding: 2px 6px; border-radius: 3px; color: #6aa9ff;">/set &lt;student&gt; &lt;amount&gt;</code> — Set student's RTC balance to specific amount</div>
-                <div style="margin-bottom: 8px;"><code style="background: var(--bg); padding: 2px 6px; border-radius: 3px; color: #6aa9ff;">/clear</code> — Clear terminal output</div>
-                <div style="color: #ffd36a; margin-top: 12px;">💡 Tip: Use ↑/↓ arrow keys to navigate command history</div>
-              </div>
-            </details>
+          <!-- Recent Students (if any) -->
+          <div id="terminal-recent-bar" style="display: none; margin-bottom: 16px;">
+            <div style="font-size: 12px; color: var(--muted); margin-bottom: 8px; font-weight: 600;">RECENT STUDENTS</div>
+            <div id="terminal-recent-list" style="display: flex; gap: 8px; flex-wrap: wrap;"></div>
           </div>
         </div>
       `;
 
-      // Focus the input
+      // Initialize UI
       setTimeout(() => {
         const input = document.getElementById('terminal-input');
         if (input) input.focus();
+        this._updateRecentStudentsBar();
       }, 100);
+
+      // Global keyboard shortcut for command palette
+      document.addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key === 'k' && this.currentSection === 'teacher-terminal') {
+          e.preventDefault();
+          this.toggleTerminalPalette();
+        }
+      });
+    }
+
+    async _loadTerminalStudents() {
+      try {
+        const { data, error } = await this.auth.supabase
+          .from('user_profiles')
+          .select('id, first_name, last_name, email, rtc_balance, account_status')
+          .eq('user_type', 'student')
+          .order('first_name');
+
+        if (error) throw error;
+        this._terminalAllStudents = (data || []).map(s => ({
+          ...s,
+          full_name: `${s.first_name || ''} ${s.last_name || ''}`.trim()
+        }));
+      } catch (err) {
+        console.error('Error loading students:', err);
+        this._terminalAllStudents = [];
+      }
+    }
+
+    toggleTerminalPalette() {
+      const palette = document.getElementById('terminal-palette');
+      if (!palette) return;
+
+      if (palette.style.display === 'none') {
+        palette.style.display = 'block';
+        const search = document.getElementById('palette-search');
+        if (search) {
+          search.value = '';
+          search.focus();
+        }
+        this.filterPalette('');
+      } else {
+        this.closeTerminalPalette();
+      }
+    }
+
+    closeTerminalPalette() {
+      const palette = document.getElementById('terminal-palette');
+      if (palette) palette.style.display = 'none';
+      const input = document.getElementById('terminal-input');
+      if (input) input.focus();
+    }
+
+    filterPalette(query) {
+      const results = document.getElementById('palette-results');
+      if (!results) return;
+
+      const q = query.toLowerCase().trim();
+
+      // Match students
+      const students = (this._terminalAllStudents || []).filter(s =>
+        s.full_name.toLowerCase().includes(q) ||
+        (s.email || '').toLowerCase().includes(q)
+      ).slice(0, 10);
+
+      // Match commands
+      const commands = [
+        { cmd: '/list', desc: 'List all students', icon: '👥' },
+        { cmd: '/search <name>', desc: 'Search for students', icon: '🔍' },
+        { cmd: '/recent', desc: 'Recently viewed students', icon: '🕐' },
+        { cmd: '/stats', desc: 'System statistics', icon: '📊' },
+        { cmd: '/top [n]', desc: 'Top RTC earners', icon: '🏆' },
+        { cmd: '/help', desc: 'Show all commands', icon: '❓' },
+        { cmd: '/clear', desc: 'Clear terminal', icon: '🧹' },
+      ].filter(c => !q || c.cmd.includes(q) || c.desc.toLowerCase().includes(q));
+
+      let html = '';
+
+      if (commands.length > 0) {
+        html += `<div style="padding: 12px 16px; background: var(--surface-bg); border-bottom: 1px solid var(--border); font-size: 12px; font-weight: 600; color: var(--muted);">COMMANDS</div>`;
+        commands.forEach(c => {
+          html += `
+            <div onclick="app.executeTerminalCommand('${c.cmd.split(' ')[0]}')" style="padding: 12px 16px; cursor: pointer; border-bottom: 1px solid var(--border); transition: background 0.15s;" onmouseover="this.style.background='var(--surface-bg)'" onmouseout="this.style.background='transparent'">
+              <div style="display: flex; align-items: center; gap: 12px;">
+                <div style="font-size: 20px;">${c.icon}</div>
+                <div style="flex: 1;">
+                  <div style="font-family: monospace; color: var(--accent); margin-bottom: 2px;">${c.cmd}</div>
+                  <div style="font-size: 12px; color: var(--muted);">${c.desc}</div>
+                </div>
+              </div>
+            </div>
+          `;
+        });
+      }
+
+      if (students.length > 0) {
+        html += `<div style="padding: 12px 16px; background: var(--surface-bg); border-bottom: 1px solid var(--border); font-size: 12px; font-weight: 600; color: var(--muted);">STUDENTS</div>`;
+        students.forEach(s => {
+          html += `
+            <div onclick="app._selectPaletteStudent('${s.full_name}')" style="padding: 12px 16px; cursor: pointer; border-bottom: 1px solid var(--border); transition: background 0.15s;" onmouseover="this.style.background='var(--surface-bg)'" onmouseout="this.style.background='transparent'">
+              <div style="display: flex; align-items: center; justify-content: space-between;">
+                <div>
+                  <div style="font-weight: 600; margin-bottom: 2px;">${this.escapeHtml(s.full_name)}</div>
+                  <div style="font-size: 12px; color: var(--muted);">${s.email}</div>
+                </div>
+                <div style="font-weight: bold; color: #f39c12;">${s.rtc_balance || 0} RTC</div>
+              </div>
+            </div>
+          `;
+        });
+      }
+
+      if (!html) {
+        html = `<div style="padding: 40px; text-align: center; color: var(--muted);">No results found</div>`;
+      }
+
+      results.innerHTML = html;
+    }
+
+    _selectPaletteStudent(studentName) {
+      this.closeTerminalPalette();
+      const input = document.getElementById('terminal-input');
+      if (input) {
+        input.value = `/read ${studentName}`;
+        input.focus();
+      }
+    }
+
+    handlePaletteKeydown(event) {
+      if (event.key === 'Escape') {
+        this.closeTerminalPalette();
+      } else if (event.key === 'Enter') {
+        // Execute first result
+        const results = document.getElementById('palette-results');
+        const firstItem = results?.querySelector('[onclick]');
+        if (firstItem) firstItem.click();
+      }
+    }
+
+    terminalQuickAction(action) {
+      const input = document.getElementById('terminal-input');
+      if (!input) return;
+      input.value = `/${action}`;
+      this.executeTerminalCommand(`/${action}`);
+    }
+
+    handleTerminalInput(event) {
+      const input = event.target;
+      const value = input.value;
+
+      // Show autocomplete
+      if (value.length > 0 && !value.startsWith('/')) {
+        this._showAutocomplete(value);
+      } else {
+        this._hideAutocomplete();
+      }
+
+      // Show inline suggestions
+      this._updateInlineSuggestions(value);
+    }
+
+    _showAutocomplete(query) {
+      const dropdown = document.getElementById('terminal-autocomplete');
+      if (!dropdown) return;
+
+      const matches = (this._terminalAllStudents || [])
+        .filter(s => s.full_name.toLowerCase().includes(query.toLowerCase()))
+        .slice(0, 5);
+
+      if (matches.length === 0) {
+        this._hideAutocomplete();
+        return;
+      }
+
+      this._terminalAutocompleteResults = matches;
+      this._terminalAutocompleteIndex = -1;
+
+      let html = '';
+      matches.forEach((s, idx) => {
+        html += `
+          <div onclick="app._selectAutocomplete(${idx})" style="padding: 10px 14px; cursor: pointer; border-bottom: 1px solid var(--border); font-size: 12px;" onmouseover="this.style.background='var(--surface-bg)'" onmouseout="this.style.background='transparent'">
+            <div style="font-weight: 600;">${this.escapeHtml(s.full_name)}</div>
+            <div style="color: var(--muted); font-size: 11px;">${s.email} • ${s.rtc_balance || 0} RTC</div>
+          </div>
+        `;
+      });
+
+      dropdown.innerHTML = html;
+      dropdown.style.display = 'block';
+    }
+
+    _hideAutocomplete() {
+      const dropdown = document.getElementById('terminal-autocomplete');
+      if (dropdown) dropdown.style.display = 'none';
+      this._terminalAutocompleteResults = [];
+      this._terminalAutocompleteIndex = -1;
+    }
+
+    _selectAutocomplete(index) {
+      const student = this._terminalAutocompleteResults[index];
+      if (!student) return;
+
+      const input = document.getElementById('terminal-input');
+      if (input) input.value = student.full_name;
+      this._hideAutocomplete();
+      input.focus();
+    }
+
+    _updateInlineSuggestions(value) {
+      const suggestions = document.getElementById('terminal-suggestions');
+      if (!suggestions) return;
+
+      if (!value) {
+        suggestions.textContent = 'Type command or student name';
+        return;
+      }
+
+      if (value.startsWith('/')) {
+        const cmd = value.toLowerCase();
+        const cmds = ['help', 'clear', 'list', 'search', 'recent', 'stats', 'top', 'read', 'add', 'set'];
+        const match = cmds.find(c => `/${c}`.startsWith(cmd) && `/${c}` !== cmd);
+        suggestions.textContent = match ? `Tab → /${match}` : '';
+      } else {
+        suggestions.textContent = '';
+      }
     }
 
     handleTerminalKeydown(event) {
       const input = document.getElementById('terminal-input');
       if (!input) return;
 
-      // Handle up/down arrow keys for history
-      if (event.key === 'ArrowUp') {
+      // Tab for autocomplete
+      if (event.key === 'Tab') {
         event.preventDefault();
-        if (this._terminalHistoryIndex < this._terminalHistory.length - 1) {
-          this._terminalHistoryIndex++;
-          input.value = this._terminalHistory[this._terminalHistory.length - 1 - this._terminalHistoryIndex];
+        if (this._terminalAutocompleteResults.length > 0) {
+          this._selectAutocomplete(0);
+        } else {
+          // Command autocomplete
+          const value = input.value.toLowerCase();
+          const cmds = ['help', 'clear', 'list', 'search', 'recent', 'stats', 'top', 'read', 'add', 'set'];
+          const match = cmds.find(c => `/${c}`.startsWith(value) && `/${c}` !== value);
+          if (match) input.value = `/${match}`;
         }
         return;
       }
 
-      if (event.key === 'ArrowDown') {
+      // Escape to close autocomplete
+      if (event.key === 'Escape') {
+        this._hideAutocomplete();
+        return;
+      }
+
+      // Arrow up/down for history or autocomplete navigation
+      if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+        if (this._terminalAutocompleteResults.length > 0) {
+          event.preventDefault();
+          // Navigate autocomplete
+          const maxIndex = this._terminalAutocompleteResults.length - 1;
+          if (event.key === 'ArrowDown') {
+            this._terminalAutocompleteIndex = Math.min(this._terminalAutocompleteIndex + 1, maxIndex);
+          } else {
+            this._terminalAutocompleteIndex = Math.max(this._terminalAutocompleteIndex - 1, 0);
+          }
+          this._selectAutocomplete(this._terminalAutocompleteIndex);
+          return;
+        }
+
+        // Command history
         event.preventDefault();
-        if (this._terminalHistoryIndex > 0) {
-          this._terminalHistoryIndex--;
-          input.value = this._terminalHistory[this._terminalHistory.length - 1 - this._terminalHistoryIndex];
-        } else if (this._terminalHistoryIndex === 0) {
-          this._terminalHistoryIndex = -1;
-          input.value = '';
+        if (event.key === 'ArrowUp') {
+          if (this._terminalHistoryIndex < this._terminalHistory.length - 1) {
+            this._terminalHistoryIndex++;
+            input.value = this._terminalHistory[this._terminalHistory.length - 1 - this._terminalHistoryIndex];
+          }
+        } else {
+          if (this._terminalHistoryIndex > 0) {
+            this._terminalHistoryIndex--;
+            input.value = this._terminalHistory[this._terminalHistory.length - 1 - this._terminalHistoryIndex];
+          } else if (this._terminalHistoryIndex === 0) {
+            this._terminalHistoryIndex = -1;
+            input.value = '';
+          }
         }
         return;
       }
 
-      // Handle Enter key
+      // Enter to execute
       if (event.key === 'Enter') {
         event.preventDefault();
         const command = input.value.trim();
@@ -40464,6 +40776,7 @@
           this._terminalHistoryIndex = -1;
           this.executeTerminalCommand(command);
           input.value = '';
+          this._hideAutocomplete();
         }
       }
     }
@@ -40484,20 +40797,40 @@
       const args = parts.slice(1);
 
       try {
-        if (cmd === '/help') {
-          this.terminalPrintHelp();
-        } else if (cmd === '/clear') {
-          output.innerHTML = '';
-        } else if (cmd === '/read') {
+        // Student data commands
+        if (cmd === '/read') {
           await this.terminalReadStudent(args);
+        } else if (cmd === '/list') {
+          await this.terminalListStudents(args);
+        } else if (cmd === '/search') {
+          await this.terminalSearchStudents(args);
+        } else if (cmd === '/recent') {
+          await this.terminalShowRecent();
+
+        // RTC commands
         } else if (cmd === '/add') {
           await this.terminalAddRTC(args);
         } else if (cmd === '/set') {
           await this.terminalSetRTC(args);
+        } else if (cmd === '/history') {
+          await this.terminalShowHistory(args);
+
+        // Analytics commands
+        } else if (cmd === '/stats') {
+          await this.terminalShowStats();
+        } else if (cmd === '/top') {
+          await this.terminalShowTop(args);
+
+        // Utility commands
+        } else if (cmd === '/help') {
+          this.terminalPrintHelp();
+        } else if (cmd === '/clear') {
+          output.innerHTML = '';
         } else {
           this.terminalPrintError(`Unknown command: ${cmd}. Type /help for available commands.`);
         }
       } catch (err) {
+        console.error('Terminal command error:', err);
         this.terminalPrintError(`Error: ${err.message}`);
       }
 
@@ -40510,19 +40843,37 @@
       if (!output) return;
 
       const helpText = `
-<div style="color: #8bffb0; margin-top: 8px; margin-bottom: 4px;">Available Commands:</div>
-<div style="color: #97a2b0; line-height: 1.8; margin-left: 16px;">
+<div style="color: #8bffb0; margin-top: 8px; margin-bottom: 4px; font-weight: bold;">📚 Available Commands</div>
+
+<div style="color: #ffd36a; margin-top: 12px; font-weight: 600;">Student Data:</div>
+<div style="color: #97a2b0; line-height: 2; margin-left: 16px; font-size: 13px;">
+  <div><span style="color: #6aa9ff;">/read &lt;student&gt;</span> — View detailed student info</div>
+  <div><span style="color: #6aa9ff;">/list [filter]</span> — List all students (active/inactive/all)</div>
+  <div><span style="color: #6aa9ff;">/search &lt;name&gt;</span> — Search for students by name</div>
+  <div><span style="color: #6aa9ff;">/recent</span> — Show recently viewed students</div>
+</div>
+
+<div style="color: #ffd36a; margin-top: 12px; font-weight: 600;">RTC Management:</div>
+<div style="color: #97a2b0; line-height: 2; margin-left: 16px; font-size: 13px;">
+  <div><span style="color: #6aa9ff;">/add &lt;student&gt; &lt;amount&gt; [reason]</span> — Add RTC to student</div>
+  <div><span style="color: #6aa9ff;">/set &lt;student&gt; &lt;amount&gt;</span> — Set exact RTC balance</div>
+  <div><span style="color: #6aa9ff;">/history &lt;student&gt;</span> — View RTC transaction history</div>
+</div>
+
+<div style="color: #ffd36a; margin-top: 12px; font-weight: 600;">Analytics:</div>
+<div style="color: #97a2b0; line-height: 2; margin-left: 16px; font-size: 13px;">
+  <div><span style="color: #6aa9ff;">/stats</span> — System statistics and RTC totals</div>
+  <div><span style="color: #6aa9ff;">/top [n]</span> — Top RTC earners (default: 10)</div>
+</div>
+
+<div style="color: #ffd36a; margin-top: 12px; font-weight: 600;">Utility:</div>
+<div style="color: #97a2b0; line-height: 2; margin-left: 16px; font-size: 13px;">
   <div><span style="color: #6aa9ff;">/help</span> — Show this help message</div>
   <div><span style="color: #6aa9ff;">/clear</span> — Clear terminal output</div>
-  <div><span style="color: #6aa9ff;">/read &lt;student&gt;</span> — Display student info</div>
-  <div><span style="color: #6aa9ff;">/add &lt;student&gt; &lt;amount&gt; [reason]</span> — Add RTC to student</div>
-  <div><span style="color: #6aa9ff;">/set &lt;student&gt; &lt;amount&gt;</span> — Set RTC balance</div>
 </div>
-<div style="color: #ffd36a; margin-top: 12px;">Examples:</div>
-<div style="color: #97a2b0; line-height: 1.8; margin-left: 16px;">
-  <div>/read John Smith</div>
-  <div>/add John Smith 50 Great work on assignment</div>
-  <div>/set Jane Doe 100</div>
+
+<div style="color: #6aa9ff; margin-top: 16px; padding: 10px; background: rgba(106, 169, 255, 0.1); border-radius: 6px; font-size: 12px;">
+  💡 <strong>Tips:</strong> Use ↑/↓ for history • Tab for autocomplete • Ctrl+K for command palette
 </div>
       `;
       output.innerHTML += helpText;
@@ -40537,24 +40888,34 @@
       const studentName = args.join(' ');
       this.terminalPrint(`Searching for student: ${studentName}...`, '#6aa9ff');
 
-      // Search for student
-      const { data, error } = await this.auth.supabase
+      // Search by first_name or last_name
+      const { data, error} = await this.auth.supabase
         .from('user_profiles')
-        .select('id, full_name, email, rtc_balance, account_status, user_type')
-        .ilike('full_name', `%${studentName}%`)
+        .select('id, first_name, last_name, email, rtc_balance, account_status')
         .eq('user_type', 'student')
-        .limit(5);
+        .or(`first_name.ilike.%${studentName}%,last_name.ilike.%${studentName}%`)
+        .limit(10);
 
       if (error) throw error;
 
-      if (!data || data.length === 0) {
+      let students = (data || []).map(s => ({
+        ...s,
+        full_name: `${s.first_name || ''} ${s.last_name || ''}`.trim()
+      }));
+
+      // Filter by full name match too
+      students = students.filter(s =>
+        s.full_name.toLowerCase().includes(studentName.toLowerCase())
+      );
+
+      if (students.length === 0) {
         this.terminalPrintError(`No student found matching: ${studentName}`);
         return;
       }
 
-      if (data.length > 1) {
-        this.terminalPrint(`Found ${data.length} matches:`, '#ffd36a');
-        data.forEach((student, idx) => {
+      if (students.length > 1) {
+        this.terminalPrint(`Found ${students.length} matches:`, '#ffd36a');
+        students.slice(0, 10).forEach((student, idx) => {
           this.terminalPrint(`  ${idx + 1}. ${student.full_name} (${student.email}) - RTC: ${student.rtc_balance || 0}`, '#97a2b0');
         });
         this.terminalPrint('Please be more specific', '#ffd36a');
@@ -40562,19 +40923,322 @@
       }
 
       // Found exactly one student
-      const student = data[0];
+      const student = students[0];
+      this._addRecentStudent(student);
+
       const info = `
-<div style="color: #8bffb0; margin-top: 8px;">Student Information:</div>
-<div style="margin-left: 16px; line-height: 1.8; color: #e6edf3;">
-  <div><span style="color: #97a2b0;">Name:</span> ${student.full_name}</div>
-  <div><span style="color: #97a2b0;">Email:</span> ${student.email}</div>
-  <div><span style="color: #97a2b0;">RTC Balance:</span> <span style="color: #f39c12; font-weight: bold;">${student.rtc_balance || 0}</span></div>
-  <div><span style="color: #97a2b0;">Status:</span> ${student.account_status || 'active'}</div>
-  <div><span style="color: #97a2b0;">Student ID:</span> ${student.id}</div>
+<div style="margin-top: 12px; background: rgba(139, 255, 176, 0.1); border-left: 3px solid #8bffb0; padding: 12px; border-radius: 6px;">
+  <div style="color: #8bffb0; font-weight: bold; margin-bottom: 8px; font-size: 14px;">👤 ${this.escapeHtml(student.full_name)}</div>
+  <div style="line-height: 2; color: #e6edf3; font-size: 13px;">
+    <div><span style="color: #97a2b0;">Email:</span> ${this.escapeHtml(student.email)}</div>
+    <div><span style="color: #97a2b0;">RTC Balance:</span> <span style="color: #f39c12; font-weight: bold; font-size: 16px;">${student.rtc_balance || 0}</span> RTC</div>
+    <div><span style="color: #97a2b0;">Status:</span> <span style="color: ${student.account_status === 'active' ? '#8bffb0' : '#ffd36a'};">${student.account_status || 'active'}</span></div>
+    <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.1);">
+      <span style="color: #97a2b0; font-size: 11px;">ID: ${student.id}</span>
+    </div>
+  </div>
 </div>
       `;
       const output = document.getElementById('terminal-output');
       if (output) output.innerHTML += info;
+    }
+
+    async terminalListStudents(args) {
+      const filter = args[0] || 'active';
+      this.terminalPrint(`Loading ${filter} students...`, '#6aa9ff');
+
+      let query = this.auth.supabase
+        .from('user_profiles')
+        .select('first_name, last_name, email, rtc_balance, account_status')
+        .eq('user_type', 'student')
+        .order('first_name');
+
+      if (filter === 'active') {
+        query = query.eq('account_status', 'active');
+      } else if (filter === 'inactive') {
+        query = query.eq('account_status', 'inactive');
+      }
+
+      const { data, error } = await query;
+      if (error) throw error;
+
+      const students = (data || []).map(s => ({
+        ...s,
+        full_name: `${s.first_name || ''} ${s.last_name || ''}`.trim()
+      }));
+
+      if (students.length === 0) {
+        this.terminalPrint('No students found', '#ffd36a');
+        return;
+      }
+
+      const output = document.getElementById('terminal-output');
+      let html = `
+<div style="margin-top: 12px; color: #8bffb0; font-weight: bold;">Found ${students.length} student${students.length === 1 ? '' : 's'}:</div>
+<div style="margin-top: 8px; display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 8px; max-height: 400px; overflow-y: auto;">
+`;
+
+      students.forEach(s => {
+        const statusColor = s.account_status === 'active' ? '#8bffb0' : '#ffd36a';
+        html += `
+          <div style="background: rgba(106, 169, 255, 0.05); border: 1px solid rgba(106, 169, 255, 0.2); padding: 10px; border-radius: 6px; font-size: 12px;">
+            <div style="font-weight: bold; margin-bottom: 4px; color: #e6edf3;">${this.escapeHtml(s.full_name)}</div>
+            <div style="color: #97a2b0; font-size: 11px; margin-bottom: 4px;">${this.escapeHtml(s.email)}</div>
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <span style="color: #f39c12; font-weight: bold;">${s.rtc_balance || 0} RTC</span>
+              <span style="color: ${statusColor}; font-size: 10px;">●</span>
+            </div>
+          </div>
+        `;
+      });
+
+      html += '</div>';
+      if (output) output.innerHTML += html;
+    }
+
+    async terminalSearchStudents(args) {
+      if (args.length === 0) {
+        this.terminalPrintError('Usage: /search <partial name>');
+        return;
+      }
+
+      const query = args.join(' ');
+      await this.terminalListStudents([]); // Show all, then we can add better filtering
+      this.terminalPrint(`💡 Tip: Results are filtered. Use /read to view details.`, '#6aa9ff');
+    }
+
+    async terminalShowRecent() {
+      if (!this._terminalRecentStudents || this._terminalRecentStudents.length === 0) {
+        this.terminalPrint('No recently viewed students', '#ffd36a');
+        return;
+      }
+
+      const output = document.getElementById('terminal-output');
+      let html = `
+<div style="margin-top: 12px; color: #8bffb0; font-weight: bold;">🕐 Recently Viewed Students:</div>
+<div style="margin-top: 8px;">
+`;
+
+      this._terminalRecentStudents.slice(0, 10).forEach((s, idx) => {
+        html += `
+          <div style="padding: 8px; margin: 4px 0; background: rgba(106, 169, 255, 0.05); border-left: 3px solid #6aa9ff; border-radius: 4px; font-size: 13px;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <div>
+                <span style="font-weight: bold;">${this.escapeHtml(s.full_name)}</span>
+                <span style="color: #97a2b0; margin-left: 8px; font-size: 11px;">${this.escapeHtml(s.email)}</span>
+              </div>
+              <span style="color: #f39c12; font-weight: bold;">${s.rtc_balance || 0} RTC</span>
+            </div>
+          </div>
+        `;
+      });
+
+      html += '</div>';
+      if (output) output.innerHTML += html;
+    }
+
+    async terminalShowHistory(args) {
+      if (args.length === 0) {
+        this.terminalPrintError('Usage: /history <student name>');
+        return;
+      }
+
+      const studentName = args.join(' ');
+
+      // Find student first
+      const { data: students } = await this.auth.supabase
+        .from('user_profiles')
+        .select('id, first_name, last_name')
+        .eq('user_type', 'student')
+        .or(`first_name.ilike.%${studentName}%,last_name.ilike.%${studentName}%`)
+        .limit(5);
+
+      if (!students || students.length === 0) {
+        this.terminalPrintError(`No student found matching: ${studentName}`);
+        return;
+      }
+
+      if (students.length > 1) {
+        this.terminalPrint(`Found ${students.length} matches. Please be more specific.`, '#ffd36a');
+        return;
+      }
+
+      const student = students[0];
+      const fullName = `${student.first_name || ''} ${student.last_name || ''}`.trim();
+
+      // Get transaction history
+      const { data: txs, error } = await this.auth.supabase
+        .from('rtc_transactions')
+        .select('amount, transaction_type, description, created_at, balance_after')
+        .eq('user_id', student.id)
+        .order('created_at', { ascending: false })
+        .limit(20);
+
+      if (error) throw error;
+
+      if (!txs || txs.length === 0) {
+        this.terminalPrint(`No transaction history for ${fullName}`, '#ffd36a');
+        return;
+      }
+
+      const output = document.getElementById('terminal-output');
+      let html = `
+<div style="margin-top: 12px; color: #8bffb0; font-weight: bold;">📜 Transaction History - ${this.escapeHtml(fullName)}</div>
+<div style="margin-top: 8px; font-size: 12px;">
+`;
+
+      txs.forEach(tx => {
+        const color = tx.amount > 0 ? '#8bffb0' : '#ff6a6a';
+        const sign = tx.amount > 0 ? '+' : '';
+        const date = new Date(tx.created_at).toLocaleDateString();
+        html += `
+          <div style="padding: 8px; margin: 4px 0; background: rgba(255,255,255,0.02); border-left: 3px solid ${color}; border-radius: 4px;">
+            <div style="display: flex; justify-content: space-between; align-items: start;">
+              <div style="flex: 1;">
+                <div style="font-weight: bold; color: ${color};">${sign}${tx.amount} RTC</div>
+                <div style="color: #97a2b0; font-size: 11px; margin-top: 2px;">${this.escapeHtml(tx.description || tx.transaction_type)}</div>
+              </div>
+              <div style="text-align: right;">
+                <div style="color: #6aa9ff; font-size: 11px;">${date}</div>
+                <div style="color: #97a2b0; font-size: 10px;">Balance: ${tx.balance_after}</div>
+              </div>
+            </div>
+          </div>
+        `;
+      });
+
+      html += '</div>';
+      if (output) output.innerHTML += html;
+    }
+
+    async terminalShowStats() {
+      this.terminalPrint('Loading statistics...', '#6aa9ff');
+
+      const { data: students, error } = await this.auth.supabase
+        .from('user_profiles')
+        .select('rtc_balance, account_status')
+        .eq('user_type', 'student');
+
+      if (error) throw error;
+
+      const stats = {
+        total: students.length,
+        active: students.filter(s => s.account_status === 'active').length,
+        inactive: students.filter(s => s.account_status === 'inactive').length,
+        totalRTC: students.reduce((sum, s) => sum + (s.rtc_balance || 0), 0),
+        avgRTC: 0,
+        maxRTC: Math.max(...students.map(s => s.rtc_balance || 0)),
+        minRTC: Math.min(...students.map(s => s.rtc_balance || 0))
+      };
+
+      stats.avgRTC = Math.round(stats.totalRTC / (stats.total || 1));
+
+      const output = document.getElementById('terminal-output');
+      const html = `
+<div style="margin-top: 12px; background: linear-gradient(135deg, rgba(106, 169, 255, 0.1), rgba(139, 255, 176, 0.1)); border-radius: 8px; padding: 16px;">
+  <div style="color: #8bffb0; font-weight: bold; margin-bottom: 12px; font-size: 15px;">📊 System Statistics</div>
+
+  <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-top: 12px;">
+    <div style="background: rgba(0,0,0,0.2); padding: 12px; border-radius: 6px; text-align: center;">
+      <div style="font-size: 24px; font-weight: bold; color: #6aa9ff;">${stats.total}</div>
+      <div style="color: #97a2b0; font-size: 11px; margin-top: 4px;">Total Students</div>
+    </div>
+
+    <div style="background: rgba(0,0,0,0.2); padding: 12px; border-radius: 6px; text-align: center;">
+      <div style="font-size: 24px; font-weight: bold; color: #8bffb0;">${stats.active}</div>
+      <div style="color: #97a2b0; font-size: 11px; margin-top: 4px;">Active</div>
+    </div>
+
+    <div style="background: rgba(0,0,0,0.2); padding: 12px; border-radius: 6px; text-align: center;">
+      <div style="font-size: 24px; font-weight: bold; color: #f39c12;">${stats.totalRTC}</div>
+      <div style="color: #97a2b0; font-size: 11px; margin-top: 4px;">Total RTC</div>
+    </div>
+
+    <div style="background: rgba(0,0,0,0.2); padding: 12px; border-radius: 6px; text-align: center;">
+      <div style="font-size: 24px; font-weight: bold; color: #ffd36a;">${stats.avgRTC}</div>
+      <div style="color: #97a2b0; font-size: 11px; margin-top: 4px;">Avg RTC</div>
+    </div>
+  </div>
+</div>
+      `;
+      if (output) output.innerHTML += html;
+    }
+
+    async terminalShowTop(args) {
+      const limit = parseInt(args[0]) || 10;
+      this.terminalPrint(`Loading top ${limit} RTC earners...`, '#6aa9ff');
+
+      const { data, error } = await this.auth.supabase
+        .from('user_profiles')
+        .select('first_name, last_name, email, rtc_balance')
+        .eq('user_type', 'student')
+        .order('rtc_balance', { ascending: false })
+        .limit(limit);
+
+      if (error) throw error;
+
+      const students = (data || []).map(s => ({
+        ...s,
+        full_name: `${s.first_name || ''} ${s.last_name || ''}`.trim()
+      }));
+
+      const output = document.getElementById('terminal-output');
+      let html = `
+<div style="margin-top: 12px; color: #8bffb0; font-weight: bold;">🏆 Top ${limit} RTC Earners</div>
+<div style="margin-top: 8px;">
+`;
+
+      students.forEach((s, idx) => {
+        const medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `${idx + 1}.`;
+        html += `
+          <div style="padding: 10px; margin: 6px 0; background: rgba(243, 156, 18, ${0.15 - idx * 0.01}); border-left: 3px solid #f39c12; border-radius: 6px;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <span style="font-size: 20px; min-width: 30px;">${medal}</span>
+                <div>
+                  <div style="font-weight: bold;">${this.escapeHtml(s.full_name)}</div>
+                  <div style="color: #97a2b0; font-size: 11px;">${this.escapeHtml(s.email)}</div>
+                </div>
+              </div>
+              <div style="font-size: 18px; font-weight: bold; color: #f39c12;">${s.rtc_balance || 0}</div>
+            </div>
+          </div>
+        `;
+      });
+
+      html += '</div>';
+      if (output) output.innerHTML += html;
+    }
+
+    _addRecentStudent(student) {
+      // Remove if already exists
+      this._terminalRecentStudents = this._terminalRecentStudents.filter(s => s.id !== student.id);
+      // Add to front
+      this._terminalRecentStudents.unshift(student);
+      // Keep only last 10
+      if (this._terminalRecentStudents.length > 10) {
+        this._terminalRecentStudents = this._terminalRecentStudents.slice(0, 10);
+      }
+      this._updateRecentStudentsBar();
+    }
+
+    _updateRecentStudentsBar() {
+      const bar = document.getElementById('terminal-recent-bar');
+      const list = document.getElementById('terminal-recent-list');
+      if (!bar || !list) return;
+
+      if (!this._terminalRecentStudents || this._terminalRecentStudents.length === 0) {
+        bar.style.display = 'none';
+        return;
+      }
+
+      bar.style.display = 'block';
+      list.innerHTML = this._terminalRecentStudents.slice(0, 5).map(s => `
+        <button onclick="app.executeTerminalCommand('/read ${s.full_name}')" style="padding: 8px 12px; background: var(--card); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; font-size: 12px; transition: all 0.2s;" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
+          <div style="font-weight: 600; color: var(--text);">${this.escapeHtml(s.full_name)}</div>
+          <div style="color: #f39c12; font-size: 10px; margin-top: 2px;">${s.rtc_balance || 0} RTC</div>
+        </button>
+      `).join('');
     }
 
     async terminalAddRTC(args) {
@@ -40604,30 +41268,35 @@
       const studentName = args.slice(0, nameEndIndex).join(' ');
       const reason = args.slice(nameEndIndex + 1).join(' ') || 'Terminal award';
 
-      // Search for student
+      // Search for student using first_name and last_name
       const { data, error } = await this.auth.supabase
         .from('user_profiles')
-        .select('id, full_name, rtc_balance')
-        .ilike('full_name', `%${studentName}%`)
+        .select('id, first_name, last_name, rtc_balance')
         .eq('user_type', 'student')
-        .limit(5);
+        .or(`first_name.ilike.%${studentName}%,last_name.ilike.%${studentName}%`)
+        .limit(10);
 
       if (error) throw error;
 
-      if (!data || data.length === 0) {
+      let students = (data || []).map(s => ({
+        ...s,
+        full_name: `${s.first_name || ''} ${s.last_name || ''}`.trim()
+      })).filter(s => s.full_name.toLowerCase().includes(studentName.toLowerCase()));
+
+      if (students.length === 0) {
         this.terminalPrintError(`No student found matching: ${studentName}`);
         return;
       }
 
-      if (data.length > 1) {
-        this.terminalPrint(`Found ${data.length} matches. Please be more specific:`, '#ffd36a');
-        data.forEach((s, idx) => {
+      if (students.length > 1) {
+        this.terminalPrint(`Found ${students.length} matches. Please be more specific:`, '#ffd36a');
+        students.slice(0, 5).forEach((s, idx) => {
           this.terminalPrint(`  ${idx + 1}. ${s.full_name}`, '#97a2b0');
         });
         return;
       }
 
-      const student = data[0];
+      const student = students[0];
 
       // Award RTC using the process_rtc_transaction RPC
       const { data: txData, error: txError } = await this.auth.supabase.rpc('process_rtc_transaction', {
@@ -40641,9 +41310,12 @@
 
       if (txError) throw txError;
 
+      const newBalance = (student.rtc_balance || 0) + amount;
+      this._addRecentStudent({...student, rtc_balance: newBalance});
+
       this.terminalPrint(`✓ Added ${amount} RTC to ${student.full_name}`, '#8bffb0');
       this.terminalPrint(`  Reason: ${reason}`, '#97a2b0');
-      this.terminalPrint(`  New balance: ${(student.rtc_balance || 0) + amount}`, '#f39c12');
+      this.terminalPrint(`  New balance: ${newBalance}`, '#f39c12');
     }
 
     async terminalSetRTC(args) {
@@ -40672,30 +41344,35 @@
 
       const studentName = args.slice(0, nameEndIndex).join(' ');
 
-      // Search for student
+      // Search for student using first_name and last_name
       const { data, error } = await this.auth.supabase
         .from('user_profiles')
-        .select('id, full_name, rtc_balance')
-        .ilike('full_name', `%${studentName}%`)
+        .select('id, first_name, last_name, rtc_balance')
         .eq('user_type', 'student')
-        .limit(5);
+        .or(`first_name.ilike.%${studentName}%,last_name.ilike.%${studentName}%`)
+        .limit(10);
 
       if (error) throw error;
 
-      if (!data || data.length === 0) {
+      let students = (data || []).map(s => ({
+        ...s,
+        full_name: `${s.first_name || ''} ${s.last_name || ''}`.trim()
+      })).filter(s => s.full_name.toLowerCase().includes(studentName.toLowerCase()));
+
+      if (students.length === 0) {
         this.terminalPrintError(`No student found matching: ${studentName}`);
         return;
       }
 
-      if (data.length > 1) {
-        this.terminalPrint(`Found ${data.length} matches. Please be more specific:`, '#ffd36a');
-        data.forEach((s, idx) => {
+      if (students.length > 1) {
+        this.terminalPrint(`Found ${students.length} matches. Please be more specific:`, '#ffd36a');
+        students.slice(0, 5).forEach((s, idx) => {
           this.terminalPrint(`  ${idx + 1}. ${s.full_name}`, '#97a2b0');
         });
         return;
       }
 
-      const student = data[0];
+      const student = students[0];
       const currentBalance = student.rtc_balance || 0;
       const difference = amount - currentBalance;
 
@@ -40716,6 +41393,8 @@
       });
 
       if (txError) throw txError;
+
+      this._addRecentStudent({...student, rtc_balance: amount});
 
       this.terminalPrint(`✓ Set RTC balance for ${student.full_name}`, '#8bffb0');
       this.terminalPrint(`  Previous: ${currentBalance}`, '#97a2b0');
