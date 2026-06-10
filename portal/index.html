@@ -40791,43 +40791,14 @@
       commandLine.innerHTML = `<span style="color: #6aa9ff;">$</span> ${this.escapeHtml(command)}`;
       output.appendChild(commandLine);
 
-      // Parse the command
-      const parts = command.trim().split(/\s+/);
-      const cmd = parts[0].toLowerCase();
-      const args = parts.slice(1);
-
       try {
-        // Student data commands
-        if (cmd === '/read') {
-          await this.terminalReadStudent(args);
-        } else if (cmd === '/list') {
-          await this.terminalListStudents(args);
-        } else if (cmd === '/search') {
-          await this.terminalSearchStudents(args);
-        } else if (cmd === '/recent') {
-          await this.terminalShowRecent();
-
-        // RTC commands
-        } else if (cmd === '/add') {
-          await this.terminalAddRTC(args);
-        } else if (cmd === '/set') {
-          await this.terminalSetRTC(args);
-        } else if (cmd === '/history') {
-          await this.terminalShowHistory(args);
-
-        // Analytics commands
-        } else if (cmd === '/stats') {
-          await this.terminalShowStats();
-        } else if (cmd === '/top') {
-          await this.terminalShowTop(args);
-
-        // Utility commands
-        } else if (cmd === '/help') {
-          this.terminalPrintHelp();
-        } else if (cmd === '/clear') {
-          output.innerHTML = '';
+        // Check if this is a slash command or natural language
+        if (command.trim().startsWith('/')) {
+          // Slash command mode
+          await this._executeSlashCommand(command);
         } else {
-          this.terminalPrintError(`Unknown command: ${cmd}. Type /help for available commands.`);
+          // Natural language mode
+          await this._executeNaturalLanguage(command);
         }
       } catch (err) {
         console.error('Terminal command error:', err);
@@ -40836,6 +40807,331 @@
 
       // Scroll to bottom
       output.scrollTop = output.scrollHeight;
+    }
+
+    async _executeSlashCommand(command) {
+      const parts = command.trim().split(/\s+/);
+      const cmd = parts[0].toLowerCase();
+      const args = parts.slice(1);
+
+      // Student data commands
+      if (cmd === '/read') {
+        await this.terminalReadStudent(args);
+      } else if (cmd === '/list') {
+        await this.terminalListStudents(args);
+      } else if (cmd === '/search') {
+        await this.terminalSearchStudents(args);
+      } else if (cmd === '/recent') {
+        await this.terminalShowRecent();
+
+      // RTC commands
+      } else if (cmd === '/add') {
+        await this.terminalAddRTC(args);
+      } else if (cmd === '/set') {
+        await this.terminalSetRTC(args);
+      } else if (cmd === '/history') {
+        await this.terminalShowHistory(args);
+
+      // Analytics commands
+      } else if (cmd === '/stats') {
+        await this.terminalShowStats();
+      } else if (cmd === '/top') {
+        await this.terminalShowTop(args);
+
+      // Utility commands
+      } else if (cmd === '/help') {
+        this.terminalPrintHelp();
+      } else if (cmd === '/clear') {
+        const output = document.getElementById('terminal-output');
+        if (output) output.innerHTML = '';
+      } else {
+        this.terminalPrintError(`Unknown command: ${cmd}. Type /help for available commands.`);
+      }
+    }
+
+    async _executeNaturalLanguage(input) {
+      // Phase 1: Basic NLP
+      const normalized = this._normalizeInput(input);
+      const entities = this._extractEntities(normalized, input);
+      const intent = this._matchIntent(normalized, entities);
+
+      if (!intent || intent.confidence < 0.5) {
+        this.terminalPrint(`I'm not sure what you mean. Try using a command like:`, '#ffd36a');
+        this.terminalPrint(`  • "How much gold does [name] have?"`, '#97a2b0');
+        this.terminalPrint(`  • "Give [name] [amount]"`, '#97a2b0');
+        this.terminalPrint(`  • "Show stats" or "List students"`, '#97a2b0');
+        return;
+      }
+
+      // Execute the matched intent
+      await this._executeIntent(intent, entities);
+    }
+
+    _normalizeInput(input) {
+      // Convert to lowercase
+      let normalized = input.toLowerCase().trim();
+
+      // Replace synonyms for RTC
+      const rtcSynonyms = ['gold', 'coins', 'points', 'money', 'currency', 'credits'];
+      rtcSynonyms.forEach(syn => {
+        normalized = normalized.replace(new RegExp(`\\b${syn}\\b`, 'g'), 'rtc');
+      });
+
+      // Replace common action synonyms
+      normalized = normalized.replace(/\bgive\b/g, 'add');
+      normalized = normalized.replace(/\baward\b/g, 'add');
+      normalized = normalized.replace(/\bgrant\b/g, 'add');
+      normalized = normalized.replace(/\bshow me\b/g, 'show');
+      normalized = normalized.replace(/\bcheck\b/g, 'show');
+      normalized = normalized.replace(/\blook at\b/g, 'show');
+
+      // Expand contractions
+      normalized = normalized.replace(/what's/g, 'what is');
+      normalized = normalized.replace(/who's/g, 'who is');
+      normalized = normalized.replace(/how's/g, 'how is');
+
+      return normalized;
+    }
+
+    _extractEntities(normalized, original) {
+      const entities = {
+        student: null,
+        amount: null,
+        reason: null,
+        count: null
+      };
+
+      // Extract numbers
+      const numbers = normalized.match(/\b\d+\b/g);
+      if (numbers && numbers.length > 0) {
+        entities.amount = parseInt(numbers[0]);
+        if (numbers.length > 1) {
+          entities.count = parseInt(numbers[1]);
+        }
+      }
+
+      // Extract student name using fuzzy matching
+      entities.student = this._fuzzyFindStudent(normalized, original);
+
+      // Extract reason (text after amount or action words)
+      const reasonMatch = original.match(/(?:for|because|reason:?)\s+(.+)/i);
+      if (reasonMatch) {
+        entities.reason = reasonMatch[1].trim();
+      }
+
+      return entities;
+    }
+
+    _fuzzyFindStudent(normalized, original) {
+      if (!this._terminalAllStudents || this._terminalAllStudents.length === 0) {
+        return null;
+      }
+
+      let bestMatch = null;
+      let bestScore = 0;
+
+      // Try to find student name in the input
+      for (const student of this._terminalAllStudents) {
+        const fullName = student.full_name.toLowerCase();
+        const firstName = (student.first_name || '').toLowerCase();
+        const lastName = (student.last_name || '').toLowerCase();
+
+        // Check for exact substring match
+        if (normalized.includes(fullName)) {
+          return student;
+        }
+
+        // Check for first or last name
+        if (normalized.includes(firstName) && firstName.length > 2) {
+          const score = firstName.length / fullName.length;
+          if (score > bestScore) {
+            bestScore = score;
+            bestMatch = student;
+          }
+        }
+
+        if (normalized.includes(lastName) && lastName.length > 2) {
+          const score = lastName.length / fullName.length;
+          if (score > bestScore) {
+            bestScore = score;
+            bestMatch = student;
+          }
+        }
+
+        // Basic fuzzy matching for typos
+        const similarity = this._calculateSimilarity(normalized, fullName);
+        if (similarity > 0.6 && similarity > bestScore) {
+          bestScore = similarity;
+          bestMatch = student;
+        }
+      }
+
+      return bestScore > 0.4 ? bestMatch : null;
+    }
+
+    _calculateSimilarity(str1, str2) {
+      // Simple substring scoring
+      if (str1.includes(str2) || str2.includes(str1)) {
+        return 0.9;
+      }
+
+      // Count matching words
+      const words1 = str1.split(/\s+/);
+      const words2 = str2.split(/\s+/);
+      let matches = 0;
+
+      for (const w1 of words1) {
+        for (const w2 of words2) {
+          if (w1.length > 2 && w2.length > 2) {
+            if (w1 === w2) matches += 1;
+            else if (w1.includes(w2) || w2.includes(w1)) matches += 0.5;
+          }
+        }
+      }
+
+      return matches / Math.max(words1.length, words2.length);
+    }
+
+    _matchIntent(normalized, entities) {
+      const patterns = [
+        // VIEW_STUDENT
+        {
+          intent: 'VIEW_STUDENT',
+          patterns: [
+            /how (much|many) rtc (does|do|has)/,
+            /(show|view) .* (balance|rtc)/,
+            /what.*rtc/,
+            /.* balance/,
+            /.* rtc$/
+          ],
+          requiresStudent: true
+        },
+        // ADD_RTC
+        {
+          intent: 'ADD_RTC',
+          patterns: [
+            /add \d+/,
+            /\d+ (to|for)/,
+            /add .* \d+/
+          ],
+          requiresStudent: true,
+          requiresAmount: true
+        },
+        // LIST_STUDENTS
+        {
+          intent: 'LIST_STUDENTS',
+          patterns: [
+            /list (all|students|everyone)/,
+            /show (all|everyone|students)/,
+            /who has rtc/,
+            /all students/
+          ]
+        },
+        // VIEW_STATS
+        {
+          intent: 'VIEW_STATS',
+          patterns: [
+            /\bstats?\b/,
+            /statistics/,
+            /how (much|many) total/,
+            /\btotal\b/
+          ]
+        },
+        // VIEW_TOP
+        {
+          intent: 'VIEW_TOP',
+          patterns: [
+            /\btop\b/,
+            /leaderboard/,
+            /who has (the )?(most|highest)/,
+            /best students/
+          ]
+        },
+        // VIEW_HISTORY
+        {
+          intent: 'VIEW_HISTORY',
+          patterns: [
+            /history/,
+            /transactions/,
+            /what happened/
+          ],
+          requiresStudent: true
+        }
+      ];
+
+      for (const pattern of patterns) {
+        for (const regex of pattern.patterns) {
+          if (regex.test(normalized)) {
+            // Check if required entities are present
+            if (pattern.requiresStudent && !entities.student) continue;
+            if (pattern.requiresAmount && !entities.amount) continue;
+
+            return {
+              intent: pattern.intent,
+              confidence: 0.9
+            };
+          }
+        }
+      }
+
+      // Fallback keyword matching
+      if (normalized.includes('rtc') || normalized.includes('balance')) {
+        if (entities.student) {
+          return { intent: 'VIEW_STUDENT', confidence: 0.7 };
+        }
+      }
+
+      if (normalized.includes('add') && entities.amount && entities.student) {
+        return { intent: 'ADD_RTC', confidence: 0.7 };
+      }
+
+      return null;
+    }
+
+    async _executeIntent(intent, entities) {
+      switch (intent.intent) {
+        case 'VIEW_STUDENT':
+          if (entities.student) {
+            await this.terminalReadStudent([entities.student.full_name]);
+          } else {
+            this.terminalPrintError('I need a student name to look up');
+          }
+          break;
+
+        case 'ADD_RTC':
+          if (entities.student && entities.amount) {
+            const args = [entities.student.full_name, entities.amount.toString()];
+            if (entities.reason) args.push(entities.reason);
+            await this.terminalAddRTC(args);
+          } else {
+            this.terminalPrintError('I need a student name and amount');
+          }
+          break;
+
+        case 'LIST_STUDENTS':
+          await this.terminalListStudents([]);
+          break;
+
+        case 'VIEW_STATS':
+          await this.terminalShowStats();
+          break;
+
+        case 'VIEW_TOP':
+          const count = entities.count || entities.amount || 10;
+          await this.terminalShowTop([count.toString()]);
+          break;
+
+        case 'VIEW_HISTORY':
+          if (entities.student) {
+            await this.terminalShowHistory([entities.student.full_name]);
+          } else {
+            this.terminalPrintError('I need a student name for history');
+          }
+          break;
+
+        default:
+          this.terminalPrintError('I understood that, but something went wrong');
+      }
     }
 
     terminalPrintHelp() {
@@ -40874,6 +41170,10 @@
 
 <div style="color: #6aa9ff; margin-top: 16px; padding: 10px; background: rgba(106, 169, 255, 0.1); border-radius: 6px; font-size: 12px;">
   💡 <strong>Tips:</strong> Use ↑/↓ for history • Tab for autocomplete • Ctrl+K for command palette
+</div>
+
+<div style="color: #8bffb0; margin-top: 12px; padding: 10px; background: rgba(139, 255, 176, 0.1); border-radius: 6px; font-size: 12px;">
+  ✨ <strong>New!</strong> Just type naturally: "How much gold does John have?" or "Give Sarah 50 for great work"
 </div>
       `;
       output.innerHTML += helpText;
