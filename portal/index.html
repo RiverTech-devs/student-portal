@@ -40850,9 +40850,27 @@
     }
 
     async _executeNaturalLanguage(input) {
-      // Phase 1 + 2: Basic NLP with ambiguity handling
+      // Phase 1 + 2 + 3: NLP with context and pronouns
       const normalized = this._normalizeInput(input);
-      const entities = this._extractEntities(normalized, input);
+
+      // Phase 3: Check for pronouns and resolve from context
+      const resolvedInput = this._resolvePronouns(normalized);
+
+      const entities = this._extractEntities(resolvedInput, input);
+
+      // Phase 3: If no student found, try using context
+      if (!entities.student && this._nlpContext?.lastStudent) {
+        // Check if this looks like a follow-up command
+        if (this._isFollowUpCommand(normalized)) {
+          entities.student = {
+            student: this._nlpContext.lastStudent,
+            score: 0.95,
+            ambiguous: false,
+            fromContext: true
+          };
+          this.terminalPrint(`💬 Using ${this._nlpContext.lastStudent.full_name} from previous command...`, '#97a2b0');
+        }
+      }
 
       // Phase 2: Check for ambiguous student match
       if (entities.student && entities.student.ambiguous) {
@@ -40860,7 +40878,7 @@
         return;
       }
 
-      const intent = this._matchIntent(normalized, entities);
+      const intent = this._matchIntent(resolvedInput, entities);
 
       if (!intent || intent.confidence < 0.5) {
         this.terminalPrint(`I'm not sure what you mean. Try using a command like:`, '#ffd36a');
@@ -40870,13 +40888,66 @@
         return;
       }
 
-      // Phase 2: Show confidence if low
-      if (intent.confidence < 0.75 && entities.student) {
+      // Phase 2: Show confidence if low (but not if from context)
+      if (intent.confidence < 0.75 && entities.student && !entities.student.fromContext) {
         this.terminalPrint(`💭 I think you mean ${entities.student.student.full_name}...`, '#ffd36a');
       }
 
       // Execute the matched intent
       await this._executeIntent(intent, entities);
+
+      // Phase 3: Update context
+      this._updateContext(intent, entities);
+    }
+
+    _resolvePronouns(normalized) {
+      // Phase 3: Replace pronouns with last student name if available
+      if (!this._nlpContext || !this._nlpContext.lastStudent) {
+        return normalized;
+      }
+
+      const lastStudent = this._nlpContext.lastStudent;
+      const pronouns = ['him', 'her', 'them', 'they', 'he', 'she'];
+
+      let resolved = normalized;
+      for (const pronoun of pronouns) {
+        const regex = new RegExp(`\\b${pronoun}\\b`, 'g');
+        resolved = resolved.replace(regex, lastStudent.full_name.toLowerCase());
+      }
+
+      return resolved;
+    }
+
+    _isFollowUpCommand(normalized) {
+      // Phase 3: Detect if this is likely a follow-up to previous command
+      const followUpWords = [
+        'history', 'transactions', 'balance', 'rtc',
+        'add', 'give', 'award', 'set'
+      ];
+
+      // Check if the command contains action words but no student name
+      for (const word of followUpWords) {
+        if (normalized.includes(word)) {
+          return true;
+        }
+      }
+
+      return false;
+    }
+
+    _updateContext(intent, entities) {
+      // Phase 3: Update context memory
+      if (!this._nlpContext) {
+        this._nlpContext = {};
+      }
+
+      // Update last student if one was used
+      const student = entities.student?.student || entities.student;
+      if (student && !entities.student?.fromContext) {
+        this._nlpContext.lastStudent = student;
+        this._nlpContext.lastIntent = intent.intent;
+        this._nlpContext.timestamp = Date.now();
+      }
     }
 
     _showAmbiguityDialog(matches, originalInput) {
