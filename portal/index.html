@@ -37242,6 +37242,14 @@
           </div>
         </div>
 
+        <div class="card" style="padding: 15px; margin-bottom: 15px; border-left: 3px solid var(--danger);">
+          <div style="font-weight: 600; margin-bottom: 6px;">📆 End-of-Year Rollover</div>
+          <div style="color: var(--muted); font-size: 12px; margin-bottom: 10px;">
+            Halves every active student's RTC balance (rounded down) so only half carries over between years. Each change is logged as an admin adjustment.
+          </div>
+          <button class="btn" onclick="app.halveAllRTC()" style="background: var(--danger); color: #fff; border: none; white-space: nowrap;">Halve All RTC Balances</button>
+        </div>
+
         <div id="rtc-balances-table"></div>
       `;
 
@@ -37489,6 +37497,58 @@
 
       // Clear bulk inputs
       document.getElementById('rtc-bulk-reason').value = '';
+    }
+
+    async halveAllRTC() {
+      // Operate on ALL active students (not just the filtered/searched view) — this is a year-wide rollover.
+      const students = this._rtcStudents || [];
+      const affected = students.filter(s => (s.rtc_balance || 0) > 0);
+
+      if (affected.length === 0) {
+        this.showNotification('No students currently have a balance to halve', 'info');
+        return;
+      }
+
+      const totalBefore = students.reduce((sum, s) => sum + (s.rtc_balance || 0), 0);
+      const totalAfter = students.reduce((sum, s) => sum + Math.floor((s.rtc_balance || 0) / 2), 0);
+
+      if (!confirm(`⚠️ END-OF-YEAR ROLLOVER\n\nHalve the RTC balance of ALL ${affected.length} student(s) who have a balance?\n\nEach balance is rounded DOWN to half (e.g. 25 → 12).\nTotal RTC in circulation: ${totalBefore} → ${totalAfter}\n\nEach change is logged as an admin adjustment, but this cannot be auto-undone.`)) return;
+
+      const typed = prompt(`This removes ${totalBefore - totalAfter} RTC total across ${affected.length} students.\n\nType HALVE to confirm:`);
+      if (typed === null) return;
+      if (typed.trim().toUpperCase() !== 'HALVE') {
+        this.showNotification('Rollover cancelled — confirmation text did not match', 'info');
+        return;
+      }
+
+      this.showNotification(`Halving RTC for ${affected.length} students…`, 'info');
+
+      let success = 0;
+      let failed = 0;
+
+      for (const student of affected) {
+        const newBalance = Math.floor((student.rtc_balance || 0) / 2);
+        try {
+          const { data, error } = await this.auth.supabase.rpc('admin_set_rtc_balance', {
+            p_user_id: student.id,
+            p_new_balance: newBalance
+          });
+
+          if (error) throw error;
+          if (data && !data.success) throw new Error(data.error);
+
+          student.rtc_balance = newBalance;
+          const balEl = document.getElementById('rtc-bal-' + student.id);
+          if (balEl) balEl.textContent = newBalance;
+          success++;
+        } catch (e) {
+          console.error(`Failed to halve RTC for ${student.first_name} ${student.last_name}:`, e);
+          failed++;
+        }
+      }
+
+      this._updateRTCSummaryStats();
+      this.showNotification(`Year rollover complete: ${success} halved, ${failed} failed`, failed > 0 ? 'warning' : 'success');
     }
 
     _updateRTCSummaryStats() {
