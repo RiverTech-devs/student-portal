@@ -4,13 +4,14 @@ You are working on this website repository via remote tasks sent from a phone.
 Follow these rules for every task.
 
 ## Workflow
-1. Read and understand the full task before making changes.
-2. Make the requested changes to the codebase.
-3. Run `npm run build` (if available) to verify no build errors. (There is no npm/build step for this project — it's static HTML.)
-4. Stage all changes: `git add -A`
-5. Commit with a clear, descriptive message: `git commit -m "feat: description"` or `fix:`, `refactor:`, etc.
-6. Push to main: `git push origin main`
-7. Write a clear summary of what you did for the outbox.
+1. **Sync first — every new thread/task.** Before making any changes, confirm the local repo matches the online repo: `git fetch origin && git status`. If behind, `git pull origin main` (or rebase local work) before doing anything else. This repo is live-deployed and edited from multiple sessions/devices, so never start work on stale code.
+2. Read and understand the full task before making changes.
+3. Make the requested changes to the codebase.
+4. Run `npm run build` (if available) to verify no build errors. (There is no npm/build step for this project — it's static HTML.)
+5. Stage all changes: `git add -A`
+6. Commit with a clear, descriptive message: `git commit -m "feat: description"` or `fix:`, `refactor:`, etc.
+7. Push to main: `git push origin main`
+8. Write a clear summary of what you did for the outbox.
 
 ## Commit Message Format
 - `feat: ...` for new features
