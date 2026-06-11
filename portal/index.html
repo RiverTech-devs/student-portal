@@ -42066,10 +42066,13 @@
       let intent = null;
       const reusableIntents = ['VIEW_STUDENT', 'VIEW_ATTENDANCE', 'VIEW_HISTORY', 'BALANCE_AT',
         'VIEW_ENROLLMENTS', 'STUDENT_TENURE', 'VIEW_GRADES', 'VIEW_CONTACT', 'VIEW_NOTES'];
+      const reuseSrc = (this._nlpContext?.lastIntent && reusableIntents.includes(this._nlpContext.lastIntent))
+        ? this._nlpContext.lastIntent
+        : this._nlpContext?.lastReadIntent;
       if (/^\s*(what about|how about|and)\b/i.test(input) && entities.student
-          && this._nlpContext?.lastIntent && reusableIntents.includes(this._nlpContext.lastIntent)
+          && reuseSrc && reusableIntents.includes(reuseSrc)
           && normalized.split(/\s+/).length <= 6) {
-        intent = { intent: this._nlpContext.lastIntent, confidence: 0.9 };
+        intent = { intent: reuseSrc, confidence: 0.9 };
       }
 
       if (!intent) intent = this._matchIntent(resolvedInput, entities);
@@ -42173,6 +42176,13 @@
         this._nlpContext.lastStudent = student;
         this._nlpContext.lastIntent = intent.intent;
         this._nlpContext.timestamp = Date.now();
+      }
+      // Track the last READ separately so "what about dylan?" works even
+      // right after a write (set grade -> ask about another student)
+      const readIntents = ['VIEW_STUDENT', 'VIEW_ATTENDANCE', 'VIEW_HISTORY', 'BALANCE_AT',
+        'VIEW_ENROLLMENTS', 'STUDENT_TENURE', 'VIEW_GRADES', 'VIEW_CONTACT', 'VIEW_NOTES'];
+      if (readIntents.includes(intent.intent)) {
+        this._nlpContext.lastReadIntent = intent.intent;
       }
 
       // Remember the pair from compare/transfer so a follow-up "she"/"he"
@@ -42431,7 +42441,8 @@
       const stopwords = new Set(['how', 'much', 'many', 'does', 'have', 'has', 'had', 'what', 'whats', 'who', 'show', 'view', 'check', 'find', 'look', 'give', 'gave', 'add', 'set', 'remove', 'take', 'tell', 'about', 'rtc', 'balance', 'history', 'transactions', 'the', 'and', 'for', 'from', 'with', 'out', 'please', 'can', 'you', 'their', 'his', 'her', 'top', 'all', 'list', 'students', 'student', 'info', 'gold', 'coins', 'money', 'points',
         // Pronouns/demonstratives must NEVER fuzzy-match a name ("them" is one
         // edit from "Theo"; an unresolved pronoun means no referent, not Theo)
-        'them', 'they', 'that', 'this', 'those', 'these', 'him', 'she', 'read', 'each', 'everyone', 'everybody']);
+        'them', 'they', 'that', 'this', 'those', 'these', 'him', 'she', 'read', 'each', 'everyone', 'everybody',
+        'grade', 'grades', 'now', 'class', 'classes']);
       const tokens = normalized.split(/\s+/);
       const words = tokens.filter(w => w.length > 1 && !stopwords.has(w));
       // Single-letter tokens are treated as name initials so a last initial
@@ -45513,10 +45524,16 @@
       const hasWord = (w) => new RegExp('\\b' + esc(w) + '\\b').test(t);
 
       // Pass 1: ALL significant name words present; Pass 2: any distinctive
-      // word (>=4 chars). Full matches outrank partial ones.
+      // word (>=4 chars). Full matches outrank partial ones. Name tokens are
+      // stripped of punctuation, and generic words ("grade" in "Lower
+      // Elementary (1-2nd grade)") never count as class evidence.
+      const genericWords = new Set(['grade', 'grades', 'class', 'classes', 'the', 'and', 'for', 'with', '1-2nd', '3-5th']);
+      const nameWords = (row) => (row.name || '').toLowerCase().split(/\s+/)
+        .map(w => w.replace(/[^a-z0-9&°:-]/g, ''))
+        .filter(w => w.length >= 3 && !genericWords.has(w));
       const full = [], partial = [];
       for (const row of rows) {
-        const words = (row.name || '').toLowerCase().split(/\s+/).filter(w => w.length >= 3);
+        const words = nameWords(row);
         if (!words.length) continue;
         if (words.every(w => t.includes(w))) full.push(row);
         else if (words.some(w => w.length >= 4 && hasWord(w))) partial.push(row);
@@ -45524,7 +45541,7 @@
       // Among full matches, the most specific name wins outright: "college
       // dual math" must not also drag in every class named plain "Math"
       if (full.length > 1) {
-        const wc = (row) => (row.name || '').toLowerCase().split(/\s+/).filter(w => w.length >= 3).length;
+        const wc = (row) => nameWords(row).length;
         const maxWc = Math.max(...full.map(wc));
         const specific = full.filter(r => wc(r) === maxWc);
         if (specific.length) full.length = 0, full.push(...specific);
@@ -45535,9 +45552,10 @@
       if (!candidates.length) {
         // Typo pass: a text word within edit distance 1 of a class-name word
         // ("ches" -> Chess) — only for words >=4 chars
-        const typoTokens = t.split(/\s+/).filter(w => w.length >= 4);
+        const typoStop = new Set(['grade', 'grades', 'class', 'classes', 'final', 'this', 'that', 'with', 'have', 'what', 'show', 'give', 'make']);
+        const typoTokens = t.split(/\s+/).filter(w => w.length >= 4 && !typoStop.has(w));
         const typoHits = rows.filter(row =>
-          (row.name || '').toLowerCase().split(/\s+/).some(w =>
+          nameWords(row).some(w =>
             w.length >= 4 && typoTokens.some(tok => Math.abs(tok.length - w.length) <= 1 && this._levenshteinDistance(tok, w) === 1)));
         if (typoHits.length) candidates = typoHits;
       }
