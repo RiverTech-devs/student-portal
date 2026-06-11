@@ -41996,8 +41996,21 @@
         else if (entities.count === null) entities.count = val;
       }
 
+      // Class first, then strip its name words before student matching so a
+      // class like "AI Game Design" can't fuzzy-match a student ("Jordan
+      // Games") out of its own name
+      entities.classMatch = this._rivenMatchClass(normalized);
+      let studentText = normalized;
+      if (entities.classMatch) {
+        for (const w of entities.classMatch.name.toLowerCase().split(/\s+/)) {
+          if (w.length >= 3) {
+            studentText = studentText.replace(new RegExp('\\b' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'g'), ' ');
+          }
+        }
+      }
+
       // Extract student name using fuzzy matching
-      entities.student = this._fuzzyFindStudent(normalized, original);
+      entities.student = this._fuzzyFindStudent(studentText, original);
 
       // Extract reason (text after action words)
       const reasonMatch = original.match(/(?:for|because|reason:?)\s+(.+)/i);
@@ -42021,9 +42034,7 @@
       const qm = original.match(/["“”']([^"“”']{2,})["“”']/);
       if (qm) entities.quoted = qm[1].trim();
 
-      // Class mentioned by name/subject (used by enrollment, attendance,
-      // grades, roster intents)
-      entities.classMatch = this._rivenMatchClass(normalized);
+      // (classMatch already computed above, before student extraction)
 
       // Two-student phrases. "from A to B" (transfers) and "A and/or/vs B"
       // (comparisons). Fragments are fuzzy-matched independently; in pair
@@ -43714,6 +43725,24 @@
       return cm.row || (this._terminalAllClasses || []).find(c => c.id === cm.id) || null;
     }
 
+    // Several live classes can share one name (four are literally "Math").
+    // For student-scoped operations, disambiguate by the student's actual
+    // enrollment: if the picked class doesn't hold the student, try the
+    // same-named siblings before giving up.
+    async _rivenResolveClassForStudent(cm, studentId) {
+      const row = this._rivenResolveClassRow(cm);
+      if (!row) return { row: null, enrollment: null };
+      let enrollment = await this._rivenFindEnrollment(row.id, studentId);
+      if (enrollment) return { row, enrollment };
+      const siblings = (this._terminalAllClasses || []).filter(c =>
+        c.id !== row.id && (c.name || '').toLowerCase() === (row.name || '').toLowerCase());
+      for (const c of siblings) {
+        const e = await this._rivenFindEnrollment(c.id, studentId);
+        if (e) return { row: c, enrollment: e };
+      }
+      return { row, enrollment: null };
+    }
+
     async terminalMarkAttendance(entities) {
       const student = entities.student?.student;
       if (!student) { this.terminalPrintError('Whose attendance? Tell me a student name.'); return; }
@@ -43744,9 +43773,13 @@
           return;
         }
       } else {
-        const row = this._rivenResolveClassRow(entities.classMatch);
+        const { row, enrollment } = await this._rivenResolveClassForStudent(entities.classMatch, student.id);
         if (!row) {
           this._showRivenMessage(`Which class? Say it like "mark ${this.escapeHtml(student.full_name.split(' ')[0])} ${status.replace(/_/g, ' ')} in Math".`, true);
+          return;
+        }
+        if (!enrollment || enrollment.status !== 'active') {
+          this.terminalPrintError(`${student.full_name} isn't actively enrolled in ${row.name} — I can only mark attendance for enrolled students.`);
           return;
         }
         if (!this._rivenCanManageClass(row, { attendance: true })) {
@@ -43852,13 +43885,13 @@
 
     async terminalUnenrollStudent(entities) {
       const student = entities.student?.student;
-      const row = this._rivenResolveClassRow(entities.classMatch);
-      if (!student || !row) { this.terminalPrintError('Tell me both — like "remove Jordan from Robotics".'); return; }
+      if (!student || !entities.classMatch) { this.terminalPrintError('Tell me both — like "remove Jordan from Robotics".'); return; }
+      const { row, enrollment: existing } = await this._rivenResolveClassForStudent(entities.classMatch, student.id);
+      if (!row) { this.terminalPrintError('Which class?'); return; }
       if (!this._rivenCanManageClass(row)) {
         this.terminalPrintError(`You don't have permission to change the roster of ${row.name} — only its teacher or an admin can.`);
         return;
       }
-      const existing = await this._rivenFindEnrollment(row.id, student.id);
       if (!existing || existing.status !== 'active') {
         this._showRivenMessage(`${this.escapeHtml(student.full_name)} isn't actively enrolled in ${this.escapeHtml(row.name)} — nothing to remove.`, true);
         return;
@@ -43953,12 +43986,13 @@
 
     async terminalSetGrade(entities) {
       const student = entities.student?.student;
-      const row = this._rivenResolveClassRow(entities.classMatch);
       if (!student) { this.terminalPrintError('Whose grade? Tell me a student name.'); return; }
+      const { row, enrollment } = await this._rivenResolveClassForStudent(entities.classMatch, student.id);
       if (!row) {
         this._showRivenMessage(`Which class? Say it like: set ${this.escapeHtml(student.full_name.split(' ')[0])}'s final grade in <b>Math</b> to 95.`, true);
         return;
       }
+      if (!enrollment) { this.terminalPrintError(`${student.full_name} isn't enrolled in ${row.name}.`); return; }
       if (!this._rivenCanManageClass(row)) {
         this.terminalPrintError(`You can only set grades for your own classes — ${row.name} isn't one of them.`);
         return;
@@ -43979,8 +44013,6 @@
       const sb = this.auth.supabase;
       const quarter = await this._rivenCurrentQuarter();
       if (!quarter) { this.terminalPrintError('No active quarter is configured — set one up in admin first.'); return; }
-      const enrollment = await this._rivenFindEnrollment(row.id, student.id);
-      if (!enrollment) { this.terminalPrintError(`${student.full_name} isn't enrolled in ${row.name}.`); return; }
       const { data: prevSnap } = await sb.from('quarter_grade_snapshots').select('*')
         .eq('enrollment_id', enrollment.id).eq('quarter_id', quarter.id).maybeSingle();
 
