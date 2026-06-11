@@ -42357,6 +42357,15 @@
           entities.classMatch = { id: lc.id, name: lc.name, row: lc, fromContext: true, qualified: true, consumed: [] };
         }
       }
+      // A number that is part of the matched class NAME ("Cycle Three Test"
+      // normalizes to "cycle 3 test") is the name, not an RTC amount or a
+      // grade value — without this, "add jordan to cycle three test" bids as
+      // an award of 3 RTC
+      if (entities.classMatch && entities.amount !== null
+          && (entities.classMatch.consumed || []).includes(String(entities.amount))) {
+        entities.amount = entities.count;
+        entities.count = null;
+      }
       let studentText = normalized;
       if (entities.classMatch) {
         for (const w of (entities.classMatch.consumed || [])) {
@@ -45883,10 +45892,13 @@
       const rows = this._terminalAllClasses && this._terminalAllClasses.length
         ? this._terminalAllClasses
         : Object.entries(this._notesPeople?.classes || {}).map(([id, name]) => ({ id, name }));
+      // Class names go through the same word-number conversion as the input
+      // ("Cycle Three Test" must match the normalized "cycle 3 test")
+      const nameNums = { one: '1', two: '2', three: '3', four: '4', five: '5', six: '6', seven: '7', eight: '8', nine: '9', ten: '10' };
       if (this._terminalPinnedClass) {
         const p = rows.find(r => r.id === this._terminalPinnedClass);
         // pinned: the user clicked the picker — NEVER re-expand to siblings
-        if (p) return { id: p.id, name: p.name, row: p, pinned: true, consumed: (p.name || '').toLowerCase().split(/\s+/) };
+        if (p) return { id: p.id, name: p.name, row: p, pinned: true, consumed: (p.name || '').toLowerCase().split(/\s+/).map(w => nameNums[w] || w) };
       }
       const t = text.toLowerCase();
       const esc = (w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -45899,7 +45911,8 @@
       const genericWords = new Set(['grade', 'grades', 'class', 'classes', 'the', 'and', 'for', 'with', '1-2nd', '3-5th']);
       const nameWords = (row) => (row.name || '').toLowerCase().split(/\s+/)
         .map(w => w.replace(/[^a-z0-9&°:-]/g, ''))
-        .filter(w => w.length >= 3 && !genericWords.has(w));
+        .map(w => nameNums[w] || w)
+        .filter(w => (w.length >= 3 || /^\d+$/.test(w)) && !genericWords.has(w));
       const full = [], partial = [];
       for (const row of rows) {
         const words = nameWords(row);
@@ -45943,7 +45956,8 @@
         return null;
       }
       candidates.forEach(c => {
-        (c.name || '').toLowerCase().split(/\s+/).forEach(w => { if (w.length >= 3 && t.includes(w)) consumed.push(w); });
+        (c.name || '').toLowerCase().split(/\s+/).map(w => nameNums[w] || w)
+          .forEach(w => { if ((w.length >= 3 || /^\d+$/.test(w)) && t.includes(w)) consumed.push(w); });
       });
 
       let qualified = false;
@@ -46012,7 +46026,7 @@
         ADD_NOTE: '🗒️ Save a note', DELETE_NOTE: '🗑️ Delete a note'
       };
       this._intentClarify = { options, entities };
-      this.terminalPrint('🤔 I can read that two ways — which did you mean?', '#ffd36a');
+      this.terminalPrint('🤔 I can read that two ways — click the one you meant, or just rephrase:', '#ffd36a');
       const output = document.getElementById('terminal-output');
       let html = '<div style="margin-top: 8px; margin-left: 16px;">';
       options.forEach((o, idx) => {
