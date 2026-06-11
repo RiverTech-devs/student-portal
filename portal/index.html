@@ -42744,6 +42744,32 @@
           requiresFromTo: true,
           requiresAmount: true
         },
+        // GROUP_RTC — "give everyone in chess class 2 rtc", "take 1 from each
+        // of them" (needs a class mention or a fresh group from a roster)
+        {
+          intent: 'GROUP_RTC',
+          patterns: [
+            /\b(add|remove|subtract|deduct|take)\b.*\b(everyone|everybody|each|all (of )?(them|those|these)|them all|(those|these) (students|kids)|the (whole )?class)\b/,
+            /\b(everyone|everybody|each( of them)?|all (of )?(them|those|these))\b.*\d+\s*(rtc)?\b/,
+            /\d+\s*(rtc\s+)?(to|for)\s+(everyone|everybody|each|all of them|the (whole )?class)\b/,
+            /\b(everyone|everybody|(all )?(those|these) (students|kids))\b.*\b(needs?|gets?|deserves?)\b.*\d+/,
+            // "give all chess class 2 gold" / "give the class 2 rtc"
+            /\b(add|remove|subtract|deduct|take)\b.*\b(all|whole|entire)\b.*\bclass\b.*\d+/,
+            /\b(add|remove|subtract|deduct|take)\b\s+the\s+class\b.*\d+/
+          ],
+          requiresAmount: true,
+          requiresGroupContext: true
+        },
+        // GROUP_BALANCES — "how much rtc does everyone in chess have?",
+        // "how much gold do each of them have?"
+        {
+          intent: 'GROUP_BALANCES',
+          patterns: [
+            /\b(rtc|balance|balances)\b.*\b(everyone|everybody|each( of them)?|all (of )?(them|those|these)|them all|(those|these) (students|kids))\b/,
+            /\b(everyone|everybody|each( of them)?|all (of )?(them|those|these)|them all|(those|these) (students|kids))\b.*\b(rtc|balance|balances|have|hold)\b/
+          ],
+          requiresGroupContext: true
+        },
         // SUBTRACT_RTC (most specific verbs first - order matters, the
         // VIEW_STUDENT catch-alls below would shadow these)
         {
@@ -42769,29 +42795,6 @@
           ],
           requiresStudent: true,
           requiresAmount: true
-        },
-        // GROUP_RTC — "give everyone in chess class 2 rtc", "take 1 from each
-        // of them" (needs a class mention or a fresh group from a roster)
-        {
-          intent: 'GROUP_RTC',
-          patterns: [
-            /\b(add|remove|subtract|deduct|take)\b.*\b(everyone|everybody|each|all (of )?(them|those|these)|them all|(those|these) (students|kids)|the (whole )?class)\b/,
-            /\b(everyone|everybody|each( of them)?|all (of )?(them|those|these))\b.*\d+\s*(rtc)?\b/,
-            /\d+\s*(rtc\s+)?(to|for)\s+(everyone|everybody|each|all of them|the (whole )?class)\b/,
-            /\b(everyone|everybody|(all )?(those|these) (students|kids))\b.*\b(needs?|gets?|deserves?)\b.*\d+/
-          ],
-          requiresAmount: true,
-          requiresGroupContext: true
-        },
-        // GROUP_BALANCES — "how much rtc does everyone in chess have?",
-        // "how much gold do each of them have?"
-        {
-          intent: 'GROUP_BALANCES',
-          patterns: [
-            /\b(rtc|balance|balances)\b.*\b(everyone|everybody|each( of them)?|all (of )?(them|those|these)|them all|(those|these) (students|kids))\b/,
-            /\b(everyone|everybody|each( of them)?|all (of )?(them|those|these)|them all|(those|these) (students|kids))\b.*\b(rtc|balance|balances|have|hold)\b/
-          ],
-          requiresGroupContext: true
         },
         // COMPARE_STUDENTS — "compare evelyn and charlotte", "who has more rtc"
         {
@@ -43055,6 +43058,12 @@
       // Last resort: a student was clearly named (e.g. just "Charlotte", or
       // "read her again" after pronoun resolution) with no other actionable
       // intent — default to showing that student rather than giving up.
+      // Exception: a WEAK (typo-corrected) student match loses to a solid
+      // class match — "ches" means the Chess class, not Chev Moen.
+      if (entities.student && entities.classMatch && !entities.student.fromContext
+          && (entities.student.score || 0) < 0.8) {
+        return { intent: 'VIEW_ROSTER', confidence: 0.6 };
+      }
       if (entities.student) {
         return { intent: 'VIEW_STUDENT', confidence: 0.6 };
       }
@@ -43834,8 +43843,9 @@
     }
 
     _isAggregateQuery(normalized) {
-      return /\b(students|kids|everyone|anyone|anybody|all of them|which of|who (has|have|is|are) (been )?\w+ing|who (was|were))\b/.test(normalized)
+      return /\b(students|kids|everyone|anyone|anybody|all of them|them all|each of them|the whole class|which of|who (has|have|is|are) (been )?\w+ing|who (was|were))\b/.test(normalized)
         || /\b(which|what) (students|kids)\b/.test(normalized)
+        || /\b(all|whole|entire)\b.*\bclass\b/.test(normalized)
         || /\bstudents\b/.test(normalized);
     }
 
@@ -44711,6 +44721,18 @@
       return mine;
     }
 
+    // Render a list with the remainder hidden behind a "show all" toggle so
+    // long briefing sections are fully viewable in place
+    _briefingExpand(lines, visible, noun) {
+      if (lines.length <= visible) return lines.join('<br>');
+      const id = 'brf-' + (this._briefingExpandSeq = (this._briefingExpandSeq || 0) + 1) + '-' + lines.length;
+      const more = lines.length - visible;
+      return lines.slice(0, visible).join('<br>') +
+        `<div id="${id}" style="display: none;">` + lines.slice(visible).join('<br>') + `</div>` +
+        `<div style="color: #2f6b6d; cursor: pointer; text-decoration: underline; font-size: 12px; margin-top: 2px;" ` +
+        `onclick="const d = document.getElementById('${id}'); const open = d.style.display === 'none'; d.style.display = open ? 'block' : 'none'; this.textContent = open ? 'show less' : '…and ${more} more ${noun} — show all';">…and ${more} more ${noun} — show all</div>`;
+    }
+
     async terminalBriefing({ auto = false } = {}) {
       const userType = this.userInfo?.profile?.user_type;
       if (userType !== 'teacher' && userType !== 'admin') return;
@@ -44736,7 +44758,7 @@
       const quarter = await this._rivenCurrentQuarter().catch(() => null);
 
       const [notifsRes, msgsRes, enrRes, snapsRes, assignRes, schedRes, sessRes, dobRes] = await Promise.all([
-        sb.from('notifications').select('id, title, message, created_at').eq('user_id', me).eq('is_read', false).order('created_at', { ascending: false }).limit(20),
+        sb.from('notifications').select('id, title, message, created_at').eq('user_id', me).eq('is_read', false).order('created_at', { ascending: false }).limit(50),
         sb.from('messages').select('id, sender_id, content, created_at').eq('recipient_id', me).eq('is_read', false).order('created_at', { ascending: false }).limit(20),
         classIds.length ? sb.from('class_enrollments').select('id, class_id, student_id').in('class_id', classIds).eq('status', 'active') : Promise.resolve({ data: [] }),
         Promise.resolve(null), // snapshots fetched after enrollments below
@@ -44765,8 +44787,8 @@
       // 1. Unread notifications + messages
       const notifs = notifsRes.data || [];
       if (notifs.length) {
-        const preview = notifs.slice(0, 3).map(n => `• ${this.escapeHtml(n.title || (n.message || '').slice(0, 60))}`).join('<br>');
-        sections.push(`<div>🔔 <b>${notifs.length} unread notification${notifs.length === 1 ? '' : 's'}</b><br><span style="font-size: 12px; color: #6b5236;">${preview}${notifs.length > 3 ? `<br>…and ${notifs.length - 3} more` : ''}</span><br>
+        const preview = this._briefingExpand(notifs.map(n => `• ${this.escapeHtml(n.title || (n.message || '').slice(0, 60))}`), 3, 'notifications');
+        sections.push(`<div>🔔 <b>${notifs.length} unread notification${notifs.length === 1 ? '' : 's'}</b><br><span style="font-size: 12px; color: #6b5236;">${preview}</span><br>
           <button onclick="app._rivenMarkAllRead()" style="margin-top: 4px; padding: 4px 12px; border-radius: 6px; border: 1px solid #2f6b6d; background: transparent; color: #2f6b6d; cursor: pointer; font-size: 12px;">✓ Mark all read</button></div>`);
       }
       const msgs = msgsRes.data || [];
@@ -44797,7 +44819,7 @@
           }
         }
         if (gapLines.length) {
-          sections.push(`<div>🎓 <b>Almost-finished grade sheets</b> (just 1–2 students left):<br><span style="font-size: 12px;">${gapLines.slice(0, 6).join('<br>')}${gapLines.length > 6 ? `<br>…and ${gapLines.length - 6} more classes` : ''}</span></div>`);
+          sections.push(`<div>🎓 <b>Almost-finished grade sheets</b> (just 1–2 students left):<br><span style="font-size: 12px;">${this._briefingExpand(gapLines, 6, 'classes')}</span></div>`);
         }
       }
 
@@ -44809,8 +44831,8 @@
         .filter(x => x.waiting > 0)
         .sort((x, y) => y.waiting - x.waiting);
       if (gradeQueue.length) {
-        const lines = gradeQueue.slice(0, 5).map(x => `• <b>${this.escapeHtml(x.a.title || 'Assignment')}</b> (${this.escapeHtml(classById[x.a.class_id]?.name || '')}, due ${String(x.a.due_date).slice(0, 10)}) — ${x.waiting} submission${x.waiting === 1 ? '' : 's'} waiting`);
-        sections.push(`<div>📥 <b>Grading queue</b> — past-due work that needs grades:<br><span style="font-size: 12px;">${lines.join('<br>')}${gradeQueue.length > 5 ? `<br>…and ${gradeQueue.length - 5} more assignments` : ''}</span></div>`);
+        const lines = gradeQueue.map(x => `• <b>${this.escapeHtml(x.a.title || 'Assignment')}</b> (${this.escapeHtml(classById[x.a.class_id]?.name || '')}, due ${String(x.a.due_date).slice(0, 10)}) — ${x.waiting} submission${x.waiting === 1 ? '' : 's'} waiting`);
+        sections.push(`<div>📥 <b>Grading queue</b> — past-due work that needs grades:<br><span style="font-size: 12px;">${this._briefingExpand(lines, 5, 'assignments')}</span></div>`);
       }
 
       // 5. Students with multiple missing assignments (one-click note)
@@ -44836,10 +44858,10 @@
         }))
         .sort((x, y) => y.count - x.count);
       if (this._briefingMissing.length) {
-        const lines = this._briefingMissing.slice(0, 6).map((m, i) =>
+        const lines = this._briefingMissing.map((m, i) =>
           `• <b>${this.escapeHtml(m.name)}</b> — ${m.count} missing (${this.escapeHtml(m.classNames.join(', '))})
            <button onclick="app._rivenNoteMissing(${i})" style="margin-left: 6px; padding: 2px 10px; border-radius: 6px; border: 1px solid #2f6b6d; background: transparent; color: #2f6b6d; cursor: pointer; font-size: 11px;">📝 Note it</button>`);
-        sections.push(`<div>⚠️ <b>Students with multiple missing assignments</b>:<br><span style="font-size: 12px;">${lines.join('<br>')}${this._briefingMissing.length > 6 ? `<br>…and ${this._briefingMissing.length - 6} more students` : ''}</span></div>`);
+        sections.push(`<div>⚠️ <b>Students with multiple missing assignments</b>:<br><span style="font-size: 12px;">${this._briefingExpand(lines, 6, 'students')}</span></div>`);
       }
 
       // 6. Attendance not yet taken for today's scheduled classes
@@ -44849,7 +44871,8 @@
         .map(cid => classById[cid])
         .filter(c => c && this._rivenCanManageClass(c, { attendance: true }));
       if (dueToday.length) {
-        sections.push(`<div>📅 <b>Attendance not yet taken today</b>: ${dueToday.slice(0, 6).map(c => this.escapeHtml(c.name)).join(', ')}${dueToday.length > 6 ? ` and ${dueToday.length - 6} more` : ''}.<br><span style="font-size: 12px; color: #6b5236;">Say "mark everyone in [class] present" and I'll handle it.</span></div>`);
+        const lines = dueToday.map(c => `• ${this.escapeHtml(c.name)}${c.teacher_name ? ` <span style="color: #6b5236; font-size: 11px;">· ${this.escapeHtml(c.teacher_name)}</span>` : ''}`);
+        sections.push(`<div>📅 <b>Attendance not yet taken today</b> (${dueToday.length} class${dueToday.length === 1 ? '' : 'es'}):<br><span style="font-size: 12px;">${this._briefingExpand(lines, 6, 'classes')}</span><br><span style="font-size: 12px; color: #6b5236;">Say "mark everyone in [class] present" and I'll handle it.</span></div>`);
       }
 
       // 7. Birthdays in the next 7 days
@@ -44862,7 +44885,7 @@
         return { name: `${p.first_name || ''} ${p.last_name || ''}`.trim(), inDays };
       }).filter(b => b.inDays >= 0 && b.inDays <= 7).sort((a, b) => a.inDays - b.inDays);
       if (bdays.length) {
-        sections.push(`<div>🎂 <b>Birthdays this week</b>: ${bdays.slice(0, 5).map(b => `${this.escapeHtml(b.name)} (${b.inDays === 0 ? 'today!' : b.inDays === 1 ? 'tomorrow' : 'in ' + b.inDays + ' days'})`).join(', ')}</div>`);
+        sections.push(`<div>🎂 <b>Birthdays this week</b>:<br><span style="font-size: 12px;">${this._briefingExpand(bdays.map(b => `• ${this.escapeHtml(b.name)} (${b.inDays === 0 ? 'today!' : b.inDays === 1 ? 'tomorrow' : 'in ' + b.inDays + ' days'})`), 5, 'birthdays')}</span></div>`);
       }
 
       if (!sections.length) {
@@ -45149,6 +45172,15 @@
       let candidates = full.length ? full : partial;
       let consumed = [];
 
+      if (!candidates.length) {
+        // Typo pass: a text word within edit distance 1 of a class-name word
+        // ("ches" -> Chess) — only for words >=4 chars
+        const typoTokens = t.split(/\s+/).filter(w => w.length >= 4);
+        const typoHits = rows.filter(row =>
+          (row.name || '').toLowerCase().split(/\s+/).some(w =>
+            w.length >= 4 && typoTokens.some(tok => Math.abs(tok.length - w.length) <= 1 && this._levenshteinDistance(tok, w) === 1)));
+        if (typoHits.length) candidates = typoHits;
+      }
       if (!candidates.length) {
         // Subject fallback: a text word >=4 chars prefixing the subject
         // ("math" -> Mathematics), only when exactly one class qualifies
