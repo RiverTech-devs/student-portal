@@ -44983,13 +44983,14 @@
         (c.name || '').toLowerCase().split(/\s+/).forEach(w => { if (w.length >= 3 && t.includes(w)) consumed.push(w); });
       });
 
+      let qualified = false;
       // Qualifier: "with <teacher first/last name>"
       const withM = t.match(/\bwith\s+([a-z]+)\b/);
       if (withM && candidates.length > 1) {
         const narrowed = candidates.filter(c =>
           (c.teacher_name || '').toLowerCase().split(/\s+/).includes(withM[1]) ||
           (c.secondary_teacher_name || '').toLowerCase().split(/\s+/).includes(withM[1]));
-        if (narrowed.length) { candidates = narrowed; consumed.push('with', withM[1]); }
+        if (narrowed.length) { candidates = narrowed; consumed.push('with', withM[1]); qualified = true; }
       }
       // Qualifier: a candidate's teacher name anywhere in the text
       // ("caitlins english class" — possessive 's is already stripped).
@@ -45007,7 +45008,8 @@
         });
         if (narrowed.length && narrowed.length < candidates.length) {
           candidates = narrowed;
-          narrowed.forEach(c => `${c.teacher_name || ''}`.toLowerCase().split(/\s+/).forEach(w => { if (w.length >= 3 && hasWord(w)) consumed.push(w); }));
+          qualified = true;
+          narrowed.forEach(c => `${c.teacher_name || ''}`.toLowerCase().split(/\s+/).forEach(w => { if (w.length >= 3 && (hasWord(w) || hasWord(w + 's'))) consumed.push(w); }));
         }
       }
       // Qualifier: level words present in class names (ms/hs/es, middle/high/elementary)
@@ -45015,7 +45017,7 @@
       if (levelM && candidates.length > 1) {
         const lvl = { middle: 'ms', high: 'hs', elementary: 'es' }[levelM[1]] || levelM[1];
         const narrowed = candidates.filter(c => new RegExp('\\b' + lvl + '\\b', 'i').test(c.name || ''));
-        if (narrowed.length) { candidates = narrowed; consumed.push(levelM[1]); }
+        if (narrowed.length) { candidates = narrowed; consumed.push(levelM[1]); qualified = true; }
       }
       // Qualifier: "my" — classes the user actually owns/teaches
       if (/\bmy\b/.test(t) && candidates.length > 1) {
@@ -45029,9 +45031,9 @@
       candidates = [...new Map(candidates.map(c => [c.id, c])).values()];
       if (candidates.length === 1) {
         const c = candidates[0];
-        return { id: c.id, name: c.name, row: c, consumed };
+        return { id: c.id, name: c.name, row: c, consumed, qualified };
       }
-      return { ambiguous: true, candidates, name: candidates[0].name, consumed };
+      return { ambiguous: true, candidates, name: candidates[0].name, consumed, qualified };
     }
 
     _showClassPicker(rowsIn, originalInput) {
@@ -45075,8 +45077,9 @@
       if (!cm) return { row: null, enrollment: null, asked: false };
       let candidates = cm.ambiguous ? [...cm.candidates] : [this._rivenResolveClassRow(cm)].filter(Boolean);
       // include same-named siblings so "Math" reaches all four Math classes —
-      // but never when the user just PICKED a specific class from the dialog
-      if (!cm.pinned) {
+      // but never when the user PICKED one from the dialog or a qualifier
+      // ("caitlins english", "with dan", "my") already narrowed it down
+      if (!cm.pinned && !cm.qualified) {
         const names = new Set(candidates.map(c => (c.name || '').toLowerCase()));
         (this._terminalAllClasses || []).forEach(c => {
           if (names.has((c.name || '').toLowerCase()) && !candidates.find(x => x.id === c.id)) candidates.push(c);
