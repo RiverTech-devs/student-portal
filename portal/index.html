@@ -41408,7 +41408,19 @@
 
     async _rivenEntityPopup(type, id) {
       if (type === 'student') return this._rivenPopupStudent(id);
-      return this._rivenPopupClass(id);
+      // Classes open the REAL class page — the same modal the Classes tab
+      // uses — not a summary card (falls back to the card if it can't load).
+      // openClass reads this.classes, which is empty until the Classes tab
+      // has loaded once — load it on demand for teachers.
+      try {
+        if ((!this.classes || !this.classes.length) && this.userInfo?.profile?.user_type === 'teacher') {
+          await this.loadTeacherData();
+        }
+        await this.openClass(id);
+      } catch (e) {
+        console.warn('openClass from chat failed, falling back to card:', e);
+        return this._rivenPopupClass(id);
+      }
     }
 
     async _rivenPopupStudent(id) {
@@ -42350,7 +42362,8 @@
       // an unnamed class reference resolves to the class we were just
       // talking about (created, listed, graded…)
       const classPronoun = /\b(that|this|it|the same|the new)\s+class\b/.test(normalized)
-        || /\b(to|in|into|from)\s+(it|there)\b/.test(normalized);
+        || /\b(to|in|into|from)\s+(it|there)\b/.test(normalized)
+        || /\b(rename|call)\s+(it|that|this)\b/.test(normalized);
       if (!entities.classMatch && classPronoun && this._nlpContext?.lastClass) {
         const lc = (this._terminalAllClasses || []).find(c => c.id === this._nlpContext.lastClass.id);
         if (lc) {
@@ -42904,6 +42917,18 @@
           // "give eli's attendance in math" must stay a read, not an enrollment
           notIfInfoNoun: true
         },
+        // RENAME_CLASS — "rename the english class to English Test",
+        // "call it Chess Club"
+        {
+          intent: 'RENAME_CLASS',
+          w: 5, notIfNoteCommand: true,
+          patterns: [
+            /\brename\b/,
+            /\bchange\b.*\bclass\b.*\bname\b/,
+            /\bcall (it|that|this)\b/
+          ],
+          requiresClass: true
+        },
         // DELETE_CLASS — "archive the robotics class" (after UNENROLL so
         // "remove jordan from math class" stays an unenrollment)
         {
@@ -43030,6 +43055,20 @@
             /\bgpa\b/
           ],
           requiresStudentOrClass: true
+        },
+        // HELP — "what can I do?", "how does this work?" (outranks the
+        // testing-center capability reply for "I'd like to test how this
+        // works — what can I do?")
+        {
+          intent: 'HELP',
+          w: 6,
+          patterns: [
+            /\bwhat can (i|you|we|u) do\b/,
+            /\bwhat (all )?(do|does) (you|this) (do|understand|know)\b/,
+            /\bhow does this work\b/,
+            /\bshow me what you can do\b/,
+            /^help\b/
+          ]
         },
         // BRIEFING — "anything I should know?", "catch me up", "what's new"
         {
@@ -43203,7 +43242,9 @@
           w: 5,
           patterns: [
             /\b(what|which|list|show|how many|all|any)\b.*\bclass(es)?\b/,
-            /\bclass(es)?\b.*\b(do we have|are there|in the system|offered|available)\b/
+            /\bclass(es)?\b.*\b(do we have|are there|in the system|offered|available)\b/,
+            /\bmy class(es)?\b/,
+            /\bwhat (do|am) i teach(ing)?\b/
           ]
         },
         // LIST_STUDENTS
@@ -43352,7 +43393,7 @@
       // match any supported intent, do NOT fall back to showing a student
       // card — that masks the misunderstanding ("mark him present" used to
       // silently show the card). Own up to the limitation instead.
-      if (/\b(mark|enrol|enroll|register|assign|schedule|book|cancel|email|message|text|call|change|update|edit|delete|reset|suspend|approve|deny|put|set|send|move|transfer|make|create|upload|export|print|invite|excuse|promote|withdraw)\b/.test(normalized)) {
+      if (/\b(mark|enrol|enroll|register|assign|schedule|book|cancel|email|message|text|call|change|update|edit|delete|reset|suspend|approve|deny|put|set|send|move|transfer|make|create|upload|export|print|invite|excuse|promote|withdraw|rename)\b/.test(normalized)) {
         return { intent: 'UNKNOWN_ACTION', confidence: 0.9, lastResort: true };
       }
 
@@ -43553,6 +43594,14 @@
 
         case 'DELETE_CLASS':
           await this.terminalDeleteClass(entities);
+          break;
+
+        case 'RENAME_CLASS':
+          await this.terminalRenameClass(entities);
+          break;
+
+        case 'HELP':
+          await this.executeTerminalCommand('/help');
           break;
 
         case 'SET_GRADE':
@@ -44599,13 +44648,24 @@
     async terminalListClasses(entities) {
       const { data, error } = await this.auth.supabase
         .from('classes')
-        .select('id, name, subject')
+        .select('id, name, subject, teacher_id, secondary_teacher_id')
         .order('name');
       if (error) { this.terminalPrintError('Could not load classes: ' + error.message); return; }
       let classes = data || [];
+      const norm = entities.normalized || '';
+      // "show me my classes" / "what do I teach" — the asker's own classes
+      const mine = /\bmy\b|\bi teach\b/.test(norm);
+      const myId = this.userInfo?.user?.id;
+      if (mine && myId) {
+        classes = classes.filter(c => c.teacher_id === myId || c.secondary_teacher_id === myId);
+        if (!classes.length) {
+          this._showRivenMessage(`You aren't listed as the teacher of any class yet. Say "list all classes" to see everything in the system.`, true);
+          return;
+        }
+      }
       // Subject keyword: "what MATH classes do we have"
-      const kw = entities.subject || (entities.normalized || '').match(/(?:what|which|list|show|any|all)\s+([a-z]+)\s+class/)?.[1] || null;
-      const kwClean = kw && !['the', 'our', 'these', 'those', 'many'].includes(kw) ? kw : null;
+      const kw = entities.subject || norm.match(/(?:what|which|list|show|any|all)\s+([a-z]+)\s+class/)?.[1] || null;
+      const kwClean = kw && !['the', 'our', 'these', 'those', 'many', 'my'].includes(kw) ? kw : null;
       if (kwClean) {
         classes = classes.filter(c =>
           (c.name || '').toLowerCase().includes(kwClean) || (c.subject || '').toLowerCase().includes(kwClean));
@@ -44614,9 +44674,13 @@
         this._showRivenMessage(`No${kwClean ? ' ' + this.escapeHtml(kwClean) : ''} classes found in the system.`, true);
         return;
       }
-      let html = `<div style="font-weight: 600; margin-bottom: 8px;">📚 ${classes.length}${kwClean ? ' ' + this.escapeHtml(kwClean) : ''} class${classes.length === 1 ? '' : 'es'}</div>`;
+      // Teacher names come from the loaded class cache (joined at load time)
+      const tNames = {};
+      (this._terminalAllClasses || []).forEach(c => { tNames[c.id] = c.teacher_name || ''; });
+      let html = `<div style="font-weight: 600; margin-bottom: 8px;">📚 ${mine ? 'Your ' : ''}${classes.length}${kwClean ? ' ' + this.escapeHtml(kwClean) : ''} class${classes.length === 1 ? '' : 'es'}</div>`;
       classes.slice(0, 25).forEach(c => {
-        html += `<div style="padding: 5px 10px; margin: 3px 0; background: rgba(255,255,255,0.03); border-radius: 4px;">${this.escapeHtml(c.name || 'Unnamed')}${c.subject ? ` <span style="color: var(--muted); font-size: 11px;">· ${this.escapeHtml(c.subject)}</span>` : ''}</div>`;
+        const t = !mine && tNames[c.id] ? ` <span style="color: var(--muted); font-size: 11px;">· ${this.escapeHtml(tNames[c.id])}</span>` : '';
+        html += `<div style="padding: 5px 10px; margin: 3px 0; background: rgba(255,255,255,0.03); border-radius: 4px;">${this.escapeHtml(c.name || 'Unnamed')}${c.subject ? ` <span style="color: var(--muted); font-size: 11px;">· ${this.escapeHtml(c.subject)}</span>` : ''}${t}</div>`;
       });
       if (classes.length > 25) html += `<div style="color: var(--muted); font-size: 12px;">…and ${classes.length - 25} more.</div>`;
       this._showRivenMessage(html, true);
@@ -44850,6 +44914,49 @@
           this._naturalSuccess([
             `${done.join(' and ')} ${done.length > 1 ? 'are' : 'is'} now enrolled in ${row.name}.`,
             `Done — added ${done.join(' and ')} to ${row.name}.`
+          ]);
+        }
+      );
+    }
+
+    async terminalRenameClass(entities) {
+      const res = await this._rivenRequireClass(entities);
+      if (res.asked) return;
+      const row = res.row;
+      if (!row) { this.terminalPrintError('Which class should I rename? Say it like "rename Chess to Chess Club".'); return; }
+      if (!this._rivenCanManageClass(row)) {
+        this.terminalPrintError(`You don't have permission to rename ${row.name} — only its teacher or an admin can.`);
+        return;
+      }
+      // The new name comes from the ORIGINAL text so capitalization survives
+      const src = entities.original || entities.normalized || '';
+      const m = src.match(/\b(?:to|as)\s+["']?([^"']+?)["']?[\s.!?]*$/i)
+        || src.match(/\bcall (?:it|that|this)\s+["']?([^"']+?)["']?[\s.!?]*$/i);
+      const newName = m && m[1] ? m[1].trim() : null;
+      if (!newName || newName.length < 2 || newName.length > 80) {
+        this.terminalPrintError(`What should ${row.name} be called? Say it like "rename ${row.name} to New Name".`);
+        return;
+      }
+      if (newName.toLowerCase() === (row.name || '').toLowerCase()) {
+        this._showRivenMessage(`${this.escapeHtml(row.name)} is already called that — nothing to change.`, true);
+        return;
+      }
+      const oldName = row.name;
+      this._requestConfirmation(
+        `Rename <b>${this.escapeHtml(oldName)}</b> to <b>${this.escapeHtml(newName)}</b>? Everything else about the class stays the same.`,
+        async () => {
+          const { error } = await this.auth.supabase.from('classes').update({ name: newName }).eq('id', row.id);
+          if (error) throw error;
+          this._pushUndo(`renaming ${oldName} to ${newName}`, async () => {
+            const { error: e } = await this.auth.supabase.from('classes').update({ name: oldName }).eq('id', row.id);
+            if (e) throw e;
+            await this._loadTerminalClasses();
+          });
+          await this._loadTerminalClasses();
+          this._rememberClass({ id: row.id, name: newName });
+          this._naturalSuccess([
+            `Done — ${oldName} is now called ${newName}.`,
+            `Renamed: ${oldName} → ${newName}.`
           ]);
         }
       );
@@ -46109,7 +46216,11 @@
           if (e) found.push({ row: c, enrollment: e });
         }
         const active = found.filter(f => f.enrollment.status === 'active');
-        const pool = (preferActive && active.length) ? active : found;
+        let pool = (preferActive && active.length) ? active : found;
+        if (pool.length > 1) {
+          const owned = this._preferOwnedClasses(pool.map(f => f.row), cm);
+          if (owned.length < pool.length) pool = pool.filter(f => owned.find(o => o.id === f.row.id));
+        }
         if (pool.length === 1) {
           this._rememberClass(pool[0].row);
           return { ...pool[0], asked: false };
@@ -46120,6 +46231,7 @@
         }
         // student is in none of them: a single candidate can still be the
         // target (e.g. enrolling them); multiple asks the user
+        candidates = this._preferOwnedClasses(candidates, cm);
         if (candidates.length === 1) {
           this._rememberClass(candidates[0]);
           return { row: candidates[0], enrollment: null, asked: false };
@@ -46128,12 +46240,25 @@
         return { asked: true };
       }
 
+      candidates = this._preferOwnedClasses(candidates, cm);
       if (candidates.length === 1) {
         this._rememberClass(candidates[0]);
         return { row: candidates[0], enrollment: null, asked: false };
       }
       this._showClassPicker(candidates, originalInput);
       return { asked: true };
+    }
+
+    // Ambiguous bare class names resolve in the asker's favor: "show me the
+    // english class" from someone who teaches an English class means THEIRS
+    // ("caitlins english" still works — a qualifier skips this entirely).
+    // If they teach several matching classes, the picker asks among those.
+    _preferOwnedClasses(rows, cm) {
+      if (!rows || rows.length < 2 || (cm && (cm.qualified || cm.pinned))) return rows;
+      const myId = this.userInfo?.user?.id;
+      if (!myId) return rows;
+      const owned = rows.filter(c => c.teacher_id === myId || c.secondary_teacher_id === myId);
+      return owned.length ? owned : rows;
     }
 
     _rememberClass(row) {
