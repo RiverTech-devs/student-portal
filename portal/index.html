@@ -42117,7 +42117,14 @@
       // topical match ("show me all my classes" → LIST_CLASSES via its
       // "classes" pattern) is NOT, no matter how low its total score, and
       // must never be second-guessed by the embeddings.
-      const weakWin = typeof intent.w === 'number' && intent.w <= 3 && intent.intent !== 'CAPABILITY';
+      // …and a WRITE the regexes matched is never second-guessed either —
+      // "give jordan 3 gold" must execute, not detour through the model
+      const writeWins = ['ADD_RTC', 'SUBTRACT_RTC', 'TRANSFER_RTC', 'GROUP_RTC', 'SET_GRADE',
+        'MARK_ATTENDANCE', 'MARK_ATTENDANCE_GROUP', 'ENROLL_STUDENT', 'UNENROLL_STUDENT',
+        'MOVE_STUDENT', 'CREATE_CLASS', 'DELETE_CLASS', 'RENAME_CLASS', 'UPDATE_CONTACT',
+        'ADD_NOTE', 'DELETE_NOTE', 'MARK_READ'];
+      const weakWin = typeof intent.w === 'number' && intent.w <= 3
+        && intent.intent !== 'CAPABILITY' && !writeWins.includes(intent.intent);
       if ((intent.lastResort || weakWin) && resolvedInput.split(/\s+/).length >= 4) {
         const handled = await this._semanticFallback(resolvedInput, entities, { insteadOf: intent.intent });
         if (handled) return;
@@ -42316,6 +42323,24 @@
       // Strip possessive 's so "eli's" / "charlotte's" match the name
       // (runs after the contraction expansions above)
       normalized = normalized.replace(/['’]s\b/g, '');
+
+      // Typo-correct the topic nouns that pick intents ("attendnace",
+      // "grdaes") — names get their own fuzzy matching later, but a typo'd
+      // noun otherwise drops the sentence to the generic student card
+      const topicNouns = ['attendance', 'grades', 'balance', 'balances', 'notes',
+        'history', 'participation', 'academic', 'roster', 'classes',
+        'transactions', 'birthday', 'email', 'notifications'];
+      normalized = normalized.split(/\s+/).map(tok => {
+        const clean = tok.replace(/[^a-z]/g, '');
+        if (clean.length < 5 || topicNouns.includes(clean)) return tok;
+        for (const n of topicNouns) {
+          if (Math.abs(n.length - clean.length) <= 2) {
+            const d = this._levenshteinDistance(clean, n);
+            if (d <= (clean.length >= 8 ? 2 : 1)) return tok.replace(clean, n);
+          }
+        }
+        return tok;
+      }).join(' ');
 
       return normalized;
     }
@@ -43571,7 +43596,7 @@
           break;
 
         case 'VIEW_ENROLLMENTS':
-          if (student) await this.terminalShowEnrollments(student);
+          if (student) await this.terminalShowEnrollments(student, entities);
           else this.terminalPrintError('Whose classes? Tell me a student name.');
           break;
 
@@ -44730,7 +44755,7 @@
       }
     }
 
-    async terminalShowEnrollments(student) {
+    async terminalShowEnrollments(student, entities = null) {
       const { data: enr, error } = await this.auth.supabase
         .from('class_enrollments')
         .select('class_id')
@@ -44738,13 +44763,23 @@
         .eq('status', 'active');
       if (error) { this.terminalPrintError('Could not read enrollments: ' + error.message); return; }
       const classIds = [...new Set((enr || []).map(e => e.class_id).filter(Boolean))];
+      // Membership question ("is jordan in chess?") deserves a direct answer
+      const cmName = entities?.classMatch?.name || null;
       if (!classIds.length) {
-        this._showRivenMessage(`${this.escapeHtml(student.full_name)} isn't enrolled in any classes right now. Enrollment is managed in the <span style="color: var(--accent); cursor: pointer; text-decoration: underline;" onclick="app.showSection('classes')">Classes tab</span>.`, true);
+        const lead = cmName ? `❌ No — ${this.escapeHtml(student.full_name)} isn't in <b>${this.escapeHtml(cmName)}</b>. ` : '';
+        this._showRivenMessage(`${lead}${this.escapeHtml(student.full_name)} isn't enrolled in any classes right now. Enrollment is managed in the <span style="color: var(--accent); cursor: pointer; text-decoration: underline;" onclick="app.showSection('classes')">Classes tab</span>.`, true);
         return;
       }
       const { data: classes } = await this.auth.supabase
         .from('classes').select('id, name, subject').in('id', classIds);
       let html = `<div style="font-weight: 600; margin-bottom: 8px;">📚 ${this.escapeHtml(student.full_name)} — ${classIds.length} class${classIds.length === 1 ? '' : 'es'}</div>`;
+      if (cmName) {
+        const hit = (classes || []).find(c => (c.name || '').toLowerCase() === cmName.toLowerCase());
+        const verdict = hit
+          ? `✅ Yes — ${this.escapeHtml(student.full_name)} is in <b>${this.escapeHtml(hit.name)}</b>.`
+          : `❌ No — ${this.escapeHtml(student.full_name)} isn't in <b>${this.escapeHtml(cmName)}</b>. Here's where they are:`;
+        html = `<div style="margin-bottom: 8px;">${verdict}</div>` + html;
+      }
       (classes || []).sort((a, b) => (a.name || '').localeCompare(b.name || '')).forEach(c => {
         html += `<div style="padding: 5px 10px; margin: 3px 0; background: rgba(255,255,255,0.03); border-radius: 4px;">${this.escapeHtml(c.name || 'Unnamed class')}${c.subject ? ` <span style="color: var(--muted); font-size: 11px;">· ${this.escapeHtml(c.subject)}</span>` : ''}</div>`;
       });
