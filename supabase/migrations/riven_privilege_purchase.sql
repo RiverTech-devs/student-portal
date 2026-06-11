@@ -86,7 +86,7 @@ BEGIN
     SELECT public.process_rtc_transaction(
       p_user_id         := p_student_id,
       p_amount          := -v_priv_price,
-      p_transaction_type := 'spend_privilege',
+      p_transaction_type := 'spend_reward',
       p_description     := 'Privilege: ' || v_priv_name,
       p_created_by      := v_caller_id
     ) INTO v_txn_result;
