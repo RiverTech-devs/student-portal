@@ -41112,8 +41112,8 @@
       this._terminalAutocompleteResults = [];
       this._terminalAutocompleteIndex = -1;
 
-      // Load all students for autocomplete
-      await this._loadTerminalStudents();
+      // Load all students and classes for matching/autocomplete
+      await Promise.all([this._loadTerminalStudents(), this._loadTerminalClasses()]);
 
       section.innerHTML = `
         <div style="max-width: 1200px; margin: 0 auto; padding: 20px;">
@@ -41131,9 +41131,14 @@
                 </div>
               </div>
             </div>
-            <button onclick="app.toggleTerminalPalette()" class="btn" style="padding: 8px 16px; font-size: 13px;">
-              <span style="opacity: 0.7; margin-right: 6px;">⌘K</span> Quick Search
-            </button>
+            <div style="display: flex; gap: 8px;">
+              <button onclick="app.clearTerminalChat()" class="btn btn-secondary" style="padding: 8px 16px; font-size: 13px;" title="Clear the conversation and start fresh">
+                🧹 Clear chat
+              </button>
+              <button onclick="app.toggleTerminalPalette()" class="btn" style="padding: 8px 16px; font-size: 13px;">
+                <span style="opacity: 0.7; margin-right: 6px;">⌘K</span> Quick Search
+              </button>
+            </div>
           </div>
 
           <!-- Command Palette Modal -->
@@ -41251,6 +41256,11 @@
         this._updateRecentStudentsBar();
       }, 100);
 
+      // Restore the persisted conversation (survives tab switches and logins)
+      // and keep persisting on every change
+      this._restoreTerminalChat();
+      this._setupTerminalPersistence();
+
       // Global keyboard shortcut for command palette
       document.addEventListener('keydown', (e) => {
         if ((e.ctrlKey || e.metaKey) && e.key === 'k' && this.currentSection === 'teacher-terminal') {
@@ -41258,6 +41268,70 @@
           this.toggleTerminalPalette();
         }
       });
+    }
+
+    // ---- Persistent chat (localStorage, per user) ----
+
+    _terminalChatKey() {
+      return 'riven_chat_' + (this.userInfo?.profile?.id || 'anon');
+    }
+
+    _setupTerminalPersistence() {
+      const out = document.getElementById('terminal-output');
+      if (!out) return;
+      if (this._terminalChatObserver) this._terminalChatObserver.disconnect();
+      this._terminalChatObserver = new MutationObserver(() => {
+        clearTimeout(this._terminalPersistTimer);
+        this._terminalPersistTimer = setTimeout(() => this._persistTerminalChat(), 400);
+      });
+      this._terminalChatObserver.observe(out, { childList: true, subtree: true, characterData: true });
+    }
+
+    _persistTerminalChat() {
+      const out = document.getElementById('terminal-output');
+      if (!out) return;
+      try {
+        // Keep the transcript bounded: persist at most the last 120 top-level
+        // nodes so localStorage stays small
+        const clone = out.cloneNode(true);
+        while (clone.children.length > 120) clone.removeChild(clone.firstElementChild);
+        const ls = this._nlpContext?.lastStudent;
+        localStorage.setItem(this._terminalChatKey(), JSON.stringify({
+          html: clone.innerHTML,
+          lastStudent: ls ? { id: ls.id, full_name: ls.full_name, first_name: ls.first_name, last_name: ls.last_name, rtc_balance: ls.rtc_balance } : null,
+          savedAt: Date.now()
+        }));
+      } catch (e) {
+        // Quota or serialization problems: drop the saved chat rather than break the UI
+        try { localStorage.removeItem(this._terminalChatKey()); } catch (_) {}
+      }
+    }
+
+    _restoreTerminalChat() {
+      try {
+        const raw = localStorage.getItem(this._terminalChatKey());
+        if (!raw) return;
+        const saved = JSON.parse(raw);
+        if (!saved?.html) return;
+        const out = document.getElementById('terminal-output');
+        if (!out) return;
+        out.innerHTML = saved.html;
+        if (saved.lastStudent) {
+          this._nlpContext = this._nlpContext || {};
+          this._nlpContext.lastStudent = saved.lastStudent;
+        }
+        out.scrollTop = out.scrollHeight;
+      } catch (e) {
+        console.warn('Could not restore Riven chat:', e);
+      }
+    }
+
+    clearTerminalChat() {
+      try { localStorage.removeItem(this._terminalChatKey()); } catch (_) {}
+      this._nlpContext = {};
+      this._undoStack = [];
+      this._pendingAction = null;
+      this.renderTeacherTerminal();
     }
 
     async _loadTerminalStudents() {
@@ -41277,6 +41351,34 @@
         console.error('Error loading students:', err);
         this._terminalAllStudents = [];
       }
+    }
+
+    async _loadTerminalClasses() {
+      try {
+        const { data, error } = await this.auth.supabase
+          .from('classes')
+          .select('id, name, subject, teacher_id, secondary_teacher_id, is_active, grading_weight')
+          .eq('is_active', true)
+          .order('name');
+        if (error) throw error;
+        this._terminalAllClasses = data || [];
+      } catch (err) {
+        console.error('Error loading classes:', err);
+        this._terminalAllClasses = [];
+      }
+    }
+
+    // Permission mirror of the portal UI / RLS: admin can manage any class;
+    // a teacher can manage classes where they are teacher_id (or, except for
+    // attendance writes which RLS limits to the primary teacher,
+    // secondary_teacher_id).
+    _rivenCanManageClass(classRow, { attendance = false } = {}) {
+      if (this.userInfo.profile.user_type === 'admin') return true;
+      if (this.userInfo.profile.user_type !== 'teacher') return false;
+      const me = this.userInfo.user.id;
+      if (classRow.teacher_id === me) return true;
+      if (!attendance && classRow.secondary_teacher_id === me) return true;
+      return false;
     }
 
     toggleTerminalPalette() {
@@ -41560,6 +41662,25 @@
       this._showUserMessage(command);
 
       try {
+        // Pending confirmation gate: a typed yes/no resolves the held action
+        // before anything else is interpreted
+        if (this._pendingAction) {
+          const t = command.trim().toLowerCase().replace(/[!.]+$/, '');
+          if (/^(yes|y|yep|yeah|yup|confirm|confirmed|do it|go ahead|sure|ok|okay|proceed)$/.test(t)) {
+            await this._confirmPendingAction();
+            output.scrollTop = output.scrollHeight;
+            return;
+          }
+          if (/^(no|n|nope|cancel|stop|abort|don'?t|never ?mind|forget it)$/.test(t)) {
+            this._cancelPendingAction();
+            output.scrollTop = output.scrollHeight;
+            return;
+          }
+          // Anything else: set the pending action aside and continue
+          this._pendingAction = null;
+          this.terminalPrint('(I set the pending action aside — nothing was changed.)', '#97a2b0');
+        }
+
         // Check if this is a slash command or natural language
         if (command.trim().startsWith('/')) {
           // Slash command mode
@@ -41621,8 +41742,7 @@
       } else if (cmd === '/help') {
         this.terminalPrintHelp();
       } else if (cmd === '/clear') {
-        const output = document.getElementById('terminal-output');
-        if (output) output.innerHTML = '';
+        this.clearTerminalChat();
       } else {
         this.terminalPrintError(`Unknown command: ${cmd}. Type /help for available commands.`);
       }
@@ -41900,6 +42020,10 @@
       // verbatim from the original input for note content etc.
       const qm = original.match(/["“”']([^"“”']{2,})["“”']/);
       if (qm) entities.quoted = qm[1].trim();
+
+      // Class mentioned by name/subject (used by enrollment, attendance,
+      // grades, roster intents)
+      entities.classMatch = this._rivenMatchClass(normalized);
 
       // Two-student phrases. "from A to B" (transfers) and "A and/or/vs B"
       // (comparisons). Fragments are fuzzy-matched independently; in pair
@@ -42230,22 +42354,76 @@
           capability: 'bank',
           patterns: [/\bbank(ed|ing)?\b/]
         },
+        // MARK_ATTENDANCE — real write: "mark jordan present in math today"
         {
-          intent: 'CAPABILITY',
-          capability: 'attendance_write',
+          intent: 'MARK_ATTENDANCE',
           patterns: [
             /\bmark\b.*\b(present|absent|late|tardy|here)\b/,
             /\b(mark|record|log|enter|change|fix|update|set)\b.*\battendance\b/
+          ],
+          requiresStudent: true
+        },
+        // UPDATE_CONTACT — "change jordan's phone to 555-1234"
+        {
+          intent: 'UPDATE_CONTACT',
+          patterns: [
+            /\b(change|update|set|edit|fix)\b.*\b(phone|email|address|contact|dob|date of birth|birthday)\b/
+          ],
+          requiresStudent: true
+        },
+        // SET_GRADE — "set jordan's final grade in math to 95", "give eli a B+
+        // participation grade". Comes before the RTC mutators; the info-noun
+        // guard already keeps grade phrasings away from ADD/SUBTRACT_RTC.
+        {
+          intent: 'SET_GRADE',
+          patterns: [
+            /\b(set|change|give|gave|update|make|put|enter|record|override)\b.*\bgrade\b/,
+            /\bgrade\b.*\bto\b\s*\d/,
+            /\b(final|participation|academic|skill)\s+grade\b/
+          ],
+          requiresStudent: true
+        },
+        // CREATE_CLASS — "create a class called Robotics"
+        {
+          intent: 'CREATE_CLASS',
+          patterns: [
+            /\b(create|make|start|set up|open)\b.*\b(new\s+)?class\b/,
+            /\bnew class\b/
           ]
         },
+        // UNENROLL_STUDENT — "remove jordan from math" (before SUBTRACT_RTC
+        // and DELETE_CLASS; currency phrasing falls through to RTC)
         {
-          intent: 'CAPABILITY',
-          capability: 'enroll',
+          intent: 'UNENROLL_STUDENT',
           patterns: [
-            /\b(add|put|enroll|enrol|register|sign(ed)? up|move)\b.+\b(to|in|into)\b.+\bclass(es)?\b/,
-            /\benroll(ing|ment)?\b/,
-            /\b(remove|drop|kick)\b.+\bfrom\b.+\bclass\b/
-          ]
+            /\b(remove|drop|kick|pull|unenroll|unenrol|withdraw|take)\b.+\bfrom\b/
+          ],
+          requiresStudent: true,
+          requiresClass: true,
+          notIfCurrency: true,
+          notIfInfoNoun: true
+        },
+        // ENROLL_STUDENT — "add jordan to robotics" (currency phrasing falls
+        // through to ADD_RTC)
+        {
+          intent: 'ENROLL_STUDENT',
+          patterns: [
+            /\b(add|put|enroll|enrol|register|sign(ed)? up|move)\b.+\b(to|in|into)\b/
+          ],
+          requiresStudent: true,
+          requiresClass: true,
+          notIfCurrency: true,
+          // "give eli's attendance in math" must stay a read, not an enrollment
+          notIfInfoNoun: true
+        },
+        // DELETE_CLASS — "archive the robotics class" (after UNENROLL so
+        // "remove jordan from math class" stays an unenrollment)
+        {
+          intent: 'DELETE_CLASS',
+          patterns: [
+            /\b(delete|archive|close|deactivate|shut down|remove)\b.*\bclass\b/
+          ],
+          requiresClass: true
         },
         // TRANSFER_RTC — "give 2 gold from evelyn to charlotte". Must precede
         // SUBTRACT_RTC ("\d+ from X") and ADD_RTC.
@@ -42305,6 +42483,35 @@
             /\b(show|view|see|read|find|search|list|pull up|bring up|any|what|got|have)\b.*\bnote\b/,
             /\bnote\b.*\b(for|on|about|from)\b/
           ]
+        },
+        // VIEW_GRADES — "what are jordan's grades in math", "grades for the
+        // math class" (read; before VIEW_STUDENT)
+        {
+          intent: 'VIEW_GRADES',
+          patterns: [
+            /\bgrades?\b/,
+            /\breport card\b/,
+            /\bgpa\b/
+          ],
+          requiresStudentOrClass: true
+        },
+        // VIEW_ROSTER — "who's in robotics?"
+        {
+          intent: 'VIEW_ROSTER',
+          patterns: [
+            /\broster\b/,
+            /\bwho('s| is| are| all)?\s+(all\s+)?(in|taking|enrolled)\b/,
+            /\b(students|kids)\s+(in|taking)\b/
+          ],
+          requiresClass: true
+        },
+        // VIEW_CONTACT — "what's jordan's phone number"
+        {
+          intent: 'VIEW_CONTACT',
+          patterns: [
+            /\b(phone|address|contact info|contact details|date of birth|birthday|emergency contact)\b/
+          ],
+          requiresStudent: true
         },
         // ATTENDANCE_ISSUES — aggregate over ALL students ("which students have
         // bad attendance"); must precede VIEW_ATTENDANCE which is per-student
@@ -42429,8 +42636,9 @@
       for (const pattern of patterns) {
         // Safety: don't allow an info-question to mutate balances
         if (blockMutation && (pattern.intent === 'ADD_RTC' || pattern.intent === 'SUBTRACT_RTC')) continue;
-        // "add 5 rtc to jordan in math class" is an award, not enrollment
-        if (pattern.capability === 'enroll' && hasCurrency) continue;
+        // "add 5 rtc to jordan in math class" is an award, not an enrollment
+        if (pattern.notIfCurrency && hasCurrency) continue;
+        if (pattern.notIfInfoNoun && hasInfoNoun) continue;
         for (const regex of pattern.patterns) {
           if (regex.test(normalized)) {
             // Check if required entities are present
@@ -42439,6 +42647,8 @@
             if (pattern.requiresFromTo && !hasFromTo) continue;
             if (pattern.requiresPair && !(hasPair || hasFromTo)) continue;
             if (pattern.requiresSince && !entities.sinceDate) continue;
+            if (pattern.requiresClass && !entities.classMatch) continue;
+            if (pattern.requiresStudentOrClass && !entities.student && !entities.classMatch) continue;
 
             return {
               intent: pattern.intent,
@@ -42615,6 +42825,47 @@
           await this.terminalListClasses(entities);
           break;
 
+        case 'MARK_ATTENDANCE':
+          await this.terminalMarkAttendance(entities);
+          break;
+
+        case 'ENROLL_STUDENT':
+          await this.terminalEnrollStudent(entities);
+          break;
+
+        case 'UNENROLL_STUDENT':
+          await this.terminalUnenrollStudent(entities);
+          break;
+
+        case 'CREATE_CLASS':
+          await this.terminalCreateClass(entities);
+          break;
+
+        case 'DELETE_CLASS':
+          await this.terminalDeleteClass(entities);
+          break;
+
+        case 'SET_GRADE':
+          await this.terminalSetGrade(entities);
+          break;
+
+        case 'VIEW_GRADES':
+          await this.terminalShowGrades(entities);
+          break;
+
+        case 'VIEW_ROSTER':
+          await this.terminalShowRoster(entities);
+          break;
+
+        case 'UPDATE_CONTACT':
+          await this.terminalUpdateContact(entities);
+          break;
+
+        case 'VIEW_CONTACT':
+          if (student) await this.terminalShowContact(student);
+          else this.terminalPrintError('Whose contact info? Tell me a student name.');
+          break;
+
         default:
           this.terminalPrintError('I understood that, but something went wrong');
       }
@@ -42635,11 +42886,17 @@
     • "Show me notes about [student/class/teacher] from last month"<br>
     • "Any notes mentioning homework this week?"<br>
     • "Give 5 RTC from [student] to [student]" (transfers)<br>
-    • "Compare [student] and [student]"<br>
+    • "Compare [student] and [student]" (RTC or grades)<br>
     • "Which students have bad attendance recently?"<br>
-    • "What classes is [student] in?" / "What math classes do we have?"<br>
+    • "What classes is [student] in?" / "Who's in [class]?"<br>
+    • "Mark [student] present in [class]" (or absent/late, "yesterday" works)<br>
+    • "Add [student] to [class]" / "Remove [student] from [class]"<br>
+    • "Create a class called [name]"<br>
+    • "Set [student]'s final grade in [class] to 92" (or participation/academic, letters OK)<br>
+    • "What are [student]'s grades?" / "Grades for [class]"<br>
+    • "Change [student]'s phone to 555-1234" / "What's [student]'s contact info?"<br>
     • "How much RTC did [student] have last week?"<br>
-    • "Undo that" (reverses my last RTC change, transfer, or note)<br>
+    • "Undo that" (reverses my recent changes, one at a time)<br>
     • "Show me the top 10 students"<br>
     • "What's John's transaction history?"<br>
     • "List all active students"
@@ -42999,37 +43256,6 @@
       if (output) output.innerHTML += html;
     }
 
-    async terminalUndoRTC() {
-      const last = this._nlpContext?.lastTransaction;
-      if (!last) {
-        this.terminalPrintError("There's nothing recent to undo. I can only undo an RTC change or a note I just made.");
-        return;
-      }
-
-      // rtc_transactions is an append-only ledger — undo posts a compensating
-      // reverse transaction rather than deleting the original.
-      const reverse = -last.amount;
-      const { data: txData, error } = await this.auth.supabase.rpc('process_rtc_transaction', {
-        p_user_id: last.studentId,
-        p_amount: reverse,
-        p_transaction_type: 'admin_adjustment',
-        p_description: `Undo of ${last.amount > 0 ? '+' : ''}${last.amount} RTC${last.txId ? ' (txn ' + last.txId + ')' : ''}`,
-        p_reference_id: last.txId || null,
-        p_reference_type: 'undo'
-      });
-      if (error) throw error;
-
-      const newBalance = last.balanceAfter + reverse;
-      this._addRecentStudent({ id: last.studentId, full_name: last.studentName, rtc_balance: newBalance });
-      this._naturalSuccess([
-        `Undone — reversed ${last.amount > 0 ? '+' : ''}${last.amount} RTC for ${last.studentName}. Balance is back to ${newBalance}.`,
-        `Reverted that ${last.amount > 0 ? 'award' : 'deduction'}. ${last.studentName} is back to ${newBalance} RTC.`
-      ]);
-
-      // Only the most recent action can be undone, and only once
-      this._nlpContext.lastTransaction = null;
-    }
-
     // ---- Notes (Riven ↔ unified notes system) ----
 
     _entitiesFromRaw(raw) {
@@ -43039,37 +43265,71 @@
       return this._extractEntities(resolved, raw);
     }
 
-    async terminalUndoLast() {
-      // Generic undo: whichever happened most recently — note, transfer, or RTC change
-      const ctx = this._nlpContext || {};
-      const candidates = [
-        ctx.lastNoteAction && { ts: ctx.lastNoteAction.timestamp || 0, run: () => this.terminalUndoNote() },
-        ctx.lastTransfer && { ts: ctx.lastTransfer.timestamp || 0, run: () => this.terminalUndoTransfer() },
-        ctx.lastTransaction && { ts: ctx.lastTransaction.timestamp || 0, run: () => this.terminalUndoRTC() }
-      ].filter(Boolean).sort((a, b) => b.ts - a.ts);
-      if (!candidates.length) {
-        this.terminalPrintError("There's nothing recent to undo. I can only undo an RTC change, transfer, or note I just made.");
-        return;
-      }
-      await candidates[0].run();
+    // ---- Confirmation framework (sensitive writes pause here) ----
+
+    _requestConfirmation(summaryHtml, executeFn) {
+      this._pendingAction = { summary: summaryHtml, execute: executeFn, timestamp: Date.now() };
+      this._showRivenMessage(`⚠️ <b>Please confirm:</b><br>${summaryHtml}
+        <div style="display: flex; gap: 8px; margin-top: 10px;">
+          <button onclick="app._confirmPendingAction()" style="padding: 6px 16px; border-radius: 6px; border: 1px solid #2f6b6d; background: #2f6b6d; color: #f2e6c9; cursor: pointer; font-weight: 600;">✅ Confirm</button>
+          <button onclick="app._cancelPendingAction()" style="padding: 6px 16px; border-radius: 6px; border: 1px solid #b05f24; background: transparent; color: #b05f24; cursor: pointer; font-weight: 600;">❌ Cancel</button>
+        </div>
+        <div style="font-size: 11px; color: #6b5236; margin-top: 6px;">…or just reply "yes" / "no". Anything else cancels it.</div>`, true);
     }
 
-    async terminalUndoNote() {
-      const last = this._nlpContext?.lastNoteAction;
-      if (!last) {
-        this.terminalPrintError("There's no recent note of mine to undo.");
+    async _confirmPendingAction() {
+      const pa = this._pendingAction;
+      if (!pa) { this.terminalPrintError('Nothing is waiting for confirmation.'); return; }
+      this._pendingAction = null;
+      if (Date.now() - pa.timestamp > 5 * 60 * 1000) {
+        this.terminalPrintError('That request expired (5 min) — please ask again.');
         return;
       }
-      const { error } = await this.auth.supabase.from('notes').delete().eq('id', last.id);
-      if (error) {
-        this.terminalPrintError('Could not remove that note: ' + error.message);
+      try {
+        await pa.execute();
+      } catch (err) {
+        console.error('Confirmed action failed:', err);
+        this.terminalPrintError('That failed: ' + err.message);
+      }
+      const out = document.getElementById('terminal-output');
+      if (out) out.scrollTop = out.scrollHeight;
+    }
+
+    _cancelPendingAction() {
+      if (!this._pendingAction) { this.terminalPrintError('Nothing is waiting for confirmation.'); return; }
+      this._pendingAction = null;
+      this._showRivenMessage('Cancelled — nothing was changed.', true);
+    }
+
+    // ---- Undo stack: every write pushes a reversal closure ----
+
+    _pushUndo(desc, fn) {
+      this._undoStack = this._undoStack || [];
+      this._undoStack.push({ desc, fn, timestamp: Date.now() });
+      if (this._undoStack.length > 15) this._undoStack.shift();
+    }
+
+    async terminalUndoLast() {
+      this._undoStack = this._undoStack || [];
+      const entry = this._undoStack.pop();
+      if (!entry) {
+        this.terminalPrintError("There's nothing recent to undo — the undo list is empty for this session.");
         return;
       }
-      this._naturalSuccess([
-        `Undone — I deleted the note ${last.desc}.`,
-        `Scratched that note ${last.desc}.`
-      ]);
-      this._nlpContext.lastNoteAction = null;
+      try {
+        await entry.fn();
+        this._naturalSuccess([
+          `Undone — reversed ${entry.desc}.`,
+          `Reverted ${entry.desc}.`
+        ]);
+        if (this._undoStack.length) {
+          const next = this._undoStack[this._undoStack.length - 1];
+          this.terminalPrint(`(say "undo" again to also reverse ${next.desc})`, '#97a2b0');
+        }
+      } catch (err) {
+        console.error('Undo failed:', err);
+        this.terminalPrintError('Undo failed: ' + err.message);
+      }
     }
 
     // ---- Conversational layer & honest fallbacks ----
@@ -43128,14 +43388,9 @@
     }
 
     _respondCorrection() {
-      const ctx = this._nlpContext || {};
-      const acts = [
-        ctx.lastTransaction && { ts: ctx.lastTransaction.timestamp || 0, desc: `${ctx.lastTransaction.amount > 0 ? '+' : ''}${ctx.lastTransaction.amount} RTC for ${ctx.lastTransaction.studentName}` },
-        ctx.lastNoteAction && { ts: ctx.lastNoteAction.timestamp || 0, desc: `the note ${ctx.lastNoteAction.desc}` },
-        ctx.lastTransfer && { ts: ctx.lastTransfer.timestamp || 0, desc: `the transfer of ${ctx.lastTransfer.amount} RTC from ${ctx.lastTransfer.fromName} to ${ctx.lastTransfer.toName}` }
-      ].filter(Boolean).sort((a, b) => b.ts - a.ts);
-      if (acts.length && Date.now() - acts[0].ts < 5 * 60 * 1000) {
-        this._showRivenMessage(`Sorry about that! My last change was <b>${this.escapeHtml(acts[0].desc)}</b> — say "undo" and I'll reverse it. Then tell me what you actually wanted.`, true);
+      const top = (this._undoStack || [])[this._undoStack?.length - 1];
+      if (top && Date.now() - top.timestamp < 5 * 60 * 1000) {
+        this._showRivenMessage(`Sorry about that! My last change was <b>${this.escapeHtml(top.desc)}</b> — say "undo" and I'll reverse it. Then tell me what you actually wanted.`, true);
       } else {
         this._showRivenMessage(`Sorry — I misread that. Could you say it another way? Mentioning the student, class, or amount directly helps me a lot.`, true);
       }
@@ -43145,11 +43400,14 @@
       const who = entities.student?.student?.full_name;
       this._showRivenMessage(`I understood you want me to <b>do</b> something${who ? ' with ' + this.escapeHtml(who) : ''}, but that's outside what I can do right now, and I'd rather tell you that than pretend.<br><br>
         Here's what I <b>can</b> do:<br>
-        • Look things up — balances, history, attendance, notes, classes, enrollments<br>
+        • Look things up — balances, history, attendance, grades, notes, classes, rosters, contact info<br>
         • Award, deduct, or transfer RTC ("give eli 5", "move 10 from eli to ava")<br>
-        • Take and search notes ("note for eli: ...", "any notes on ava this week?")<br>
-        • Undo my last change<br><br>
-        For everything else (marking attendance, rosters, grades…), the portal tabs are the way to go.`, true);
+        • Mark attendance ("mark eli present in Math")<br>
+        • Manage rosters and classes ("add eli to Robotics", "create a class called Chess Club")<br>
+        • Set grades ("set eli's final grade in Math to 92")<br>
+        • Update contact info ("change eli's phone to 555-1234")<br>
+        • Take and search notes, and undo my recent changes<br><br>
+        Sensitive changes always ask you to confirm first.`, true);
     }
 
     _handleUnknown(normalized, entities) {
@@ -43174,9 +43432,7 @@
     _rivenCapabilityReply(key) {
       const link = (section, label) => `<span style="color: var(--accent); cursor: pointer; text-decoration: underline;" onclick="app.showSection('${section}')">${label}</span>`;
       const replies = {
-        bank: `I don't handle banking myself — deposits and savings live in the ${link('rtc-bank-helper', 'Bank Helper tab')}. If you just meant a regular award, say "give [name] 30 rtc" and I'll do that.`,
-        attendance_write: `I can <b>read</b> attendance, but I can't change it yet — marking attendance happens on the class page (${link('classes', 'Classes tab')} → open the class → Attendance). Want me to show what's recorded? Try "show [name]'s attendance".`,
-        enroll: `I can't change class rosters yet — enrollment is managed in the ${link('classes', 'Classes tab')}. I <b>can</b> tell you what someone is taking: ask "what classes is [name] in?"`
+        bank: `I don't handle banking myself — deposits and savings live in the ${link('rtc-bank-helper', 'Bank Helper tab')}. If you just meant a regular award, say "give [name] 30 rtc" and I'll do that.`
       };
       this._showRivenMessage(replies[key] || replies.bank, true);
     }
@@ -43218,40 +43474,25 @@
       }
       const srcAfter = (src.rtc_balance || 0) - amount;
       const dstAfter = (dst.rtc_balance || 0) + amount;
-      this._nlpContext = this._nlpContext || {};
-      this._nlpContext.lastTransfer = {
-        fromId: src.id, fromName: src.full_name, fromBalanceAfter: srcAfter,
-        toId: dst.id, toName: dst.full_name, toBalanceAfter: dstAfter,
-        amount, timestamp: Date.now()
-      };
+      this._pushUndo(`the transfer of ${amount} RTC from ${src.full_name} to ${dst.full_name}`, async () => {
+        const { error: u1 } = await rpc(src.id, amount, `Undo transfer to ${dst.full_name}`);
+        if (u1) throw u1;
+        const { error: u2 } = await rpc(dst.id, -amount, `Undo transfer from ${src.full_name}`);
+        if (u2) throw new Error('half-completed, check balances: ' + u2.message);
+      });
       this._naturalSuccess([
         `Moved ${amount} RTC from ${src.full_name} (now ${srcAfter}) to ${dst.full_name} (now ${dstAfter}).`,
         `Done — ${dst.full_name} received ${amount} RTC from ${src.full_name}. Balances: ${src.full_name} ${srcAfter}, ${dst.full_name} ${dstAfter}.`
       ]);
     }
 
-    async terminalUndoTransfer() {
-      const last = this._nlpContext?.lastTransfer;
-      if (!last) { this.terminalPrintError('No recent transfer to undo.'); return; }
-      const rpc = (userId, amt, desc) => this.auth.supabase.rpc('process_rtc_transaction', {
-        p_user_id: userId, p_amount: amt, p_transaction_type: 'admin_adjustment',
-        p_description: desc, p_reference_id: null, p_reference_type: 'undo'
-      });
-      const { error: e1 } = await rpc(last.fromId, last.amount, `Undo transfer to ${last.toName}`);
-      if (e1) { this.terminalPrintError('Undo failed: ' + e1.message); return; }
-      const { error: e2 } = await rpc(last.toId, -last.amount, `Undo transfer from ${last.fromName}`);
-      if (e2) { this.terminalPrintError('Undo half-completed — check balances: ' + e2.message); return; }
-      this._naturalSuccess([
-        `Undone — ${last.amount} RTC moved back from ${last.toName} to ${last.fromName}.`,
-        `Reversed that transfer. ${last.fromName} has their ${last.amount} RTC back.`
-      ]);
-      this._nlpContext.lastTransfer = null;
-    }
-
     async terminalCompareStudents(entities) {
       const pair = entities.students || [entities.studentFrom, entities.studentTo];
       const a = pair?.[0]?.student, b = pair?.[1]?.student;
       if (!a || !b) { this.terminalPrintError('Tell me two students to compare, like "compare Evelyn and Charlotte".'); return; }
+      if (/\bgrades?\b|\bgpa\b/.test(entities.normalized || '')) {
+        return this._compareGrades(a, b, entities);
+      }
       const assumed = pair.some(p => p?.assumed);
       const rowsA = await this._findStudentsByName(a.full_name, 'id, first_name, last_name, rtc_balance');
       const rowsB = await this._findStudentsByName(b.full_name, 'id, first_name, last_name, rtc_balance');
@@ -43267,6 +43508,29 @@
         <div style="margin: 6px 0;"><b>${this.escapeHtml(sb.full_name)}</b> — ${balB} RTC ${bar(balB)}</div>
         <div style="color: var(--muted); font-size: 12px; margin-top: 8px;">${leader ? this.escapeHtml(leader.full_name) + ' is ahead by ' + diff + ' RTC.' : 'Dead even!'}</div>`;
       this._showRivenMessage(html, true);
+    }
+
+    async _compareGrades(a, b, entities) {
+      const quarter = await this._rivenCurrentQuarter();
+      if (!quarter) { this.terminalPrintError('No active quarter is configured.'); return; }
+      const sb = this.auth.supabase;
+      const fetchAvg = async (sid) => {
+        const { data } = await sb.from('quarter_grade_snapshots')
+          .select('class_grade, class_enrollments!inner(student_id)')
+          .eq('quarter_id', quarter.id).eq('class_enrollments.student_id', sid);
+        const vals = (data || []).map(r => r.class_grade).filter(v => v != null && v !== 0);
+        return vals.length ? { avg: Math.round((vals.reduce((s, v) => s + v, 0) / vals.length) * 10) / 10, n: vals.length } : null;
+      };
+      const [ga, gb] = await Promise.all([fetchAvg(a.id), fetchAvg(b.id)]);
+      const fmt = (g) => g ? `${g.avg} (${this._pctToLetter(g.avg)}) across ${g.n} class${g.n === 1 ? '' : 'es'}` : 'no grades recorded';
+      let verdict = '';
+      if (ga && gb) {
+        verdict = ga.avg === gb.avg ? 'Dead even!' : `${(ga.avg > gb.avg ? a : b).full_name} is ahead by ${Math.abs(ga.avg - gb.avg).toFixed(1)} points.`;
+      }
+      this._showRivenMessage(`<div style="font-weight: 600; margin-bottom: 8px;">🎓 Grade comparison — ${this.escapeHtml(quarter.name || 'current quarter')}</div>
+        <div style="margin: 4px 0;"><b>${this.escapeHtml(a.full_name)}</b> — ${fmt(ga)}</div>
+        <div style="margin: 4px 0;"><b>${this.escapeHtml(b.full_name)}</b> — ${fmt(gb)}</div>
+        ${verdict ? `<div style="color: var(--muted); font-size: 12px; margin-top: 6px;">${this.escapeHtml(verdict)}</div>` : ''}`, true);
     }
 
     async terminalAttendanceIssues(entities) {
@@ -43400,18 +43664,570 @@
       this._showRivenMessage(html, true);
     }
 
-    _rivenMatchClass(text) {
-      // Match a class by name words appearing in the text
-      const classes = this._notesPeople?.classes || {};
-      const t = text.toLowerCase();
-      let best = null;
-      for (const [id, name] of Object.entries(classes)) {
-        const words = name.toLowerCase().split(/\s+/).filter(w => w.length >= 3);
-        if (words.length && words.every(w => t.includes(w))) {
-          if (!best || name.length > best.name.length) best = { id, name };
-        }
+    // ---- Riven write operations (attendance, enrollment, classes, grades,
+    // contact info). Every write either runs immediately with an undo entry,
+    // or — when sensitive — pauses at _requestConfirmation first. Permissions
+    // mirror the portal UI: admins manage anything; teachers only their own
+    // classes (and RLS enforces the same server-side).
+
+    _isoDaysAgo(n) {
+      return new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
+    }
+
+    _letterToPct(letter) {
+      return { 'a+': 98.5, 'a': 95, 'a-': 91.5, 'b+': 88.5, 'b': 85, 'b-': 81.5, 'c+': 78.5, 'c': 75, 'c-': 71.5, 'd+': 68.5, 'd': 65, 'd-': 61.5, 'f': 55 }[letter.toLowerCase()] ?? null;
+    }
+
+    _pctToLetter(p) {
+      if (p == null || p === 0) return '—';
+      if (p >= 97) return 'A+'; if (p >= 93) return 'A'; if (p >= 90) return 'A-';
+      if (p >= 87) return 'B+'; if (p >= 83) return 'B'; if (p >= 80) return 'B-';
+      if (p >= 77) return 'C+'; if (p >= 73) return 'C'; if (p >= 70) return 'C-';
+      if (p >= 67) return 'D+'; if (p >= 63) return 'D'; if (p >= 60) return 'D-';
+      return 'F';
+    }
+
+    async _rivenCurrentQuarter() {
+      if (this._rivenQuarterCache && Date.now() - this._rivenQuarterCache.at < 10 * 60 * 1000) {
+        return this._rivenQuarterCache.q;
       }
-      return best;
+      const { data, error } = await this.auth.supabase
+        .from('quarters').select('*').eq('is_archived', false)
+        .order('start_date', { ascending: false });
+      if (error) throw error;
+      const q = (data || []).find(x => x.is_current) || (data || [])[0] || null;
+      this._rivenQuarterCache = { q, at: Date.now() };
+      return q;
+    }
+
+    async _rivenFindEnrollment(classId, studentId) {
+      const { data, error } = await this.auth.supabase
+        .from('class_enrollments').select('id, status')
+        .eq('class_id', classId).eq('student_id', studentId)
+        .order('enrolled_at', { ascending: false }).limit(1);
+      if (error) throw error;
+      return (data || [])[0] || null;
+    }
+
+    _rivenResolveClassRow(cm) {
+      if (!cm) return null;
+      return cm.row || (this._terminalAllClasses || []).find(c => c.id === cm.id) || null;
+    }
+
+    async terminalMarkAttendance(entities) {
+      const student = entities.student?.student;
+      if (!student) { this.terminalPrintError('Whose attendance? Tell me a student name.'); return; }
+      const lower = entities.normalized || '';
+      let status = null;
+      if (/\bleft early\b/.test(lower)) status = 'left_early';
+      else if (/\b(absent|missing|out)\b/.test(lower)) status = 'absent';
+      else if (/\b(late|tardy)\b/.test(lower)) status = 'late';
+      else if (/\b(present|here|attended)\b/.test(lower)) status = 'present';
+      if (!status) { this.terminalPrintError('Mark them as what — present, absent, late, or left early?'); return; }
+      const date = /\byesterday\b/.test(lower) ? this._isoDaysAgo(1)
+        : (lower.match(/\b(\d{4}-\d{2}-\d{2})\b/)?.[1] || this._isoDaysAgo(0));
+
+      const sb = this.auth.supabase;
+      let targets = [];
+      let skippedNote = '';
+      const bulk = /\b(all|every)\b[^.]*\bclass/.test(lower) && !entities.classMatch;
+      if (bulk) {
+        const { data: enr, error } = await sb.from('class_enrollments')
+          .select('class_id').eq('student_id', student.id).eq('status', 'active');
+        if (error) { this.terminalPrintError('Could not read enrollments: ' + error.message); return; }
+        const ids = [...new Set((enr || []).map(e => e.class_id))];
+        const all = (this._terminalAllClasses || []).filter(c => ids.includes(c.id));
+        targets = all.filter(c => this._rivenCanManageClass(c, { attendance: true }));
+        if (all.length > targets.length) skippedNote = ` (skipping ${all.length - targets.length} class${all.length - targets.length === 1 ? '' : 'es'} you don't teach)`;
+        if (!targets.length) {
+          this.terminalPrintError(`${student.full_name} isn't in any class whose attendance you can mark — only the primary teacher (or an admin) can.`);
+          return;
+        }
+      } else {
+        const row = this._rivenResolveClassRow(entities.classMatch);
+        if (!row) {
+          this._showRivenMessage(`Which class? Say it like "mark ${this.escapeHtml(student.full_name.split(' ')[0])} ${status.replace(/_/g, ' ')} in Math".`, true);
+          return;
+        }
+        if (!this._rivenCanManageClass(row, { attendance: true })) {
+          this.terminalPrintError(`Only the primary teacher of ${row.name} (or an admin) can mark its attendance.`);
+          return;
+        }
+        targets = [row];
+      }
+
+      const doIt = async () => {
+        const undoOps = [];
+        for (const cls of targets) {
+          const { data: prevRows } = await sb.from('class_attendance').select('*')
+            .eq('class_id', cls.id).eq('student_id', student.id).eq('date', date).is('period', null);
+          // Mirror the portal: delete-then-insert (unique index uses COALESCE(period,0))
+          await sb.from('class_attendance').delete()
+            .eq('class_id', cls.id).eq('student_id', student.id).eq('date', date).is('period', null);
+          const { error: insErr } = await sb.from('class_attendance').insert({
+            class_id: cls.id, student_id: student.id, date, period: null,
+            status, notes: null, marked_by: this.userInfo.user.id
+          });
+          if (insErr) throw insErr;
+          undoOps.push({ cls, prev: (prevRows || [])[0] || null });
+        }
+        this._pushUndo(`marking ${student.full_name} ${status.replace(/_/g, ' ')} on ${date}`, async () => {
+          for (const op of undoOps) {
+            await sb.from('class_attendance').delete()
+              .eq('class_id', op.cls.id).eq('student_id', student.id).eq('date', date).is('period', null);
+            if (op.prev) {
+              const { id, ...rest } = op.prev;
+              await sb.from('class_attendance').insert(rest);
+            }
+          }
+        });
+        const names = targets.map(t => t.name).join(', ');
+        this._naturalSuccess([
+          `Marked ${student.full_name} ${status.replace(/_/g, ' ')} in ${names} for ${date}.${skippedNote}`,
+          `Done — ${student.full_name} is recorded ${status.replace(/_/g, ' ')} (${names}, ${date}).${skippedNote}`
+        ]);
+      };
+
+      if (targets.length > 1) {
+        this._requestConfirmation(
+          `Mark <b>${this.escapeHtml(student.full_name)}</b> as <b>${status.replace(/_/g, ' ')}</b> on <b>${date}</b> in ${targets.length} classes: ${this.escapeHtml(targets.map(t => t.name).join(', '))}${skippedNote}`,
+          doIt
+        );
+      } else {
+        await doIt();
+      }
+    }
+
+    async terminalEnrollStudent(entities) {
+      const student = entities.student?.student;
+      const row = this._rivenResolveClassRow(entities.classMatch);
+      if (!student || !row) { this.terminalPrintError('Tell me both — like "add Jordan to Robotics".'); return; }
+      if (!this._rivenCanManageClass(row)) {
+        this.terminalPrintError(`You don't have permission to change the roster of ${row.name} — only its teacher or an admin can.`);
+        return;
+      }
+      const sb = this.auth.supabase;
+      const existing = await this._rivenFindEnrollment(row.id, student.id);
+      if (existing && existing.status === 'active') {
+        this._showRivenMessage(`${this.escapeHtml(student.full_name)} is already enrolled in ${this.escapeHtml(row.name)} — nothing to do.`, true);
+        return;
+      }
+      this._requestConfirmation(
+        `Enroll <b>${this.escapeHtml(student.full_name)}</b> in <b>${this.escapeHtml(row.name)}</b>${existing ? ' (re-activating their previous enrollment)' : ''}`,
+        async () => {
+          const now = new Date().toISOString();
+          if (existing) {
+            const prevStatus = existing.status;
+            const { error } = await sb.from('class_enrollments')
+              .update({ status: 'active', enrolled_at: now, updated_at: now }).eq('id', existing.id);
+            if (error) throw error;
+            this._pushUndo(`enrolling ${student.full_name} in ${row.name}`, async () => {
+              const { error: e } = await sb.from('class_enrollments')
+                .update({ status: prevStatus, updated_at: new Date().toISOString() }).eq('id', existing.id);
+              if (e) throw e;
+            });
+          } else {
+            const { data: ins, error } = await sb.from('class_enrollments')
+              .insert({ class_id: row.id, student_id: student.id, status: 'active', enrolled_at: now })
+              .select().single();
+            if (error) {
+              if (/policy|permission|denied/i.test(error.message)) {
+                throw new Error(`the database refused the new enrollment — teachers can re-activate past enrollments, but brand-new enrollments may need an admin.`);
+              }
+              throw error;
+            }
+            this._pushUndo(`enrolling ${student.full_name} in ${row.name}`, async () => {
+              const { error: e } = await sb.from('class_enrollments')
+                .update({ status: 'removed', updated_at: new Date().toISOString() }).eq('id', ins.id);
+              if (e) throw e;
+            });
+          }
+          this._naturalSuccess([
+            `${student.full_name} is now enrolled in ${row.name}.`,
+            `Done — added ${student.full_name} to ${row.name}.`
+          ]);
+        }
+      );
+    }
+
+    async terminalUnenrollStudent(entities) {
+      const student = entities.student?.student;
+      const row = this._rivenResolveClassRow(entities.classMatch);
+      if (!student || !row) { this.terminalPrintError('Tell me both — like "remove Jordan from Robotics".'); return; }
+      if (!this._rivenCanManageClass(row)) {
+        this.terminalPrintError(`You don't have permission to change the roster of ${row.name} — only its teacher or an admin can.`);
+        return;
+      }
+      const existing = await this._rivenFindEnrollment(row.id, student.id);
+      if (!existing || existing.status !== 'active') {
+        this._showRivenMessage(`${this.escapeHtml(student.full_name)} isn't actively enrolled in ${this.escapeHtml(row.name)} — nothing to remove.`, true);
+        return;
+      }
+      const sb = this.auth.supabase;
+      this._requestConfirmation(
+        `Remove <b>${this.escapeHtml(student.full_name)}</b> from <b>${this.escapeHtml(row.name)}</b>? Their grades and submissions are preserved; this just deactivates the enrollment.`,
+        async () => {
+          const { error } = await sb.from('class_enrollments')
+            .update({ status: 'removed', updated_at: new Date().toISOString() }).eq('id', existing.id);
+          if (error) throw error;
+          this._pushUndo(`removing ${student.full_name} from ${row.name}`, async () => {
+            const { error: e } = await sb.from('class_enrollments')
+              .update({ status: 'active', updated_at: new Date().toISOString() }).eq('id', existing.id);
+            if (e) throw e;
+          });
+          this._naturalSuccess([
+            `Removed ${student.full_name} from ${row.name}. Their grades are preserved.`,
+            `Done — ${student.full_name} is out of ${row.name} (grades kept).`
+          ]);
+        }
+      );
+    }
+
+    async terminalCreateClass(entities) {
+      const userType = this.userInfo.profile.user_type;
+      if (userType !== 'teacher' && userType !== 'admin') {
+        this.terminalPrintError('Only teachers and admins can create classes.');
+        return;
+      }
+      const original = entities.original || '';
+      let name = entities.quoted || original.match(/\b(?:called|named|titled)\s+(.+?)(?:\s+(?:for|with|subject)\b.*)?$/i)?.[1]?.trim() || null;
+      if (name) name = name.replace(/[.!?]+$/, '').trim();
+      if (!name) {
+        this._showRivenMessage(`What should the class be called? Say it like: create a class called <b>Robotics 101</b> (you can add: subject Science).`, true);
+        return;
+      }
+      const subject = original.match(/\bsubject\s+([A-Za-z][A-Za-z &/-]*)/i)?.[1]?.trim()
+        || original.match(/\bfor\s+([A-Za-z][A-Za-z]+)\s*$/i)?.[1]?.trim() || 'Other';
+      const sb = this.auth.supabase;
+      this._requestConfirmation(
+        `Create a new class <b>${this.escapeHtml(name)}</b> (subject: ${this.escapeHtml(subject)}, max 30 students) with you as the teacher?`,
+        async () => {
+          const { data, error } = await sb.from('classes').insert([{
+            name, subject, teacher_id: this.userInfo.user.id,
+            max_students: 30, grading_weight: 'even'
+          }]).select().single();
+          if (error) throw error;
+          await this._loadTerminalClasses();
+          this._pushUndo(`creating the class ${name}`, async () => {
+            const { error: e } = await sb.from('classes').update({ is_active: false }).eq('id', data.id);
+            if (e) throw e;
+            await this._loadTerminalClasses();
+          });
+          this._naturalSuccess([
+            `Created ${name} (${subject}) — it's live and you're the teacher. Set its schedule from the Classes tab when ready.`,
+            `Done! ${name} exists now. Say "add [student] to ${name}" to start enrolling.`
+          ]);
+        }
+      );
+    }
+
+    async terminalDeleteClass(entities) {
+      const row = this._rivenResolveClassRow(entities.classMatch);
+      if (!row) { this.terminalPrintError('Which class should I deactivate?'); return; }
+      if (!this._rivenCanManageClass(row, { attendance: true })) {
+        this.terminalPrintError(`Only ${row.name}'s primary teacher or an admin can deactivate it.`);
+        return;
+      }
+      const sb = this.auth.supabase;
+      const isAdmin = this.userInfo.profile.user_type === 'admin';
+      this._requestConfirmation(
+        `Deactivate the class <b>${this.escapeHtml(row.name)}</b>? It disappears from active lists but nothing is deleted — enrollments and grades stay, and it can be restored.`,
+        async () => {
+          let q = sb.from('classes').update({ is_active: false }).eq('id', row.id);
+          if (!isAdmin) q = q.eq('teacher_id', this.userInfo.user.id);
+          const { error } = await q;
+          if (error) throw error;
+          await this._loadTerminalClasses();
+          this._pushUndo(`deactivating ${row.name}`, async () => {
+            const { error: e } = await sb.from('classes').update({ is_active: true }).eq('id', row.id);
+            if (e) throw e;
+            await this._loadTerminalClasses();
+          });
+          this._naturalSuccess([
+            `${row.name} is deactivated. Say "undo" to bring it back.`,
+            `Done — ${row.name} is no longer active (recoverable).`
+          ]);
+        }
+      );
+    }
+
+    async terminalSetGrade(entities) {
+      const student = entities.student?.student;
+      const row = this._rivenResolveClassRow(entities.classMatch);
+      if (!student) { this.terminalPrintError('Whose grade? Tell me a student name.'); return; }
+      if (!row) {
+        this._showRivenMessage(`Which class? Say it like: set ${this.escapeHtml(student.full_name.split(' ')[0])}'s final grade in <b>Math</b> to 95.`, true);
+        return;
+      }
+      if (!this._rivenCanManageClass(row)) {
+        this.terminalPrintError(`You can only set grades for your own classes — ${row.name} isn't one of them.`);
+        return;
+      }
+      const lower = entities.normalized || '';
+      const component = /\bparticipation\b/.test(lower) ? 'participation'
+        : /\b(academic|skill)\b/.test(lower) ? 'academic' : 'final';
+      // Value: number 0–100, or letter grade
+      let value = (entities.amount != null && entities.amount >= 0 && entities.amount <= 100) ? entities.amount : null;
+      if (value === null) {
+        const lm = lower.match(/\b([abcdf][+-])(?=[\s.,!?]|$)/) || lower.match(/\b(?:an?|to)\s+([abcdf])\b(?!\w)/);
+        if (lm) value = this._letterToPct(lm[1]);
+      }
+      if (value === null) {
+        this.terminalPrintError('What grade? Give me a percent (0–100) or a letter, like "set her final grade in Math to 92" or "to a B+".');
+        return;
+      }
+      const sb = this.auth.supabase;
+      const quarter = await this._rivenCurrentQuarter();
+      if (!quarter) { this.terminalPrintError('No active quarter is configured — set one up in admin first.'); return; }
+      const enrollment = await this._rivenFindEnrollment(row.id, student.id);
+      if (!enrollment) { this.terminalPrintError(`${student.full_name} isn't enrolled in ${row.name}.`); return; }
+      const { data: prevSnap } = await sb.from('quarter_grade_snapshots').select('*')
+        .eq('enrollment_id', enrollment.id).eq('quarter_id', quarter.id).maybeSingle();
+
+      const letter = this._pctToLetter(value);
+      const compLabel = component === 'final' ? 'final (class) grade' : component + ' grade';
+      this._requestConfirmation(
+        `Set <b>${this.escapeHtml(student.full_name)}</b>'s <b>${compLabel}</b> in <b>${this.escapeHtml(row.name)}</b> to <b>${value} (${letter})</b> for ${this.escapeHtml(quarter.name || 'the current quarter')}${component !== 'participation' ? ' — this overrides the calculated grade' : ''}.`,
+        async () => {
+          if (component === 'final') {
+            const { error } = await sb.rpc('set_class_grade_override', {
+              p_enrollment_id: enrollment.id, p_quarter_id: quarter.id,
+              p_class_grade: value, p_override: true
+            });
+            if (error) throw error;
+          } else if (component === 'academic') {
+            const { error } = await sb.rpc('set_academic_grade_override', {
+              p_enrollment_id: enrollment.id, p_quarter_id: quarter.id,
+              p_academic_grade: value, p_override: true
+            });
+            if (error) throw error;
+          } else {
+            const { error } = await sb.rpc('upsert_quarter_grade', {
+              p_enrollment_id: enrollment.id, p_quarter_id: quarter.id,
+              p_participation_grade: value, p_teacher_notes: null
+            });
+            if (error) throw error;
+            if (!prevSnap?.class_grade_override) {
+              await sb.rpc('calculate_quarter_grades', { p_enrollment_id: enrollment.id, p_quarter_id: quarter.id });
+            }
+          }
+          this._pushUndo(`setting ${student.full_name}'s ${compLabel} in ${row.name} to ${value}`, async () => {
+            if (prevSnap) {
+              const { error: e } = await sb.from('quarter_grade_snapshots').update({
+                academic_grade: prevSnap.academic_grade,
+                participation_grade: prevSnap.participation_grade,
+                class_grade: prevSnap.class_grade,
+                class_grade_override: prevSnap.class_grade_override,
+                academic_grade_override: prevSnap.academic_grade_override,
+                updated_at: new Date().toISOString()
+              }).eq('id', prevSnap.id);
+              if (e) throw e;
+            } else {
+              await sb.from('quarter_grade_snapshots').update({
+                class_grade_override: false, academic_grade_override: false, participation_grade: null
+              }).eq('enrollment_id', enrollment.id).eq('quarter_id', quarter.id);
+              await sb.rpc('calculate_quarter_grades', { p_enrollment_id: enrollment.id, p_quarter_id: quarter.id });
+            }
+          });
+          this._naturalSuccess([
+            `${student.full_name}'s ${compLabel} in ${row.name} is now ${value} (${letter}).`,
+            `Recorded — ${compLabel} ${value} (${letter}) for ${student.full_name} in ${row.name}.`
+          ]);
+        }
+      );
+    }
+
+    async terminalShowGrades(entities) {
+      const student = entities.student?.student || null;
+      const row = this._rivenResolveClassRow(entities.classMatch);
+      const sb = this.auth.supabase;
+      const quarter = await this._rivenCurrentQuarter();
+      if (!quarter) { this.terminalPrintError('No active quarter is configured.'); return; }
+      this.terminalPrint('Pulling up grades…', '#6aa9ff');
+      const fmt = (v) => (v == null || v === 0) ? '—' : `${v} (${this._pctToLetter(v)})`;
+      const classNames = {};
+      (this._terminalAllClasses || []).forEach(c => { classNames[c.id] = c.name; });
+
+      if (student) {
+        const { data, error } = await sb.from('quarter_grade_snapshots')
+          .select('*, class_enrollments!inner(class_id, student_id)')
+          .eq('quarter_id', quarter.id)
+          .eq('class_enrollments.student_id', student.id);
+        if (error) { this.terminalPrintError('Could not read grades: ' + error.message); return; }
+        let snaps = data || [];
+        if (row) snaps = snaps.filter(s => s.class_enrollments?.class_id === row.id);
+        if (!snaps.length) {
+          this._showRivenMessage(`No grades recorded yet for ${this.escapeHtml(student.full_name)}${row ? ' in ' + this.escapeHtml(row.name) : ''} (${this.escapeHtml(quarter.name || 'current quarter')}).`, true);
+          return;
+        }
+        let html = `<div style="font-weight: 600; margin-bottom: 8px;">🎓 ${this.escapeHtml(student.full_name)} — ${this.escapeHtml(quarter.name || 'current quarter')}</div>`;
+        snaps.forEach(s => {
+          const cn = classNames[s.class_enrollments?.class_id] || 'Class';
+          html += `<div style="padding: 6px 10px; margin: 4px 0; background: rgba(255,255,255,0.03); border-radius: 4px;">
+            <b>${this.escapeHtml(cn)}</b> — final ${fmt(s.class_grade)}${s.class_grade_override ? ' (override)' : ''}
+            <span style="color: var(--muted); font-size: 12px;"> · academic ${fmt(s.academic_grade)} · participation ${fmt(s.participation_grade)}</span>
+          </div>`;
+        });
+        this._showRivenMessage(html, true);
+      } else if (row) {
+        const { data: enr, error } = await sb.from('class_enrollments')
+          .select('id, student_id').eq('class_id', row.id).eq('status', 'active');
+        if (error) { this.terminalPrintError('Could not read the roster: ' + error.message); return; }
+        const ids = (enr || []).map(e => e.id);
+        if (!ids.length) { this._showRivenMessage(`${this.escapeHtml(row.name)} has no active students.`, true); return; }
+        const { data: snaps } = await sb.from('quarter_grade_snapshots')
+          .select('*').eq('quarter_id', quarter.id).in('enrollment_id', ids);
+        const byEnr = {};
+        (snaps || []).forEach(s => { byEnr[s.enrollment_id] = s; });
+        const names = {};
+        (this._terminalAllStudents || []).forEach(s => { names[s.id] = s.full_name; });
+        let html = `<div style="font-weight: 600; margin-bottom: 8px;">🎓 ${this.escapeHtml(row.name)} — ${this.escapeHtml(quarter.name || 'current quarter')} (${enr.length} students)</div>`;
+        enr.forEach(e => {
+          const s = byEnr[e.id];
+          html += `<div style="padding: 5px 10px; margin: 3px 0; background: rgba(255,255,255,0.03); border-radius: 4px;">
+            ${this.escapeHtml(names[e.student_id] || 'Student')} — final ${fmt(s?.class_grade)}
+            <span style="color: var(--muted); font-size: 12px;"> · academic ${fmt(s?.academic_grade)} · participation ${fmt(s?.participation_grade)}</span>
+          </div>`;
+        });
+        this._showRivenMessage(html, true);
+      }
+    }
+
+    async terminalShowRoster(entities) {
+      const row = this._rivenResolveClassRow(entities.classMatch);
+      if (!row) { this.terminalPrintError('Which class?'); return; }
+      const { data: enr, error } = await this.auth.supabase
+        .from('class_enrollments').select('student_id').eq('class_id', row.id).eq('status', 'active');
+      if (error) { this.terminalPrintError('Could not read the roster: ' + error.message); return; }
+      const names = {};
+      (this._terminalAllStudents || []).forEach(s => { names[s.id] = s.full_name; });
+      const list = (enr || []).map(e => names[e.student_id] || 'Unknown').sort();
+      if (!list.length) { this._showRivenMessage(`${this.escapeHtml(row.name)} has no active students.`, true); return; }
+      this._showRivenMessage(
+        `<div style="font-weight: 600; margin-bottom: 6px;">👥 ${this.escapeHtml(row.name)} — ${list.length} student${list.length === 1 ? '' : 's'}</div>` +
+        list.map(n => `<div style="padding: 3px 8px;">• ${this.escapeHtml(n)}</div>`).join(''), true);
+    }
+
+    async terminalUpdateContact(entities) {
+      const student = entities.student?.student;
+      if (!student) { this.terminalPrintError('Whose contact info? Tell me a student name.'); return; }
+      const o = entities.original || '';
+      const updates = {};
+      let m = o.match(/phone(?:\s*number)?\s*(?:to|:|=)?\s*([+()\d][\d\s\-().]{5,})/i);
+      if (m) updates.phone = m[1].trim();
+      m = o.match(/email\s*(?:to|:|=)?\s*([^\s,]+@[^\s,]+)/i);
+      if (m) updates.email = m[1].replace(/[.,!?]+$/, '');
+      m = o.match(/(?:date of birth|birthday|dob)\s*(?:to|:|=)?\s*(\d{4}-\d{2}-\d{2})/i);
+      if (m) updates.date_of_birth = m[1];
+      m = o.match(/address\s*(?:to|:|=)?\s+(.{5,})$/i);
+      if (m) updates.address_line1 = m[1].replace(/[.!?]+$/, '').trim();
+      const fields = Object.keys(updates);
+      if (!fields.length) {
+        this._showRivenMessage(`What should I change? Examples:<br>• change ${this.escapeHtml(student.full_name.split(' ')[0])}'s phone to 555-123-4567<br>• update her email to name@example.com<br>• set his date of birth to 2012-04-09<br>• change their address to 12 Oak St, Springfield`, true);
+        return;
+      }
+      const sb = this.auth.supabase;
+      const { data: prev, error: pe } = await sb.from('user_profiles')
+        .select('phone, email, date_of_birth, address_line1').eq('id', student.id).single();
+      if (pe) { this.terminalPrintError('Could not read their profile: ' + pe.message); return; }
+      const changeList = fields.map(f =>
+        `${f.replace(/_/g, ' ')}: ${this.escapeHtml(String(prev[f] ?? '—'))} → <b>${this.escapeHtml(String(updates[f]))}</b>`).join('<br>');
+      const emailWarn = updates.email ? `<br><span style="font-size: 11px;">⚠️ This updates the directory email only — their login email stays the same.</span>` : '';
+      this._requestConfirmation(
+        `Update <b>${this.escapeHtml(student.full_name)}</b>'s contact info?<br>${changeList}${emailWarn}`,
+        async () => {
+          const { error } = await sb.from('user_profiles').update(updates).eq('id', student.id);
+          if (error) {
+            if (/policy|permission|denied|row-level/i.test(error.message)) {
+              throw new Error('the database refused — teachers can only update students actively enrolled in their own classes.');
+            }
+            throw error;
+          }
+          const restore = {};
+          fields.forEach(f => { restore[f] = prev[f]; });
+          this._pushUndo(`updating ${student.full_name}'s ${fields.map(f => f.replace(/_/g, ' ')).join(', ')}`, async () => {
+            const { error: e } = await sb.from('user_profiles').update(restore).eq('id', student.id);
+            if (e) throw e;
+          });
+          this._naturalSuccess([
+            `Updated ${student.full_name}'s ${fields.map(f => f.replace(/_/g, ' ')).join(', ')}.`,
+            `Done — contact info saved for ${student.full_name}.`
+          ]);
+        }
+      );
+    }
+
+    async terminalShowContact(student) {
+      const sb = this.auth.supabase;
+      const { data: p, error } = await sb.from('user_profiles')
+        .select('first_name, last_name, email, phone, address_line1, address_line2, city, state, zip_code, date_of_birth, grade_level')
+        .eq('id', student.id).single();
+      if (error || !p) { this.terminalPrintError(`Couldn't read contact info for ${student.full_name}.`); return; }
+      const { data: ecs } = await sb.from('emergency_contacts')
+        .select('contact_name, relationship, phone_primary, is_primary')
+        .eq('student_id', student.id).order('is_primary', { ascending: false }).limit(3);
+      const addr = [p.address_line1, p.address_line2, [p.city, p.state, p.zip_code].filter(Boolean).join(', ')].filter(Boolean).join(', ');
+      let html = `<div style="font-weight: 600; margin-bottom: 8px;">📇 ${this.escapeHtml(student.full_name)}</div>
+        <div style="line-height: 1.9; font-size: 13px;">
+          Email: ${this.escapeHtml(p.email || '—')}<br>
+          Phone: ${this.escapeHtml(p.phone || '—')}<br>
+          Address: ${this.escapeHtml(addr || '—')}<br>
+          Date of birth: ${this.escapeHtml(p.date_of_birth || '—')}${p.grade_level ? `<br>Grade level: ${this.escapeHtml(String(p.grade_level))}` : ''}
+        </div>`;
+      if (ecs && ecs.length) {
+        html += `<div style="margin-top: 8px; font-size: 12px; color: var(--muted);">Emergency contacts:</div>` +
+          ecs.map(c => `<div style="font-size: 12px; padding: 2px 8px;">• ${this.escapeHtml(c.contact_name)} (${this.escapeHtml(c.relationship || '—')}) ${this.escapeHtml(c.phone_primary || '')}${c.is_primary ? ' ⭐' : ''}</div>`).join('');
+      }
+      this._showRivenMessage(html, true);
+    }
+
+    _rivenMatchClass(text) {
+      // Match a class by name words appearing in the text. Prefers the
+      // longest (most specific) name; falls back to subject-word matching
+      // ("math class" -> a class whose subject is Mathematics).
+      const rows = this._terminalAllClasses && this._terminalAllClasses.length
+        ? this._terminalAllClasses
+        : Object.entries(this._notesPeople?.classes || {}).map(([id, name]) => ({ id, name }));
+      const t = text.toLowerCase();
+      // When several classes tie (e.g. multiple classes literally named
+      // "Math"), prefer one the current user can manage.
+      const pick = (cands) => {
+        if (!cands.length) return null;
+        cands.sort((x, y) =>
+          (this._rivenCanManageClass(y.row) ? 1 : 0) - (this._rivenCanManageClass(x.row) ? 1 : 0)
+          || (y.name || '').length - (x.name || '').length);
+        const c = cands[0];
+        return { id: c.id, name: c.name, row: c.row };
+      };
+      // Pass 1: ALL significant name words present in the text
+      const allWordHits = rows.filter(row => {
+        const words = (row.name || '').toLowerCase().split(/\s+/).filter(w => w.length >= 3);
+        return words.length && words.every(w => t.includes(w));
+      }).map(row => ({ id: row.id, name: row.name, row }));
+      let best = pick(allWordHits);
+      if (best) return best;
+      // Pass 2: a single distinctive name word (>=4 chars) appears as a whole
+      // word ("filmmaking" -> "Filmmaking - Freshman"); only when unambiguous
+      // among class NAMES (same-named duplicates resolved by pick()).
+      const anyWordHits = rows.filter(row => {
+        const words = (row.name || '').toLowerCase().split(/\s+/).filter(w => w.length >= 4);
+        return words.some(w => new RegExp('\\b' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b').test(t));
+      }).map(row => ({ id: row.id, name: row.name, row }));
+      const distinctNames = [...new Set(anyWordHits.map(h => (h.name || '').toLowerCase()))];
+      if (anyWordHits.length && distinctNames.length === 1) {
+        return pick(anyWordHits);
+      }
+      // Subject fallback: a text word of >=4 chars that prefixes the subject
+      // ("math" -> Mathematics), but only when exactly one class qualifies
+      const textTokens = t.split(/\s+/).filter(w => w.length >= 4);
+      const subjHits = rows.filter(r => {
+        const subj = (r.subject || '').toLowerCase();
+        return subj && textTokens.some(tok => subj.startsWith(tok));
+      });
+      if (subjHits.length === 1) {
+        return { id: subjHits[0].id, name: subjHits[0].name, row: subjHits[0], bySubject: true };
+      }
+      return null;
     }
 
     _rivenMatchTeacher(text) {
@@ -43501,8 +44317,10 @@
           classMatch ? classMatch.name : null,
           useTeacher ? teacherMatch.name : null
         ].filter(Boolean).join(' / ');
-        this._nlpContext = this._nlpContext || {};
-        this._nlpContext.lastNoteAction = { id: saved.id, desc: `for ${targets}`, timestamp: Date.now() };
+        this._pushUndo(`the note for ${targets}`, async () => {
+          const { error } = await this.auth.supabase.from('notes').delete().eq('id', saved.id);
+          if (error) throw error;
+        });
         this._naturalSuccess([
           `Noted — saved a ${visibility === 'private' ? 'private ' : ''}note for ${targets}: "${text.length > 90 ? text.slice(0, 90) + '…' : text}"`,
           `Got it. Note saved for ${targets}. Say "undo" if you didn't mean that.`
@@ -43769,16 +44587,21 @@
       const newBalance = (student.rtc_balance || 0) + amount;
       this._addRecentStudent({...student, rtc_balance: newBalance});
 
-      // Remember this transaction so "undo that" can reverse it
-      if (!this._nlpContext) this._nlpContext = {};
-      this._nlpContext.lastTransaction = {
-        studentId: student.id,
-        studentName: student.full_name,
-        amount,
-        balanceAfter: newBalance,
-        txId: txData?.transaction_id || null,
-        timestamp: Date.now()
-      };
+      // Register the reversal so "undo" can post a compensating transaction
+      // (rtc_transactions is append-only — nothing is deleted)
+      const txId = txData?.transaction_id || null;
+      this._pushUndo(`${amount > 0 ? '+' : ''}${amount} RTC for ${student.full_name}`, async () => {
+        const { error } = await this.auth.supabase.rpc('process_rtc_transaction', {
+          p_user_id: student.id,
+          p_amount: -amount,
+          p_transaction_type: 'admin_adjustment',
+          p_description: `Undo of ${amount > 0 ? '+' : ''}${amount} RTC${txId ? ' (txn ' + txId + ')' : ''}`,
+          p_reference_id: txId,
+          p_reference_type: 'undo'
+        });
+        if (error) throw error;
+        this._addRecentStudent({ id: student.id, full_name: student.full_name, rtc_balance: newBalance - amount });
+      });
 
       // Phase 4: Natural varied responses (different phrasing for subtractions)
       if (amount < 0) {
