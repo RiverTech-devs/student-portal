@@ -41855,6 +41855,16 @@
       this._showUserMessage(command);
 
       try {
+        // Self-heal: if the student/class rosters failed to load (e.g. the
+        // first load raced auth on a fresh page), retry now — otherwise no
+        // name can ever match for the rest of the session
+        if (!this._terminalAllStudents?.length || !this._terminalAllClasses?.length) {
+          await Promise.all([
+            !this._terminalAllStudents?.length ? this._loadTerminalStudents() : Promise.resolve(),
+            !this._terminalAllClasses?.length ? this._loadTerminalClasses() : Promise.resolve()
+          ]);
+        }
+
         // Pending confirmation gate: a typed yes/no resolves the held action
         // before anything else is interpreted
         if (this._pendingAction) {
@@ -41980,6 +41990,28 @@
       if (filler && input.slice(filler[0].length).trim().split(/\s+/).length >= 2) {
         await this._executeNaturalLanguage(input.slice(filler[0].length));
         return;
+      }
+
+      // Compound commands: "mark eli present in math and give him 5 rtc" —
+      // split on an "and <action verb>" seam and run both halves in order.
+      // Both halves keep full context (pronouns resolve to the same student).
+      this._compoundDepth = this._compoundDepth || 0;
+      if (this._compoundDepth < 3) {
+        const seam = input.match(/\s+(?:and|,)\s+(?:then\s+)?(give|add|award|mark|set|remove|take|note|enroll|unenroll|put|send|show|tell|check|what|how)\b/i);
+        // never split inside note content ("note for eli: came in late and
+        // showed up without homework")
+        if (seam && seam.index > 5 && !/(\bnote\b|:|")/i.test(input.slice(0, seam.index))) {
+          const left = input.slice(0, seam.index).trim();
+          const right = input.slice(seam.index).replace(/^\s*(?:and|,)\s*(?:then\s+)?/i, '').trim();
+          if (left.split(/\s+/).length >= 3 && right.split(/\s+/).length >= 2) {
+            this._compoundDepth++;
+            try {
+              await this._executeNaturalLanguage(left);
+              await this._executeNaturalLanguage(right);
+            } finally { this._compoundDepth--; }
+            return;
+          }
+        }
       }
 
       // Phase 1 + 2 + 3: NLP with context and pronouns
@@ -42219,6 +42251,12 @@
       normalized = normalized.replace(/\bcheck\b/g, 'show');
       normalized = normalized.replace(/\blook at\b/g, 'show');
 
+      // Word numbers -> digits so amount patterns fire ("five rtc" -> "5 rtc").
+      // 'one' is intentionally excluded ("which one", "one more time").
+      const wordNums = { two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+        eleven: 11, twelve: 12, fifteen: 15, twenty: 20, thirty: 30, fifty: 50, hundred: 100 };
+      normalized = normalized.replace(/\b(two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty|thirty|fifty|hundred)\b/g, (w) => String(wordNums[w]));
+
       // Expand contractions
       normalized = normalized.replace(/what's/g, 'what is');
       normalized = normalized.replace(/who's/g, 'who is');
@@ -42249,10 +42287,17 @@
       // safety guard: "give eli's attendance over the last 5 weeks" must not
       // award 5 RTC.
       const timeUnit = /^(day|days|week|weeks|month|months|year|years|hour|hours|minute|minutes|term|terms|quarter|quarters|semester|semesters)$/;
-      const toks = normalized.split(/\s+/);
+      const wordNums = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+        eleven: 11, twelve: 12, fifteen: 15, twenty: 20, thirty: 30, fifty: 50, hundred: 100 };
+      const toks = normalized.split(/\s+/).map(t => {
+        // "five rtc" — convert word numbers, but never "one more time" etc.
+        return (wordNums[t] !== undefined) ? String(wordNums[t]) : t;
+      });
       for (let i = 0; i < toks.length; i++) {
         const m = toks[i].match(/^[+-]?(\d+)$/);
         if (!m) continue;
+        // word-number guard: "one more time", "one of them"
+        if (toks[i + 1] === 'more' || toks[i + 1] === 'of') continue;
         const next = (toks[i + 1] || '').replace(/[^a-z]/g, '');
         if (timeUnit.test(next)) continue;           // skip "5 weeks"
         const val = parseInt(m[1]);
@@ -42300,7 +42345,7 @@
 
       // Timeframe ("last 5 weeks", "past 3 days", "this month", "last week")
       const tf = this._parseTimeframe(normalized);
-      if (tf) { entities.sinceDate = tf.sinceDate; entities.sinceLabel = tf.label; }
+      if (tf) { entities.sinceDate = tf.sinceDate; entities.untilDate = tf.untilDate || null; entities.sinceLabel = tf.label; }
 
       // Quoted text ("give jordan a note 'Working on pre-calc'") — preserved
       // verbatim from the original input for note content etc.
@@ -42345,8 +42390,22 @@
         days = unitDays[m[1]]; label = `${m[0]}`;
       } else if ((m = normalized.match(/(\d+)\s+(day|days|week|weeks|month|months|year|years)\s+ago/))) {
         days = parseInt(m[1]) * unitDays[m[2]]; label = `${m[1]} ${m[2]} ago`;
-      } else if (/\byesterday\b/.test(normalized)) { days = 2; label = 'yesterday'; }
-      else if (/\btoday\b/.test(normalized)) { days = 1; label = 'today'; }
+      } else if (/\byesterday\b/.test(normalized)) {
+        const d = new Date(Date.now() - dayMs).toISOString().slice(0, 10);
+        return { sinceDate: d, untilDate: d, label: 'yesterday' };
+      } else if (/\btoday\b/.test(normalized)) {
+        const d = new Date().toISOString().slice(0, 10);
+        return { sinceDate: d, untilDate: d, label: 'today' };
+      } else if ((m = normalized.match(/\b(?:on|last|this)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/))) {
+        // most recent occurrence of that weekday (today counts)
+        const dows = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+        const target = dows.indexOf(m[1]);
+        const now = new Date();
+        let back = (now.getDay() - target + 7) % 7;
+        if (/\blast\b/.test(m[0]) && back === 0) back = 7;
+        const d = new Date(Date.now() - back * dayMs).toISOString().slice(0, 10);
+        return { sinceDate: d, untilDate: d, label: m[1].charAt(0).toUpperCase() + m[1].slice(1) + ' (' + d + ')' };
+      }
       if (days === null) return null;
       const since = new Date(Date.now() - days * dayMs);
       const iso = since.toISOString().slice(0, 10);
@@ -42620,10 +42679,11 @@
           patterns: [
             /\bundo\b/,
             /\brevert\b/,
-            /take (that|it) back/,
-            /never ?mind/,
-            /scratch that/
+            /take (that|it) back/
           ]
+          // NOTE: "never mind"/"scratch that" are NOT undo — they mean
+          // "forget my request" (handled as smalltalk / pending-cancel),
+          // never "reverse my last database change".
         },
         // REPEAT — "do it again", "again", "one more time": re-run the last
         // actionable command (sensitive ones re-confirm on the way through)
@@ -42727,6 +42787,17 @@
             /\b(create|make|start|set up|open)\b.*\b(new\s+)?class\b/,
             /\bnew class\b/
           ]
+        },
+        // MOVE_STUDENT — "move jordan from math to college dual math"
+        // (between classes; before UNENROLL/ENROLL which would half-do it)
+        {
+          intent: 'MOVE_STUDENT',
+          patterns: [
+            /\b(move|switch|transfer)\b.+\bfrom\b.+\bto\b/
+          ],
+          requiresStudent: true,
+          requiresClass: true,
+          notIfCurrency: true
         },
         // UNENROLL_STUDENT — "remove jordan from math" (before SUBTRACT_RTC
         // and DELETE_CLASS; currency phrasing falls through to RTC)
@@ -42847,6 +42918,15 @@
             /\bnote\b.*\b(for|on|about|from)\b/
           ]
         },
+        // CLASS_VS — "average grade in chess vs english"
+        {
+          intent: 'CLASS_VS',
+          patterns: [
+            /\b(vs\.?|versus)\b/,
+            /\bcompare\b.*\bclass(es)?\b/
+          ],
+          requiresClass: true
+        },
         // VIEW_GRADES — "what are jordan's grades in math", "grades for the
         // math class" (read; before VIEW_STUDENT)
         {
@@ -42877,6 +42957,24 @@
           patterns: [
             /\bmark\b.*\b(notifications?|messages?|them|those|all|everything)\b.*\bread\b/,
             /\bclear\b.*\bnotifications?\b/
+          ]
+        },
+        // ACTIVITY_LOG — "what did you just do?", "what have you changed?"
+        {
+          intent: 'ACTIVITY_LOG',
+          patterns: [
+            /what (did|have) (you|u)( just)?\b.*\b(do|done|change|changed)\b/,
+            /\bwhat changed\b/,
+            /\b(your|riven'?s?) (recent )?(changes|actions|activity)\b/,
+            /show (me )?what you('ve| have)? (done|changed)/
+          ]
+        },
+        // DELETE_NOTE — "remove that note", "delete the last note" (before
+        // ADD_NOTE; targets the most recent note Riven created)
+        {
+          intent: 'DELETE_NOTE',
+          patterns: [
+            /\b(remove|delete|scrap|trash|get rid of)\b.*\bnote\b/
           ]
         },
         // CLASS_INFO — "who teaches chess?", "tell me about the robotics
@@ -42930,7 +43028,8 @@
             /attendance/,
             /\b(absent|absence|absences)\b/,
             /\b(tardy|tardies|tardiness)\b/,
-            /(miss|missed|skipped) (class|classes|school|days)/
+            /(miss|missed|skipped) (class|classes|school|days)/,
+            /\bis\b.+\b(here|present|in (school|class))\b/
           ],
           requiresStudent: true
         },
@@ -43160,10 +43259,15 @@
           await this.terminalShowStats();
           break;
 
-        case 'VIEW_TOP':
+        case 'VIEW_TOP': {
           const count = entities.count || entities.amount || 10;
-          await this.terminalShowTop([count.toString()]);
+          if (entities.classMatch) {
+            await this.terminalTopInClass(entities, count);
+          } else {
+            await this.terminalShowTop([count.toString()]);
+          }
           break;
+        }
 
         case 'VIEW_HISTORY':
           if (student) {
@@ -43175,10 +43279,16 @@
 
         case 'VIEW_ATTENDANCE':
           if (student) {
+            // "is eli here today?" without an explicit timeframe means today
+            let vSince = entities.sinceDate, vUntil = entities.untilDate, vLabel = entities.sinceLabel;
+            if (!vSince && /\bis\b.*\b(here|present|absent|in (school|class))\b/.test(entities.normalized || '')) {
+              vSince = vUntil = this._isoDaysAgo(0); vLabel = 'today';
+            }
             await this.terminalShowAttendance(student.full_name, {
               subject: entities.subject,
-              sinceDate: entities.sinceDate,
-              sinceLabel: entities.sinceLabel
+              sinceDate: vSince,
+              untilDate: vUntil,
+              sinceLabel: vLabel
             });
           } else {
             this.terminalPrintError('Whose attendance? Tell me a student name.');
@@ -43295,6 +43405,22 @@
 
         case 'CLASS_INFO':
           await this.terminalClassInfo(entities);
+          break;
+
+        case 'MOVE_STUDENT':
+          await this.terminalMoveStudent(entities);
+          break;
+
+        case 'ACTIVITY_LOG':
+          this.terminalActivityLog();
+          break;
+
+        case 'DELETE_NOTE':
+          await this.terminalDeleteLastNote();
+          break;
+
+        case 'CLASS_VS':
+          await this.terminalCompareClasses(entities);
           break;
 
         case 'BRIEFING':
@@ -43640,6 +43766,7 @@
         .gte('date', sinceDate)
         .order('date', { ascending: false })
         .limit(100);
+      if (opts.untilDate) q = q.lte('date', opts.untilDate);
       const { data, error } = await q;
       if (error) throw error;
 
@@ -43801,6 +43928,7 @@
         ['capabilities', /^(what can you do|what do you do|what can you help( me)? with|help|help me)$/],
         ['ack', /^(nice|cool|awesome|great|perfect|sweet|love it|good job|well done)( riven)?$/],
         ['stray_yes', /^(yes|yep|yeah|sure|confirm|ok then)( please)?$/],
+        ['dismiss', /^(never ?mind|scratch that|forget it|don'?t worry( about it)?|nothing)[\s!.]*$/],
         ['bugreport', /(that('s| is|s)? (a bug|broken|buggy)|seems? (like a )?bug|you('re| are) (broken|glitching))/]
       ];
       for (const [key, re] of checks) {
@@ -43830,6 +43958,7 @@
         ],
         ack: [`🙂`, `Glad that worked!`, `👍`],
         stray_yes: [`There's nothing waiting for a yes right now — what would you like me to do?`],
+        dismiss: [`No problem — standing by. (If you wanted me to reverse something, say "undo".)`, `Okay! I'm here when you need me.`],
         bugreport: [
           `Sorry about that — you're right, that wasn't my best moment. Try phrasing it a little differently and I'll get it; the dev team also reviews these conversations to make me better.`
         ]
@@ -45025,6 +45154,23 @@
     // Resolve "everyone / each of them": a class mentioned now, or the group
     // from the last roster/group answer
     async _rivenResolveGroup(entities) {
+      // "everyone in chess EXCEPT matthew" — collect exclusions up front
+      const exclusions = [];
+      const exM = (entities.normalized || '').match(/\b(?:except|besides|excluding|but not|minus|other than)\s+(.+?)(?:\s+\d|$)/);
+      if (exM) {
+        for (const piece of exM[1].split(/\s+(?:and|,|&)\s+|,\s*/)) {
+          const res = this._fuzzyFindStudent(piece.trim(), piece.trim());
+          const st = res?.student || (res?.ambiguous ? res.matches[0] : null);
+          if (st) exclusions.push(st);
+        }
+      }
+      const applyExclusions = (grp) => {
+        if (!grp || !grp.studentIds || !exclusions.length) return grp;
+        const exIds = new Set(exclusions.map(e => e.id));
+        return { ...grp,
+          studentIds: grp.studentIds.filter(id => !exIds.has(id)),
+          excludedNames: exclusions.map(e => e.full_name) };
+      };
       if (entities.classMatch) {
         const res = await this._rivenRequireClass(entities);
         if (res.asked) return { asked: true };
@@ -45035,11 +45181,11 @@
           const ids = (enr || []).map(e => e.student_id);
           this._nlpContext = this._nlpContext || {};
           this._nlpContext.lastGroup = { label: res.row.name, classId: res.row.id, studentIds: ids, timestamp: Date.now() };
-          return { label: res.row.name, studentIds: ids };
+          return applyExclusions({ label: res.row.name, studentIds: ids });
         }
       }
       const grp = this._nlpContext?.lastGroup;
-      if (grp && grp.studentIds?.length) return { label: grp.label, studentIds: grp.studentIds };
+      if (grp && grp.studentIds?.length) return applyExclusions({ label: grp.label, studentIds: grp.studentIds });
       return { label: null, studentIds: [] };
     }
 
@@ -45084,8 +45230,9 @@
       const n = grp.studentIds.length;
       const names = {};
       (this._terminalAllStudents || []).forEach(s => { names[s.id] = s.full_name; });
+      const exNote = grp.excludedNames?.length ? ` — excluding ${this.escapeHtml(grp.excludedNames.join(' and '))}` : '';
       this._requestConfirmation(
-        `${amount > 0 ? 'Give' : 'Take'} <b>${Math.abs(amount)} RTC</b> ${amount > 0 ? 'to' : 'from'} <b>each of the ${n} students</b>${grp.label ? ' in <b>' + this.escapeHtml(grp.label) + '</b>' : ''} (${Math.abs(amount) * n} RTC total)?`,
+        `${amount > 0 ? 'Give' : 'Take'} <b>${Math.abs(amount)} RTC</b> ${amount > 0 ? 'to' : 'from'} <b>each of the ${n} students</b>${grp.label ? ' in <b>' + this.escapeHtml(grp.label) + '</b>' : ''}${exNote} (${Math.abs(amount) * n} RTC total)?`,
         async () => {
           const sb = this.auth.supabase;
           const done = [];
@@ -45110,6 +45257,168 @@
           ]);
         }
       );
+    }
+
+    async terminalMoveStudent(entities) {
+      const student = entities.student?.student;
+      if (!student) { this.terminalPrintError('Who should I move? Tell me a student name.'); return; }
+      const original = entities.original || '';
+      const fm = original.match(/\bfrom\s+(.+?)\s+(?:to|into)\s+(.+?)[.!?]*$/i);
+      if (!fm) { this.terminalPrintError('Say it like: "move Jordan from Math to College Dual Math".'); return; }
+      const fromCm = this._rivenMatchClass(fm[1].toLowerCase());
+      const toCm = this._rivenMatchClass(fm[2].toLowerCase());
+      if (!fromCm || !toCm) {
+        this.terminalPrintError(`I couldn't pin down ${!fromCm ? 'the class to move them out of' : 'the destination class'} — use the exact class names.`);
+        return;
+      }
+      // FROM: resolve via the student's enrollment; TO: plain resolution
+      const fromRes = await this._rivenRequireClass({ classMatch: fromCm, original }, { studentId: student.id });
+      if (fromRes.asked) return;
+      const toRes = await this._rivenRequireClass({ classMatch: toCm, original });
+      if (toRes.asked) return;
+      const fromRow = fromRes.row, toRow = toRes.row;
+      if (!fromRow || !toRow) { this.terminalPrintError('I lost track of one of those classes — try again.'); return; }
+      if (fromRow.id === toRow.id) { this.terminalPrintError('Those are the same class.'); return; }
+      if (!fromRes.enrollment || fromRes.enrollment.status !== 'active') {
+        this.terminalPrintError(`${student.full_name} isn't actively enrolled in ${fromRow.name}.`);
+        return;
+      }
+      if (!this._rivenCanManageClass(fromRow) || !this._rivenCanManageClass(toRow)) {
+        this.terminalPrintError(`You need permission on both classes — ${!this._rivenCanManageClass(fromRow) ? fromRow.name : toRow.name} isn't yours to change.`);
+        return;
+      }
+      const sb = this.auth.supabase;
+      const destExisting = await this._rivenFindEnrollment(toRow.id, student.id);
+      this._requestConfirmation(
+        `Move <b>${this.escapeHtml(student.full_name)}</b> from <b>${this.escapeHtml(fromRow.name)}</b> to <b>${this.escapeHtml(toRow.name)}</b>? Their ${this.escapeHtml(fromRow.name)} grades are preserved.`,
+        async () => {
+          const now = new Date().toISOString();
+          const fromEnr = fromRes.enrollment;
+          const { error: e1 } = await sb.from('class_enrollments')
+            .update({ status: 'removed', updated_at: now }).eq('id', fromEnr.id);
+          if (e1) throw e1;
+          let destId = null, destPrevStatus = null;
+          if (destExisting) {
+            destPrevStatus = destExisting.status;
+            const { error: e2 } = await sb.from('class_enrollments')
+              .update({ status: 'active', enrolled_at: now, updated_at: now }).eq('id', destExisting.id);
+            if (e2) { await sb.from('class_enrollments').update({ status: 'active' }).eq('id', fromEnr.id); throw e2; }
+            destId = destExisting.id;
+          } else {
+            const { data: ins, error: e2 } = await sb.from('class_enrollments')
+              .insert({ class_id: toRow.id, student_id: student.id, status: 'active', enrolled_at: now })
+              .select().single();
+            if (e2) { await sb.from('class_enrollments').update({ status: 'active' }).eq('id', fromEnr.id); throw e2; }
+            destId = ins.id;
+          }
+          this._pushUndo(`moving ${student.full_name} from ${fromRow.name} to ${toRow.name}`, async () => {
+            await sb.from('class_enrollments').update({ status: 'active', updated_at: new Date().toISOString() }).eq('id', fromEnr.id);
+            await sb.from('class_enrollments').update({ status: destPrevStatus || 'removed', updated_at: new Date().toISOString() }).eq('id', destId);
+          });
+          this._naturalSuccess([
+            `Moved ${student.full_name}: out of ${fromRow.name}, into ${toRow.name}.`,
+            `Done — ${student.full_name} now attends ${toRow.name} instead of ${fromRow.name}.`
+          ]);
+        }
+      );
+    }
+
+    terminalActivityLog() {
+      const stack = [...(this._undoStack || [])].reverse();
+      if (!stack.length) {
+        this._showRivenMessage(`I haven't made any changes this session. Reads (balances, rosters, grades…) don't count — only writes show up here.`, true);
+        return;
+      }
+      const ago = (ts) => {
+        const m = Math.round((Date.now() - ts) / 60000);
+        return m < 1 ? 'just now' : m < 60 ? m + ' min ago' : Math.round(m / 60) + ' h ago';
+      };
+      const lines = stack.map(e => `• ${this.escapeHtml(e.desc)} <span style="color: #6b5236; font-size: 11px;">(${ago(e.timestamp)})</span>`);
+      this._showRivenMessage(
+        `<div style="font-weight: 600; margin-bottom: 6px;">📜 My changes this session (newest first):</div>
+        <div style="font-size: 13px; line-height: 1.9;">${lines.join('<br>')}</div>
+        <div style="color: #6b5236; font-size: 12px; margin-top: 6px;">Say "undo" to reverse the most recent one.</div>`, true);
+    }
+
+    async terminalDeleteLastNote() {
+      this._undoStack = this._undoStack || [];
+      for (let i = this._undoStack.length - 1; i >= 0; i--) {
+        if (/^the (missing-assignments )?note /.test(this._undoStack[i].desc)) {
+          const entry = this._undoStack.splice(i, 1)[0];
+          try {
+            await entry.fn();
+            this._naturalSuccess([`Deleted ${entry.desc}.`, `Gone — removed ${entry.desc}.`]);
+          } catch (err) {
+            this.terminalPrintError('Could not delete it: ' + err.message);
+          }
+          return;
+        }
+      }
+      this.terminalPrintError(`I don't have a recent note of mine to delete. Tell me whose: "show notes for [name]" and manage them from the Notes tab, or say which note to remove.`);
+    }
+
+    async terminalTopInClass(entities, count) {
+      const res = await this._rivenRequireClass(entities);
+      if (res.asked) return;
+      const row = res.row;
+      if (!row) { this.terminalPrintError('Which class?'); return; }
+      const { data: enr, error } = await this.auth.supabase
+        .from('class_enrollments').select('student_id').eq('class_id', row.id).eq('status', 'active');
+      if (error) { this.terminalPrintError('Could not read the roster: ' + error.message); return; }
+      const ids = (enr || []).map(e => e.student_id);
+      if (!ids.length) { this._showRivenMessage(`${this.escapeHtml(row.name)} has no active students.`, true); return; }
+      const { data: profiles } = await this.auth.supabase
+        .from('user_profiles').select('id, first_name, last_name, rtc_balance').in('id', ids);
+      const ranked = (profiles || [])
+        .map(p => ({ name: `${p.first_name || ''} ${p.last_name || ''}`.trim(), bal: p.rtc_balance || 0 }))
+        .sort((a, b) => b.bal - a.bal).slice(0, count);
+      const medals = ['🥇', '🥈', '🥉'];
+      this._showRivenMessage(
+        `<div style="font-weight: 600; margin-bottom: 6px;">🏆 Top ${ranked.length} in ${this.escapeHtml(row.name)}</div>` +
+        ranked.map((r, i) => `<div style="padding: 3px 8px;">${medals[i] || (i + 1) + '.'} ${this.escapeHtml(r.name)} — <b style="color: #f39c12;">${r.bal} RTC</b></div>`).join(''), true);
+    }
+
+    async terminalCompareClasses(entities) {
+      const original = (entities.normalized || '');
+      const parts = original.split(/\b(?:vs\.?|versus)\b/);
+      let aCm = null, bCm = null;
+      if (parts.length >= 2) {
+        aCm = this._rivenMatchClass(parts[0]);
+        bCm = this._rivenMatchClass(parts[1]);
+      }
+      if (!aCm || !bCm) {
+        this.terminalPrintError('Tell me two classes, like "average grade in chess vs english".');
+        return;
+      }
+      const resolve = async (cm) => {
+        const res = await this._rivenRequireClass({ classMatch: cm, original: entities.original });
+        return res.asked ? null : res.row;
+      };
+      const aRow = await resolve(aCm);
+      if (!aRow) return;
+      const bRow = await resolve(bCm);
+      if (!bRow) return;
+      const quarter = await this._rivenCurrentQuarter();
+      if (!quarter) { this.terminalPrintError('No active quarter is configured.'); return; }
+      const sb = this.auth.supabase;
+      const avgFor = async (row) => {
+        const { data: enr } = await sb.from('class_enrollments').select('id').eq('class_id', row.id).eq('status', 'active');
+        const ids = (enr || []).map(e => e.id);
+        if (!ids.length) return { avg: null, n: 0, students: 0 };
+        const { data: snaps } = await sb.from('quarter_grade_snapshots').select('class_grade').eq('quarter_id', quarter.id).in('enrollment_id', ids);
+        const vals = (snaps || []).map(x => x.class_grade).filter(v => v != null && v !== 0);
+        return { avg: vals.length ? Math.round((vals.reduce((s2, v) => s2 + v, 0) / vals.length) * 10) / 10 : null, n: vals.length, students: ids.length };
+      };
+      const [a, b] = await Promise.all([avgFor(aRow), avgFor(bRow)]);
+      const fmt = (row, g) => `<b>${this.escapeHtml(row.name)}</b> — ${g.avg != null ? `avg <b>${g.avg} (${this._pctToLetter(g.avg)})</b> across ${g.n}/${g.students} graded` : `no grades yet (${g.students} students)`}`;
+      let verdict = '';
+      if (a.avg != null && b.avg != null && a.avg !== b.avg) {
+        verdict = `${(a.avg > b.avg ? aRow : bRow).name} is ahead by ${Math.abs(a.avg - b.avg).toFixed(1)} points.`;
+      }
+      this._showRivenMessage(`<div style="font-weight: 600; margin-bottom: 8px;">⚖️ Class comparison — ${this.escapeHtml(quarter.name || 'current quarter')}</div>
+        <div style="margin: 4px 0;">${fmt(aRow, a)}</div>
+        <div style="margin: 4px 0;">${fmt(bRow, b)}</div>
+        ${verdict ? `<div style="color: var(--muted); font-size: 12px; margin-top: 6px;">${this.escapeHtml(verdict)}</div>` : ''}`, true);
     }
 
     async terminalUpdateContact(entities) {
