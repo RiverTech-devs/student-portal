@@ -41112,8 +41112,13 @@
       this._terminalAutocompleteResults = [];
       this._terminalAutocompleteIndex = -1;
 
-      // Load all students and classes for matching/autocomplete
-      await Promise.all([this._loadTerminalStudents(), this._loadTerminalClasses()]);
+      // Load all students, classes, store items, and privileges for matching/autocomplete
+      await Promise.all([
+        this._loadTerminalStudents(),
+        this._loadTerminalClasses(),
+        this._loadTerminalStoreItems(),
+        this._loadTerminalPrivileges()
+      ]);
 
       section.innerHTML = `
         <div style="max-width: 1200px; margin: 0 auto; padding: 20px;">
@@ -41870,10 +41875,13 @@
         // Self-heal: if the student/class rosters failed to load (e.g. the
         // first load raced auth on a fresh page), retry now — otherwise no
         // name can ever match for the rest of the session
-        if (!this._terminalAllStudents?.length || !this._terminalAllClasses?.length) {
+        if (!this._terminalAllStudents?.length || !this._terminalAllClasses?.length
+            || !this._terminalStoreItems || !this._terminalPrivileges) {
           await Promise.all([
             !this._terminalAllStudents?.length ? this._loadTerminalStudents() : Promise.resolve(),
-            !this._terminalAllClasses?.length ? this._loadTerminalClasses() : Promise.resolve()
+            !this._terminalAllClasses?.length ? this._loadTerminalClasses() : Promise.resolve(),
+            !this._terminalStoreItems ? this._loadTerminalStoreItems() : Promise.resolve(),
+            !this._terminalPrivileges ? this._loadTerminalPrivileges() : Promise.resolve()
           ]);
         }
 
@@ -41957,6 +41965,12 @@
       } else if (cmd === '/top') {
         await this.terminalShowTop(args);
 
+      // Shop / privilege commands
+      } else if (cmd === '/shop') {
+        await this.terminalViewShop({});
+      } else if (cmd === '/privileges') {
+        await this.terminalViewPrivilegeCatalog();
+
       // Utility commands
       } else if (cmd === '/help') {
         this.terminalPrintHelp();
@@ -42033,6 +42047,7 @@
       const resolvedInput = this._resolvePronouns(normalized);
 
       const entities = this._extractEntities(resolvedInput, input);
+      entities._rawInput = input; // preserve for shop/privilege executors
 
       // Phase 3: If no student found, try using context — but never for
       // aggregate questions ("which students...", "anyone absent?") where
@@ -43090,6 +43105,143 @@
           ],
           requiresPair: true
         },
+        // ===== SHOP / PRIVILEGE INTENTS =====
+
+        // VIEW_SHOP — list active store catalog
+        {
+          intent: 'VIEW_SHOP',
+          w: 6,
+          patterns: [
+            /\b(show|view|see|list|display|open|check|whats?)\b.*\b(shop|store|catalog|items?)\b/,
+            /\b(shop|store|catalog)\b.*\b(show|view|see|list|display)\b/,
+            /\bwhat can (they|we|students?|kids?|everyone)\s+(buy|get|purchase)\b/,
+            /^(shop|store|catalog)\b/
+          ]
+        },
+
+        // VIEW_PRIVILEGE_CATALOG — list privilege offerings
+        {
+          intent: 'VIEW_PRIVILEGE_CATALOG',
+          w: 6,
+          patterns: [
+            /\b(show|view|see|list|display|what)\b.*\b(privilege|privileges|perks?)\b(?!.*does\b)/,
+            /\b(privilege|privileges|perks?)\b.*\b(available|catalog|list|show|view)\b/,
+            /^(privileges?|perks?)\b/
+          ]
+        },
+
+        // VIEW_STUDENT_PRIVILEGES — what privileges does [student] have
+        {
+          intent: 'VIEW_STUDENT_PRIVILEGES',
+          w: 6,
+          patterns: [
+            /\b(privileges?|perks?)\b.*\b(does|do|has|have)\b/,
+            /\b(has|have|does)\b.*\b(privileges?|perks?)\b/,
+            /\bshow\b.*\bprivileges?\b/,
+            /\bactive\b.*\bprivileges?\b/
+          ],
+          requiresStudent: true
+        },
+
+        // BUY_PRIVILEGE — buy/purchase verb + privilege/perk keyword
+        {
+          intent: 'BUY_PRIVILEGE',
+          w: 7, notIfNoteCommand: true, notIfBank: true,
+          patterns: [
+            { re: /\b(buy|buys|buying|bought|purchas(e|es|ed|ing)?|spend(s|ing)?|spent|pay(s|ing)?|paid|charge[sd]?)\b[^.]*\b(privileg|privelege|perk)\b/, w: 8 },
+            { re: /\b(privileg|privelege|perk)\b[^.]*\b(buy|buys|buying|bought|purchas|spend|spent|pay|paid|charge)\b/, w: 8 }
+          ],
+          requiresStudent: true
+        },
+
+        // GRANT_PRIVILEGE — give/grant verb + privilege/perk/pass (no RTC cost)
+        {
+          intent: 'GRANT_PRIVILEGE',
+          w: 7, notIfNoteCommand: true, notIfBank: true,
+          patterns: [
+            { re: /\b(grant|grants?ing|granted|assign|assigns?ing|assigned|extend|renew)\b[^.]*\b(privileg|privelege|perk|pass)\b/, w: 8 },
+            { re: /\bgive\b[^.]*\b(privileg|privelege|perk)\b/, w: 8 },
+            { re: /\b(privileg|privelege|perk)\b[^.]*\b(grant|assign|activate)\b/, w: 8 }
+          ],
+          requiresStudent: true
+        },
+
+        // REVOKE_PRIVILEGE — revoke/take away privilege from student
+        {
+          intent: 'REVOKE_PRIVILEGE',
+          w: 7, notIfNoteCommand: true, notIfBank: true,
+          patterns: [
+            { re: /\b(revoke|revoking|revoked|rescind|rescinding)\b/, w: 8 },
+            { re: /\b(take away|taking away|took away|strip)\b[^.]*\b(privileg|privelege|perk|pass)\b/, w: 8 },
+            { re: /\b(remove|cancel)\b[^.]*\b(privileg|privelege|perk)\b/, w: 7 }
+          ],
+          requiresStudent: true
+        },
+
+        // ADD_SHOP_ITEM — add item to catalog (admin)
+        {
+          intent: 'ADD_SHOP_ITEM',
+          w: 6, notIfNoteCommand: true, notIfBank: true,
+          patterns: [
+            { re: /\b(add|create|put|make|new)\b[^.]*\bto\s+(the\s+)?(shop|store|catalog)\b/, w: 7 },
+            { re: /\b(add|create|put)\b[^.]*\b(shop|store|catalog)\b[^.]*\bfor\s+\d+/, w: 7 },
+            { re: /\b(add|put)\b[^.]*\bitem\b[^.]*\bfor\s+\d+\s*rtc\b/, w: 7 }
+          ]
+        },
+
+        // EDIT_SHOP_ITEM — change price or name of catalog item (admin)
+        {
+          intent: 'EDIT_SHOP_ITEM',
+          w: 6, notIfNoteCommand: true, notIfBank: true,
+          patterns: [
+            { re: /\b(change|update|edit|rename|reprice|set|adjust)\b[^.]*\bprice\b[^.]*\b(shop|store|item|catalog)\b/, w: 7 },
+            { re: /\b(change|update|edit|rename|reprice)\b[^.]*\b(shop|store|item|catalog)\b[^.]*\b(price|cost|name|to)\b/, w: 7 },
+            { re: /\b(rename|reprice)\b[^.]*\b(item|shop|store)\b/, w: 6 }
+          ]
+        },
+
+        // REMOVE_SHOP_ITEM — deactivate item from catalog (admin)
+        {
+          intent: 'REMOVE_SHOP_ITEM',
+          w: 6, notIfNoteCommand: true, notIfBank: true,
+          patterns: [
+            { re: /\b(remove|delete|deactivate|archive|retire|hide|disable)\b[^.]*\b(from\s+)?(the\s+)?(shop|store|catalog)\b/, w: 7 },
+            { re: /\b(shop|store|catalog)\b[^.]*\b(remove|delete|deactivate|archive|retire)\b/, w: 7 }
+          ]
+        },
+
+        // ADD_PRIVILEGE — add privilege to catalog (admin)
+        {
+          intent: 'ADD_PRIVILEGE',
+          w: 6, notIfNoteCommand: true, notIfBank: true,
+          patterns: [
+            { re: /\b(add|create|new|make|put)\b[^.]*\b(privilege|privileges|perk|perks)\b[^.]*\bfor\s+\d+/, w: 7 },
+            { re: /\badd\b[^.]*\bto\s+(the\s+)?(privilege|perk)\s*(catalog|list)?\b/, w: 7 }
+          ]
+        },
+
+        // EDIT_PRIVILEGE — change price/details of catalog privilege (admin)
+        {
+          intent: 'EDIT_PRIVILEGE',
+          w: 6, notIfNoteCommand: true, notIfBank: true,
+          patterns: [
+            { re: /\b(change|update|edit|reprice|set|adjust)\b[^.]*\b(privilege|perk)\b[^.]*\b(price|cost|to\s+\d)\b/, w: 7 },
+            { re: /\b(change|update|edit|reprice)\b[^.]*\b(privilege|perk)\b/, w: 5 }
+          ]
+        },
+
+        // REMOVE_PRIVILEGE — deactivate privilege from catalog (admin)
+        {
+          intent: 'REMOVE_PRIVILEGE',
+          w: 6, notIfNoteCommand: true, notIfBank: true,
+          patterns: [
+            { re: /\b(remove|delete|deactivate|archive|retire|hide)\b[^.]*\b(from\s+)?(the\s+)?(privilege|perk)\s*(catalog|list)?\b/, w: 7 },
+            { re: /\bdelete\b[^.]*\bprivilege\b/, w: 7 }
+          ]
+        },
+
+        // ===== END SHOP / PRIVILEGE INTENTS =====
+
         // VIEW_NOTES (after the RTC mutators so "remove 5 rtc from eli for not
         // taking notes" still subtracts; before VIEW_ATTENDANCE so "notes about
         // attendance" searches notes)
@@ -43428,7 +43580,10 @@
         const margin = second ? top.score - second.score : Infinity;
         const writeIntents = ['ADD_RTC', 'SUBTRACT_RTC', 'TRANSFER_RTC', 'GROUP_RTC', 'SET_GRADE',
           'MARK_ATTENDANCE', 'MARK_ATTENDANCE_GROUP', 'ENROLL_STUDENT', 'UNENROLL_STUDENT',
-          'MOVE_STUDENT', 'CREATE_CLASS', 'DELETE_CLASS', 'UPDATE_CONTACT', 'ADD_NOTE', 'DELETE_NOTE'];
+          'MOVE_STUDENT', 'CREATE_CLASS', 'DELETE_CLASS', 'UPDATE_CONTACT', 'ADD_NOTE', 'DELETE_NOTE',
+          'BUY_PRIVILEGE', 'GRANT_PRIVILEGE', 'REVOKE_PRIVILEGE',
+          'ADD_SHOP_ITEM', 'EDIT_SHOP_ITEM', 'REMOVE_SHOP_ITEM',
+          'ADD_PRIVILEGE', 'EDIT_PRIVILEGE', 'REMOVE_PRIVILEGE'];
         if (second && margin < 1.5 && writeIntents.includes(top.intent) && writeIntents.includes(second.intent)) {
           return { intent: 'CLARIFY_INTENT', confidence: 0.9, options: [top, second] };
         }
@@ -43536,8 +43691,18 @@
             // a privilege for 2 gold" — deduct from each
             await this.terminalMultiAward(entities, true);
           } else if (student && entities.amount) {
-            // Subtract by adding negative amount
-            await this.terminalAddRTC([student.full_name, (-entities.amount).toString()], { reason: entities.reason || null });
+            // If a buy/charge verb was the primary verb (not a subtract verb),
+            // route through the real IRL purchase flow so a shop record is created.
+            const rawLower = (entities._rawInput || '').toLowerCase();
+            const hasBuyVerbOriginal = /\b(buy|buys|buying|bought|purchas(e|es|ed|ing)?|spend(s|ing)?|spent|pay(s|ing)?|paid|charge[sd]?)\b/.test(rawLower);
+            const hasSubtractVerbOriginal = /\b(remove|subtract|deduct|take\s+away|dock|minus)\b/.test(rawLower);
+            if (hasBuyVerbOriginal && !hasSubtractVerbOriginal) {
+              const normalized2 = this._normalizeInput(entities._rawInput || '');
+              const itemName = this._rivenExtractItemName(normalized2, entities);
+              await this.terminalBuyItem(student, entities.amount, itemName, entities.reason, normalized2);
+            } else {
+              await this.terminalAddRTC([student.full_name, (-entities.amount).toString()], { reason: entities.reason || null });
+            }
           } else if (entities.amount) {
             this.terminalPrintError(`Which student should I take ${entities.amount} RTC from? Try "remove ${entities.amount} from [name]".`);
           } else if (student) {
@@ -43545,6 +43710,58 @@
           } else {
             this.terminalPrintError('Tell me a student and an amount, like "remove 2 from Charlotte".');
           }
+          break;
+
+        case 'VIEW_SHOP':
+          await this.terminalViewShop(entities);
+          break;
+
+        case 'VIEW_PRIVILEGE_CATALOG':
+          await this.terminalViewPrivilegeCatalog();
+          break;
+
+        case 'VIEW_STUDENT_PRIVILEGES':
+          if (student) {
+            await this.terminalViewStudentPrivileges(entities);
+          } else {
+            this.terminalPrintError('Which student? Try "what privileges does Jordan have".');
+          }
+          break;
+
+        case 'BUY_PRIVILEGE':
+          await this.terminalBuyPrivilege(entities);
+          break;
+
+        case 'GRANT_PRIVILEGE':
+          await this.terminalGrantPrivilege(entities);
+          break;
+
+        case 'REVOKE_PRIVILEGE':
+          await this.terminalRevokePrivilege(entities);
+          break;
+
+        case 'ADD_SHOP_ITEM':
+          await this.terminalAddShopItemFromNL(entities);
+          break;
+
+        case 'EDIT_SHOP_ITEM':
+          await this.terminalEditShopItem(entities);
+          break;
+
+        case 'REMOVE_SHOP_ITEM':
+          await this.terminalRemoveShopItem(entities);
+          break;
+
+        case 'ADD_PRIVILEGE':
+          await this.terminalAddPrivilege(entities);
+          break;
+
+        case 'EDIT_PRIVILEGE':
+          await this.terminalEditPrivilege(entities);
+          break;
+
+        case 'REMOVE_PRIVILEGE':
+          await this.terminalRemovePrivilege(entities);
           break;
 
         case 'LIST_STUDENTS':
@@ -43783,11 +44000,32 @@
   </div>
 </div>
 
+<div style="margin: 12px 0;">
+  <div style="font-weight: 600; font-size: 13px; margin-bottom: 6px;">🛒 Shop & Privileges:</div>
+  <div style="color: #6b5236; font-size: 13px; line-height: 1.8; margin-left: 12px;">
+    • "Jordan bought a snack for 3 RTC" — logs a real shop purchase<br>
+    • "Charge Dylan 5 for the field trip" — deducts + records the transaction<br>
+    • "Show me the shop" / "What can students buy?"<br>
+    • "Add granola bar to shop for 4 RTC" (admin) — adds to catalog<br>
+    • "Change price of snack to 6 RTC" (admin) — edits catalog item<br>
+    • "Remove snack from shop" (admin) — deactivates item<br>
+    • "What privileges does Jordan have?"<br>
+    • "Show me the privilege catalog"<br>
+    • "Jordan bought the homework pass privilege" — deducts RTC + grants privilege<br>
+    • "Grant Charlotte the VIP perk for 7 days" — free privilege grant<br>
+    • "Revoke Jordan's homework pass"<br>
+    • "Add homework pass to privileges for 15 RTC for 7 days" (admin)<br>
+    • Unknown items: I'll offer to add them to the catalog automatically!
+  </div>
+</div>
+
 <div style="margin: 16px 0; padding: 12px; background: rgba(47, 107, 109, 0.1); border-radius: 8px; border-left: 3px solid #2f6b6d;">
   <div style="font-weight: 600; font-size: 12px; margin-bottom: 4px;">⌨️ Advanced: Slash Commands</div>
   <div style="font-size: 11px; color: #6b5236; line-height: 1.6;">
     You can also use commands like <code style="background: rgba(61, 40, 23, 0.12); padding: 2px 6px; border-radius: 3px;">/read</code>,
     <code style="background: rgba(61, 40, 23, 0.12); padding: 2px 6px; border-radius: 3px;">/add</code>,
+    <code style="background: rgba(61, 40, 23, 0.12); padding: 2px 6px; border-radius: 3px;">/shop</code>,
+    <code style="background: rgba(61, 40, 23, 0.12); padding: 2px 6px; border-radius: 3px;">/privileges</code>,
     <code style="background: rgba(61, 40, 23, 0.12); padding: 2px 6px; border-radius: 3px;">/stats</code>,
     <code style="background: rgba(61, 40, 23, 0.12); padding: 2px 6px; border-radius: 3px;">/top</code>,
     <code style="background: rgba(61, 40, 23, 0.12); padding: 2px 6px; border-radius: 3px;">/history</code>,
@@ -44514,6 +44752,81 @@
         COMPARE_STUDENTS: [
           'who is doing better jordan or eli',
           'put jordan and eli side by side'
+        ],
+        VIEW_SHOP: [
+          'what can kids buy in the shop',
+          'show me everything in the store catalog',
+          'list all shop items available',
+          'what is for sale right now',
+          'pull up the store for me',
+          'what stuff can students purchase'
+        ],
+        VIEW_PRIVILEGE_CATALOG: [
+          'what privileges are available right now',
+          'show me the privilege list',
+          'what perks can students get',
+          'what is in the privilege catalog',
+          'list the available privileges'
+        ],
+        VIEW_STUDENT_PRIVILEGES: [
+          'what privileges does jordan have',
+          'does jordan have any perks right now',
+          'show jordans active privileges',
+          'what is jordan currently privileged for',
+          'any perks on jordans account'
+        ],
+        BUY_PRIVILEGE: [
+          'jordan bought the homework pass privilege',
+          'charge jordan for the vip perk',
+          'jordan wants to purchase the reading privilege',
+          'dylan spent some rtc on a privilege today'
+        ],
+        GRANT_PRIVILEGE: [
+          'give jordan the homework pass for free',
+          'grant charlotte the vip perk for 7 days',
+          'assign the reading privilege to dylan for a month',
+          'extend jordans pass for another week'
+        ],
+        REVOKE_PRIVILEGE: [
+          'revoke jordans homework pass',
+          'take away charlottes vip privilege',
+          'remove the perk from dylan',
+          'cancel jordans current privilege'
+        ],
+        ADD_SHOP_ITEM: [
+          'add snack to the shop for 5 rtc',
+          'create a field trip fee item in the store for 20',
+          'put a new item called candy bar in the catalog',
+          'add granola bar to shop at 3 rtc'
+        ],
+        EDIT_SHOP_ITEM: [
+          'change the price of snack to 10 rtc',
+          'rename snack to granola bar in the shop',
+          'update the field trip item to cost 25',
+          'reprice candy bar to 4 rtc'
+        ],
+        REMOVE_SHOP_ITEM: [
+          'remove snack from the shop catalog',
+          'delete the field trip item from the store',
+          'deactivate the candy item in the catalog',
+          'retire the old snack item'
+        ],
+        ADD_PRIVILEGE: [
+          'add homework pass to privileges for 15 rtc for 7 days',
+          'create a vip privilege for 50 rtc lasting 30 days',
+          'make a new privilege called reading pass for 20 rtc for 14 days',
+          'add a free period perk for 10 rtc for 3 days'
+        ],
+        EDIT_PRIVILEGE: [
+          'change price of homework pass privilege to 20 rtc',
+          'update the vip privilege to cost 60 rtc',
+          'reprice the reading privilege to 25'
+        ],
+        REMOVE_PRIVILEGE: [
+          'remove homework pass from the privilege catalog',
+          'delete the vip privilege',
+          'deactivate the reading privilege',
+          'retire the old perk from the list'
         ]
       };
     }
@@ -47819,6 +48132,822 @@
         this.showNotification('Failed to update item: ' + error.message, 'error');
       }
     }
+
+    // =========================================================================
+    // RIVEN SHOP + PRIVILEGE INTEGRATION
+    // =========================================================================
+
+    async _loadTerminalStoreItems() {
+      try {
+        const { data, error } = await this.auth.supabase
+          .from('irl_store_items')
+          .select('id, name, description, price, icon, category, is_active, created_at')
+          .eq('is_active', true)
+          .order('sort_order', { ascending: true })
+          .order('name', { ascending: true });
+        if (error) throw error;
+        this._terminalStoreItems = data || [];
+      } catch (err) {
+        console.error('Riven: error loading store items:', err);
+        this._terminalStoreItems = [];
+      }
+    }
+
+    async _loadTerminalPrivileges() {
+      try {
+        const { data, error } = await this.auth.supabase
+          .from('rtc_privileges')
+          .select('id, name, description, price, duration_days, icon, is_active, created_at')
+          .order('sort_order', { ascending: true })
+          .order('name', { ascending: true });
+        if (error) throw error;
+        this._terminalPrivileges = data || [];
+      } catch (err) {
+        console.error('Riven: error loading privileges:', err);
+        this._terminalPrivileges = [];
+      }
+    }
+
+    async _ensureTerminalStoreItems() {
+      if (!this._terminalStoreItems) await this._loadTerminalStoreItems();
+    }
+
+    async _ensureTerminalPrivileges() {
+      if (!this._terminalPrivileges) await this._loadTerminalPrivileges();
+    }
+
+    // Fuzzy-match an item/privilege name from free text against a catalog list.
+    // Handles typos (Levenshtein), partial matches, and token overlap.
+    _rivenMatchStoreItem(itemName, items) {
+      if (!itemName || !items?.length) return null;
+      const q = itemName.toLowerCase().trim();
+      if (!q) return null;
+      let best = null, bestScore = 0;
+      for (const item of items) {
+        const name = (item.name || '').toLowerCase();
+        if (name === q) return { item, score: 1.0 };
+        // Substring containment
+        if (name.includes(q) || q.includes(name)) {
+          const score = 0.88 * Math.min(q.length, name.length) / Math.max(q.length, name.length);
+          if (score > bestScore) { best = item; bestScore = score; }
+          continue;
+        }
+        // Significant-token overlap (>=3 chars)
+        const qToks = q.split(/\s+/).filter(t => t.length >= 3);
+        const nToks = name.split(/\s+/).filter(t => t.length >= 3);
+        if (qToks.length && nToks.length) {
+          const overlap = qToks.filter(qt =>
+            nToks.some(nt => nt === qt || nt.startsWith(qt) || qt.startsWith(nt))
+          ).length;
+          if (overlap > 0) {
+            const score = 0.72 * overlap / Math.max(qToks.length, nToks.length);
+            if (score > bestScore) { best = item; bestScore = score; }
+            continue;
+          }
+        }
+        // Levenshtein typo correction for reasonably-long names
+        if (q.length >= 3 && name.length >= 3) {
+          const dist = this._levenshteinDistance(q, name);
+          const lScore = 1 - dist / Math.max(q.length, name.length);
+          if (lScore >= 0.6 && lScore > bestScore) { best = item; bestScore = lScore; }
+        }
+      }
+      return bestScore >= 0.4 ? { item: best, score: bestScore } : null;
+    }
+
+    // Extract the item name from a buy sentence by stripping non-item tokens.
+    // "charge Jordan 5 for the snack" → "snack"
+    // "Jordan bought a candy bar for 3" → "candy bar"
+    _rivenExtractItemName(normalized, entities) {
+      let text = normalized;
+      const student = entities.student?.student;
+      if (student?.full_name) {
+        student.full_name.toLowerCase().split(/\s+/).forEach(w => {
+          if (w.length >= 2) text = text.replace(new RegExp('\\b' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'g'), ' ');
+        });
+      }
+      if (entities.amount) text = text.replace(new RegExp('\\b' + entities.amount + '\\b', 'g'), ' ');
+      // Strip currency synonyms
+      text = text.replace(/\b(rtc|gold|coins?|credits?|points?|money|currency)\b/g, ' ');
+      // Strip buy verbs (normalized may have "remove" for "charge" — strip both)
+      text = text.replace(/\b(buy|buys|buying|bought|purchas(e|es|ed|ing)?|spend(s|ing)?|spent|pay(s|ing)?|paid|charge[sd]?|pick(ed)?\s+up|got)\b/g, ' ');
+      // Strip subtract verbs (in case normalization converted charge→remove)
+      text = text.replace(/\b(remove|subtract|deduct|take|minus|dock|penalize)\b/g, ' ');
+      // Strip filler prepositions / articles
+      text = text.replace(/\b(a|an|the|some|his|her|their|for|on|in|at|from|of|is|was|are|were|to|just|today|yesterday|this|that)\b/g, ' ');
+      text = text.replace(/[.,!?;:'"()\[\]]/g, ' ').replace(/\s+/g, ' ').trim();
+      return text || null;
+    }
+
+    // Extract a privilege name from input (strips verbs, student, amount, keywords)
+    _rivenExtractPrivilegeName(normalized, entities) {
+      let text = normalized;
+      const student = entities.student?.student;
+      if (student?.full_name) {
+        student.full_name.toLowerCase().split(/\s+/).forEach(w => {
+          if (w.length >= 2) text = text.replace(new RegExp('\\b' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'g'), ' ');
+        });
+      }
+      if (entities.amount) text = text.replace(new RegExp('\\b' + entities.amount + '\\b', 'g'), ' ');
+      text = text.replace(/\b(rtc|gold|coins?|credits?|points?|money)\b/g, ' ');
+      text = text.replace(/\b(buy|buys|buying|bought|purchas(e|es|ed|ing)?|spend(s|ing)?|spent|pay(s|ing)?|paid|charge[sd]?|grant|grants?ing|granted|give|gives|giving|gave|assign|assigns?ing|assigned|revoke|revokes?|revoking|revoked|take\s+away|remove|cancel)\b/g, ' ');
+      text = text.replace(/\b(a|an|the|some|his|her|their|for|on|in|at|from|of|is|was|are|were|to|just|today|yesterday|this|that|privelege|privilege|privileges|perk|perks|priv)\b/g, ' ');
+      text = text.replace(/[.,!?;:'"()\[\]]/g, ' ').replace(/\s+/g, ' ').trim();
+      return text || null;
+    }
+
+    // Count calendar days between fromDate and today, excluding June/July/August.
+    _rivenCountNonSummerDays(fromDate) {
+      const summerMonths = new Set([5, 6, 7]); // 0-indexed: June=5, July=6, Aug=7
+      let d = new Date(fromDate);
+      d.setHours(0, 0, 0, 0);
+      const end = new Date();
+      end.setHours(0, 0, 0, 0);
+      let count = 0;
+      while (d < end) {
+        if (!summerMonths.has(d.getMonth())) count++;
+        d.setDate(d.getDate() + 1);
+      }
+      return count;
+    }
+
+    // Find active store items not purchased for > 30 non-summer days.
+    async _rivenFindStaleItems() {
+      await this._ensureTerminalStoreItems();
+      const items = this._terminalStoreItems || [];
+      if (!items.length) return [];
+      const STALE_DAYS = 30;
+      const { data: purchases } = await this.auth.supabase
+        .from('irl_purchases')
+        .select('item_id, created_at')
+        .in('item_id', items.map(i => i.id))
+        .order('created_at', { ascending: false });
+      const lastPurchase = {};
+      for (const p of (purchases || [])) {
+        if (!lastPurchase[p.item_id]) lastPurchase[p.item_id] = p.created_at;
+      }
+      const stale = [];
+      for (const item of items) {
+        const lastBought = lastPurchase[item.id];
+        const refDate = lastBought || item.created_at;
+        if (!refDate) continue;
+        const days = this._rivenCountNonSummerDays(new Date(refDate));
+        if (days >= STALE_DAYS) {
+          stale.push({ item, lastBought, daysSince: days, neverBought: !lastBought });
+        }
+      }
+      return stale;
+    }
+
+    // ---- VIEW_SHOP ----
+    async terminalViewShop(entities) {
+      await this._ensureTerminalStoreItems();
+      const items = this._terminalStoreItems || [];
+      if (!items.length) {
+        this._showRivenMessage('The shop catalog is empty — no active items. Want to add some? Try "add snack to shop for 5 rtc".', false);
+        return;
+      }
+      const byCategory = {};
+      for (const item of items) {
+        const cat = item.category || 'General';
+        if (!byCategory[cat]) byCategory[cat] = [];
+        byCategory[cat].push(item);
+      }
+      const isAdmin = this.userInfo?.profile?.user_type === 'admin';
+      let html = `<div style="font-size:14px;font-weight:600;margin-bottom:10px;">🛒 Shop Catalog (${items.length} item${items.length !== 1 ? 's' : ''})</div>`;
+      for (const [cat, catItems] of Object.entries(byCategory)) {
+        html += `<div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:8px 0 4px;">${this.escapeHtml(cat)}</div>`;
+        for (const item of catItems) {
+          html += `<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid rgba(128,128,128,0.15);">
+            <span style="font-size:16px;">${item.icon || '🛒'}</span>
+            <span style="flex:1;font-weight:500;">${this.escapeHtml(item.name)}${item.description ? `<span style="font-weight:normal;color:var(--muted);font-size:11px;"> — ${this.escapeHtml(item.description)}</span>` : ''}</span>
+            <span style="color:#f39c12;font-weight:600;">${item.price} RTC</span>
+            ${isAdmin ? `<button onclick="app.executeTerminalCommand('edit shop item ${item.name.replace(/'/g, "\\'")}')" style="padding:2px 8px;border-radius:4px;border:1px solid var(--border);background:transparent;color:var(--muted);cursor:pointer;font-size:10px;">Edit</button>` : ''}
+          </div>`;
+        }
+      }
+      // Stale items (async, best-effort)
+      this._rivenFindStaleItems().then(stale => {
+        if (!stale.length) return;
+        const staleBanner = document.createElement('div');
+        staleBanner.style.cssText = 'margin-top:12px;padding:8px;border-radius:6px;border:1px solid rgba(243,156,18,0.35);background:rgba(243,156,18,0.08);';
+        let staleHtml = `<div style="font-size:12px;color:#f39c12;font-weight:600;margin-bottom:6px;">⚠️ ${stale.length} item${stale.length > 1 ? 's' : ''} not purchased in 30+ school days:</div>`;
+        for (const { item, neverBought, daysSince } of stale) {
+          staleHtml += `<div style="display:flex;align-items:center;gap:8px;font-size:12px;margin:3px 0;">
+            <span>${item.icon || '🛒'} <b>${this.escapeHtml(item.name)}</b> — ${neverBought ? 'never purchased' : `${daysSince} school days since last purchase`}</span>
+            ${isAdmin ? `<button onclick="app.executeTerminalCommand('remove ${item.name.replace(/'/g, "\\'")} from shop')" style="padding:2px 8px;border-radius:4px;border:1px solid rgba(231,76,60,0.4);background:transparent;color:#e74c3c;cursor:pointer;font-size:10px;">Remove</button>` : ''}
+          </div>`;
+        }
+        staleBanner.innerHTML = staleHtml;
+        const output = document.getElementById('terminal-output');
+        if (output) output.lastElementChild?.querySelector?.('div')?.appendChild?.(staleBanner) || output.appendChild(staleBanner);
+      }).catch(() => {});
+      this._showRivenMessage(html, true);
+    }
+
+    // ---- VIEW_PRIVILEGE_CATALOG ----
+    async terminalViewPrivilegeCatalog() {
+      await this._ensureTerminalPrivileges();
+      const privileges = (this._terminalPrivileges || []).filter(p => p.is_active);
+      if (!privileges.length) {
+        this._showRivenMessage('No active privileges in the catalog. Want to add one? Try "add homework pass to privileges for 15 rtc for 7 days".', false);
+        return;
+      }
+      const isAdmin = this.userInfo?.profile?.user_type === 'admin';
+      let html = `<div style="font-size:14px;font-weight:600;margin-bottom:10px;">🎖️ Privilege Catalog (${privileges.length} active)</div>`;
+      for (const priv of privileges) {
+        const durLabel = priv.duration_days ? `${priv.duration_days}d` : '∞';
+        html += `<div style="display:flex;align-items:flex-start;gap:8px;padding:6px 0;border-bottom:1px solid rgba(128,128,128,0.15);">
+          <span style="font-size:16px;">${priv.icon || '🎖️'}</span>
+          <div style="flex:1;">
+            <b>${this.escapeHtml(priv.name)}</b>
+            ${priv.description ? `<div style="font-size:11px;color:var(--muted);">${this.escapeHtml(priv.description)}</div>` : ''}
+          </div>
+          <span style="color:#f39c12;font-weight:600;font-size:13px;">${priv.price} RTC</span>
+          <span style="color:var(--muted);font-size:12px;margin-left:4px;">${durLabel}</span>
+          ${isAdmin ? `<button onclick="app.executeTerminalCommand('edit privilege ${priv.name.replace(/'/g, "\\'")}')" style="padding:2px 8px;border-radius:4px;border:1px solid var(--border);background:transparent;color:var(--muted);cursor:pointer;font-size:10px;">Edit</button>` : ''}
+        </div>`;
+      }
+      this._showRivenMessage(html, true);
+    }
+
+    // ---- VIEW_STUDENT_PRIVILEGES ----
+    async terminalViewStudentPrivileges(entities) {
+      const student = entities.student?.student;
+      if (!student) { this.terminalPrintError('Which student? Try "what privileges does Jordan have".'); return; }
+      const { data, error } = await this.auth.supabase.rpc('rtc_admin_list_student_privileges', { p_student_id: student.id });
+      if (error) throw error;
+      const result = typeof data === 'string' ? JSON.parse(data) : data;
+      if (!result.success) throw new Error(result.error);
+      const grants = result.grants || [];
+      if (!grants.length) {
+        this._showRivenMessage(`${this.escapeHtml(student.full_name)} doesn't have any active privileges right now.`, false);
+        return;
+      }
+      let html = `<div style="font-size:14px;font-weight:600;margin-bottom:10px;">🎖️ ${this.escapeHtml(student.full_name)}'s Privileges</div>`;
+      for (const g of grants) {
+        const expiry = g.is_permanent ? 'Permanent' : (g.expires_at ? `Expires ${new Date(g.expires_at).toLocaleDateString()}` : '');
+        const srcLabel = g.source === 'granted' ? '(granted)' : `(${g.price_paid || 0} RTC)`;
+        html += `<div style="display:flex;align-items:flex-start;gap:8px;padding:6px 0;border-bottom:1px solid rgba(128,128,128,0.15);">
+          <span style="font-size:16px;">${g.icon || '🎖️'}</span>
+          <div style="flex:1;">
+            <b>${this.escapeHtml(g.name)}</b> <span style="color:var(--muted);font-size:11px;">${srcLabel}</span>
+            ${expiry ? `<div style="font-size:11px;color:var(--muted);">${expiry}</div>` : ''}
+            ${g.grant_reason ? `<div style="font-size:11px;color:var(--muted);">Note: ${this.escapeHtml(g.grant_reason)}</div>` : ''}
+          </div>
+          <button onclick="app.executeTerminalCommand('revoke ${g.name.replace(/'/g, "\\'")} from ${student.full_name.replace(/'/g, "\\'")}')" style="padding:2px 8px;border-radius:4px;border:1px solid rgba(231,76,60,0.4);background:transparent;color:#e74c3c;cursor:pointer;font-size:10px;">Revoke</button>
+        </div>`;
+      }
+      this._showRivenMessage(html, true);
+    }
+
+    // ---- BUY_ITEM (via SUBTRACT_RTC → shop routing) ----
+    async terminalBuyItem(student, amount, rawItemName, reason, normalized) {
+      await this._ensureTerminalStoreItems();
+      const activeItems = this._terminalStoreItems || [];
+      const matchResult = rawItemName ? this._rivenMatchStoreItem(rawItemName, activeItems) : null;
+      const item = matchResult?.item || null;
+
+      if (item) {
+        // Catalog match — use catalog price if no explicit amount, else given amount
+        const price = amount || item.price;
+        const newBal = (student.rtc_balance || 0) - price;
+        const doIt = async () => {
+          const { data, error } = await this.auth.supabase.rpc('process_irl_purchase', {
+            p_student_id: student.id,
+            p_item_id: item.id,
+            p_custom_name: null,
+            p_custom_price: null,
+            p_quantity: 1,
+            p_description: reason || null
+          });
+          if (error) throw error;
+          const result = typeof data === 'string' ? JSON.parse(data) : data;
+          if (!result.success) throw new Error(result.error);
+          this._addRecentStudent({ ...student, rtc_balance: result.new_balance });
+          const paidAmt = price;
+          this._pushUndo(`${student.full_name} buying ${item.name}`, async () => {
+            await this._rtcTxn({ userId: student.id, amount: paidAmt, type: 'admin_adjustment',
+              description: `Undo: refund for ${item.name} purchase`, refType: 'undo' });
+            this._addRecentStudent({ ...student, rtc_balance: (student.rtc_balance || 0) });
+          });
+          this._naturalSuccess([
+            `Logged! ${student.full_name} bought ${item.name} for ${price} RTC. New balance: ${result.new_balance}`,
+            `Purchase recorded — ${item.name} (${price} RTC) for ${student.full_name}. Balance: ${result.new_balance}`,
+            `Done! ${student.full_name} spent ${price} RTC on ${item.name}. Balance is now ${result.new_balance}`
+          ]);
+        };
+        this._requestConfirmation(
+          `${this.escapeHtml(student.full_name)} buys <b>${this.escapeHtml(item.name)}</b> for <b>${price} RTC</b>${amount && amount !== item.price ? ` (catalog: ${item.price})` : ''}. New balance: ${newBal}`,
+          doIt
+        );
+
+      } else if (rawItemName) {
+        // Not in catalog — process as custom, then offer to add
+        const price = amount;
+        if (!price || price < 1) {
+          this.terminalPrintError(`How much did "${rawItemName}" cost? Try "charge ${student.full_name} 5 for ${rawItemName}".`);
+          return;
+        }
+        const newBal = (student.rtc_balance || 0) - price;
+        const doIt = async () => {
+          const { data, error } = await this.auth.supabase.rpc('process_irl_purchase', {
+            p_student_id: student.id,
+            p_item_id: null,
+            p_custom_name: rawItemName,
+            p_custom_price: price,
+            p_quantity: 1,
+            p_description: reason || null
+          });
+          if (error) throw error;
+          const result = typeof data === 'string' ? JSON.parse(data) : data;
+          if (!result.success) throw new Error(result.error);
+          this._addRecentStudent({ ...student, rtc_balance: result.new_balance });
+          this._pushUndo(`${student.full_name} buying ${rawItemName}`, async () => {
+            await this._rtcTxn({ userId: student.id, amount: price, type: 'admin_adjustment',
+              description: `Undo: refund for custom purchase "${rawItemName}"`, refType: 'undo' });
+            this._addRecentStudent({ ...student, rtc_balance: (student.rtc_balance || 0) });
+          });
+          this._naturalSuccess([
+            `Purchase logged! ${student.full_name} spent ${price} RTC on "${rawItemName}". Balance: ${result.new_balance}`,
+            `Done — "${rawItemName}" recorded for ${student.full_name} (${price} RTC). New balance: ${result.new_balance}`
+          ]);
+          // Offer to add to catalog (admin only)
+          if (this.userInfo?.profile?.user_type === 'admin') {
+            this._rivenOfferAddToShop(rawItemName, price);
+          }
+        };
+        this._requestConfirmation(
+          `<b>"${this.escapeHtml(rawItemName)}"</b> isn't in the catalog — log as a custom purchase: ${this.escapeHtml(student.full_name)} spends <b>${price} RTC</b> on "${this.escapeHtml(rawItemName)}". New balance: ${newBal}`,
+          doIt
+        );
+
+      } else {
+        // No item name identified — fall through to plain RTC deduction
+        await this.terminalAddRTC([student.full_name, (-amount).toString()], { reason: reason || null });
+      }
+    }
+
+    // Offer to add an unknown item to the catalog after a custom purchase
+    _rivenOfferAddToShop(itemName, price) {
+      const e = s => this.escapeHtml(s);
+      const safeCmd = s => s.replace(/'/g, "\\'");
+      this._showRivenMessage(`
+        <div style="font-size:13px;color:var(--muted);margin-bottom:8px;">💡 <b>"${e(itemName)}"</b> isn't in the shop catalog yet.</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button onclick="app.executeTerminalCommand('add ${safeCmd(itemName)} to shop for ${price} rtc')"
+            style="padding:5px 12px;border-radius:6px;border:1px solid var(--accent);background:transparent;color:var(--accent);cursor:pointer;font-size:12px;">
+            ➕ Add to catalog (${price} RTC)
+          </button>
+          <button onclick="app._rivenPromptAddToShop('${safeCmd(itemName)}', ${price})"
+            style="padding:5px 12px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--muted);cursor:pointer;font-size:12px;">
+            ✏️ Add with different name/price
+          </button>
+        </div>
+      `, true);
+    }
+
+    _rivenPromptAddToShop(suggestedName, suggestedPrice) {
+      this._showRivenMessage(`
+        <div style="font-size:13px;margin-bottom:8px;">What should I call this item and what price?</div>
+        <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
+          <input id="riven-add-item-name" type="text" value="${this.escapeHtml(suggestedName)}" placeholder="Item name"
+            style="flex:1;min-width:120px;padding:5px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--text);">
+          <input id="riven-add-item-price" type="number" value="${suggestedPrice}" min="1" placeholder="Price"
+            style="width:80px;padding:5px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--text);">
+        </div>
+        <button onclick="app._rivenConfirmAddToShop()"
+          style="padding:5px 14px;border-radius:6px;border:none;background:var(--accent);color:white;cursor:pointer;font-size:12px;font-weight:600;">
+          Add to catalog
+        </button>
+      `, true);
+    }
+
+    async _rivenConfirmAddToShop() {
+      const name = document.getElementById('riven-add-item-name')?.value?.trim();
+      const price = parseInt(document.getElementById('riven-add-item-price')?.value) || 0;
+      if (!name) { this.terminalPrintError('Item name is required.'); return; }
+      if (price < 1) { this.terminalPrintError('Price must be at least 1 RTC.'); return; }
+      await this.terminalAddShopItem({ name, price });
+    }
+
+    // ---- BUY_PRIVILEGE ----
+    async terminalBuyPrivilege(entities) {
+      const student = entities.student?.student;
+      if (!student) { this.terminalPrintError('Which student? Try "Jordan bought the homework pass privilege".'); return; }
+      await this._ensureTerminalPrivileges();
+      const allPrivs = (this._terminalPrivileges || []).filter(p => p.is_active);
+      const rawNorm = this._normalizeInput(entities._rawInput || '');
+      const privName = this._rivenExtractPrivilegeName(rawNorm, entities);
+      const matchResult = privName ? this._rivenMatchStoreItem(privName, allPrivs) : null;
+      const matchedPriv = matchResult?.item || null;
+
+      if (!matchedPriv) {
+        if (!privName) {
+          this._showRivenMessage(`Which privilege should ${this.escapeHtml(student.full_name)} buy? Here's the catalog:`, false);
+          await this.terminalViewPrivilegeCatalog();
+        } else if (!allPrivs.length) {
+          this.terminalPrintError(`No privileges in the catalog yet. Add one with "add [name] to privileges for [price] rtc for [days] days".`);
+        } else {
+          const list = allPrivs.slice(0, 5).map(p => `${p.icon || '🎖️'} ${p.name} (${p.price} RTC)`).join(', ');
+          this.terminalPrintError(`Couldn't find a privilege called "${privName}". Available: ${list}`);
+        }
+        return;
+      }
+
+      const price = entities.amount || matchedPriv.price;
+      const newBal = (student.rtc_balance || 0) - price;
+      const durLabel = matchedPriv.duration_days ? `for ${matchedPriv.duration_days} days` : '(permanent)';
+
+      const doIt = async () => {
+        const { data, error } = await this.auth.supabase.rpc('teacher_purchase_privilege', {
+          p_student_id: student.id,
+          p_privilege_id: matchedPriv.id,
+          p_custom_privilege_name: null,
+          p_price_override: price !== matchedPriv.price ? price : null,
+          p_duration_days_override: null,
+          p_description: entities.reason || null
+        });
+        if (error) throw error;
+        const result = typeof data === 'string' ? JSON.parse(data) : data;
+        if (!result.success) throw new Error(result.error);
+        this._addRecentStudent({ ...student, rtc_balance: result.new_balance });
+        const grantId = result.grant_id;
+        const paidPrice = price;
+        this._pushUndo(`${student.full_name} purchasing ${matchedPriv.name}`, async () => {
+          if (grantId) await this.auth.supabase.rpc('rtc_revoke_privilege', { p_grant_id: grantId, p_reason: 'Undo from Riven terminal' });
+          await this._rtcTxn({ userId: student.id, amount: paidPrice, type: 'admin_adjustment',
+            description: `Undo: refund privilege ${matchedPriv.name}`, refType: 'undo' });
+          this._addRecentStudent({ ...student, rtc_balance: (student.rtc_balance || 0) });
+        });
+        this._naturalSuccess([
+          `Done! ${student.full_name} bought the ${matchedPriv.name} privilege for ${price} RTC ${durLabel}. Balance: ${result.new_balance}`,
+          `Privilege granted! ${student.full_name} now has ${matchedPriv.name} ${durLabel}. New balance: ${result.new_balance}`
+        ]);
+      };
+
+      this._requestConfirmation(
+        `${this.escapeHtml(student.full_name)} purchases <b>${this.escapeHtml(matchedPriv.name)}</b> privilege for <b>${price} RTC</b> ${durLabel}. New balance: ${newBal}`,
+        doIt
+      );
+    }
+
+    // ---- GRANT_PRIVILEGE ----
+    async terminalGrantPrivilege(entities) {
+      const student = entities.student?.student;
+      if (!student) { this.terminalPrintError('Which student? Try "grant Jordan the homework pass for 7 days".'); return; }
+      await this._ensureTerminalPrivileges();
+      const allPrivs = (this._terminalPrivileges || []).filter(p => p.is_active);
+      const rawNorm = this._normalizeInput(entities._rawInput || '');
+      const privName = this._rivenExtractPrivilegeName(rawNorm, entities);
+      const matchResult = privName ? this._rivenMatchStoreItem(privName, allPrivs) : null;
+      const matchedPriv = matchResult?.item || null;
+
+      if (!privName && !matchedPriv) {
+        this.terminalPrintError(`Which privilege should I grant to ${this.escapeHtml(student.full_name)}? Try "grant Jordan the homework pass for 7 days".`);
+        return;
+      }
+
+      const isPermanent = /\b(permanent|forever|always|no\s+expiry|indefinite)\b/i.test(entities._rawInput || '');
+      const durMatch = (entities._rawInput || '').match(/\b(\d+)\s*(day|days|week|weeks|month|months)\b/i);
+      let durationDays = null;
+      if (durMatch) {
+        const num = parseInt(durMatch[1]);
+        const unit = durMatch[2].toLowerCase();
+        durationDays = unit.startsWith('w') ? num * 7 : unit.startsWith('m') ? num * 30 : num;
+      }
+
+      const privId = matchedPriv?.id || null;
+      const privDisplayName = matchedPriv?.name || privName;
+      const effectiveDuration = durationDays || matchedPriv?.duration_days;
+
+      if (!isPermanent && !effectiveDuration) {
+        this.terminalPrintError(`How long should the privilege last? Try "grant Jordan the homework pass for 7 days" or add "permanently".`);
+        return;
+      }
+
+      const durLabel = isPermanent ? 'permanently' : `for ${effectiveDuration} days`;
+
+      const doIt = async () => {
+        const { data, error } = await this.auth.supabase.rpc('rtc_grant_privilege', {
+          p_student_id: student.id,
+          p_privilege_id: privId,
+          p_duration_days: isPermanent ? null : effectiveDuration,
+          p_is_permanent: isPermanent,
+          p_custom_name: privId ? null : privName,
+          p_reason: entities.reason || 'Granted via Riven terminal'
+        });
+        if (error) throw error;
+        const result = typeof data === 'string' ? JSON.parse(data) : data;
+        if (!result.success) throw new Error(result.error);
+        const grantId = result.grant_id;
+        this._pushUndo(`granting ${privDisplayName} to ${student.full_name}`, async () => {
+          if (grantId) await this.auth.supabase.rpc('rtc_revoke_privilege', { p_grant_id: grantId, p_reason: 'Undo from Riven terminal' });
+        });
+        this._naturalSuccess([
+          `Granted! ${student.full_name} now has the ${privDisplayName} privilege ${durLabel}. No RTC charged.`,
+          `Done — ${student.full_name} received ${privDisplayName} ${durLabel} (free grant).`
+        ]);
+      };
+
+      this._requestConfirmation(
+        `Grant <b>${this.escapeHtml(privDisplayName)}</b> to ${this.escapeHtml(student.full_name)} <b>${durLabel}</b> at no RTC cost`,
+        doIt
+      );
+    }
+
+    // ---- REVOKE_PRIVILEGE ----
+    async terminalRevokePrivilege(entities) {
+      const student = entities.student?.student;
+      if (!student) { this.terminalPrintError('Which student? Try "revoke Jordan\'s homework pass".'); return; }
+      const { data, error } = await this.auth.supabase.rpc('rtc_admin_list_student_privileges', { p_student_id: student.id });
+      if (error) throw error;
+      const result = typeof data === 'string' ? JSON.parse(data) : data;
+      if (!result.success) throw new Error(result.error);
+      const grants = result.grants || [];
+      if (!grants.length) {
+        this.terminalPrintError(`${this.escapeHtml(student.full_name)} doesn't have any active privileges to revoke.`);
+        return;
+      }
+      const rawNorm = this._normalizeInput(entities._rawInput || '');
+      const privName = this._rivenExtractPrivilegeName(rawNorm, entities);
+      let targetGrant = null;
+      if (grants.length === 1) {
+        targetGrant = grants[0];
+      } else if (privName) {
+        const m = this._rivenMatchStoreItem(privName, grants.map(g => ({ id: g.id, name: g.name })));
+        if (m) targetGrant = grants.find(g => g.id === m.item.id);
+      }
+      if (!targetGrant) {
+        const list = grants.map(g => `${g.icon || '🎖️'} ${g.name}`).join(', ');
+        this._showRivenMessage(`Which privilege should I revoke from ${this.escapeHtml(student.full_name)}? They have: ${this.escapeHtml(list)}`, false);
+        return;
+      }
+      const doIt = async () => {
+        const { data: d2, error: e2 } = await this.auth.supabase.rpc('rtc_revoke_privilege', {
+          p_grant_id: targetGrant.id,
+          p_reason: entities.reason || 'Revoked via Riven terminal'
+        });
+        if (e2) throw e2;
+        const r2 = typeof d2 === 'string' ? JSON.parse(d2) : d2;
+        if (!r2.success) throw new Error(r2.error);
+        this._naturalSuccess([
+          `Revoked ${targetGrant.name} from ${student.full_name}.`,
+          `Done — ${student.full_name} no longer has the ${targetGrant.name} privilege.`
+        ]);
+      };
+      this._requestConfirmation(
+        `Revoke <b>${this.escapeHtml(targetGrant.name)}</b> from ${this.escapeHtml(student.full_name)}`,
+        doIt
+      );
+    }
+
+    // ---- ADD_SHOP_ITEM ----
+    async terminalAddShopItemFromNL(entities) {
+      const rawInput = entities._rawInput || '';
+      const normalized = this._normalizeInput(rawInput);
+      // Extract price: "for 5 rtc" or from entities.amount
+      const priceMatch = rawInput.match(/\bfor\s+(\d+)\s*(?:rtc|gold|coins?)?\b/i);
+      const price = priceMatch ? parseInt(priceMatch[1]) : (entities.amount || null);
+      // Extract name by stripping verbs, shop/catalog, price phrase, filler
+      let name = normalized
+        .replace(/\b(add|create|put|make|new|post|insert)\b/g, '')
+        .replace(/\bto\s+(the\s+)?(shop|store|catalog)\b/g, '')
+        .replace(/\b(shop|store|catalog|item)\b/g, '')
+        .replace(/\bfor\s+\d+\s*(rtc|gold|coins?)?\b/gi, '')
+        .replace(/\b(rtc|gold|coins?|credits?)\b/g, '')
+        .replace(/[.,!?;:'"()\[\]]/g, ' ').replace(/\s+/g, ' ').trim();
+      await this.terminalAddShopItem({ name, price, category: 'General', icon: '🛒' });
+    }
+
+    async terminalAddShopItem(overrides = {}) {
+      const isAdmin = this.userInfo?.profile?.user_type === 'admin';
+      if (!isAdmin) { this.terminalPrintError('Only admins can add items to the shop catalog.'); return; }
+      const { name, price, category = 'General', icon = '🛒' } = overrides;
+      if (!name) { this.terminalPrintError('What should the item be called? Try "add snack to shop for 5 rtc".'); return; }
+      if (!price || price < 1) { this.terminalPrintError('What should it cost? Include "for X rtc".'); return; }
+      await this._ensureTerminalStoreItems();
+      const existing = this._terminalStoreItems?.find(i => i.name.toLowerCase() === name.toLowerCase());
+      if (existing) {
+        this.terminalPrintError(`"${name}" is already in the shop (${existing.price} RTC). To edit it, say "change price of ${name} to [new price] rtc".`);
+        return;
+      }
+      const doIt = async () => {
+        const { error } = await this.auth.supabase.from('irl_store_items')
+          .insert({ name, price, icon, category, created_by: this.userInfo.user.id });
+        if (error) throw error;
+        await this._loadTerminalStoreItems();
+        // Keep IRL store UI cache in sync if open
+        if (this._irlAllItems !== undefined) {
+          const { data } = await this.auth.supabase.from('irl_store_items').select('*').order('sort_order').order('name');
+          this._irlAllItems = data || [];
+          this._irlStoreItems = (data || []).filter(i => i.is_active);
+        }
+        this._naturalSuccess([
+          `Added "${name}" to the shop for ${price} RTC!`,
+          `Done — "${name}" (${price} RTC) is now in the catalog.`
+        ]);
+      };
+      this._requestConfirmation(`Add <b>${this.escapeHtml(name)}</b> to shop catalog for <b>${price} RTC</b>`, doIt);
+    }
+
+    // ---- EDIT_SHOP_ITEM ----
+    async terminalEditShopItem(entities) {
+      const isAdmin = this.userInfo?.profile?.user_type === 'admin';
+      if (!isAdmin) { this.terminalPrintError('Only admins can edit shop items.'); return; }
+      await this._ensureTerminalStoreItems();
+      const items = this._terminalStoreItems || [];
+      const rawInput = entities._rawInput || '';
+      const priceMatch = rawInput.match(/\bto\s+(\d+)\b/i);
+      const newPrice = priceMatch ? parseInt(priceMatch[1]) : null;
+      const renameMatch = rawInput.match(/\brename\b[^"]*\bto\b\s+"?([^"]+)"?$/i);
+      const newName = renameMatch ? renameMatch[1].trim() : null;
+      const normalized = this._normalizeInput(rawInput);
+      let itemName = normalized
+        .replace(/\b(change|update|edit|rename|reprice|set|adjust|modify)\b/g, '')
+        .replace(/\b(price|cost|name)\b/g, '').replace(/\bof\b/g, '')
+        .replace(/\b(shop|store|item|catalog)\b/g, '')
+        .replace(/\bto\s+\d+\b/g, '').replace(/\brtc\b|\bgold\b/g, '')
+        .replace(/[.,!?;:'"()\[\]]/g, ' ').replace(/\s+/g, ' ').trim();
+      // Handle "rename X to Y" → extract X
+      const renameFrom = rawInput.match(/\b(?:rename|change name of)\b\s+(.+?)\s+to\s+/i);
+      if (renameFrom) itemName = renameFrom[1].trim();
+      const match = this._rivenMatchStoreItem(itemName, items);
+      if (!match?.item) {
+        this.terminalPrintError(`Couldn't find "${itemName}" in the shop. Use "show shop" to see what's available.`);
+        return;
+      }
+      const item = match.item;
+      if (!newPrice && !newName) {
+        this.terminalPrintError(`What should I change? Try "change price of ${item.name} to 10" or "rename ${item.name} to New Name".`);
+        return;
+      }
+      const updatedName = newName || item.name;
+      const updatedPrice = newPrice || item.price;
+      const doIt = async () => {
+        const { error } = await this.auth.supabase.from('irl_store_items')
+          .update({ name: updatedName, price: updatedPrice, updated_at: new Date().toISOString() })
+          .eq('id', item.id);
+        if (error) throw error;
+        await this._loadTerminalStoreItems();
+        const cached = (this._irlAllItems || []).find(i => i.id === item.id);
+        if (cached) Object.assign(cached, { name: updatedName, price: updatedPrice });
+        if (this._irlAllItems) this._irlStoreItems = this._irlAllItems.filter(i => i.is_active);
+        this._naturalSuccess([
+          `Updated! ${item.name}${newName ? ` → "${updatedName}"` : ''} is now ${updatedPrice} RTC.`,
+          `Done — ${updatedName} updated in the shop.`
+        ]);
+      };
+      const changes = [];
+      if (newName) changes.push(`rename to "${newName}"`);
+      if (newPrice) changes.push(`price → ${newPrice} RTC`);
+      this._requestConfirmation(`Edit <b>${this.escapeHtml(item.name)}</b>: ${changes.join(', ')}`, doIt);
+    }
+
+    // ---- REMOVE_SHOP_ITEM ----
+    async terminalRemoveShopItem(entities) {
+      const isAdmin = this.userInfo?.profile?.user_type === 'admin';
+      if (!isAdmin) { this.terminalPrintError('Only admins can remove shop items.'); return; }
+      await this._ensureTerminalStoreItems();
+      const items = this._terminalStoreItems || [];
+      const normalized = this._normalizeInput(entities._rawInput || '');
+      const itemName = normalized
+        .replace(/\b(remove|delete|deactivate|archive|retire|hide|disable)\b/g, '')
+        .replace(/\b(from|the|shop|store|catalog)\b/g, '')
+        .replace(/[.,!?;:'"()\[\]]/g, ' ').replace(/\s+/g, ' ').trim();
+      const match = this._rivenMatchStoreItem(itemName, items);
+      if (!match?.item) {
+        this.terminalPrintError(`Couldn't find "${itemName}" in the shop. Use "show shop" to see what's available.`);
+        return;
+      }
+      const item = match.item;
+      const doIt = async () => {
+        const { error } = await this.auth.supabase.from('irl_store_items')
+          .update({ is_active: false, updated_at: new Date().toISOString() })
+          .eq('id', item.id);
+        if (error) throw error;
+        await this._loadTerminalStoreItems();
+        if (this._irlAllItems) {
+          const cached = this._irlAllItems.find(i => i.id === item.id);
+          if (cached) cached.is_active = false;
+          this._irlStoreItems = this._irlAllItems.filter(i => i.is_active);
+        }
+        this._naturalSuccess([
+          `Removed "${item.name}" from the shop catalog. (Deactivated — purchase history preserved.)`,
+          `Done — "${item.name}" is now hidden from the store.`
+        ]);
+      };
+      this._requestConfirmation(`Deactivate <b>${this.escapeHtml(item.name)}</b> from shop catalog (purchase history preserved)`, doIt);
+    }
+
+    // ---- ADD_PRIVILEGE ----
+    async terminalAddPrivilege(entities) {
+      const isAdmin = this.userInfo?.profile?.user_type === 'admin';
+      if (!isAdmin) { this.terminalPrintError('Only admins can add privileges to the catalog.'); return; }
+      const rawInput = entities._rawInput || '';
+      const priceMatch = rawInput.match(/\bfor\s+(\d+)\s*(?:rtc|gold|coins?)?\b/i);
+      const price = priceMatch ? parseInt(priceMatch[1]) : (entities.amount || null);
+      const durMatch = rawInput.match(/\bfor\s+(\d+)\s*(day|days|week|weeks|month|months)\b/i);
+      let durationDays = null;
+      if (durMatch) {
+        const num = parseInt(durMatch[1]);
+        const unit = durMatch[2].toLowerCase();
+        durationDays = unit.startsWith('w') ? num * 7 : unit.startsWith('m') ? num * 30 : num;
+      }
+      const isPermanent = /\b(permanent|forever|no\s+expiry|indefinite)\b/i.test(rawInput);
+      const normalized = this._normalizeInput(rawInput);
+      const name = normalized
+        .replace(/\b(add|create|new|put|make)\b/g, '')
+        .replace(/\b(privilege|privileges|perk|perks|to|in|into|the|catalog|list)\b/g, '')
+        .replace(/\bfor\s+\d+\s*(rtc|gold|coins?|days?|weeks?|months?)?\b/gi, '')
+        .replace(/\b(rtc|gold|coins?|credits?|permanent|forever|indefinite)\b/g, '')
+        .replace(/[.,!?;:'"()\[\]]/g, ' ').replace(/\s+/g, ' ').trim();
+      if (!name) { this.terminalPrintError('What should the privilege be called? Try "add homework pass to privileges for 15 rtc for 7 days".'); return; }
+      if (!price || price < 1) { this.terminalPrintError('What should it cost? Include "for X rtc".'); return; }
+      if (!durationDays && !isPermanent) { this.terminalPrintError('How long should it last? Include "for X days" or say "permanent".'); return; }
+      const durLabel = isPermanent ? 'permanent' : `${durationDays} days`;
+      const doIt = async () => {
+        const { error } = await this.auth.supabase.from('rtc_privileges').insert({
+          name, price,
+          duration_days: isPermanent ? null : durationDays,
+          icon: '🎖️',
+          created_by: this.userInfo.user.id
+        });
+        if (error) throw error;
+        await this._loadTerminalPrivileges();
+        this._naturalSuccess([
+          `Added "${name}" to the privilege catalog — ${price} RTC, ${durLabel}!`,
+          `Done — "${name}" is now available in the privilege catalog.`
+        ]);
+      };
+      this._requestConfirmation(`Add <b>${this.escapeHtml(name)}</b> to privilege catalog — <b>${price} RTC</b>, ${durLabel}`, doIt);
+    }
+
+    // ---- EDIT_PRIVILEGE ----
+    async terminalEditPrivilege(entities) {
+      const isAdmin = this.userInfo?.profile?.user_type === 'admin';
+      if (!isAdmin) { this.terminalPrintError('Only admins can edit privileges.'); return; }
+      await this._ensureTerminalPrivileges();
+      const privs = (this._terminalPrivileges || []).filter(p => p.is_active);
+      const rawInput = entities._rawInput || '';
+      const priceMatch = rawInput.match(/\bto\s+(\d+)\b/i);
+      const newPrice = priceMatch ? parseInt(priceMatch[1]) : null;
+      const normalized = this._normalizeInput(rawInput);
+      const privName = normalized
+        .replace(/\b(change|update|edit|set|rename|reprice|adjust|modify)\b/g, '')
+        .replace(/\b(price|cost|name)\b/g, '').replace(/\bof\b/g, '')
+        .replace(/\b(privilege|perk|catalog)\b/g, '')
+        .replace(/\bto\s+\d+\b/g, '').replace(/\brtc\b|\bgold\b/g, '')
+        .replace(/[.,!?;:'"()\[\]]/g, ' ').replace(/\s+/g, ' ').trim();
+      const match = this._rivenMatchStoreItem(privName, privs);
+      if (!match?.item) {
+        this.terminalPrintError(`Couldn't find a privilege called "${privName}". Use "show privileges" to see what's available.`);
+        return;
+      }
+      const priv = match.item;
+      if (!newPrice) { this.terminalPrintError(`What should I change? Try "change price of ${priv.name} privilege to 20 rtc".`); return; }
+      const doIt = async () => {
+        const { error } = await this.auth.supabase.from('rtc_privileges')
+          .update({ price: newPrice, updated_at: new Date().toISOString() })
+          .eq('id', priv.id);
+        if (error) throw error;
+        await this._loadTerminalPrivileges();
+        this._naturalSuccess([`Updated! ${priv.name} now costs ${newPrice} RTC.`]);
+      };
+      this._requestConfirmation(`Change <b>${this.escapeHtml(priv.name)}</b> price: ${priv.price} → <b>${newPrice} RTC</b>`, doIt);
+    }
+
+    // ---- REMOVE_PRIVILEGE ----
+    async terminalRemovePrivilege(entities) {
+      const isAdmin = this.userInfo?.profile?.user_type === 'admin';
+      if (!isAdmin) { this.terminalPrintError('Only admins can remove privileges.'); return; }
+      await this._ensureTerminalPrivileges();
+      const privs = (this._terminalPrivileges || []).filter(p => p.is_active);
+      const normalized = this._normalizeInput(entities._rawInput || '');
+      const privName = normalized
+        .replace(/\b(remove|delete|deactivate|archive|retire|hide)\b/g, '')
+        .replace(/\b(from|the|privilege|privileges|perk|perks|catalog|list)\b/g, '')
+        .replace(/[.,!?;:'"()\[\]]/g, ' ').replace(/\s+/g, ' ').trim();
+      const match = this._rivenMatchStoreItem(privName, privs);
+      if (!match?.item) {
+        this.terminalPrintError(`Couldn't find "${privName}" in the privilege catalog. Use "show privileges" to see what's there.`);
+        return;
+      }
+      const priv = match.item;
+      const doIt = async () => {
+        const { error } = await this.auth.supabase.from('rtc_privileges')
+          .update({ is_active: false, updated_at: new Date().toISOString() })
+          .eq('id', priv.id);
+        if (error) throw error;
+        await this._loadTerminalPrivileges();
+        this._naturalSuccess([`Removed "${priv.name}" from the privilege catalog.`]);
+      };
+      this._requestConfirmation(`Deactivate <b>${this.escapeHtml(priv.name)}</b> from the privilege catalog`, doIt);
+    }
+
+    // =========================================================================
+    // END RIVEN SHOP + PRIVILEGE INTEGRATION
+    // =========================================================================
 
     } // ============================= END OF CLASSAPP ===================================
 
