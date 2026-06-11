@@ -41629,6 +41629,18 @@
     }
 
     async _executeNaturalLanguage(input) {
+      // Phase 5: conversational layer — handle smalltalk before NLP, and
+      // strip a leading greeting ("hi, can you...") so the rest still works
+      const small = this._matchSmalltalk(input);
+      if (small) {
+        if (small.remainder) {
+          await this._executeNaturalLanguage(small.remainder);
+          return;
+        }
+        this._respondSmalltalk(small.key);
+        return;
+      }
+
       // Phase 1 + 2 + 3: NLP with context and pronouns
       const normalized = this._normalizeInput(input);
 
@@ -41637,8 +41649,10 @@
 
       const entities = this._extractEntities(resolvedInput, input);
 
-      // Phase 3: If no student found, try using context
-      if (!entities.student && this._nlpContext?.lastStudent) {
+      // Phase 3: If no student found, try using context — but never for
+      // aggregate questions ("which students...", "anyone absent?") where
+      // reusing the last student gives a confidently wrong answer
+      if (!entities.student && this._nlpContext?.lastStudent && !this._isAggregateQuery(normalized)) {
         // Check if this looks like a follow-up command
         if (this._isFollowUpCommand(normalized)) {
           entities.student = {
@@ -41651,8 +41665,10 @@
         }
       }
 
-      // Phase 2: Check for ambiguous student match
-      if (entities.student && entities.student.ambiguous) {
+      // Phase 2: Check for ambiguous student match (skip when a two-student
+      // phrase resolved both ends — the pair takes precedence)
+      const hasPair = (entities.studentFrom && entities.studentTo) || (entities.students && entities.students.length >= 2);
+      if (entities.student && entities.student.ambiguous && !hasPair) {
         this._showAmbiguityDialog(entities.student.matches, input);
         return;
       }
@@ -41660,11 +41676,7 @@
       const intent = this._matchIntent(resolvedInput, entities);
 
       if (!intent || intent.confidence < 0.5) {
-        this.terminalPrint(`I'm not sure what you mean. Try using a command like:`, '#ffd36a');
-        this.terminalPrint(`  • "How much gold does [name] have?"`, '#97a2b0');
-        this.terminalPrint(`  • "Give [name] [amount]"`, '#97a2b0');
-        this.terminalPrint(`  • "Note for [name]: forgot homework"`, '#97a2b0');
-        this.terminalPrint(`  • "Show stats" or "List students"`, '#97a2b0');
+        this._handleUnknown(resolvedInput, entities);
         return;
       }
 
@@ -41763,14 +41775,12 @@
       // User clicked on a student from ambiguity list
       this.terminalPrint(`Selected: ${studentName}`, '#8bffb0');
 
-      // Re-execute with the resolved student name
-      const modifiedInput = originalInput.replace(/\b[a-z]+\b/gi, (word) => {
-        // This is a simple replacement - in reality we'd be smarter about it
-        return word;
-      });
-
-      // Just execute the command with the exact student name
-      await this.executeTerminalCommand(`/read ${studentName}`);
+      // Re-run the ORIGINAL request with the chosen student pinned, so the
+      // intent survives ("compare evelyn and charlotte" stays a comparison
+      // instead of degrading to /read).
+      this._terminalPinnedStudent = studentName;
+      await this.executeTerminalCommand(originalInput);
+      this._terminalPinnedStudent = null;
     }
 
     _normalizeInput(input) {
@@ -41859,6 +41869,34 @@
       const tf = this._parseTimeframe(normalized);
       if (tf) { entities.sinceDate = tf.sinceDate; entities.sinceLabel = tf.label; }
 
+      // Quoted text ("give jordan a note 'Working on pre-calc'") — preserved
+      // verbatim from the original input for note content etc.
+      const qm = original.match(/["“”']([^"“”']{2,})["“”']/);
+      if (qm) entities.quoted = qm[1].trim();
+
+      // Two-student phrases. "from A to B" (transfers) and "A and/or/vs B"
+      // (comparisons). Fragments are fuzzy-matched independently; in pair
+      // context we accept each fragment's best match rather than opening
+      // the ambiguity dialog for one half of the request.
+      const best = (res) => res ? (res.ambiguous ? { student: res.matches[0], score: 0.7, assumed: true } : res) : null;
+      const ft = normalized.match(/\bfrom\s+([a-z]+(?:\s+[a-z]+)?)\s+to\s+([a-z]+(?:\s+[a-z]+)?)\b/);
+      if (ft) {
+        const a = best(this._fuzzyFindStudent(ft[1], ft[1]));
+        const b = best(this._fuzzyFindStudent(ft[2], ft[2]));
+        if (a?.student && b?.student && a.student.id !== b.student.id) {
+          entities.studentFrom = a;
+          entities.studentTo = b;
+        }
+      }
+      const pm = normalized.match(/\b([a-z]+(?:\s+[a-z]+)?)\s+(?:and|or|vs|versus)\s+([a-z]+(?:\s+[a-z]+)?)\b/);
+      if (pm && !entities.studentFrom) {
+        const a = best(this._fuzzyFindStudent(pm[1], pm[1]));
+        const b = best(this._fuzzyFindStudent(pm[2], pm[2]));
+        if (a?.student && b?.student && a.student.id !== b.student.id) {
+          entities.students = [a, b];
+        }
+      }
+
       return entities;
     }
 
@@ -41870,7 +41908,10 @@
       if (m) { days = parseInt(m[1]) * unitDays[m[2]]; label = `last ${m[1]} ${m[2]}`; }
       else if ((m = normalized.match(/(?:this|last|past)\s+(week|month|year)/))) {
         days = unitDays[m[1]]; label = `${m[0]}`;
-      } else if (/\btoday\b/.test(normalized)) { days = 1; label = 'today'; }
+      } else if ((m = normalized.match(/(\d+)\s+(day|days|week|weeks|month|months|year|years)\s+ago/))) {
+        days = parseInt(m[1]) * unitDays[m[2]]; label = `${m[1]} ${m[2]} ago`;
+      } else if (/\byesterday\b/.test(normalized)) { days = 2; label = 'yesterday'; }
+      else if (/\btoday\b/.test(normalized)) { days = 1; label = 'today'; }
       if (days === null) return null;
       const since = new Date(Date.now() - days * dayMs);
       const iso = since.toISOString().slice(0, 10);
@@ -41881,6 +41922,13 @@
       // Phase 2+: Enhanced with word-level matching
       if (!this._terminalAllStudents || this._terminalAllStudents.length === 0) {
         return null;
+      }
+
+      // A student chosen from the ambiguity dialog overrides fuzzy matching
+      // for the re-run of the original request
+      if (this._terminalPinnedStudent) {
+        const pinned = this._terminalAllStudents.find(s => s.full_name === this._terminalPinnedStudent);
+        if (pinned) return { student: pinned, score: 1, ambiguous: false };
       }
 
       const matches = [];
@@ -42125,16 +42173,64 @@
             /scratch that/
           ]
         },
+        // CORRECTION — "no, not what I meant". Apologize and offer undo.
+        {
+          intent: 'CORRECTION',
+          patterns: [
+            /^(no+|nope|wrong|wait)\b/,
+            /not what i (meant|said|asked|wanted)/,
+            /that('| i)?s? (wrong|not right|not it|not what)/,
+            /you (misunderstood|got that wrong)/
+          ]
+        },
         // ADD_NOTE (before the RTC mutators: "take a note: eli owes 5 problems"
         // must never parse as "take 5 from eli"). The verb must sit directly
         // before "note" so "add 5 rtc to eli, note: late" still reads as RTC.
         {
           intent: 'ADD_NOTE',
           patterns: [
-            /\b(add|write|leave|make|create|log|record|take|save)\s+(a\s+|an\s+)?(quick\s+|new\s+|private\s+|staff\s+)?note\b/,
+            /\b(add|write|leave|make|create|log|record|take|save)\s+(\w+\s+)?(a\s+|an\s+)?(quick\s+|new\s+|private\s+|staff\s+)?note\b/,
             /^note\b/,
             /\bnote that\b/
           ]
+        },
+        // ---- Recognized-but-unsupported actions: answer honestly and point
+        // to the right tool instead of mis-executing or showing a student card.
+        // BANK must precede ADD_RTC: "give jordan 30 gold in the bank" is a
+        // banking request, not an award.
+        {
+          intent: 'CAPABILITY',
+          capability: 'bank',
+          patterns: [/\bbank(ed|ing)?\b/]
+        },
+        {
+          intent: 'CAPABILITY',
+          capability: 'attendance_write',
+          patterns: [
+            /\bmark\b.*\b(present|absent|late|tardy|here)\b/,
+            /\b(mark|record|log|enter|change|fix|update|set)\b.*\battendance\b/
+          ]
+        },
+        {
+          intent: 'CAPABILITY',
+          capability: 'enroll',
+          patterns: [
+            /\b(add|put|enroll|enrol|register|sign(ed)? up|move)\b.+\b(to|in|into)\b.+\bclass(es)?\b/,
+            /\benroll(ing|ment)?\b/,
+            /\b(remove|drop|kick)\b.+\bfrom\b.+\bclass\b/
+          ]
+        },
+        // TRANSFER_RTC — "give 2 gold from evelyn to charlotte". Must precede
+        // SUBTRACT_RTC ("\d+ from X") and ADD_RTC.
+        {
+          intent: 'TRANSFER_RTC',
+          patterns: [
+            /\d+\s+(rtc\s+)?from\b.+\bto\b/,
+            /\b(transfer|move|send)\b.*\d+/,
+            /\bfrom\b.+\bto\b.*\d+/
+          ],
+          requiresFromTo: true,
+          requiresAmount: true
         },
         // SUBTRACT_RTC (most specific verbs first - order matters, the
         // VIEW_STUDENT catch-alls below would shadow these)
@@ -42162,6 +42258,16 @@
           requiresStudent: true,
           requiresAmount: true
         },
+        // COMPARE_STUDENTS — "compare evelyn and charlotte", "who has more rtc"
+        {
+          intent: 'COMPARE_STUDENTS',
+          patterns: [
+            /\bcompare\b/,
+            /who has (more|less)\b/,
+            /\b(vs|versus)\b/
+          ],
+          requiresPair: true
+        },
         // VIEW_NOTES (after the RTC mutators so "remove 5 rtc from eli for not
         // taking notes" still subtracts; before VIEW_ATTENDANCE so "notes about
         // attendance" searches notes)
@@ -42173,6 +42279,17 @@
             /\bnote\b.*\b(for|on|about|from)\b/
           ]
         },
+        // ATTENDANCE_ISSUES — aggregate over ALL students ("which students have
+        // bad attendance"); must precede VIEW_ATTENDANCE which is per-student
+        {
+          intent: 'ATTENDANCE_ISSUES',
+          patterns: [
+            /\b(spotty|bad|poor|low|worst|terrible|rough|concerning)\b.*\b(attendance|absences)\b/,
+            /\battendance\b.*\b(issues?|problems?|concerns?)\b/,
+            /\b(students|kids|who|which|anyone|anybody)\b.*\b(absent|absences|missing|skipp(ed|ing)|tardy|late)\b/,
+            /\b(students|kids|anyone|anybody)\b.*\battendance\b/
+          ]
+        },
         // VIEW_ATTENDANCE (before VIEW_STUDENT so "show eli's attendance" works)
         {
           intent: 'VIEW_ATTENDANCE',
@@ -42181,6 +42298,35 @@
             /\b(absent|absence|absences)\b/,
             /\b(tardy|tardies|tardiness)\b/,
             /(miss|missed|skipped) (class|classes|school|days)/
+          ],
+          requiresStudent: true
+        },
+        // BALANCE_AT — "how much rtc did he have yesterday" (point-in-time,
+        // reconstructed from the transaction ledger). Needs a past timeframe.
+        {
+          intent: 'BALANCE_AT',
+          patterns: [
+            /\b(did|had)\b.*\brtc\b/,
+            /\brtc\b.*\b(did|had|have)\b/
+          ],
+          requiresStudent: true,
+          requiresSince: true
+        },
+        // VIEW_ENROLLMENTS — "what classes is jordan in"
+        {
+          intent: 'VIEW_ENROLLMENTS',
+          patterns: [
+            /\bclass(es)?\b.*\b(is|in|taking|enrolled|signed)\b/,
+            /\b(what|which|show|list)\b.*\bclass(es)?\b/
+          ],
+          requiresStudent: true
+        },
+        // STUDENT_TENURE — "how long has he been at river tech"
+        {
+          intent: 'STUDENT_TENURE',
+          patterns: [
+            /how long\b.*\b(been|here|with us|at|enrolled)\b/,
+            /when did\b.*\b(join|start|enroll|sign up)\b/
           ],
           requiresStudent: true
         },
@@ -42206,6 +42352,15 @@
             /.* rtc\b/
           ],
           requiresStudent: true
+        },
+        // LIST_CLASSES — "what math classes do we have in the system" (after
+        // VIEW_ENROLLMENTS so a named student takes precedence)
+        {
+          intent: 'LIST_CLASSES',
+          patterns: [
+            /\b(what|which|list|show|how many|all|any)\b.*\bclass(es)?\b/,
+            /\bclass(es)?\b.*\b(do we have|are there|in the system|offered|available)\b/
+          ]
         },
         // LIST_STUDENTS
         {
@@ -42241,18 +42396,27 @@
         }
       ];
 
+      const hasPair = entities.students && entities.students.length >= 2;
+      const hasFromTo = entities.studentFrom && entities.studentTo;
+
       for (const pattern of patterns) {
         // Safety: don't allow an info-question to mutate balances
         if (blockMutation && (pattern.intent === 'ADD_RTC' || pattern.intent === 'SUBTRACT_RTC')) continue;
+        // "add 5 rtc to jordan in math class" is an award, not enrollment
+        if (pattern.capability === 'enroll' && hasCurrency) continue;
         for (const regex of pattern.patterns) {
           if (regex.test(normalized)) {
             // Check if required entities are present
             if (pattern.requiresStudent && !entities.student) continue;
             if (pattern.requiresAmount && !entities.amount) continue;
+            if (pattern.requiresFromTo && !hasFromTo) continue;
+            if (pattern.requiresPair && !(hasPair || hasFromTo)) continue;
+            if (pattern.requiresSince && !entities.sinceDate) continue;
 
             return {
               intent: pattern.intent,
-              confidence: 0.9
+              confidence: 0.9,
+              capability: pattern.capability || null
             };
           }
         }
@@ -42274,6 +42438,14 @@
         if (entities.student) {
           return { intent: 'VIEW_STUDENT', confidence: 0.7 };
         }
+      }
+
+      // Honesty guard: if the message contains an ACTION verb that didn't
+      // match any supported intent, do NOT fall back to showing a student
+      // card — that masks the misunderstanding ("mark him present" used to
+      // silently show the card). Own up to the limitation instead.
+      if (/\b(mark|enrol|enroll|register|assign|schedule|book|cancel|email|message|text|call|change|update|edit|delete|reset|suspend|approve|deny|put|set|send|move|transfer|make|create|upload|export|print|invite|excuse|promote|withdraw)\b/.test(normalized)) {
+        return { intent: 'UNKNOWN_ACTION', confidence: 0.9 };
       }
 
       // Last resort: a student was clearly named (e.g. just "Charlotte", or
@@ -42373,6 +42545,49 @@
           await this.terminalShowNotes(entities);
           break;
 
+        case 'CORRECTION':
+          this._respondCorrection();
+          break;
+
+        case 'CAPABILITY':
+          this._rivenCapabilityReply(intent.capability);
+          break;
+
+        case 'UNKNOWN_ACTION':
+          this._respondUnknownAction(entities);
+          break;
+
+        case 'TRANSFER_RTC':
+          await this.terminalTransferRTC(entities);
+          break;
+
+        case 'COMPARE_STUDENTS':
+          await this.terminalCompareStudents(entities);
+          break;
+
+        case 'ATTENDANCE_ISSUES':
+          await this.terminalAttendanceIssues(entities);
+          break;
+
+        case 'BALANCE_AT':
+          if (student) await this.terminalBalanceAt(student, entities);
+          else this.terminalPrintError('Whose balance should I look back at?');
+          break;
+
+        case 'VIEW_ENROLLMENTS':
+          if (student) await this.terminalShowEnrollments(student);
+          else this.terminalPrintError('Whose classes? Tell me a student name.');
+          break;
+
+        case 'STUDENT_TENURE':
+          if (student) await this.terminalStudentTenure(student);
+          else this.terminalPrintError('Which student do you mean?');
+          break;
+
+        case 'LIST_CLASSES':
+          await this.terminalListClasses(entities);
+          break;
+
         default:
           this.terminalPrintError('I understood that, but something went wrong');
       }
@@ -42392,7 +42607,12 @@
     • "Add a private note for [student]: check in tomorrow"<br>
     • "Show me notes about [student/class/teacher] from last month"<br>
     • "Any notes mentioning homework this week?"<br>
-    • "Undo that" (reverses my last RTC change or note)<br>
+    • "Give 5 RTC from [student] to [student]" (transfers)<br>
+    • "Compare [student] and [student]"<br>
+    • "Which students have bad attendance recently?"<br>
+    • "What classes is [student] in?" / "What math classes do we have?"<br>
+    • "How much RTC did [student] have last week?"<br>
+    • "Undo that" (reverses my last RTC change, transfer, or note)<br>
     • "Show me the top 10 students"<br>
     • "What's John's transaction history?"<br>
     • "List all active students"
@@ -42433,7 +42653,7 @@
       // Get all students and search client-side for better fuzzy matching
       const { data, error} = await this.auth.supabase
         .from('user_profiles')
-        .select('id, first_name, last_name, email, rtc_balance, account_status')
+        .select('id, first_name, last_name, email, rtc_balance, account_status, created_at')
         .eq('user_type', 'student');
 
       if (error) throw error;
@@ -42484,6 +42704,7 @@
     <div><span style="color: #97a2b0;">Email:</span> ${this.escapeHtml(student.email)}</div>
     <div><span style="color: #97a2b0;">RTC Balance:</span> <span style="color: #f39c12; font-weight: bold; font-size: 16px;">${student.rtc_balance || 0}</span> RTC</div>
     <div><span style="color: #97a2b0;">Status:</span> <span style="color: ${student.account_status === 'active' ? '#8bffb0' : '#ffd36a'};">${student.account_status || 'active'}</span></div>
+    ${student.created_at ? `<div><span style="color: #97a2b0;">Joined:</span> ${new Date(student.created_at).toLocaleDateString()}</div>` : ''}
     <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.1);">
       <span style="color: #97a2b0; font-size: 11px;">ID: ${student.id}</span>
     </div>
@@ -42709,7 +42930,13 @@
 
       const scope = (opts.subject ? `${opts.subject} · ` : '') + sinceLabel;
       if (records.length === 0) {
-        this.terminalPrint(`No attendance records for ${fullName} (${scope}).`, '#ffd36a');
+        // Don't dead-end on a narrow timeframe — automatically widen so the
+        // teacher learns what IS recorded instead of just "nothing".
+        if (opts.sinceDate) {
+          this.terminalPrint(`Nothing recorded for ${fullName} (${scope}) — here's the last 30 days instead:`, '#ffd36a');
+          return this.terminalShowAttendance(name, { subject: opts.subject });
+        }
+        this.terminalPrint(`No attendance records for ${fullName} (${scope}). Nothing has been recorded for them yet.`, '#ffd36a');
         return;
       }
 
@@ -42786,14 +43013,18 @@
     }
 
     async terminalUndoLast() {
-      // Generic undo: whichever happened most recently — a note or an RTC change
-      const ln = this._nlpContext?.lastNoteAction;
-      const lt = this._nlpContext?.lastTransaction;
-      if (ln && (!lt || ln.timestamp > (lt.timestamp || 0))) {
-        await this.terminalUndoNote();
-      } else {
-        await this.terminalUndoRTC();
+      // Generic undo: whichever happened most recently — note, transfer, or RTC change
+      const ctx = this._nlpContext || {};
+      const candidates = [
+        ctx.lastNoteAction && { ts: ctx.lastNoteAction.timestamp || 0, run: () => this.terminalUndoNote() },
+        ctx.lastTransfer && { ts: ctx.lastTransfer.timestamp || 0, run: () => this.terminalUndoTransfer() },
+        ctx.lastTransaction && { ts: ctx.lastTransaction.timestamp || 0, run: () => this.terminalUndoRTC() }
+      ].filter(Boolean).sort((a, b) => b.ts - a.ts);
+      if (!candidates.length) {
+        this.terminalPrintError("There's nothing recent to undo. I can only undo an RTC change, transfer, or note I just made.");
+        return;
       }
+      await candidates[0].run();
     }
 
     async terminalUndoNote() {
@@ -42812,6 +43043,334 @@
         `Scratched that note ${last.desc}.`
       ]);
       this._nlpContext.lastNoteAction = null;
+    }
+
+    // ---- Conversational layer & honest fallbacks ----
+
+    _matchSmalltalk(input) {
+      const raw = (input || '').trim();
+      // Leading greeting with real content after it: peel the greeting off and
+      // let the rest run through the pipeline ("hi, give jordan 5 rtc")
+      const g = raw.match(/^\s*(hey there|hey|hi there|hi|hello|yo|hiya|howdy|good (?:morning|afternoon|evening))\b[\s,!.?]*/i);
+      if (g && /\w/.test(raw.slice(g[0].length))) {
+        return { remainder: raw.slice(g[0].length) };
+      }
+      const lower = raw.toLowerCase().replace(/[!?.,]+/g, ' ').replace(/\s+/g, ' ').trim();
+      if (!lower) return null;
+      const checks = [
+        ['greeting', /^(hey there|hey|hi there|hi|hello|yo|hiya|howdy|good (morning|afternoon|evening))( riven)?$/],
+        ['howareyou', /^(hows it going|how is it going|how are you( doing)?( today)?|how you doing|how are things|how goes it|hows your day( going)?|whats up|what is up|sup)( riven)?$/],
+        ['thanks', /^(ok |okay )?(thanks|thank you|thx|ty|appreciate it)( so much| a lot)?( riven)?$/],
+        ['bye', /^(bye|goodbye|goodnight|good night|see ya|see you( later)?|later|cya)( riven)?$/],
+        ['whoareyou', /^(who|what) are you( again| exactly)?$/],
+        ['capabilities', /^(what can you do|what do you do|what can you help( me)? with|help|help me)$/],
+        ['ack', /^(nice|cool|awesome|great|perfect|sweet|love it|good job|well done)( riven)?$/]
+      ];
+      for (const [key, re] of checks) {
+        if (re.test(lower)) return { key };
+      }
+      return null;
+    }
+
+    _respondSmalltalk(key) {
+      const name = this.userInfo?.profile?.first_name || '';
+      const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+      const lines = {
+        greeting: [
+          `Hey${name ? ' ' + name : ''}! What can I do for you?`,
+          `Hi${name ? ' ' + name : ''}! Need a balance, attendance, or a note taken?`,
+          `Hello! I'm all ears — ask me about any student, class, or note.`
+        ],
+        howareyou: [
+          `Doing great, thanks for asking! What can I help you with — balances, attendance, notes?`,
+          `All systems humming. 🙂 What do you need${name ? ', ' + name : ''}?`,
+          `Pretty good! Ready to work whenever you are.`
+        ],
+        thanks: [`Anytime!`, `Happy to help! 🙂`, `You got it.`],
+        bye: [`See you later${name ? ', ' + name : ''}! 👋`, `Bye! I'll be here when you need me.`],
+        whoareyou: [
+          `I'm Riven — your teaching assistant here in the portal. I can look up students, balances, attendance, classes, and notes; award or move RTC; and take notes for you. Ask me anything, or type /help for the full list.`
+        ],
+        ack: [`🙂`, `Glad that worked!`, `👍`]
+      };
+      if (key === 'capabilities') {
+        this.terminalPrintHelp();
+        return;
+      }
+      this._showRivenMessage(this.escapeHtml(pick(lines[key] || lines.greeting)), true);
+    }
+
+    _respondCorrection() {
+      const ctx = this._nlpContext || {};
+      const acts = [
+        ctx.lastTransaction && { ts: ctx.lastTransaction.timestamp || 0, desc: `${ctx.lastTransaction.amount > 0 ? '+' : ''}${ctx.lastTransaction.amount} RTC for ${ctx.lastTransaction.studentName}` },
+        ctx.lastNoteAction && { ts: ctx.lastNoteAction.timestamp || 0, desc: `the note ${ctx.lastNoteAction.desc}` },
+        ctx.lastTransfer && { ts: ctx.lastTransfer.timestamp || 0, desc: `the transfer of ${ctx.lastTransfer.amount} RTC from ${ctx.lastTransfer.fromName} to ${ctx.lastTransfer.toName}` }
+      ].filter(Boolean).sort((a, b) => b.ts - a.ts);
+      if (acts.length && Date.now() - acts[0].ts < 5 * 60 * 1000) {
+        this._showRivenMessage(`Sorry about that! My last change was <b>${this.escapeHtml(acts[0].desc)}</b> — say "undo" and I'll reverse it. Then tell me what you actually wanted.`, true);
+      } else {
+        this._showRivenMessage(`Sorry — I misread that. Could you say it another way? Mentioning the student, class, or amount directly helps me a lot.`, true);
+      }
+    }
+
+    _respondUnknownAction(entities) {
+      const who = entities.student?.student?.full_name;
+      this._showRivenMessage(`I understood you want me to <b>do</b> something${who ? ' with ' + this.escapeHtml(who) : ''}, but that's outside what I can do right now, and I'd rather tell you that than pretend.<br><br>
+        Here's what I <b>can</b> do:<br>
+        • Look things up — balances, history, attendance, notes, classes, enrollments<br>
+        • Award, deduct, or transfer RTC ("give eli 5", "move 10 from eli to ava")<br>
+        • Take and search notes ("note for eli: ...", "any notes on ava this week?")<br>
+        • Undo my last change<br><br>
+        For everything else (marking attendance, rosters, grades…), the portal tabs are the way to go.`, true);
+    }
+
+    _handleUnknown(normalized, entities) {
+      const tips = [
+        `"How much gold does [name] have?"`,
+        `"Give [name] 5 rtc for great work"`,
+        `"Note for [name]: forgot homework"`,
+        `"Which students have bad attendance?"`,
+        `"What classes is [name] in?"`
+      ];
+      this._showRivenMessage(`Hmm, I didn't quite get that. A few things you can ask me:<br>` +
+        tips.map(t => '• ' + this.escapeHtml(t)).join('<br>') +
+        `<br>…or type <b>/help</b> for everything I understand.`, true);
+    }
+
+    _isAggregateQuery(normalized) {
+      return /\b(students|kids|everyone|anyone|anybody|all of them|which of|who (has|have|is|are) (been )?\w+ing|who (was|were))\b/.test(normalized)
+        || /\b(which|what) (students|kids)\b/.test(normalized)
+        || /\bstudents\b/.test(normalized);
+    }
+
+    _rivenCapabilityReply(key) {
+      const link = (section, label) => `<span style="color: var(--accent); cursor: pointer; text-decoration: underline;" onclick="app.showSection('${section}')">${label}</span>`;
+      const replies = {
+        bank: `I don't handle banking myself — deposits and savings live in the ${link('rtc-bank-helper', 'Bank Helper tab')}. If you just meant a regular award, say "give [name] 30 rtc" and I'll do that.`,
+        attendance_write: `I can <b>read</b> attendance, but I can't change it yet — marking attendance happens on the class page (${link('classes', 'Classes tab')} → open the class → Attendance). Want me to show what's recorded? Try "show [name]'s attendance".`,
+        enroll: `I can't change class rosters yet — enrollment is managed in the ${link('classes', 'Classes tab')}. I <b>can</b> tell you what someone is taking: ask "what classes is [name] in?"`
+      };
+      this._showRivenMessage(replies[key] || replies.bank, true);
+    }
+
+    // ---- New read/mutate executors ----
+
+    async terminalTransferRTC(entities) {
+      const from = entities.studentFrom?.student;
+      const to = entities.studentTo?.student;
+      const amount = entities.amount;
+      if (!from || !to || !amount) {
+        this.terminalPrintError('Tell me like: "give 5 rtc from Evelyn to Charlotte".');
+        return;
+      }
+      // Fresh balances
+      const fromRows = await this._findStudentsByName(from.full_name, 'id, first_name, last_name, rtc_balance');
+      const toRows = await this._findStudentsByName(to.full_name, 'id, first_name, last_name, rtc_balance');
+      const src = fromRows?.[0], dst = toRows?.[0];
+      if (!src || !dst) {
+        this.terminalPrintError("I couldn't pin down both students — try their full names.");
+        return;
+      }
+      if ((src.rtc_balance || 0) < amount) {
+        this.terminalPrintError(`${src.full_name} only has ${src.rtc_balance || 0} RTC — not enough to transfer ${amount}.`);
+        return;
+      }
+      const rpc = (userId, amt, desc) => this.auth.supabase.rpc('process_rtc_transaction', {
+        p_user_id: userId, p_amount: amt, p_transaction_type: 'admin_adjustment',
+        p_description: desc, p_reference_id: null, p_reference_type: 'transfer'
+      });
+      const { data: tx1, error: e1 } = await rpc(src.id, -amount, `Transfer to ${dst.full_name}`);
+      if (e1) { this.terminalPrintError('Transfer failed: ' + e1.message); return; }
+      const { data: tx2, error: e2 } = await rpc(dst.id, amount, `Transfer from ${src.full_name}`);
+      if (e2) {
+        // Roll the first leg back so we never leave a half-done transfer
+        await rpc(src.id, amount, `Reversal: failed transfer to ${dst.full_name}`);
+        this.terminalPrintError('Transfer failed on the receiving side (rolled back): ' + e2.message);
+        return;
+      }
+      const srcAfter = (src.rtc_balance || 0) - amount;
+      const dstAfter = (dst.rtc_balance || 0) + amount;
+      this._nlpContext = this._nlpContext || {};
+      this._nlpContext.lastTransfer = {
+        fromId: src.id, fromName: src.full_name, fromBalanceAfter: srcAfter,
+        toId: dst.id, toName: dst.full_name, toBalanceAfter: dstAfter,
+        amount, timestamp: Date.now()
+      };
+      this._naturalSuccess([
+        `Moved ${amount} RTC from ${src.full_name} (now ${srcAfter}) to ${dst.full_name} (now ${dstAfter}).`,
+        `Done — ${dst.full_name} received ${amount} RTC from ${src.full_name}. Balances: ${src.full_name} ${srcAfter}, ${dst.full_name} ${dstAfter}.`
+      ]);
+    }
+
+    async terminalUndoTransfer() {
+      const last = this._nlpContext?.lastTransfer;
+      if (!last) { this.terminalPrintError('No recent transfer to undo.'); return; }
+      const rpc = (userId, amt, desc) => this.auth.supabase.rpc('process_rtc_transaction', {
+        p_user_id: userId, p_amount: amt, p_transaction_type: 'admin_adjustment',
+        p_description: desc, p_reference_id: null, p_reference_type: 'undo'
+      });
+      const { error: e1 } = await rpc(last.fromId, last.amount, `Undo transfer to ${last.toName}`);
+      if (e1) { this.terminalPrintError('Undo failed: ' + e1.message); return; }
+      const { error: e2 } = await rpc(last.toId, -last.amount, `Undo transfer from ${last.fromName}`);
+      if (e2) { this.terminalPrintError('Undo half-completed — check balances: ' + e2.message); return; }
+      this._naturalSuccess([
+        `Undone — ${last.amount} RTC moved back from ${last.toName} to ${last.fromName}.`,
+        `Reversed that transfer. ${last.fromName} has their ${last.amount} RTC back.`
+      ]);
+      this._nlpContext.lastTransfer = null;
+    }
+
+    async terminalCompareStudents(entities) {
+      const pair = entities.students || [entities.studentFrom, entities.studentTo];
+      const a = pair?.[0]?.student, b = pair?.[1]?.student;
+      if (!a || !b) { this.terminalPrintError('Tell me two students to compare, like "compare Evelyn and Charlotte".'); return; }
+      const assumed = pair.some(p => p?.assumed);
+      const rowsA = await this._findStudentsByName(a.full_name, 'id, first_name, last_name, rtc_balance');
+      const rowsB = await this._findStudentsByName(b.full_name, 'id, first_name, last_name, rtc_balance');
+      const sa = rowsA?.[0] || a, sb = rowsB?.[0] || b;
+      const balA = sa.rtc_balance || 0, balB = sb.rtc_balance || 0;
+      const max = Math.max(balA, balB, 1);
+      const bar = (v) => `<div style="background: rgba(243,156,18,0.25); border-radius: 4px; height: 10px; width: ${Math.round((v / max) * 100)}%; min-width: 4px;"></div>`;
+      const diff = Math.abs(balA - balB);
+      const leader = balA === balB ? null : (balA > balB ? sa : sb);
+      let html = assumed ? `<div style="font-size: 12px; color: var(--muted); margin-bottom: 6px;">(assuming you meant ${this.escapeHtml(sa.full_name)} and ${this.escapeHtml(sb.full_name)})</div>` : '';
+      html += `<div style="font-weight: 600; margin-bottom: 8px;">⚖️ RTC comparison</div>
+        <div style="margin: 6px 0;"><b>${this.escapeHtml(sa.full_name)}</b> — ${balA} RTC ${bar(balA)}</div>
+        <div style="margin: 6px 0;"><b>${this.escapeHtml(sb.full_name)}</b> — ${balB} RTC ${bar(balB)}</div>
+        <div style="color: var(--muted); font-size: 12px; margin-top: 8px;">${leader ? this.escapeHtml(leader.full_name) + ' is ahead by ' + diff + ' RTC.' : 'Dead even!'}</div>`;
+      this._showRivenMessage(html, true);
+    }
+
+    async terminalAttendanceIssues(entities) {
+      const sinceDate = entities.sinceDate || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+      const sinceLabel = entities.sinceLabel || 'last 30 days';
+      this.terminalPrint('Scanning attendance across all students…', '#6aa9ff');
+      const { data, error } = await this.auth.supabase
+        .from('class_attendance')
+        .select('student_id, status, date')
+        .gte('date', sinceDate)
+        .neq('status', 'present')
+        .order('date', { ascending: false })
+        .limit(1000);
+      if (error) { this.terminalPrintError('Could not check attendance: ' + error.message); return; }
+      if (!data || data.length === 0) {
+        this._showRivenMessage(`Good news — no absences, lates, or early exits recorded for anyone (${this.escapeHtml(sinceLabel)}). 🎉`, true);
+        return;
+      }
+      if (!this._terminalAllStudents || !this._terminalAllStudents.length) await this._loadTerminalStudents();
+      const nameOf = {};
+      (this._terminalAllStudents || []).forEach(s => { nameOf[s.id] = s.full_name; });
+      const byStudent = {};
+      data.forEach(r => {
+        const e = byStudent[r.student_id] = byStudent[r.student_id] || { absent: 0, late: 0, left: 0, last: r.date };
+        if (r.status === 'absent') e.absent++;
+        else if (r.status === 'late' || r.status === 'late_left_early') e.late++;
+        else e.left++;
+        if (r.date > e.last) e.last = r.date;
+      });
+      const ranked = Object.entries(byStudent)
+        .map(([id, e]) => ({ id, name: nameOf[id] || 'Unknown student', total: e.absent + e.late + e.left, ...e }))
+        .sort((x, y) => y.total - x.total)
+        .slice(0, 10);
+      let html = `<div style="font-weight: 600; margin-bottom: 8px;">📉 Attendance issues (${this.escapeHtml(sinceLabel)})</div>`;
+      ranked.forEach(s => {
+        const parts = [];
+        if (s.absent) parts.push(`❌ ${s.absent} absent`);
+        if (s.late) parts.push(`⏰ ${s.late} late`);
+        if (s.left) parts.push(`🚪 ${s.left} left early`);
+        html += `<div style="padding: 6px 10px; margin: 4px 0; background: rgba(255,255,255,0.03); border-left: 3px solid ${s.absent ? '#ff6a6a' : '#ffd36a'}; border-radius: 4px;">
+          <b>${this.escapeHtml(s.name)}</b> — ${parts.join(' · ')} <span style="color: var(--muted); font-size: 11px;">(last: ${s.last})</span>
+        </div>`;
+      });
+      html += `<div style="color: var(--muted); font-size: 12px; margin-top: 6px;">Ask "show [name]'s attendance" for the full picture on anyone.</div>`;
+      this._showRivenMessage(html, true);
+    }
+
+    async terminalBalanceAt(student, entities) {
+      const rows = await this._findStudentsByName(student.full_name, 'id, first_name, last_name, rtc_balance');
+      const s = rows?.[0];
+      if (!s) { this.terminalPrintError(`I couldn't find ${student.full_name}.`); return; }
+      const label = entities.sinceLabel || 'then';
+      const { data, error } = await this.auth.supabase
+        .from('rtc_transactions')
+        .select('amount, created_at')
+        .eq('user_id', s.id)
+        .gte('created_at', entities.sinceDate + 'T00:00:00');
+      if (error) { this.terminalPrintError('Could not read the ledger: ' + error.message); return; }
+      const current = s.rtc_balance || 0;
+      const netSince = (data || []).reduce((sum, t) => sum + (t.amount || 0), 0);
+      const then = current - netSince;
+      if (!data || data.length === 0) {
+        this._showRivenMessage(`${this.escapeHtml(s.full_name)} had the same as now — <b>${current} RTC</b>. No transactions since ${this.escapeHtml(label)}.`, true);
+      } else {
+        this._showRivenMessage(`As of ${this.escapeHtml(label)}, ${this.escapeHtml(s.full_name)} had <b>${then} RTC</b>. Since then: ${netSince >= 0 ? '+' : ''}${netSince} across ${data.length} transaction${data.length === 1 ? '' : 's'}, putting them at <b>${current}</b> now.`, true);
+      }
+    }
+
+    async terminalShowEnrollments(student) {
+      const { data: enr, error } = await this.auth.supabase
+        .from('class_enrollments')
+        .select('class_id')
+        .eq('student_id', student.id);
+      if (error) { this.terminalPrintError('Could not read enrollments: ' + error.message); return; }
+      const classIds = [...new Set((enr || []).map(e => e.class_id).filter(Boolean))];
+      if (!classIds.length) {
+        this._showRivenMessage(`${this.escapeHtml(student.full_name)} isn't enrolled in any classes right now. Enrollment is managed in the <span style="color: var(--accent); cursor: pointer; text-decoration: underline;" onclick="app.showSection('classes')">Classes tab</span>.`, true);
+        return;
+      }
+      const { data: classes } = await this.auth.supabase
+        .from('classes').select('id, name, subject').in('id', classIds);
+      let html = `<div style="font-weight: 600; margin-bottom: 8px;">📚 ${this.escapeHtml(student.full_name)} — ${classIds.length} class${classIds.length === 1 ? '' : 'es'}</div>`;
+      (classes || []).sort((a, b) => (a.name || '').localeCompare(b.name || '')).forEach(c => {
+        html += `<div style="padding: 5px 10px; margin: 3px 0; background: rgba(255,255,255,0.03); border-radius: 4px;">${this.escapeHtml(c.name || 'Unnamed class')}${c.subject ? ` <span style="color: var(--muted); font-size: 11px;">· ${this.escapeHtml(c.subject)}</span>` : ''}</div>`;
+      });
+      this._showRivenMessage(html, true);
+    }
+
+    async terminalStudentTenure(student) {
+      const { data, error } = await this.auth.supabase
+        .from('user_profiles')
+        .select('created_at, first_name, last_name')
+        .eq('id', student.id)
+        .single();
+      if (error || !data?.created_at) {
+        this.terminalPrintError(`I couldn't find a join date for ${student.full_name}.`);
+        return;
+      }
+      const joined = new Date(data.created_at);
+      const days = Math.floor((Date.now() - joined.getTime()) / 86400000);
+      const months = Math.floor(days / 30);
+      const ago = days < 31 ? `${days} day${days === 1 ? '' : 's'}`
+        : months < 24 ? `${months} month${months === 1 ? '' : 's'}`
+        : `${Math.floor(months / 12)} years and ${months % 12} months`;
+      this._showRivenMessage(`${this.escapeHtml(student.full_name)}'s account was created on <b>${joined.toLocaleDateString()}</b> — about ${ago} ago. (That's when they joined the portal; actual enrollment may predate it.)`, true);
+    }
+
+    async terminalListClasses(entities) {
+      const { data, error } = await this.auth.supabase
+        .from('classes')
+        .select('id, name, subject')
+        .order('name');
+      if (error) { this.terminalPrintError('Could not load classes: ' + error.message); return; }
+      let classes = data || [];
+      // Subject keyword: "what MATH classes do we have"
+      const kw = entities.subject || (entities.normalized || '').match(/(?:what|which|list|show|any|all)\s+([a-z]+)\s+class/)?.[1] || null;
+      const kwClean = kw && !['the', 'our', 'these', 'those', 'many'].includes(kw) ? kw : null;
+      if (kwClean) {
+        classes = classes.filter(c =>
+          (c.name || '').toLowerCase().includes(kwClean) || (c.subject || '').toLowerCase().includes(kwClean));
+      }
+      if (!classes.length) {
+        this._showRivenMessage(`No${kwClean ? ' ' + this.escapeHtml(kwClean) : ''} classes found in the system.`, true);
+        return;
+      }
+      let html = `<div style="font-weight: 600; margin-bottom: 8px;">📚 ${classes.length}${kwClean ? ' ' + this.escapeHtml(kwClean) : ''} class${classes.length === 1 ? '' : 'es'}</div>`;
+      classes.slice(0, 25).forEach(c => {
+        html += `<div style="padding: 5px 10px; margin: 3px 0; background: rgba(255,255,255,0.03); border-radius: 4px;">${this.escapeHtml(c.name || 'Unnamed')}${c.subject ? ` <span style="color: var(--muted); font-size: 11px;">· ${this.escapeHtml(c.subject)}</span>` : ''}</div>`;
+      });
+      if (classes.length > 25) html += `<div style="color: var(--muted); font-size: 12px;">…and ${classes.length - 25} more.</div>`;
+      this._showRivenMessage(html, true);
     }
 
     _rivenMatchClass(text) {
@@ -42851,9 +43410,14 @@
       const original = entities.original || '';
       await this._loadNotesPeople();
 
-      // 1. Pull out the note text
+      // 1. Pull out the note text — quoted text wins ("give jordan a note
+      // 'Working on pre-calc'"), then "note that …", colon, "saying …"
       let text = null, textIdx = -1;
-      let m = original.match(/\bnote\s+that\s+/i);
+      if (entities.quoted) {
+        text = entities.quoted;
+        textIdx = original.indexOf(entities.quoted);
+      }
+      let m = !text && original.match(/\bnote\s+that\s+/i);
       if (m) { textIdx = m.index; text = original.slice(m.index + m[0].length); }
       if (!text) {
         const ci = original.indexOf(':');
