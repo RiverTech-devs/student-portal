@@ -42088,6 +42088,15 @@
         return;
       }
 
+      // A last-resort guess (generic student card, honest "can't do that")
+      // masks sentences the semantic layer can actually read — "has jordan
+      // been showing up lately" is an attendance question, not a card pull.
+      // Only stands when the semantic layer has nothing better.
+      if (intent.lastResort && resolvedInput.split(/\s+/).length >= 4) {
+        const handled = await this._semanticFallback(resolvedInput, entities, { insteadOf: intent.intent });
+        if (handled) return;
+      }
+
       // Only hedge when the NAME match itself was fuzzy (typo-corrected),
       // not when the intent fell through to a fallback pattern — and only
       // for intents that actually use the student (creating a class named
@@ -43083,7 +43092,11 @@
             /\b(absent|absence|absences)\b/,
             /\b(tardy|tardies|tardiness)\b/,
             /(miss|missed|skipped) (class|classes|school|days)/,
-            /\bis\b.+\b(here|present|in (school|class))\b/
+            /\bis\b.+\b(here|present|in (school|class))\b/,
+            // question forms: "was jordan late?", "is he on time usually?" —
+            // the statement form ("jordan was late") outscores this and
+            // writes; leading-verb questions block the write and read here
+            /\b(late|tardy|on time|left early)\b/
           ],
           requiresStudent: true
         },
@@ -43299,7 +43312,7 @@
       // card — that masks the misunderstanding ("mark him present" used to
       // silently show the card). Own up to the limitation instead.
       if (/\b(mark|enrol|enroll|register|assign|schedule|book|cancel|email|message|text|call|change|update|edit|delete|reset|suspend|approve|deny|put|set|send|move|transfer|make|create|upload|export|print|invite|excuse|promote|withdraw)\b/.test(normalized)) {
-        return { intent: 'UNKNOWN_ACTION', confidence: 0.9 };
+        return { intent: 'UNKNOWN_ACTION', confidence: 0.9, lastResort: true };
       }
 
       // Last resort: a student was clearly named (e.g. just "Charlotte", or
@@ -43312,7 +43325,7 @@
         return { intent: 'VIEW_ROSTER', confidence: 0.6 };
       }
       if (entities.student) {
-        return { intent: 'VIEW_STUDENT', confidence: 0.6 };
+        return { intent: 'VIEW_STUDENT', confidence: 0.6, lastResort: true };
       }
 
       // A bare class mention ("the high school math class") with no other
@@ -44266,10 +44279,11 @@
         for (let d = 0; d < v.length; d++) dot += v[d] * q[d];
         if (dot > best.sim) best = { sim: dot, intent: this._semanticBank.labels[i], example: this._semanticBank.examples[i] };
       });
-      return best.sim >= 0.55 ? best : null;
+      // Thresholding happens in _semanticFallback (reads vs writes differ)
+      return best.intent ? best : null;
     }
 
-    async _semanticFallback(resolvedInput, entities) {
+    async _semanticFallback(resolvedInput, entities, { insteadOf = null } = {}) {
       // Skip for trivial inputs — one word is never worth a 25MB model
       if (resolvedInput.split(/\s+/).length < 3) return false;
       try {
@@ -44279,8 +44293,15 @@
         }
         const match = await this._semanticMatchIntent(resolvedInput);
         if (!match) return false;
-        const intent = { intent: match.intent, confidence: 0.65, semantic: true };
+        // When pre-empting a last-resort guess, only a DIFFERENT reading is
+        // worth taking — same intent means the guess was already right
+        if (insteadOf && match.intent === insteadOf) return false;
         const writeIntents = ['ADD_RTC', 'SUBTRACT_RTC', 'ADD_NOTE', 'MARK_ATTENDANCE'];
+        const isWrite = writeIntents.includes(match.intent);
+        // Reads are cheap to be wrong about (worst case: rephrase); writes
+        // confirm anyway but should not even be PROPOSED on a weak signal
+        if (match.sim < (isWrite ? 0.55 : 0.45)) return false;
+        const intent = { intent: match.intent, confidence: 0.65, semantic: true };
         const labels = {
           ADD_RTC: 'award RTC', SUBTRACT_RTC: 'take RTC away', ADD_NOTE: 'save a note',
           MARK_ATTENDANCE: 'mark attendance'
@@ -44291,7 +44312,15 @@
           if (repeatable.includes(intent.intent)) this._lastRepeatable = { text: resolvedInput, at: Date.now() };
           this._updateContext(intent, entities);
         };
-        if (writeIntents.includes(match.intent)) {
+        if (isWrite) {
+          // An RTC change with no amount: confirming first and erroring after
+          // is clunky — ask for the missing piece directly
+          if ((match.intent === 'ADD_RTC' || match.intent === 'SUBTRACT_RTC') && !entities.amount) {
+            const who = entities.student?.student?.full_name || entities.student?.full_name || 'them';
+            const dir = match.intent === 'ADD_RTC' ? 'give' : 'take from';
+            this._showRivenMessage(`Sounds like an RTC change for <b>${this.escapeHtml(who)}</b> — how much should I ${dir === 'give' ? 'give' : 'take'}? Say it like "${dir === 'give' ? 'give' : 'remove'} ${this.escapeHtml(who.split(' ')[0])} 5".`, true);
+            return true;
+          }
           // The intent is a guess — never write without an explicit yes
           this._requestConfirmation(
             `It sounds like you want me to <b>${labels[match.intent] || match.intent}</b> based on: "${this.escapeHtml(resolvedInput)}"`,
