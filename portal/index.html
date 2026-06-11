@@ -42440,6 +42440,17 @@
           capability: 'bank',
           patterns: [/\bbank(ed|ing)?\b/]
         },
+        // MARK_ATTENDANCE_GROUP — "mark everyone in chess present today",
+        // "take attendance for chess" (before the per-student version)
+        {
+          intent: 'MARK_ATTENDANCE_GROUP',
+          patterns: [
+            /\bmark\b.*\b(everyone|everybody|all|the (whole )?class)\b.*\b(present|absent|late|tardy|here)\b/,
+            /\b(everyone|everybody|the (whole )?class)\b.*\b(is|was|are|were)\s*(present|absent|here)\b/,
+            /take attendance\b/
+          ],
+          requiresGroupContext: true
+        },
         // MARK_ATTENDANCE — real write: "mark jordan present in math today"
         {
           intent: 'MARK_ATTENDANCE',
@@ -42448,6 +42459,16 @@
             /\b(mark|record|log|enter|change|fix|update|set)\b.*\battendance\b/
           ],
           requiresStudent: true
+        },
+        // CAPABILITY tests — testing-center scores aren't wired up yet;
+        // answer honestly instead of dumping the student card
+        {
+          intent: 'CAPABILITY',
+          capability: 'tests',
+          patterns: [
+            /\b(test|quiz|exam)s?\b.*\b(score|scores|result|results|grade|grades|got|get|did|do)\b/,
+            /\b(score|scores|result|results|got|get|did)\b.*\b(test|quiz|exam)s?\b/
+          ]
         },
         // UPDATE_CONTACT — "change jordan's phone to 555-1234"
         {
@@ -42607,6 +42628,15 @@
             /\bgpa\b/
           ],
           requiresStudentOrClass: true
+        },
+        // CLASS_INFO — "who teaches chess?", "tell me about the robotics class"
+        {
+          intent: 'CLASS_INFO',
+          patterns: [
+            /\bwho (teaches|runs|leads)\b/,
+            /\b(tell me about|info (on|about)|details (on|about|of))\b/
+          ],
+          requiresClass: true
         },
         // VIEW_ROSTER — "who's in robotics?"
         {
@@ -42829,7 +42859,10 @@
           break;
 
         case 'ADD_RTC':
-          if (student && entities.amount) {
+          if (entities.students?.length >= 2 && entities.amount) {
+            // "give 5 rtc to jordan and charlotte" — award both
+            await this.terminalMultiAward(entities);
+          } else if (student && entities.amount) {
             const args = [student.full_name, entities.amount.toString()];
             if (entities.reason) args.push(entities.reason);
             await this.terminalAddRTC(args);
@@ -42983,6 +43016,14 @@
 
         case 'GROUP_RTC':
           await this.terminalGroupAddRTC(entities);
+          break;
+
+        case 'MARK_ATTENDANCE_GROUP':
+          await this.terminalMarkAttendanceGroup(entities);
+          break;
+
+        case 'CLASS_INFO':
+          await this.terminalClassInfo(entities);
           break;
 
         case 'UPDATE_CONTACT':
@@ -43477,7 +43518,8 @@
         ['bye', /^(bye|goodbye|goodnight|good night|see ya|see you( later)?|later|cya)( riven)?$/],
         ['whoareyou', /^(who|what) are you( again| exactly)?$/],
         ['capabilities', /^(what can you do|what do you do|what can you help( me)? with|help|help me)$/],
-        ['ack', /^(nice|cool|awesome|great|perfect|sweet|love it|good job|well done)( riven)?$/]
+        ['ack', /^(nice|cool|awesome|great|perfect|sweet|love it|good job|well done)( riven)?$/],
+        ['stray_yes', /^(yes|yep|yeah|sure|confirm|ok then)( please)?$/]
       ];
       for (const [key, re] of checks) {
         if (re.test(lower)) return { key };
@@ -43504,7 +43546,8 @@
         whoareyou: [
           `I'm Riven — your teaching assistant here in the portal. I can look up students, balances, attendance, classes, and notes; award or move RTC; and take notes for you. Ask me anything, or type /help for the full list.`
         ],
-        ack: [`🙂`, `Glad that worked!`, `👍`]
+        ack: [`🙂`, `Glad that worked!`, `👍`],
+        stray_yes: [`There's nothing waiting for a yes right now — what would you like me to do?`]
       };
       if (key === 'capabilities') {
         this.terminalPrintHelp();
@@ -43558,7 +43601,8 @@
     _rivenCapabilityReply(key) {
       const link = (section, label) => `<span style="color: var(--accent); cursor: pointer; text-decoration: underline;" onclick="app.showSection('${section}')">${label}</span>`;
       const replies = {
-        bank: `I don't handle banking myself — deposits and savings live in the ${link('rtc-bank-helper', 'Bank Helper tab')}. If you just meant a regular award, say "give [name] 30 rtc" and I'll do that.`
+        bank: `I don't handle banking myself — deposits and savings live in the ${link('rtc-bank-helper', 'Bank Helper tab')}. If you just meant a regular award, say "give [name] 30 rtc" and I'll do that.`,
+        tests: `I can't see testing-center results yet — those live in the ${link('testing-center', 'Testing tab')}. I <b>can</b> show class grades though: try "what are [name]'s grades?"`
       };
       this._showRivenMessage(replies[key] || replies.bank, true);
     }
@@ -44285,6 +44329,13 @@
             <span style="color: var(--muted); font-size: 12px;"> · academic ${fmt(s?.academic_grade)} · participation ${fmt(s?.participation_grade)}</span>
           </div>`;
         });
+        const graded = (snaps || []).map(s => s.class_grade).filter(v => v != null && v !== 0);
+        if (graded.length) {
+          const avg = Math.round((graded.reduce((s, v) => s + v, 0) / graded.length) * 10) / 10;
+          html += `<div style="color: var(--muted); font-size: 12px; margin-top: 8px;">Class average: <b>${avg} (${this._pctToLetter(avg)})</b> across ${graded.length} graded student${graded.length === 1 ? '' : 's'}.</div>`;
+        } else {
+          html += `<div style="color: var(--muted); font-size: 12px; margin-top: 8px;">No final grades recorded yet this quarter.</div>`;
+        }
         this._showRivenMessage(html, true);
       }
     }
@@ -44312,6 +44363,120 @@
       this._showRivenMessage(
         `<div style="font-weight: 600; margin-bottom: 6px;">👥 ${this.escapeHtml(row.name)}${teach} — ${list.length} student${list.length === 1 ? '' : 's'}</div>` +
         list.map(n => `<div style="padding: 3px 8px;">• ${this.escapeHtml(n)}</div>`).join(''), true);
+    }
+
+    async terminalMarkAttendanceGroup(entities) {
+      const lower = entities.normalized || '';
+      let status = null;
+      if (/\bleft early\b/.test(lower)) status = 'left_early';
+      else if (/\babsent\b/.test(lower)) status = 'absent';
+      else if (/\b(late|tardy)\b/.test(lower)) status = 'late';
+      else status = 'present'; // "take attendance for chess" defaults to all-present
+      const date = /\byesterday\b/.test(lower) ? this._isoDaysAgo(1)
+        : (lower.match(/\b(\d{4}-\d{2}-\d{2})\b/)?.[1] || this._isoDaysAgo(0));
+      const grp = await this._rivenResolveGroup(entities);
+      if (grp.asked) return;
+      if (!grp.studentIds.length || !this._nlpContext?.lastGroup?.classId) {
+        this.terminalPrintError('Which class? Say it like "mark everyone in Chess present".');
+        return;
+      }
+      const classId = this._nlpContext.lastGroup.classId;
+      const row = (this._terminalAllClasses || []).find(c => c.id === classId);
+      if (!row || !this._rivenCanManageClass(row, { attendance: true })) {
+        this.terminalPrintError(`Only the primary teacher of ${row ? row.name : 'that class'} (or an admin) can mark its attendance.`);
+        return;
+      }
+      const sb = this.auth.supabase;
+      const ids = grp.studentIds;
+      this._requestConfirmation(
+        `Mark <b>all ${ids.length} students</b> in <b>${this.escapeHtml(row.name)}</b> as <b>${status.replace(/_/g, ' ')}</b> for <b>${date}</b>? This replaces anything already recorded for that day.`,
+        async () => {
+          // Mirror saveClassAttendance: snapshot prior rows + session, then
+          // delete-and-insert the whole class for that date
+          const { data: prevRows } = await sb.from('class_attendance').select('*')
+            .eq('class_id', classId).eq('date', date).is('period', null);
+          const { data: prevSession } = await sb.from('class_attendance_sessions').select('*')
+            .eq('class_id', classId).eq('date', date).is('period', null);
+          await sb.from('class_attendance').delete().eq('class_id', classId).eq('date', date).is('period', null);
+          const { error: insErr } = await sb.from('class_attendance').insert(ids.map(sid => ({
+            class_id: classId, student_id: sid, date, period: null,
+            status, notes: null, marked_by: this.userInfo.user.id
+          })));
+          if (insErr) throw insErr;
+          await sb.from('class_attendance_sessions').delete().eq('class_id', classId).eq('date', date).is('period', null);
+          await sb.from('class_attendance_sessions').insert({
+            class_id: classId, date, period: null, status: 'completed',
+            taken_by: this.userInfo.user.id, taken_at: new Date().toISOString()
+          });
+          this._pushUndo(`marking all of ${row.name} ${status.replace(/_/g, ' ')} on ${date}`, async () => {
+            await sb.from('class_attendance').delete().eq('class_id', classId).eq('date', date).is('period', null);
+            if (prevRows && prevRows.length) {
+              await sb.from('class_attendance').insert(prevRows.map(({ id, ...rest }) => rest));
+            }
+            await sb.from('class_attendance_sessions').delete().eq('class_id', classId).eq('date', date).is('period', null);
+            if (prevSession && prevSession.length) {
+              const { id, ...rest } = prevSession[0];
+              await sb.from('class_attendance_sessions').insert(rest);
+            }
+          });
+          this._naturalSuccess([
+            `Attendance taken — all ${ids.length} students in ${row.name} marked ${status.replace(/_/g, ' ')} for ${date}.`,
+            `Done. ${row.name}: ${ids.length} × ${status.replace(/_/g, ' ')} recorded for ${date}.`
+          ]);
+        }
+      );
+    }
+
+    async terminalClassInfo(entities) {
+      const res = await this._rivenRequireClass(entities);
+      if (res.asked) return;
+      const row = res.row;
+      if (!row) { this.terminalPrintError('Which class?'); return; }
+      const { count } = await this.auth.supabase
+        .from('class_enrollments').select('id', { count: 'exact', head: true })
+        .eq('class_id', row.id).eq('status', 'active');
+      const weight = { skill: 'skill-weighted (60/40)', participation: 'participation-weighted (40/60)', even: 'evenly weighted (50/50)' }[row.grading_weight] || row.grading_weight || '';
+      this._showRivenMessage(`<div style="font-weight: 600; margin-bottom: 6px;">📚 ${this.escapeHtml(row.name)}</div>
+        <div style="line-height: 1.9; font-size: 13px;">
+          Teacher: <b>${this.escapeHtml(row.teacher_name || '—')}</b>${row.secondary_teacher_name ? ` (with ${this.escapeHtml(row.secondary_teacher_name)})` : ''}<br>
+          Subject: ${this.escapeHtml(row.subject || '—')}<br>
+          Students: ${count ?? '—'}${weight ? `<br>Grading: ${this.escapeHtml(weight)}` : ''}
+        </div>
+        <div style="color: var(--muted); font-size: 12px; margin-top: 6px;">Ask "who is in ${this.escapeHtml(row.name)}" for the roster or "grades for ${this.escapeHtml(row.name)}" for grades.</div>`, true);
+    }
+
+    async terminalMultiAward(entities) {
+      // "give 5 rtc to jordan and charlotte" — award each, one undo
+      const pair = entities.students || [];
+      const amount = entities.amount;
+      const negative = /\b(remove|subtract|deduct|take|minus)\b/.test(entities.normalized || '');
+      const amt = (negative ? -1 : 1) * Math.abs(amount);
+      const names = pair.map(p => p.student.full_name);
+      const sb = this.auth.supabase;
+      const done = [];
+      for (const p of pair) {
+        const { error } = await sb.rpc('process_rtc_transaction', {
+          p_user_id: p.student.id, p_amount: amt,
+          p_transaction_type: amt > 0 ? 'earn_manual' : 'admin_adjustment',
+          p_description: entities.reason || 'Terminal award', p_reference_id: null, p_reference_type: null
+        });
+        if (error) { this.terminalPrintError(`Failed for ${p.student.full_name}: ${error.message}`); }
+        else done.push(p.student);
+      }
+      if (done.length) {
+        this._pushUndo(`${amt > 0 ? '+' : ''}${amt} RTC for ${done.map(s => s.full_name).join(' and ')}`, async () => {
+          for (const s of done) {
+            await sb.rpc('process_rtc_transaction', {
+              p_user_id: s.id, p_amount: -amt, p_transaction_type: 'admin_adjustment',
+              p_description: 'Undo multi-award', p_reference_id: null, p_reference_type: 'undo'
+            });
+          }
+        });
+        this._naturalSuccess([
+          `Done — ${Math.abs(amt)} RTC ${amt > 0 ? 'to' : 'from'} each of ${done.map(s => s.full_name).join(' and ')}.`,
+          `${done.map(s => s.full_name).join(' and ')} ${amt > 0 ? 'each received' : 'each lost'} ${Math.abs(amt)} RTC.`
+        ]);
+      }
     }
 
     // Resolve "everyone / each of them": a class mentioned now, or the group
