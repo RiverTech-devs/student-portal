@@ -42061,6 +42061,14 @@
         }
       }
 
+      // "both of them" after a two-student exchange targets the PAIR — the
+      // singular pronoun replacement above would otherwise hand it to just
+      // the most recent student
+      if ((!entities.students || entities.students.length < 2)
+          && /\bboth\b/.test(normalized) && this._nlpContext?.lastPair?.length >= 2) {
+        entities.students = this._nlpContext.lastPair.slice(0, 2).map(s => ({ student: s, score: 0.95 }));
+      }
+
       // A pronoun that survived resolution means we have no usable referent.
       // After a two-student command ("compare A and B"), ask which one rather
       // than guessing or falling through to a generic intent.
@@ -42609,6 +42617,14 @@
           // only the final typed character diverges)
           if (word.length >= 4) {
             const cpl = (a, b) => { let i = 0; while (i < a.length && i < b.length && a[i] === b[i]) i++; return i; };
+            // Compressed nickname: shares the first two letters and reads as
+            // a subsequence of the name ("dany" -> Daenerys, "kate" ->
+            // Katherine) — scored below prefix matches
+            const isSubseq = (small, big) => { let i = 0; for (const ch of big) { if (i < small.length && ch === small[i]) i++; } return i === small.length; };
+            if (firstName.length > word.length && word.slice(0, 2) === firstName.slice(0, 2) && isSubseq(word, firstName)) {
+              score = Math.max(score, 0.72);
+              firstHit = true;
+            }
             if (firstName.length > word.length && cpl(word, firstName) >= Math.max(4, word.length - 1)) {
               score = Math.max(score, 0.75);
               firstHit = true;
@@ -43027,7 +43043,11 @@
             /(remove|subtract|take|deduct) \d+/,
             /(^|\s)-\d+/,                  // "-2 from charlotte"
             /\d+ (rtc )?(from|off)\b/,     // "5 from sam", "5 rtc from sam"
-            /minus \d+/
+            /minus \d+/,
+            // purchases SPEND gold: "jordan is buying a privilege for 2
+            // gold", "charge dylan 5 for the snack" (buy-verb must precede
+            // the amount, so "give X 5 for buying supplies" stays an award)
+            /\b(buy(s|ing)?|bought|purchas(e|es|ed|ing)|spend(s|ing)?|spent|pay(s|ing)?|paid|charge[sd]?)\b[^.]*\d/
           ],
           requiresStudent: true,
           requiresAmount: true
@@ -43468,7 +43488,13 @@
           break;
 
         case 'VIEW_STUDENT':
-          if (student) {
+          if (entities.students?.length >= 2) {
+            // "how much gold do evelyn and dany have" — show BOTH
+            for (const p of entities.students) {
+              const s = p.student || p;
+              await this.terminalReadStudent([s.full_name]);
+            }
+          } else if (student) {
             await this.terminalReadStudent([student.full_name]);
           } else {
             this.terminalPrintError('I need a student name to look up');
@@ -43493,7 +43519,11 @@
           break;
 
         case 'SUBTRACT_RTC':
-          if (student && entities.amount) {
+          if (entities.students?.length >= 2 && entities.amount) {
+            // "remove 5 from both of them" / "jordan and dylan are buying
+            // a privilege for 2 gold" — deduct from each
+            await this.terminalMultiAward(entities, true);
+          } else if (student && entities.amount) {
             // Subtract by adding negative amount
             const args = [student.full_name, (-entities.amount).toString()];
             if (entities.reason) args.push(entities.reason);
@@ -44345,7 +44375,13 @@
           'penalize jordan some rtc',
           'fine jordan for messing around',
           'take some gold off jordan',
-          'knock a few coins off jordan'
+          'knock a few coins off jordan',
+          // purchases spend gold (from live transcripts)
+          'jordan and dylan are buying a privilege for 2 gold',
+          'jordan bought a snack at the cafe for 3 gold',
+          'charge jordan 5 for the field trip',
+          'jordan spent 4 of his gold today',
+          'remove 5 gold from both of them for a spoon at the cafe'
         ],
         VIEW_GRADES: [
           'how is jordan doing academically',
@@ -44814,11 +44850,14 @@
     async terminalListClasses(entities) {
       const { data, error } = await this.auth.supabase
         .from('classes')
-        .select('id, name, subject, teacher_id, secondary_teacher_id')
+        .select('id, name, subject, teacher_id, secondary_teacher_id, is_active')
         .order('name');
       if (error) { this.terminalPrintError('Could not load classes: ' + error.message); return; }
       let classes = data || [];
       const norm = entities.normalized || '';
+      // Current classes by default — "archived"/"inactive" shows the rest
+      const wantArchived = /\b(archived|inactive|deactivated|closed|past|old)\b/.test(norm);
+      classes = classes.filter(c => wantArchived ? c.is_active === false : c.is_active !== false);
       // "show me my classes" / "what do I teach" — the asker's own classes
       const mine = /\bmy\b|\bi teach\b/.test(norm);
       const myId = this.userInfo?.user?.id;
@@ -44843,13 +44882,13 @@
       // Teacher names come from the loaded class cache (joined at load time)
       const tNames = {};
       (this._terminalAllClasses || []).forEach(c => { tNames[c.id] = c.teacher_name || ''; });
-      let html = `<div style="font-weight: 600; margin-bottom: 8px;">📚 ${mine ? 'Your ' : ''}${classes.length}${kwClean ? ' ' + this.escapeHtml(kwClean) : ''} class${classes.length === 1 ? '' : 'es'}</div>`;
-      classes.slice(0, 25).forEach(c => {
+      const header = `<div style="font-weight: 600; margin-bottom: 8px;">📚 ${mine ? 'Your ' : ''}${classes.length}${kwClean ? ' ' + this.escapeHtml(kwClean) : ''}${wantArchived ? ' archived' : ''} class${classes.length === 1 ? '' : 'es'}</div>`;
+      const lines = classes.map(c => {
         const t = !mine && tNames[c.id] ? ` <span style="color: var(--muted); font-size: 11px;">· ${this.escapeHtml(tNames[c.id])}</span>` : '';
-        html += `<div style="padding: 5px 10px; margin: 3px 0; background: rgba(255,255,255,0.03); border-radius: 4px;">${this.escapeHtml(c.name || 'Unnamed')}${c.subject ? ` <span style="color: var(--muted); font-size: 11px;">· ${this.escapeHtml(c.subject)}</span>` : ''}${t}</div>`;
+        return `<div style="padding: 5px 10px; margin: 3px 0; background: rgba(255,255,255,0.03); border-radius: 4px;">${this.escapeHtml(c.name || 'Unnamed')}${c.subject ? ` <span style="color: var(--muted); font-size: 11px;">· ${this.escapeHtml(c.subject)}</span>` : ''}${t}</div>`;
       });
-      if (classes.length > 25) html += `<div style="color: var(--muted); font-size: 12px;">…and ${classes.length - 25} more.</div>`;
-      this._showRivenMessage(html, true);
+      // Expandable past 25 — "show all" beats a dead "…and N more"
+      this._showRivenMessage(header + this._briefingExpand(lines, 25, 'classes', ''), true);
     }
 
     // ---- Riven write operations (attendance, enrollment, classes, grades,
@@ -45403,6 +45442,13 @@
             <span style="color: var(--muted); font-size: 12px;"> · academic ${fmt(s.academic_grade)} · participation ${fmt(s.participation_grade)}</span>
           </div>`;
         });
+        // Overall average across graded classes — the closest thing to a
+        // GPA the gradebook has ("what's alexanders gpa")
+        const finals = snaps.map(s => s.class_grade).filter(v => v != null && v !== 0);
+        if (finals.length > 1) {
+          const avg = Math.round((finals.reduce((a, v) => a + v, 0) / finals.length) * 10) / 10;
+          html += `<div style="color: var(--muted); font-size: 12px; margin-top: 8px;">Overall average: <b>${avg} (${this._pctToLetter(avg)})</b> across ${finals.length} graded classes.</div>`;
+        }
         this._showRivenMessage(html, true);
       } else if (row) {
         const { data: enr, error } = await sb.from('class_enrollments')
@@ -45566,12 +45612,12 @@
 
     // Render a list with the remainder hidden behind a "show all" toggle so
     // long briefing sections are fully viewable in place
-    _briefingExpand(lines, visible, noun) {
-      if (lines.length <= visible) return lines.join('<br>');
+    _briefingExpand(lines, visible, noun, joiner = '<br>') {
+      if (lines.length <= visible) return lines.join(joiner);
       const id = 'brf-' + (this._briefingExpandSeq = (this._briefingExpandSeq || 0) + 1) + '-' + lines.length;
       const more = lines.length - visible;
-      return lines.slice(0, visible).join('<br>') +
-        `<div id="${id}" style="display: none;">` + lines.slice(visible).join('<br>') + `</div>` +
+      return lines.slice(0, visible).join(joiner) +
+        `<div id="${id}" style="display: none;">` + lines.slice(visible).join(joiner) + `</div>` +
         `<div style="color: #2f6b6d; cursor: pointer; text-decoration: underline; font-size: 12px; margin-top: 2px;" ` +
         `onclick="const d = document.getElementById('${id}'); const open = d.style.display === 'none'; d.style.display = open ? 'block' : 'none'; this.textContent = open ? 'show less' : '…and ${more} more ${noun} — show all';">…and ${more} more ${noun} — show all</div>`;
     }
@@ -45785,11 +45831,12 @@
       }
     }
 
-    async terminalMultiAward(entities) {
+    async terminalMultiAward(entities, forceNegative = null) {
       // "give 5 rtc to jordan and charlotte" — award each, one undo
       const pair = entities.students || [];
       const amount = entities.amount;
-      const negative = /\b(remove|subtract|deduct|take|minus)\b/.test(entities.normalized || '');
+      const negative = forceNegative !== null ? forceNegative
+        : /\b(remove|subtract|deduct|take|minus|buy|buys|buying|bought|purchase|purchased|purchasing|spend|spending|spent|paid|charge|charged)\b/.test(entities.normalized || '');
       const amt = (negative ? -1 : 1) * Math.abs(amount);
       const names = pair.map(p => p.student.full_name);
       const sb = this.auth.supabase;
@@ -46209,7 +46256,13 @@
         // Typo pass: a text word within edit distance 1 of a class-name word
         // ("ches" -> Chess) — only for words >=4 chars
         const typoStop = new Set(['grade', 'grades', 'class', 'classes', 'final', 'this', 'that', 'with', 'have', 'what', 'show', 'give', 'make']);
-        const typoTokens = t.split(/\s+/).filter(w => w.length >= 4 && !typoStop.has(w));
+        // A student's name is never a typo'd class word — without this,
+        // "Jordan GAMES" is one edit from "AI GAME Design" and his grades
+        // silently scope to that class
+        const studentWords = new Set();
+        (this._terminalAllStudents || []).forEach(s =>
+          (s.full_name || '').toLowerCase().split(/\s+/).forEach(w => { if (w.length >= 4) studentWords.add(w); }));
+        const typoTokens = t.split(/\s+/).filter(w => w.length >= 4 && !typoStop.has(w) && !studentWords.has(w));
         const typoHits = rows.filter(row =>
           nameWords(row).some(w =>
             w.length >= 4 && typoTokens.some(tok => Math.abs(tok.length - w.length) <= 1 && this._levenshteinDistance(tok, w) === 1)));
