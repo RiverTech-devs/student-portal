@@ -42471,12 +42471,20 @@
           entities.studentTo = b;
         }
       }
-      const pm = normalized.match(/\b([a-z]+(?:\s+[a-z]+)?)\s+(?:and|or|vs|versus)\s+([a-z]+(?:\s+[a-z]+)?)\b/);
-      if (pm && !entities.studentFrom) {
-        const a = best(this._fuzzyFindStudent(pm[1], pm[1]));
-        const b = best(this._fuzzyFindStudent(pm[2], pm[2]));
-        if (a?.student && b?.student && a.student.id !== b.student.id) {
-          entities.students = [a, b];
+      // Multi-student chains of ANY length: "daeny and charlotte and evelyn
+      // and larry" / "jordan, dylan and chev". Each comma/and fragment is
+      // fuzzy-matched on its own; two or more distinct hits become the set
+      // the executors act on (cards, awards, deductions all loop it).
+      if (!entities.studentFrom && (/\b(?:and|or|vs|versus)\b/.test(normalized) || normalized.includes(','))) {
+        const frags = normalized.split(/\s*,\s*|\s+(?:and|or|vs|versus)\s+/).filter(f => f.trim().length >= 2);
+        if (frags.length >= 2) {
+          const found = [];
+          const seen = new Set();
+          for (const f of frags) {
+            const r = best(this._fuzzyFindStudent(f, f));
+            if (r?.student && !seen.has(r.student.id)) { seen.add(r.student.id); found.push(r); }
+          }
+          if (found.length >= 2) entities.students = found;
         }
       }
 
@@ -43039,6 +43047,10 @@
           intent: 'SUBTRACT_RTC',
           w: 3, notIfNoteCommand: true, notIfBank: true,
           patterns: [
+            // a LEADING subtract verb is decisive ("charge X 5 for buying a
+            // treat" normalizes to "remove X 5 …" — the trailing "for buying"
+            // must not drag it into a clarify against ADD's "<n> for")
+            { re: /^(remove|subtract|take|deduct)\b.*\d/, w: 5 },
             /(remove|subtract|take|deduct) .* \d+/,
             /(remove|subtract|take|deduct) \d+/,
             /(^|\s)-\d+/,                  // "-2 from charlotte"
@@ -43046,8 +43058,10 @@
             /minus \d+/,
             // purchases SPEND gold: "jordan is buying a privilege for 2
             // gold", "charge dylan 5 for the snack" (buy-verb must precede
-            // the amount, so "give X 5 for buying supplies" stays an award)
-            /\b(buy(s|ing)?|bought|purchas(e|es|ed|ing)|spend(s|ing)?|spent|pay(s|ing)?|paid|charge[sd]?)\b[^.]*\d/
+            // the amount, so "give X 5 for buying supplies" stays an award).
+            // Weighted as topical so it decisively beats ADD's generic
+            // "<amount> for" pattern — no clarify on an explicit purchase
+            { re: /\b(buy(s|ing)?|bought|purchas(e|es|ed|ing)|spend(s|ing)?|spent|pay(s|ing)?|paid|charge[sd]?)\b[^.]*\d/, w: 5 }
           ],
           requiresStudent: true,
           requiresAmount: true
@@ -43506,9 +43520,7 @@
             // "give 5 rtc to jordan and charlotte" — award both
             await this.terminalMultiAward(entities);
           } else if (student && entities.amount) {
-            const args = [student.full_name, entities.amount.toString()];
-            if (entities.reason) args.push(entities.reason);
-            await this.terminalAddRTC(args);
+            await this.terminalAddRTC([student.full_name, entities.amount.toString()], { reason: entities.reason || null });
           } else if (entities.amount) {
             this.terminalPrintError(`Which student should get ${entities.amount} RTC? Try "give [name] ${entities.amount}".`);
           } else if (student) {
@@ -43525,9 +43537,7 @@
             await this.terminalMultiAward(entities, true);
           } else if (student && entities.amount) {
             // Subtract by adding negative amount
-            const args = [student.full_name, (-entities.amount).toString()];
-            if (entities.reason) args.push(entities.reason);
-            await this.terminalAddRTC(args);
+            await this.terminalAddRTC([student.full_name, (-entities.amount).toString()], { reason: entities.reason || null });
           } else if (entities.amount) {
             this.terminalPrintError(`Which student should I take ${entities.amount} RTC from? Try "remove ${entities.amount} from [name]".`);
           } else if (student) {
@@ -44223,6 +44233,9 @@
         ['ack', /^(nice|cool|awesome|great|perfect|sweet|love it|good job|well done)( riven)?$/],
         ['stray_yes', /^(yes|yep|yeah|sure|confirm|ok then)( please)?$/],
         ['dismiss', /^(never ?mind|scratch that|forget it|don'?t worry( about it)?|nothing)[\s!.]*$/],
+        // FYI statements ("I'm about to run shop now") get a friendly ack,
+        // not a confused "I didn't get that"
+        ['fyi', /^(i'?m|i am|we'?re|we are|im) (about to|going to|gonna|getting ready to|starting|running|opening|doing)\b[^?]*$/],
         ['bugreport', /(that('s| is|s)? (a bug|broken|buggy)|seems? (like a )?bug|you('re| are) (broken|glitching))/]
       ];
       for (const [key, re] of checks) {
@@ -44253,6 +44266,10 @@
         ack: [`🙂`, `Glad that worked!`, `👍`],
         stray_yes: [`There's nothing waiting for a yes right now — what would you like me to do?`],
         dismiss: [`No problem — standing by. (If you wanted me to reverse something, say "undo".)`, `Okay! I'm here when you need me.`],
+        fyi: [
+          `Got it — I'm ready when you are. Balances, purchases, group changes: just say the word.`,
+          `Sounds good! Tell me names and amounts as you go and I'll handle the ledger.`
+        ],
         bugreport: [
           `Sorry about that — you're right, that wasn't my best moment. Try phrasing it a little differently and I'll get it; the dev team also reviews these conversations to make me better.`
         ]
@@ -45721,8 +45738,9 @@
         .filter(x => x.waiting > 0)
         .sort((x, y) => y.waiting - x.waiting);
       if (gradeQueue.length) {
-        const lines = gradeQueue.map(x => `• <b>${this.escapeHtml(x.a.title || 'Assignment')}</b> (${this.escapeHtml(classById[x.a.class_id]?.name || '')}, due ${String(x.a.due_date).slice(0, 10)}) — ${x.waiting} submission${x.waiting === 1 ? '' : 's'} waiting`);
-        sections.push(`<div>📥 <b>Grading queue</b> — past-due work that needs grades:<br><span style="font-size: 12px;">${this._briefingExpand(lines, 5, 'assignments')}</span></div>`);
+        // Each line links straight into the grading view for that assignment
+        const lines = gradeQueue.map(x => `• <span style="color: var(--accent); cursor: pointer; text-decoration: underline; font-weight: 600;" onclick="app.viewSubmissions('${x.a.id}')">${this.escapeHtml(x.a.title || 'Assignment')}</span> (${this.escapeHtml(classById[x.a.class_id]?.name || '')}, due ${String(x.a.due_date).slice(0, 10)}) — ${x.waiting} submission${x.waiting === 1 ? '' : 's'} waiting`);
+        sections.push(`<div>📥 <b>Grading queue</b> — past-due work that needs grades (click one to grade it):<br><span style="font-size: 12px;">${this._briefingExpand(lines, 5, 'assignments')}</span></div>`);
       }
 
       // 5. Students with multiple missing assignments (one-click note)
@@ -45797,6 +45815,10 @@
       const ids = unread.map(n => n.id);
       const { error } = await sb.from('notifications').update({ is_read: true }).in('id', ids);
       if (error) { this.terminalPrintError('Could not mark them read: ' + error.message); return; }
+      // Update the bell/badge IMMEDIATELY from local state — the background
+      // reload then confirms from the database
+      (this.notifications || []).forEach(n => { n.is_read = true; });
+      this.updateNotificationUI?.();
       if (typeof this.loadNotifications === 'function') { this.loadNotifications().then(() => this.updateNotificationUI?.()); }
       this._pushUndo(`marking ${ids.length} notifications as read`, async () => {
         await sb.from('notifications').update({ is_read: false }).in('id', ids);
@@ -46788,7 +46810,7 @@
       `).join('');
     }
 
-    async terminalAddRTC(args) {
+    async terminalAddRTC(args, { reason: fixedReason = null } = {}) {
       if (args.length < 2) {
         this.terminalPrintError('Usage: /add <student name> <amount> [reason]');
         return;
@@ -46812,8 +46834,12 @@
         return;
       }
 
+      // A structured caller (intent executor) passes the reason out-of-band —
+      // a reason containing digits ("buying a treat for 5 rtc") must never be
+      // re-parsed as the amount, which used to swallow the real amount into
+      // the student name ("Charlotte Tebow -5")
       const studentName = args.slice(0, nameEndIndex).join(' ');
-      const reason = args.slice(nameEndIndex + 1).join(' ') || 'Terminal award';
+      const reason = fixedReason || args.slice(nameEndIndex + 1).join(' ') || 'Terminal award';
 
       const students = await this._findStudentsByName(studentName, 'id, first_name, last_name, rtc_balance');
 
