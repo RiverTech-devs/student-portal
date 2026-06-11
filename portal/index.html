@@ -42091,8 +42091,13 @@
       // A last-resort guess (generic student card, honest "can't do that")
       // masks sentences the semantic layer can actually read — "has jordan
       // been showing up lately" is an attendance question, not a card pull.
-      // Only stands when the semantic layer has nothing better.
-      if (intent.lastResort && resolvedInput.split(/\s+/).length >= 4) {
+      // Weak scored wins (≤15 = base + a generic catch-all pattern, e.g.
+      // "hook jordan up with some gold" via /.* rtc\b/) are equally guesses;
+      // writes always score ≥17 via entity bonuses so they're never
+      // pre-empted, and CAPABILITY replies are deliberate honesty, not
+      // guesses. Only stands when the semantic layer has nothing better.
+      const weakWin = typeof intent.score === 'number' && intent.score <= 15 && intent.intent !== 'CAPABILITY';
+      if ((intent.lastResort || weakWin) && resolvedInput.split(/\s+/).length >= 4) {
         const handled = await this._semanticFallback(resolvedInput, entities, { insteadOf: intent.intent });
         if (handled) return;
       }
@@ -42504,6 +42509,19 @@
             score = Math.max(score, 0.97);
             if (word === firstName) firstHit = true;
             if (word === lastName) lastHit = true;
+          }
+
+          // Bare possessive without the apostrophe ("jordans grades") —
+          // an exact name + trailing s is the name, not a typo, so it must
+          // not fall through to the low-scoring typo pass (which triggers
+          // the "I think you mean…" hedge on every possessive)
+          if (word.length >= 4 && word.endsWith('s')) {
+            const base = word.slice(0, -1);
+            if (base === firstName || base === lastName) {
+              score = Math.max(score, 0.97);
+              if (base === firstName) firstHit = true;
+              if (base === lastName) lastHit = true;
+            }
           }
 
           // Prefix match - user typed the START of a name ("eli" -> "elijah",
@@ -43303,7 +43321,9 @@
       // Fallback keyword matching
       if (normalized.includes('rtc') || normalized.includes('balance')) {
         if (entities.student) {
-          return { intent: 'VIEW_STUDENT', confidence: 0.7 };
+          // lastResort: "hook jordan up with some gold" normalizes to rtc and
+          // lands here — the semantic layer reads it as an award, not a card
+          return { intent: 'VIEW_STUDENT', confidence: 0.7, lastResort: true };
         }
       }
 
