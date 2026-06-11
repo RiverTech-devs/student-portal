@@ -42025,8 +42025,10 @@
       // Phase 3: If no student found, try using context — but never for
       // aggregate questions ("which students...", "anyone absent?") where
       // reusing the last student gives a confidently wrong answer
-      if (!entities.student && this._nlpContext?.lastStudent && !this._isAggregateQuery(normalized)) {
-        // Check if this looks like a follow-up command
+      if (!entities.student && this._nlpContext?.lastStudent && !this._isAggregateQuery(normalized)
+          && !entities.classMatch) {
+        // Check if this looks like a follow-up command (an explicitly named
+        // class means the request is class-scoped, not about the last student)
         if (this._isFollowUpCommand(normalized)) {
           entities.student = {
             student: this._nlpContext.lastStudent,
@@ -42752,9 +42754,13 @@
           intent: 'MARK_ATTENDANCE',
           patterns: [
             /\bmark\b.*\b(present|absent|late|tardy|here)\b/,
-            /\b(mark|record|log|enter|change|fix|update|set)\b.*\battendance\b/
+            /\b(mark|record|log|enter|change|fix|update|set)\b.*\battendance\b/,
+            // statement form: "jordan was late (today)" — question form
+            // ("was jordan late?") is blocked below and stays a read
+            /\b(was|is|came( in)?|arrived|showed up)\s+(late|tardy|absent)\b/
           ],
-          requiresStudent: true
+          requiresStudent: true,
+          notIfLeadingVerb: true
         },
         // CAPABILITY tests — testing-center scores aren't wired up yet;
         // answer honestly instead of dumping the student card
@@ -43148,6 +43154,8 @@
         // "add 5 rtc to jordan in math class" is an award, not an enrollment
         if (pattern.notIfCurrency && hasCurrency) continue;
         if (pattern.notIfInfoNoun && hasInfoNoun) continue;
+        // question form ("was jordan late?") must not trigger a write
+        if (pattern.notIfLeadingVerb && /^(was|is|were|did|does|has|have|who|when)\b/.test(normalized)) continue;
         for (const regex of pattern.patterns) {
           if (regex.test(normalized)) {
             // Check if required entities are present
@@ -45535,7 +45543,8 @@
       for (const row of rows) {
         const words = nameWords(row);
         if (!words.length) continue;
-        if (words.every(w => t.includes(w))) full.push(row);
+        // whole-word matching: "attenDANCE" must never match the class "Dance"
+        if (words.every(w => hasWord(w))) full.push(row);
         else if (words.some(w => w.length >= 4 && hasWord(w))) partial.push(row);
       }
       // Among full matches, the most specific name wins outright: "college
