@@ -48560,7 +48560,10 @@
       const durLabel = matchedPriv.duration_days ? `for ${matchedPriv.duration_days} days` : '(permanent)';
 
       const doIt = async () => {
-        const { data, error } = await this.auth.supabase.rpc('teacher_purchase_privilege', {
+        let result, grantId;
+        // Try atomic RPC (requires riven_privilege_purchase migration).
+        // Falls back to sequential deduction + grant if migration not applied.
+        const { data: atomicData, error: atomicErr } = await this.auth.supabase.rpc('teacher_purchase_privilege', {
           p_student_id: student.id,
           p_privilege_id: matchedPriv.id,
           p_custom_privilege_name: null,
@@ -48568,11 +48571,29 @@
           p_duration_days_override: null,
           p_description: entities.reason || null
         });
-        if (error) throw error;
-        const result = typeof data === 'string' ? JSON.parse(data) : data;
-        if (!result.success) throw new Error(result.error);
+        if (!atomicErr && atomicData) {
+          result = typeof atomicData === 'string' ? JSON.parse(atomicData) : atomicData;
+          if (!result.success) throw new Error(result.error);
+          grantId = result.grant_id;
+        } else {
+          // Sequential fallback: deduct then grant
+          const txData = await this._rtcTxn({ userId: student.id, amount: -price, type: 'spend_privilege',
+            description: 'Privilege: ' + matchedPriv.name });
+          const { data: gd, error: ge } = await this.auth.supabase.rpc('rtc_grant_privilege', {
+            p_student_id: student.id,
+            p_privilege_id: matchedPriv.id,
+            p_duration_days: matchedPriv.duration_days || null,
+            p_is_permanent: !matchedPriv.duration_days,
+            p_reason: entities.reason || 'Purchased via Riven terminal'
+          });
+          if (ge) throw ge;
+          const gr = typeof gd === 'string' ? JSON.parse(gd) : gd;
+          if (!gr.success) throw new Error(gr.error);
+          grantId = gr.grant_id;
+          const curBal = (this._terminalAllStudents?.find(s => s.id === student.id)?.rtc_balance || student.rtc_balance || 0) - price;
+          result = { new_balance: curBal };
+        }
         this._addRecentStudent({ ...student, rtc_balance: result.new_balance });
-        const grantId = result.grant_id;
         const paidPrice = price;
         this._pushUndo(`${student.full_name} purchasing ${matchedPriv.name}`, async () => {
           if (grantId) await this.auth.supabase.rpc('rtc_revoke_privilege', { p_grant_id: grantId, p_reason: 'Undo from Riven terminal' });
