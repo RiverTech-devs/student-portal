@@ -41261,6 +41261,10 @@
       this._restoreTerminalChat();
       this._setupTerminalPersistence();
 
+      // Proactive briefing: surface anything needing attention (throttled to
+      // once per 4 hours; silent when there's nothing)
+      setTimeout(() => { this.terminalBriefing({ auto: true }).catch(e => console.warn('briefing:', e)); }, 1200);
+
       // Global keyboard shortcut for command palette
       document.addEventListener('keydown', (e) => {
         if ((e.ctrlKey || e.metaKey) && e.key === 'k' && this.currentSection === 'teacher-terminal') {
@@ -41743,6 +41747,10 @@
         await this.terminalShowAttendance(args.join(' '), {});
       } else if (cmd === '/undo') {
         await this.terminalUndoLast();
+
+      // Assistant commands
+      } else if (cmd === '/briefing') {
+        await this.terminalBriefing();
 
       // Notes commands
       } else if (cmd === '/note') {
@@ -42629,12 +42637,36 @@
           ],
           requiresStudentOrClass: true
         },
-        // CLASS_INFO — "who teaches chess?", "tell me about the robotics class"
+        // BRIEFING — "anything I should know?", "catch me up", "what's new"
+        {
+          intent: 'BRIEFING',
+          patterns: [
+            /\bbriefing\b/,
+            /\bbrief me\b/,
+            /anything (i|we) (should|need to) know/,
+            /\bcatch me up\b/,
+            /what needs (my )?attention/,
+            /what('s| is) (new|going on|happening)( today)?/,
+            /^updates?[\s!?.]*$/
+          ]
+        },
+        // MARK_READ — "mark them as read", "mark notifications read"
+        {
+          intent: 'MARK_READ',
+          patterns: [
+            /\bmark\b.*\b(notifications?|messages?|them|those|all|everything)\b.*\bread\b/,
+            /\bclear\b.*\bnotifications?\b/
+          ]
+        },
+        // CLASS_INFO — "who teaches chess?", "tell me about the robotics
+        // class", "which math class is that / is jordan in?"
         {
           intent: 'CLASS_INFO',
           patterns: [
             /\bwho (teaches|runs|leads)\b/,
-            /\b(tell me about|info (on|about)|details (on|about|of))\b/
+            /\b(tell me about|info (on|about)|details (on|about|of))\b/,
+            /\bwhich\b.*\bclass\b.*\bis\b.*\b(that|this|it)\b/,
+            /\bwhich\b.*\bclass\b.*\bis\b\s+\w+(\s+\w+)?\s+in\b/
           ],
           requiresClass: true
         },
@@ -43026,6 +43058,14 @@
           await this.terminalClassInfo(entities);
           break;
 
+        case 'BRIEFING':
+          await this.terminalBriefing();
+          break;
+
+        case 'MARK_READ':
+          await this._rivenMarkAllRead();
+          break;
+
         case 'UPDATE_CONTACT':
           await this.terminalUpdateContact(entities);
           break;
@@ -43066,6 +43106,8 @@
     • "Change [student]'s phone to 555-1234" / "What's [student]'s contact info?"<br>
     • "How much RTC did [student] have last week?"<br>
     • "Undo that" (reverses my recent changes, one at a time)<br>
+    • "Anything I should know?" — briefing: unread notifications, grading queue,<br>
+    &nbsp;&nbsp;&nbsp;missing assignments, quarter deadline, attendance, birthdays<br>
     • "Show me the top 10 students"<br>
     • "What's John's transaction history?"<br>
     • "List all active students"
@@ -43519,7 +43561,8 @@
         ['whoareyou', /^(who|what) are you( again| exactly)?$/],
         ['capabilities', /^(what can you do|what do you do|what can you help( me)? with|help|help me)$/],
         ['ack', /^(nice|cool|awesome|great|perfect|sweet|love it|good job|well done)( riven)?$/],
-        ['stray_yes', /^(yes|yep|yeah|sure|confirm|ok then)( please)?$/]
+        ['stray_yes', /^(yes|yep|yeah|sure|confirm|ok then)( please)?$/],
+        ['bugreport', /(that('s| is|s)? (a bug|broken|buggy)|seems? (like a )?bug|you('re| are) (broken|glitching))/]
       ];
       for (const [key, re] of checks) {
         if (re.test(lower)) return { key };
@@ -43547,13 +43590,20 @@
           `I'm Riven — your teaching assistant here in the portal. I can look up students, balances, attendance, classes, and notes; award or move RTC; and take notes for you. Ask me anything, or type /help for the full list.`
         ],
         ack: [`🙂`, `Glad that worked!`, `👍`],
-        stray_yes: [`There's nothing waiting for a yes right now — what would you like me to do?`]
+        stray_yes: [`There's nothing waiting for a yes right now — what would you like me to do?`],
+        bugreport: [
+          `Sorry about that — you're right, that wasn't my best moment. Try phrasing it a little differently and I'll get it; the dev team also reviews these conversations to make me better.`
+        ]
       };
       if (key === 'capabilities') {
         this.terminalPrintHelp();
         return;
       }
       this._showRivenMessage(this.escapeHtml(pick(lines[key] || lines.greeting)), true);
+      // A greeting is a natural moment to surface anything pending
+      if (key === 'greeting' || key === 'howareyou') {
+        this.terminalBriefing({ auto: true }).catch(() => {});
+      }
     }
 
     _respondCorrection() {
@@ -44343,7 +44393,7 @@
     async terminalShowRoster(entities) {
       // "who is in jordan's math class" — the student narrows which same-named
       // class we mean; otherwise ambiguity asks via the class picker
-      const res = await this._rivenRequireClass(entities, { studentId: entities.student?.student?.id || null });
+      const res = await this._rivenRequireClass(entities, { studentId: this._rivenReferringStudentId(entities) });
       if (res.asked) return;
       const row = res.row;
       if (!row) { this.terminalPrintError('Which class?'); return; }
@@ -44427,8 +44477,18 @@
       );
     }
 
+    // "that math class" after talking about a student: narrow same-named
+    // classes by the conversation's student
+    _rivenReferringStudentId(entities) {
+      if (entities.student?.student?.id) return entities.student.student.id;
+      if (/\b(that|this|it)\b/.test(entities.normalized || '') && this._nlpContext?.lastStudent?.id) {
+        return this._nlpContext.lastStudent.id;
+      }
+      return null;
+    }
+
     async terminalClassInfo(entities) {
-      const res = await this._rivenRequireClass(entities);
+      const res = await this._rivenRequireClass(entities, { studentId: this._rivenReferringStudentId(entities) });
       if (res.asked) return;
       const row = res.row;
       if (!row) { this.terminalPrintError('Which class?'); return; }
@@ -44443,6 +44503,228 @@
           Students: ${count ?? '—'}${weight ? `<br>Grading: ${this.escapeHtml(weight)}` : ''}
         </div>
         <div style="color: var(--muted); font-size: 12px; margin-top: 6px;">Ask "who is in ${this.escapeHtml(row.name)}" for the roster or "grades for ${this.escapeHtml(row.name)}" for grades.</div>`, true);
+    }
+
+    // ==================== RIVEN BRIEFING (proactive assistant) ====================
+    // Scans for things that need the teacher's attention: unread notifications
+    // and messages, end-of-quarter countdown, near-complete grade sheets,
+    // past-due assignments waiting for grades, students with multiple missing
+    // assignments (one-click note), attendance not yet taken today, birthdays.
+
+    _rivenMyClassRows() {
+      const me = this.userInfo.user.id;
+      const mine = (this._terminalAllClasses || []).filter(c => c.teacher_id === me || c.secondary_teacher_id === me);
+      // Admins watch over the whole school; teachers see their own classes
+      if (this.userInfo.profile.user_type === 'admin') return this._terminalAllClasses || [];
+      return mine;
+    }
+
+    async terminalBriefing({ auto = false } = {}) {
+      const userType = this.userInfo?.profile?.user_type;
+      if (userType !== 'teacher' && userType !== 'admin') return;
+      const throttleKey = 'riven_briefing_at_' + this.userInfo.profile.id;
+      if (auto) {
+        const last = parseInt(localStorage.getItem(throttleKey) || '0');
+        if (Date.now() - last < 4 * 60 * 60 * 1000) return;
+      } else {
+        this.terminalPrint('Taking a look around…', '#6aa9ff');
+      }
+      try { localStorage.setItem(throttleKey, String(Date.now())); } catch (_) {}
+
+      const sb = this.auth.supabase;
+      const me = this.userInfo.user.id;
+      const today = this._isoDaysAgo(0);
+      const classRows = this._rivenMyClassRows();
+      const classIds = classRows.map(c => c.id);
+      const classById = {};
+      classRows.forEach(c => { classById[c.id] = c; });
+      const studentName = {};
+      (this._terminalAllStudents || []).forEach(s => { studentName[s.id] = s.full_name; });
+
+      const quarter = await this._rivenCurrentQuarter().catch(() => null);
+
+      const [notifsRes, msgsRes, enrRes, snapsRes, assignRes, schedRes, sessRes, dobRes] = await Promise.all([
+        sb.from('notifications').select('id, title, message, created_at').eq('user_id', me).eq('is_read', false).order('created_at', { ascending: false }).limit(20),
+        sb.from('messages').select('id, sender_id, content, created_at').eq('recipient_id', me).eq('is_read', false).order('created_at', { ascending: false }).limit(20),
+        classIds.length ? sb.from('class_enrollments').select('id, class_id, student_id').in('class_id', classIds).eq('status', 'active') : Promise.resolve({ data: [] }),
+        Promise.resolve(null), // snapshots fetched after enrollments below
+        (classIds.length && quarter) ? sb.from('assignments').select('id, title, class_id, due_date, assigned_to_all, graded_offline').in('class_id', classIds).eq('is_published', true).gte('due_date', quarter.start_date).lt('due_date', today) : Promise.resolve({ data: [] }),
+        classIds.length ? sb.from('class_schedule').select('class_id, day_of_week').in('class_id', classIds).eq('day_of_week', new Date().getDay()) : Promise.resolve({ data: [] }),
+        classIds.length ? sb.from('class_attendance_sessions').select('class_id').in('class_id', classIds).eq('date', today) : Promise.resolve({ data: [] }),
+        sb.from('user_profiles').select('id, first_name, last_name, date_of_birth').eq('user_type', 'student').not('date_of_birth', 'is', null)
+      ]);
+
+      const enrollments = enrRes.data || [];
+      const enrIds = enrollments.map(e => e.id);
+      let snaps = [];
+      if (quarter && enrIds.length) {
+        const { data } = await sb.from('quarter_grade_snapshots').select('enrollment_id, class_grade').eq('quarter_id', quarter.id).in('enrollment_id', enrIds);
+        snaps = data || [];
+      }
+      let submissions = [];
+      const assignments = (assignRes.data || []).filter(a => !a.graded_offline);
+      if (assignments.length) {
+        const { data } = await sb.from('assignment_submissions').select('assignment_id, student_id, status').in('assignment_id', assignments.map(a => a.id));
+        submissions = data || [];
+      }
+
+      const sections = [];
+
+      // 1. Unread notifications + messages
+      const notifs = notifsRes.data || [];
+      if (notifs.length) {
+        const preview = notifs.slice(0, 3).map(n => `• ${this.escapeHtml(n.title || (n.message || '').slice(0, 60))}`).join('<br>');
+        sections.push(`<div>🔔 <b>${notifs.length} unread notification${notifs.length === 1 ? '' : 's'}</b><br><span style="font-size: 12px; color: #6b5236;">${preview}${notifs.length > 3 ? `<br>…and ${notifs.length - 3} more` : ''}</span><br>
+          <button onclick="app._rivenMarkAllRead()" style="margin-top: 4px; padding: 4px 12px; border-radius: 6px; border: 1px solid #2f6b6d; background: transparent; color: #2f6b6d; cursor: pointer; font-size: 12px;">✓ Mark all read</button></div>`);
+      }
+      const msgs = msgsRes.data || [];
+      if (msgs.length) {
+        sections.push(`<div>💬 <b>${msgs.length} unread message${msgs.length === 1 ? '' : 's'}</b> — <span style="color: var(--accent); cursor: pointer; text-decoration: underline;" onclick="app.showSection('messaging')">open Messages</span> to read and reply.</div>`);
+      }
+
+      // 2. End-of-quarter countdown (3 weeks or less)
+      if (quarter?.end_date) {
+        const daysLeft = Math.ceil((new Date(quarter.end_date + 'T23:59:59') - Date.now()) / 86400000);
+        if (daysLeft >= 0 && daysLeft <= 21) {
+          sections.push(`<div>⏳ <b>${this.escapeHtml(quarter.name || 'The quarter')} ends in ${daysLeft} day${daysLeft === 1 ? '' : 's'}</b> (${quarter.end_date}). Time to wrap up grading.</div>`);
+        }
+      }
+
+      // 3. Grade sheets that are nearly complete (1–2 students missing)
+      if (quarter) {
+        const gradedEnr = new Set(snaps.filter(s => s.class_grade != null && s.class_grade !== 0).map(s => s.enrollment_id));
+        const byClass = {};
+        enrollments.forEach(e => {
+          (byClass[e.class_id] = byClass[e.class_id] || []).push(e);
+        });
+        const gapLines = [];
+        for (const [cid, list] of Object.entries(byClass)) {
+          const missing = list.filter(e => !gradedEnr.has(e.id));
+          if (missing.length >= 1 && missing.length <= 2 && list.length - missing.length >= 1 && list.length >= 3) {
+            gapLines.push(`• <b>${this.escapeHtml(classById[cid]?.name || 'Class')}</b>: ${list.length - missing.length}/${list.length} graded — missing ${missing.map(e => this.escapeHtml(studentName[e.student_id] || 'a student')).join(' and ')}`);
+          }
+        }
+        if (gapLines.length) {
+          sections.push(`<div>🎓 <b>Almost-finished grade sheets</b> (just 1–2 students left):<br><span style="font-size: 12px;">${gapLines.slice(0, 6).join('<br>')}${gapLines.length > 6 ? `<br>…and ${gapLines.length - 6} more classes` : ''}</span></div>`);
+        }
+      }
+
+      // 4. Past-due assignments with ungraded submissions
+      const subsByAssign = {};
+      submissions.forEach(s => { (subsByAssign[s.assignment_id] = subsByAssign[s.assignment_id] || []).push(s); });
+      const gradeQueue = assignments
+        .map(a => ({ a, waiting: (subsByAssign[a.id] || []).filter(s => s.status === 'submitted').length }))
+        .filter(x => x.waiting > 0)
+        .sort((x, y) => y.waiting - x.waiting);
+      if (gradeQueue.length) {
+        const lines = gradeQueue.slice(0, 5).map(x => `• <b>${this.escapeHtml(x.a.title || 'Assignment')}</b> (${this.escapeHtml(classById[x.a.class_id]?.name || '')}, due ${x.a.due_date}) — ${x.waiting} submission${x.waiting === 1 ? '' : 's'} waiting`);
+        sections.push(`<div>📥 <b>Grading queue</b> — past-due work that needs grades:<br><span style="font-size: 12px;">${lines.join('<br>')}${gradeQueue.length > 5 ? `<br>…and ${gradeQueue.length - 5} more assignments` : ''}</span></div>`);
+      }
+
+      // 5. Students with multiple missing assignments (one-click note)
+      const enrByClass = {};
+      enrollments.forEach(e => { (enrByClass[e.class_id] = enrByClass[e.class_id] || new Set()).add(e.student_id); });
+      const missingByStudent = {};
+      assignments.filter(a => a.assigned_to_all !== false).forEach(a => {
+        const submitted = new Set((subsByAssign[a.id] || []).map(s => s.student_id));
+        (enrByClass[a.class_id] || new Set()).forEach(sid => {
+          if (!submitted.has(sid)) {
+            (missingByStudent[sid] = missingByStudent[sid] || []).push(a);
+          }
+        });
+      });
+      this._briefingMissing = Object.entries(missingByStudent)
+        .filter(([, list]) => list.length >= 2)
+        .map(([sid, list]) => ({
+          studentId: sid,
+          name: studentName[sid] || 'Unknown student',
+          count: list.length,
+          titles: list.slice(0, 5).map(a => a.title || 'assignment'),
+          classNames: [...new Set(list.map(a => classById[a.class_id]?.name).filter(Boolean))]
+        }))
+        .sort((x, y) => y.count - x.count);
+      if (this._briefingMissing.length) {
+        const lines = this._briefingMissing.slice(0, 6).map((m, i) =>
+          `• <b>${this.escapeHtml(m.name)}</b> — ${m.count} missing (${this.escapeHtml(m.classNames.join(', '))})
+           <button onclick="app._rivenNoteMissing(${i})" style="margin-left: 6px; padding: 2px 10px; border-radius: 6px; border: 1px solid #2f6b6d; background: transparent; color: #2f6b6d; cursor: pointer; font-size: 11px;">📝 Note it</button>`);
+        sections.push(`<div>⚠️ <b>Students with multiple missing assignments</b>:<br><span style="font-size: 12px;">${lines.join('<br>')}${this._briefingMissing.length > 6 ? `<br>…and ${this._briefingMissing.length - 6} more students` : ''}</span></div>`);
+      }
+
+      // 6. Attendance not yet taken for today's scheduled classes
+      const takenToday = new Set((sessRes.data || []).map(s => s.class_id));
+      const dueToday = [...new Set((schedRes.data || []).map(s => s.class_id))]
+        .filter(cid => !takenToday.has(cid))
+        .map(cid => classById[cid])
+        .filter(c => c && this._rivenCanManageClass(c, { attendance: true }));
+      if (dueToday.length) {
+        sections.push(`<div>📅 <b>Attendance not yet taken today</b>: ${dueToday.slice(0, 6).map(c => this.escapeHtml(c.name)).join(', ')}${dueToday.length > 6 ? ` and ${dueToday.length - 6} more` : ''}.<br><span style="font-size: 12px; color: #6b5236;">Say "mark everyone in [class] present" and I'll handle it.</span></div>`);
+      }
+
+      // 7. Birthdays in the next 7 days
+      const bdays = (dobRes.data || []).map(p => {
+        const dob = new Date(p.date_of_birth + 'T12:00:00');
+        const now = new Date();
+        const next = new Date(now.getFullYear(), dob.getMonth(), dob.getDate());
+        if (next < new Date(now.getFullYear(), now.getMonth(), now.getDate())) next.setFullYear(now.getFullYear() + 1);
+        const inDays = Math.round((next - new Date(now.getFullYear(), now.getMonth(), now.getDate())) / 86400000);
+        return { name: `${p.first_name || ''} ${p.last_name || ''}`.trim(), inDays };
+      }).filter(b => b.inDays >= 0 && b.inDays <= 7).sort((a, b) => a.inDays - b.inDays);
+      if (bdays.length) {
+        sections.push(`<div>🎂 <b>Birthdays this week</b>: ${bdays.slice(0, 5).map(b => `${this.escapeHtml(b.name)} (${b.inDays === 0 ? 'today!' : b.inDays === 1 ? 'tomorrow' : 'in ' + b.inDays + ' days'})`).join(', ')}</div>`);
+      }
+
+      if (!sections.length) {
+        if (!auto) this._showRivenMessage(`All clear — nothing needs your attention right now. 🎉`, true);
+        return;
+      }
+      const scopeNote = userType === 'admin' ? 'school-wide' : `across your ${classRows.length} class${classRows.length === 1 ? '' : 'es'}`;
+      this._showRivenMessage(
+        `<div style="font-weight: 700; margin-bottom: 8px;">📋 Here's what needs your attention (${scopeNote}):</div>` +
+        sections.map(s => `<div style="margin: 10px 0;">${s}</div>`).join(''), true);
+    }
+
+    async _rivenMarkAllRead() {
+      const sb = this.auth.supabase;
+      const me = this.userInfo.user.id;
+      const { data: unread, error: re } = await sb.from('notifications').select('id').eq('user_id', me).eq('is_read', false);
+      if (re) { this.terminalPrintError('Could not read notifications: ' + re.message); return; }
+      if (!unread || !unread.length) { this._showRivenMessage('Already done — no unread notifications.', true); return; }
+      const ids = unread.map(n => n.id);
+      const { error } = await sb.from('notifications').update({ is_read: true }).in('id', ids);
+      if (error) { this.terminalPrintError('Could not mark them read: ' + error.message); return; }
+      if (typeof this.loadNotifications === 'function') { this.loadNotifications().then(() => this.updateNotificationUI?.()); }
+      this._pushUndo(`marking ${ids.length} notifications as read`, async () => {
+        await sb.from('notifications').update({ is_read: false }).in('id', ids);
+        if (typeof this.loadNotifications === 'function') { this.loadNotifications().then(() => this.updateNotificationUI?.()); }
+      });
+      this._naturalSuccess([
+        `Done — ${ids.length} notification${ids.length === 1 ? '' : 's'} marked read.`,
+        `Inbox zero! ${ids.length} notification${ids.length === 1 ? '' : 's'} cleared.`
+      ]);
+    }
+
+    async _rivenNoteMissing(index) {
+      const m = (this._briefingMissing || [])[index];
+      if (!m) { this.terminalPrintError('That list has expired — ask for a fresh briefing.'); return; }
+      try {
+        const saved = await this._insertNote({
+          studentId: m.studentId,
+          category: 'academic',
+          sentiment: 'negative',
+          visibility: 'staff',
+          note: `Missing ${m.count} assignments as of ${this._isoDaysAgo(0)} (${m.classNames.join(', ')}): ${m.titles.join('; ')}${m.count > m.titles.length ? '; …' : ''} — auto-noted via Riven briefing.`
+        });
+        this._pushUndo(`the missing-assignments note for ${m.name}`, async () => {
+          const { error } = await this.auth.supabase.from('notes').delete().eq('id', saved.id);
+          if (error) throw error;
+        });
+        this._naturalSuccess([
+          `Noted — ${m.name}'s ${m.count} missing assignments are on record (staff-visible).`,
+          `Saved a note for ${m.name} about the ${m.count} missing assignments.`
+        ]);
+      } catch (err) {
+        this.terminalPrintError('Could not save the note: ' + err.message);
+      }
     }
 
     async terminalMultiAward(entities) {
@@ -44656,7 +44938,8 @@
         : Object.entries(this._notesPeople?.classes || {}).map(([id, name]) => ({ id, name }));
       if (this._terminalPinnedClass) {
         const p = rows.find(r => r.id === this._terminalPinnedClass);
-        if (p) return { id: p.id, name: p.name, row: p, consumed: (p.name || '').toLowerCase().split(/\s+/) };
+        // pinned: the user clicked the picker — NEVER re-expand to siblings
+        if (p) return { id: p.id, name: p.name, row: p, pinned: true, consumed: (p.name || '').toLowerCase().split(/\s+/) };
       }
       const t = text.toLowerCase();
       const esc = (w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -44698,6 +44981,24 @@
           (c.teacher_name || '').toLowerCase().split(/\s+/).includes(withM[1]) ||
           (c.secondary_teacher_name || '').toLowerCase().split(/\s+/).includes(withM[1]));
         if (narrowed.length) { candidates = narrowed; consumed.push('with', withM[1]); }
+      }
+      // Qualifier: a candidate's teacher name anywhere in the text
+      // ("caitlins english class" — possessive 's is already stripped).
+      // Tokens that are also STUDENT names are skipped ("jordans math class"
+      // means the student Jordan, not teacher Jordan Ezell).
+      if (candidates.length > 1) {
+        const studentTokens = new Set();
+        (this._terminalAllStudents || []).forEach(s => {
+          `${s.first_name || ''} ${s.last_name || ''}`.toLowerCase().split(/\s+/).forEach(w => { if (w.length >= 3) studentTokens.add(w); });
+        });
+        const narrowed = candidates.filter(c => {
+          const toks = `${c.teacher_name || ''} ${c.secondary_teacher_name || ''}`.toLowerCase().split(/\s+/).filter(w => w.length >= 3 && !studentTokens.has(w));
+          return toks.some(w => hasWord(w));
+        });
+        if (narrowed.length && narrowed.length < candidates.length) {
+          candidates = narrowed;
+          narrowed.forEach(c => `${c.teacher_name || ''}`.toLowerCase().split(/\s+/).forEach(w => { if (w.length >= 3 && hasWord(w)) consumed.push(w); }));
+        }
       }
       // Qualifier: level words present in class names (ms/hs/es, middle/high/elementary)
       const levelM = t.match(/\b(ms|hs|es|middle|high|elementary)\b/);
@@ -44763,11 +45064,14 @@
       const originalInput = entities.original || '';
       if (!cm) return { row: null, enrollment: null, asked: false };
       let candidates = cm.ambiguous ? [...cm.candidates] : [this._rivenResolveClassRow(cm)].filter(Boolean);
-      // include same-named siblings so "Math" reaches all four Math classes
-      const names = new Set(candidates.map(c => (c.name || '').toLowerCase()));
-      (this._terminalAllClasses || []).forEach(c => {
-        if (names.has((c.name || '').toLowerCase()) && !candidates.find(x => x.id === c.id)) candidates.push(c);
-      });
+      // include same-named siblings so "Math" reaches all four Math classes —
+      // but never when the user just PICKED a specific class from the dialog
+      if (!cm.pinned) {
+        const names = new Set(candidates.map(c => (c.name || '').toLowerCase()));
+        (this._terminalAllClasses || []).forEach(c => {
+          if (names.has((c.name || '').toLowerCase()) && !candidates.find(x => x.id === c.id)) candidates.push(c);
+        });
+      }
 
       if (studentId) {
         const found = [];
