@@ -41355,13 +41355,32 @@
 
     async _loadTerminalClasses() {
       try {
-        const { data, error } = await this.auth.supabase
-          .from('classes')
-          .select('id, name, subject, teacher_id, secondary_teacher_id, is_active, grading_weight')
-          .eq('is_active', true)
-          .order('name');
+        const [{ data, error }, { data: staff }] = await Promise.all([
+          this.auth.supabase
+            .from('classes')
+            .select('id, name, subject, teacher_id, secondary_teacher_id, is_active, grading_weight')
+            .eq('is_active', true)
+            .order('name'),
+          this.auth.supabase
+            .from('user_profiles')
+            .select('id, auth_user_id, first_name, last_name')
+            .in('user_type', ['teacher', 'admin'])
+        ]);
         if (error) throw error;
-        this._terminalAllClasses = data || [];
+        // classes.teacher_id holds the AUTH user id; user_profiles uses a
+        // separate profile id with auth_user_id linking them (some legacy rows
+        // share one id) — index staff under both keys
+        const staffByAnyId = {};
+        (staff || []).forEach(p => {
+          const nm = `${p.first_name || ''} ${p.last_name || ''}`.trim();
+          if (p.id) staffByAnyId[p.id] = nm;
+          if (p.auth_user_id) staffByAnyId[p.auth_user_id] = nm;
+        });
+        this._terminalAllClasses = (data || []).map(c => ({
+          ...c,
+          teacher_name: staffByAnyId[c.teacher_id] || '',
+          secondary_teacher_name: staffByAnyId[c.secondary_teacher_id] || ''
+        }));
       } catch (err) {
         console.error('Error loading classes:', err);
         this._terminalAllClasses = [];
@@ -41761,6 +41780,30 @@
         return;
       }
 
+      // Correction-with-content: "No how much gold does everyone have?",
+      // "I mean the high school math class", "Elementary english with Dan I
+      // mean" — peel the correction phrase and run the real request. Bare
+      // "no" / "not what I meant" still reaches the CORRECTION intent below.
+      const corrLead = input.match(/^\s*(?:no+[,!. ]+|i meant?[,: ]+|actually[,: ]+|i mean[,: ]+|sorry[,: ]+i meant?\s+)/i);
+      if (corrLead) {
+        const rest = input.slice(corrLead[0].length).trim();
+        if (rest.split(/\s+/).length >= 3 && !/^not what/i.test(rest)) {
+          await this._executeNaturalLanguage(rest);
+          return;
+        }
+      }
+      const corrTrail = input.match(/[,\s]+i mean[.!?\s]*$/i);
+      if (corrTrail && input.slice(0, corrTrail.index).trim().split(/\s+/).length >= 2) {
+        await this._executeNaturalLanguage(input.slice(0, corrTrail.index).trim());
+        return;
+      }
+      // Leading filler ("now", "ok", "also", "please") never carries meaning
+      const filler = input.match(/^\s*(?:now|ok(?:ay)?|also|please|then|next)[,\s]+/i);
+      if (filler && input.slice(filler[0].length).trim().split(/\s+/).length >= 2) {
+        await this._executeNaturalLanguage(input.slice(filler[0].length));
+        return;
+      }
+
       // Phase 1 + 2 + 3: NLP with context and pronouns
       const normalized = this._normalizeInput(input);
 
@@ -41808,7 +41851,18 @@
         return;
       }
 
-      const intent = this._matchIntent(resolvedInput, entities);
+      // "What about jordan?" / "and sawyer?" — repeat the previous question
+      // for a different student instead of dumping the generic student card
+      let intent = null;
+      const reusableIntents = ['VIEW_STUDENT', 'VIEW_ATTENDANCE', 'VIEW_HISTORY', 'BALANCE_AT',
+        'VIEW_ENROLLMENTS', 'STUDENT_TENURE', 'VIEW_GRADES', 'VIEW_CONTACT', 'VIEW_NOTES'];
+      if (/^\s*(what about|how about|and)\b/i.test(input) && entities.student
+          && this._nlpContext?.lastIntent && reusableIntents.includes(this._nlpContext.lastIntent)
+          && normalized.split(/\s+/).length <= 6) {
+        intent = { intent: this._nlpContext.lastIntent, confidence: 0.9 };
+      }
+
+      if (!intent) intent = this._matchIntent(resolvedInput, entities);
 
       if (!intent || intent.confidence < 0.5) {
         this._handleUnknown(resolvedInput, entities);
@@ -41842,7 +41896,14 @@
       }
 
       const lastStudent = this._nlpContext.lastStudent;
-      const pronouns = ['him', 'her', 'hers', 'his', 'them', 'their', 'theirs', 'they', 'he', 'she'];
+      // Plural pronouns refer to the last GROUP (a roster, "everyone in
+      // chess") when one is fresher than the last single student — leave them
+      // alone so the group executors can handle "each of them".
+      const grp = this._nlpContext.lastGroup;
+      const groupIsFresher = grp && grp.timestamp >= (this._nlpContext.timestamp || 0);
+      const pronouns = groupIsFresher
+        ? ['him', 'her', 'hers', 'his', 'he', 'she']
+        : ['him', 'her', 'hers', 'his', 'them', 'their', 'theirs', 'they', 'he', 'she'];
 
       let resolved = normalized;
       for (const pronoun of pronouns) {
@@ -41947,6 +42008,10 @@
         normalized = normalized.replace(new RegExp(`\\b${syn}\\b`, 'g'), 'rtc');
       });
 
+      // "give me X" / "get me X" is a read request, not an award — must run
+      // before the give->add mapping below
+      normalized = normalized.replace(/\b(give|get|grab|pull) me\b/g, 'show');
+
       // Replace common action synonyms (add side)
       normalized = normalized.replace(/\bgive\b/g, 'add');
       normalized = normalized.replace(/\baward\b/g, 'add');
@@ -42003,13 +42068,14 @@
         else if (entities.count === null) entities.count = val;
       }
 
-      // Class first, then strip its name words before student matching so a
-      // class like "AI Game Design" can't fuzzy-match a student ("Jordan
-      // Games") out of its own name
+      // Class first, then strip every word it consumed (class-name words,
+      // "with <teacher>" qualifiers) before student matching, so a class like
+      // "AI Game Design" can't fuzzy-match a student ("Jordan Games") out of
+      // its own name and "english with dan" doesn't match a student "Dan".
       entities.classMatch = this._rivenMatchClass(normalized);
       let studentText = normalized;
       if (entities.classMatch) {
-        for (const w of entities.classMatch.name.toLowerCase().split(/\s+/)) {
+        for (const w of (entities.classMatch.consumed || [])) {
           if (w.length >= 3) {
             studentText = studentText.replace(new RegExp('\\b' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'g'), ' ');
           }
@@ -42326,7 +42392,7 @@
       // mention RTC currency, never let it trigger a balance change. Stops
       // "give eli's attendance in math over the last 5 weeks" from awarding RTC.
       // (gold/coins/points are already normalized to "rtc" upstream.)
-      const hasInfoNoun = /\b(attendance|attendances|absent|absence|absences|tardy|tardies|tardiness|grade|grades|gpa|score|scores|note|notes)\b/.test(normalized);
+      const hasInfoNoun = /\b(attendance|attendances|absent|absence|absences|tardy|tardies|tardiness|grade|grades|gpa|score|scores|note|notes|participation|academic|skill|skills)\b/.test(normalized);
       const hasCurrency = /\brtc\b/.test(normalized);
       const blockMutation = hasInfoNoun && !hasCurrency;
 
@@ -42342,11 +42408,13 @@
             /scratch that/
           ]
         },
-        // CORRECTION — "no, not what I meant". Apologize and offer undo.
+        // CORRECTION — bare "no" / "not what I meant". A "no" followed by an
+        // actual request is peeled off earlier in the pipeline and re-run.
         {
           intent: 'CORRECTION',
           patterns: [
-            /^(no+|nope|wrong|wait)\b/,
+            /^(no+|nope|wrong|wait)[\s!.,]*$/,
+            /^no+[,\s]+(that('s| is)? )?(not|wrong)/,
             /not what i (meant|said|asked|wanted)/,
             /that('| i)?s? (wrong|not right|not it|not what)/,
             /you (misunderstood|got that wrong)/
@@ -42395,11 +42463,16 @@
         {
           intent: 'SET_GRADE',
           patterns: [
-            /\b(set|change|give|gave|update|make|put|enter|record|override)\b.*\bgrade\b/,
+            /\b(set|change|give|gave|update|make|put|enter|record|override|add)\b.*\bgrade\b/,
             /\bgrade\b.*\bto\b\s*\d/,
-            /\b(final|participation|academic|skill)\s+grade\b/
+            /\b(final|participation|academic|skill)\s+grade\b/,
+            // "give him a b in participation and a c in skill" — component
+            // words work without saying "grade"
+            /\b(set|change|give|gave|update|make|put|add)\b.*\b(participation|academic|skill|skills|part)\b/,
+            /\b[abcdf][+-]?\s+(in|for|on)\s+(participation|academic|skill|skills|part)\b/
           ],
-          requiresStudent: true
+          requiresStudent: true,
+          notIfCurrency: true
         },
         // CREATE_CLASS — "create a class called Robotics"
         {
@@ -42480,6 +42553,28 @@
           ],
           requiresStudent: true,
           requiresAmount: true
+        },
+        // GROUP_RTC — "give everyone in chess class 2 rtc", "take 1 from each
+        // of them" (needs a class mention or a fresh group from a roster)
+        {
+          intent: 'GROUP_RTC',
+          patterns: [
+            /\b(add|remove|subtract|deduct|take)\b.*\b(everyone|everybody|each|all of them|them all|the (whole )?class)\b/,
+            /\b(everyone|everybody|each( of them)?|all of them)\b.*\d+\s*(rtc)?\b/,
+            /\d+\s*(rtc\s+)?(to|for)\s+(everyone|everybody|each|all of them|the (whole )?class)\b/
+          ],
+          requiresAmount: true,
+          requiresGroupContext: true
+        },
+        // GROUP_BALANCES — "how much rtc does everyone in chess have?",
+        // "how much gold do each of them have?"
+        {
+          intent: 'GROUP_BALANCES',
+          patterns: [
+            /\b(rtc|balance|balances)\b.*\b(everyone|everybody|each( of them)?|all of them|them all)\b/,
+            /\b(everyone|everybody|each( of them)?|all of them|them all)\b.*\b(rtc|balance|balances|have|hold)\b/
+          ],
+          requiresGroupContext: true
         },
         // COMPARE_STUDENTS — "compare evelyn and charlotte", "who has more rtc"
         {
@@ -42667,6 +42762,7 @@
             if (pattern.requiresSince && !entities.sinceDate) continue;
             if (pattern.requiresClass && !entities.classMatch) continue;
             if (pattern.requiresStudentOrClass && !entities.student && !entities.classMatch) continue;
+            if (pattern.requiresGroupContext && !entities.classMatch && !this._nlpContext?.lastGroup) continue;
 
             return {
               intent: pattern.intent,
@@ -42708,6 +42804,12 @@
       // intent — default to showing that student rather than giving up.
       if (entities.student) {
         return { intent: 'VIEW_STUDENT', confidence: 0.6 };
+      }
+
+      // A bare class mention ("the high school math class") with no other
+      // intent — show its roster (the executor disambiguates if needed)
+      if (entities.classMatch) {
+        return { intent: 'VIEW_ROSTER', confidence: 0.6 };
       }
 
       return null;
@@ -42873,6 +42975,14 @@
 
         case 'VIEW_ROSTER':
           await this.terminalShowRoster(entities);
+          break;
+
+        case 'GROUP_BALANCES':
+          await this.terminalGroupBalances(entities);
+          break;
+
+        case 'GROUP_RTC':
+          await this.terminalGroupAddRTC(entities);
           break;
 
         case 'UPDATE_CONTACT':
@@ -43619,7 +43729,8 @@
       const { data: enr, error } = await this.auth.supabase
         .from('class_enrollments')
         .select('class_id')
-        .eq('student_id', student.id);
+        .eq('student_id', student.id)
+        .eq('status', 'active');
       if (error) { this.terminalPrintError('Could not read enrollments: ' + error.message); return; }
       const classIds = [...new Set((enr || []).map(e => e.class_id).filter(Boolean))];
       if (!classIds.length) {
@@ -43734,20 +43845,6 @@
     // For student-scoped operations, disambiguate by the student's actual
     // enrollment: if the picked class doesn't hold the student, try the
     // same-named siblings before giving up.
-    async _rivenResolveClassForStudent(cm, studentId) {
-      const row = this._rivenResolveClassRow(cm);
-      if (!row) return { row: null, enrollment: null };
-      let enrollment = await this._rivenFindEnrollment(row.id, studentId);
-      if (enrollment) return { row, enrollment };
-      const siblings = (this._terminalAllClasses || []).filter(c =>
-        c.id !== row.id && (c.name || '').toLowerCase() === (row.name || '').toLowerCase());
-      for (const c of siblings) {
-        const e = await this._rivenFindEnrollment(c.id, studentId);
-        if (e) return { row: c, enrollment: e };
-      }
-      return { row, enrollment: null };
-    }
-
     async terminalMarkAttendance(entities) {
       const student = entities.student?.student;
       if (!student) { this.terminalPrintError('Whose attendance? Tell me a student name.'); return; }
@@ -43778,7 +43875,9 @@
           return;
         }
       } else {
-        const { row, enrollment } = await this._rivenResolveClassForStudent(entities.classMatch, student.id);
+        const res = await this._rivenRequireClass(entities, { studentId: student.id });
+        if (res.asked) return;
+        const { row, enrollment } = res;
         if (!row) {
           this._showRivenMessage(`Which class? Say it like "mark ${this.escapeHtml(student.full_name.split(' ')[0])} ${status.replace(/_/g, ' ')} in Math".`, true);
           return;
@@ -43838,8 +43937,11 @@
 
     async terminalEnrollStudent(entities) {
       const student = entities.student?.student;
-      const row = this._rivenResolveClassRow(entities.classMatch);
-      if (!student || !row) { this.terminalPrintError('Tell me both — like "add Jordan to Robotics".'); return; }
+      if (!student || !entities.classMatch) { this.terminalPrintError('Tell me both — like "add Jordan to Robotics".'); return; }
+      const res = await this._rivenRequireClass(entities);
+      if (res.asked) return;
+      const row = res.row;
+      if (!row) { this.terminalPrintError('Which class should I add them to?'); return; }
       if (!this._rivenCanManageClass(row)) {
         this.terminalPrintError(`You don't have permission to change the roster of ${row.name} — only its teacher or an admin can.`);
         return;
@@ -43891,7 +43993,9 @@
     async terminalUnenrollStudent(entities) {
       const student = entities.student?.student;
       if (!student || !entities.classMatch) { this.terminalPrintError('Tell me both — like "remove Jordan from Robotics".'); return; }
-      const { row, enrollment: existing } = await this._rivenResolveClassForStudent(entities.classMatch, student.id);
+      const res = await this._rivenRequireClass(entities, { studentId: student.id });
+      if (res.asked) return;
+      const { row, enrollment: existing } = res;
       if (!row) { this.terminalPrintError('Which class?'); return; }
       if (!this._rivenCanManageClass(row)) {
         this.terminalPrintError(`You don't have permission to change the roster of ${row.name} — only its teacher or an admin can.`);
@@ -43960,7 +44064,9 @@
     }
 
     async terminalDeleteClass(entities) {
-      const row = this._rivenResolveClassRow(entities.classMatch);
+      const res = await this._rivenRequireClass(entities);
+      if (res.asked) return;
+      const row = res.row;
       if (!row) { this.terminalPrintError('Which class should I deactivate?'); return; }
       if (!this._rivenCanManageClass(row, { attendance: true })) {
         this.terminalPrintError(`Only ${row.name}'s primary teacher or an admin can deactivate it.`);
@@ -43992,63 +44098,106 @@
     async terminalSetGrade(entities) {
       const student = entities.student?.student;
       if (!student) { this.terminalPrintError('Whose grade? Tell me a student name.'); return; }
-      const { row, enrollment } = await this._rivenResolveClassForStudent(entities.classMatch, student.id);
+      const lower = entities.normalized || '';
+
+      // No class mentioned? Fall back to the class we were just talking about
+      // ("add jordan to chess" → "give him a b in participation")
+      let row = null, enrollment = null;
+      if (entities.classMatch) {
+        const res = await this._rivenRequireClass(entities, { studentId: student.id });
+        if (res.asked) return;
+        row = res.row; enrollment = res.enrollment;
+      } else if (this._nlpContext?.lastClass) {
+        row = (this._terminalAllClasses || []).find(c => c.id === this._nlpContext.lastClass.id) || null;
+        if (row) {
+          enrollment = await this._rivenFindEnrollment(row.id, student.id);
+          this.terminalPrint(`💬 Using ${row.name} from our conversation...`, '#97a2b0');
+        }
+      }
       if (!row) {
         this._showRivenMessage(`Which class? Say it like: set ${this.escapeHtml(student.full_name.split(' ')[0])}'s final grade in <b>Math</b> to 95.`, true);
         return;
       }
-      if (!enrollment) { this.terminalPrintError(`${student.full_name} isn't enrolled in ${row.name}.`); return; }
+      if (!enrollment) {
+        this.terminalPrintError(`${student.full_name} isn't enrolled in ${row.name}. Say "add ${student.full_name.split(' ')[0]} to ${row.name}" first.`);
+        return;
+      }
       if (!this._rivenCanManageClass(row)) {
         this.terminalPrintError(`You can only set grades for your own classes — ${row.name} isn't one of them.`);
         return;
       }
-      const lower = entities.normalized || '';
-      const component = /\bparticipation\b/.test(lower) ? 'participation'
-        : /\b(academic|skill)\b/.test(lower) ? 'academic' : 'final';
-      // Value: number 0–100, or letter grade
-      let value = (entities.amount != null && entities.amount >= 0 && entities.amount <= 100) ? entities.amount : null;
-      if (value === null) {
-        const lm = lower.match(/\b([abcdf][+-])(?=[\s.,!?]|$)/) || lower.match(/\b(?:an?|to)\s+([abcdf])\b(?!\w)/);
-        if (lm) value = this._letterToPct(lm[1]);
+
+      // Components+values: handles multiples in one breath — "a b in
+      // participation and a c in skill". Falls back to single-value parsing.
+      const mapComp = (c) => c.startsWith('part') ? 'participation'
+        : (c === 'final' || c === 'overall' || c === 'class') ? 'final' : 'academic';
+      const pairs = [];
+      const pairRe = /([abcdf][+-]?|\d{1,3}(?:\.\d+)?)\s*%?\s*(?:in|for|on|to)?\s+(participation|part\b|academic|skills?|final|overall)/g;
+      let pm;
+      while ((pm = pairRe.exec(lower)) !== null) {
+        const raw = pm[1];
+        const v = /^[abcdf]/.test(raw) ? this._letterToPct(raw) : parseFloat(raw);
+        if (v != null && !isNaN(v) && v >= 0 && v <= 100) {
+          pairs.push({ component: mapComp(pm[2].trim()), value: v });
+        }
       }
-      if (value === null) {
-        this.terminalPrintError('What grade? Give me a percent (0–100) or a letter, like "set her final grade in Math to 92" or "to a B+".');
-        return;
+      if (!pairs.length) {
+        const component = /\bparticipation\b|\bpart\b/.test(lower) ? 'participation'
+          : /\b(academic|skills?)\b/.test(lower) ? 'academic' : 'final';
+        let value = (entities.amount != null && entities.amount >= 0 && entities.amount <= 100) ? entities.amount : null;
+        if (value === null) {
+          const lm = lower.match(/\b([abcdf][+-])(?=[\s.,!?]|$)/) || lower.match(/\b(?:an?|to)\s+([abcdf])\b(?!\w)/);
+          if (lm) value = this._letterToPct(lm[1]);
+        }
+        if (value === null) {
+          this.terminalPrintError('What grade? Give me a percent (0–100) or a letter, like "set her final grade in Math to 92" or "a B in participation".');
+          return;
+        }
+        pairs.push({ component, value });
       }
+      // Last mention of a component wins
+      const byComp = {};
+      pairs.forEach(p => { byComp[p.component] = p.value; });
+      const finalPairs = Object.entries(byComp).map(([component, value]) => ({ component, value }));
       const sb = this.auth.supabase;
       const quarter = await this._rivenCurrentQuarter();
       if (!quarter) { this.terminalPrintError('No active quarter is configured — set one up in admin first.'); return; }
       const { data: prevSnap } = await sb.from('quarter_grade_snapshots').select('*')
         .eq('enrollment_id', enrollment.id).eq('quarter_id', quarter.id).maybeSingle();
 
-      const letter = this._pctToLetter(value);
-      const compLabel = component === 'final' ? 'final (class) grade' : component + ' grade';
+      const compLabel = (c) => c === 'final' ? 'final (class) grade' : c + ' grade';
+      const describe = finalPairs.map(p => `<b>${compLabel(p.component)}</b> → <b>${p.value} (${this._pctToLetter(p.value)})</b>`).join(', ');
+      const hasOverride = finalPairs.some(p => p.component !== 'participation');
       this._requestConfirmation(
-        `Set <b>${this.escapeHtml(student.full_name)}</b>'s <b>${compLabel}</b> in <b>${this.escapeHtml(row.name)}</b> to <b>${value} (${letter})</b> for ${this.escapeHtml(quarter.name || 'the current quarter')}${component !== 'participation' ? ' — this overrides the calculated grade' : ''}.`,
+        `Set <b>${this.escapeHtml(student.full_name)}</b>'s ${describe} in <b>${this.escapeHtml(row.name)}</b> for ${this.escapeHtml(quarter.name || 'the current quarter')}${hasOverride ? ' — this overrides the calculated grade' : ''}.`,
         async () => {
-          if (component === 'final') {
-            const { error } = await sb.rpc('set_class_grade_override', {
-              p_enrollment_id: enrollment.id, p_quarter_id: quarter.id,
-              p_class_grade: value, p_override: true
-            });
-            if (error) throw error;
-          } else if (component === 'academic') {
-            const { error } = await sb.rpc('set_academic_grade_override', {
-              p_enrollment_id: enrollment.id, p_quarter_id: quarter.id,
-              p_academic_grade: value, p_override: true
-            });
-            if (error) throw error;
-          } else {
-            const { error } = await sb.rpc('upsert_quarter_grade', {
-              p_enrollment_id: enrollment.id, p_quarter_id: quarter.id,
-              p_participation_grade: value, p_teacher_notes: null
-            });
-            if (error) throw error;
-            if (!prevSnap?.class_grade_override) {
-              await sb.rpc('calculate_quarter_grades', { p_enrollment_id: enrollment.id, p_quarter_id: quarter.id });
+          for (const p of finalPairs) {
+            if (p.component === 'final') {
+              const { error } = await sb.rpc('set_class_grade_override', {
+                p_enrollment_id: enrollment.id, p_quarter_id: quarter.id,
+                p_class_grade: p.value, p_override: true
+              });
+              if (error) throw error;
+            } else if (p.component === 'academic') {
+              const { error } = await sb.rpc('set_academic_grade_override', {
+                p_enrollment_id: enrollment.id, p_quarter_id: quarter.id,
+                p_academic_grade: p.value, p_override: true
+              });
+              if (error) throw error;
+            } else {
+              const { error } = await sb.rpc('upsert_quarter_grade', {
+                p_enrollment_id: enrollment.id, p_quarter_id: quarter.id,
+                p_participation_grade: p.value, p_teacher_notes: null
+              });
+              if (error) throw error;
             }
           }
-          this._pushUndo(`setting ${student.full_name}'s ${compLabel} in ${row.name} to ${value}`, async () => {
+          // Refresh the computed final unless it was explicitly overridden
+          if (!finalPairs.some(p => p.component === 'final') && !prevSnap?.class_grade_override) {
+            await sb.rpc('calculate_quarter_grades', { p_enrollment_id: enrollment.id, p_quarter_id: quarter.id });
+          }
+          const descPlain = finalPairs.map(p => `${compLabel(p.component)} ${p.value}`).join(', ');
+          this._pushUndo(`setting ${student.full_name}'s ${descPlain} in ${row.name}`, async () => {
             if (prevSnap) {
               const { error: e } = await sb.from('quarter_grade_snapshots').update({
                 academic_grade: prevSnap.academic_grade,
@@ -44066,9 +44215,10 @@
               await sb.rpc('calculate_quarter_grades', { p_enrollment_id: enrollment.id, p_quarter_id: quarter.id });
             }
           });
+          const summary = finalPairs.map(p => `${compLabel(p.component)} ${p.value} (${this._pctToLetter(p.value)})`).join(', ');
           this._naturalSuccess([
-            `${student.full_name}'s ${compLabel} in ${row.name} is now ${value} (${letter}).`,
-            `Recorded — ${compLabel} ${value} (${letter}) for ${student.full_name} in ${row.name}.`
+            `${student.full_name} in ${row.name}: ${summary}. Done.`,
+            `Recorded for ${student.full_name} in ${row.name} — ${summary}.`
           ]);
         }
       );
@@ -44076,7 +44226,16 @@
 
     async terminalShowGrades(entities) {
       const student = entities.student?.student || null;
-      const row = this._rivenResolveClassRow(entities.classMatch);
+      let row = null;
+      if (entities.classMatch) {
+        const res = await this._rivenRequireClass(entities, { studentId: student?.id || null });
+        if (res.asked) return;
+        row = res.row;
+        if (student && row && !res.enrollment) {
+          this._showRivenMessage(`${this.escapeHtml(student.full_name)} isn't enrolled in ${this.escapeHtml(row.name)}, so there are no grades there. Say "add ${this.escapeHtml(student.full_name.split(' ')[0])} to ${this.escapeHtml(row.name)}" if you want to enroll them.`, true);
+          return;
+        }
+      }
       const sb = this.auth.supabase;
       const quarter = await this._rivenCurrentQuarter();
       if (!quarter) { this.terminalPrintError('No active quarter is configured.'); return; }
@@ -44131,18 +44290,121 @@
     }
 
     async terminalShowRoster(entities) {
-      const row = this._rivenResolveClassRow(entities.classMatch);
+      // "who is in jordan's math class" — the student narrows which same-named
+      // class we mean; otherwise ambiguity asks via the class picker
+      const res = await this._rivenRequireClass(entities, { studentId: entities.student?.student?.id || null });
+      if (res.asked) return;
+      const row = res.row;
       if (!row) { this.terminalPrintError('Which class?'); return; }
       const { data: enr, error } = await this.auth.supabase
         .from('class_enrollments').select('student_id').eq('class_id', row.id).eq('status', 'active');
       if (error) { this.terminalPrintError('Could not read the roster: ' + error.message); return; }
       const names = {};
       (this._terminalAllStudents || []).forEach(s => { names[s.id] = s.full_name; });
-      const list = (enr || []).map(e => names[e.student_id] || 'Unknown').sort();
+      const ids = (enr || []).map(e => e.student_id);
+      const list = ids.map(id => names[id] || 'Unknown').sort();
       if (!list.length) { this._showRivenMessage(`${this.escapeHtml(row.name)} has no active students.`, true); return; }
+      // Remember this group so "give each of them 2 rtc" / "how much do they
+      // all have" works as a follow-up
+      this._nlpContext = this._nlpContext || {};
+      this._nlpContext.lastGroup = { label: row.name, classId: row.id, studentIds: ids, timestamp: Date.now() };
+      const teach = row.teacher_name ? ` <span style="font-size: 12px; color: var(--muted);">· ${this.escapeHtml(row.teacher_name)}</span>` : '';
       this._showRivenMessage(
-        `<div style="font-weight: 600; margin-bottom: 6px;">👥 ${this.escapeHtml(row.name)} — ${list.length} student${list.length === 1 ? '' : 's'}</div>` +
+        `<div style="font-weight: 600; margin-bottom: 6px;">👥 ${this.escapeHtml(row.name)}${teach} — ${list.length} student${list.length === 1 ? '' : 's'}</div>` +
         list.map(n => `<div style="padding: 3px 8px;">• ${this.escapeHtml(n)}</div>`).join(''), true);
+    }
+
+    // Resolve "everyone / each of them": a class mentioned now, or the group
+    // from the last roster/group answer
+    async _rivenResolveGroup(entities) {
+      if (entities.classMatch) {
+        const res = await this._rivenRequireClass(entities);
+        if (res.asked) return { asked: true };
+        if (res.row) {
+          const { data: enr, error } = await this.auth.supabase
+            .from('class_enrollments').select('student_id').eq('class_id', res.row.id).eq('status', 'active');
+          if (error) { this.terminalPrintError('Could not read the roster: ' + error.message); return { asked: true }; }
+          const ids = (enr || []).map(e => e.student_id);
+          this._nlpContext = this._nlpContext || {};
+          this._nlpContext.lastGroup = { label: res.row.name, classId: res.row.id, studentIds: ids, timestamp: Date.now() };
+          return { label: res.row.name, studentIds: ids };
+        }
+      }
+      const grp = this._nlpContext?.lastGroup;
+      if (grp && grp.studentIds?.length) return { label: grp.label, studentIds: grp.studentIds };
+      return { label: null, studentIds: [] };
+    }
+
+    async terminalGroupBalances(entities) {
+      const grp = await this._rivenResolveGroup(entities);
+      if (grp.asked) return;
+      if (!grp.studentIds.length) {
+        this.terminalPrintError('Which group? Mention a class, like "how much rtc does everyone in Chess have?"');
+        return;
+      }
+      const { data, error } = await this.auth.supabase
+        .from('user_profiles').select('id, first_name, last_name, rtc_balance').in('id', grp.studentIds);
+      if (error) { this.terminalPrintError('Could not read balances: ' + error.message); return; }
+      const rows = (data || []).map(p => ({ name: `${p.first_name || ''} ${p.last_name || ''}`.trim(), bal: p.rtc_balance || 0 }))
+        .sort((a, b) => b.bal - a.bal);
+      const total = rows.reduce((s, r) => s + r.bal, 0);
+      const max = Math.max(...rows.map(r => r.bal), 1);
+      let html = `<div style="font-weight: 600; margin-bottom: 8px;">💰 ${grp.label ? this.escapeHtml(grp.label) + ' — ' : ''}${rows.length} students · ${total} RTC total</div>`;
+      rows.forEach(r => {
+        html += `<div style="display: flex; align-items: center; gap: 8px; padding: 3px 8px;">
+          <span style="flex: 0 0 170px;">${this.escapeHtml(r.name)}</span>
+          <span style="color: #f39c12; font-weight: 600; flex: 0 0 70px;">${r.bal} RTC</span>
+          <span style="flex: 1;"><span style="display: block; background: rgba(243,156,18,0.25); border-radius: 3px; height: 8px; width: ${Math.round((r.bal / max) * 100)}%; min-width: 3px;"></span></span>
+        </div>`;
+      });
+      this._showRivenMessage(html, true);
+      if (this._nlpContext?.lastGroup) this._nlpContext.lastGroup.timestamp = Date.now();
+    }
+
+    async terminalGroupAddRTC(entities) {
+      const grp = await this._rivenResolveGroup(entities);
+      if (grp.asked) return;
+      if (!grp.studentIds.length) {
+        this.terminalPrintError('Which group? Mention a class, like "give everyone in Chess 2 rtc".');
+        return;
+      }
+      const lower = entities.normalized || '';
+      const negative = /\b(remove|subtract|deduct|take|minus)\b/.test(lower) || /(^|\s)-\d/.test(lower);
+      const amount = (negative ? -1 : 1) * Math.abs(entities.amount || 0);
+      if (!amount) { this.terminalPrintError('How much RTC for each of them?'); return; }
+      const reason = entities.reason || `Group ${amount > 0 ? 'award' : 'deduction'}${grp.label ? ' — ' + grp.label : ''}`;
+      const n = grp.studentIds.length;
+      const names = {};
+      (this._terminalAllStudents || []).forEach(s => { names[s.id] = s.full_name; });
+      this._requestConfirmation(
+        `${amount > 0 ? 'Give' : 'Take'} <b>${Math.abs(amount)} RTC</b> ${amount > 0 ? 'to' : 'from'} <b>each of the ${n} students</b>${grp.label ? ' in <b>' + this.escapeHtml(grp.label) + '</b>' : ''} (${Math.abs(amount) * n} RTC total)?`,
+        async () => {
+          const sb = this.auth.supabase;
+          const done = [];
+          const failed = [];
+          for (const sid of grp.studentIds) {
+            const { error } = await sb.rpc('process_rtc_transaction', {
+              p_user_id: sid, p_amount: amount, p_transaction_type: amount > 0 ? 'earn_manual' : 'admin_adjustment',
+              p_description: reason, p_reference_id: null, p_reference_type: null
+            });
+            if (error) failed.push(names[sid] || sid); else done.push(sid);
+          }
+          if (done.length) {
+            this._pushUndo(`${amount > 0 ? '+' : ''}${amount} RTC for ${done.length} students${grp.label ? ' in ' + grp.label : ''}`, async () => {
+              for (const sid of done) {
+                await sb.rpc('process_rtc_transaction', {
+                  p_user_id: sid, p_amount: -amount, p_transaction_type: 'admin_adjustment',
+                  p_description: `Undo group ${amount > 0 ? 'award' : 'deduction'}`, p_reference_id: null, p_reference_type: 'undo'
+                });
+              }
+            });
+          }
+          this._naturalSuccess([
+            `Done — ${amount > 0 ? 'gave' : 'took'} ${Math.abs(amount)} RTC ${amount > 0 ? 'to' : 'from'} ${done.length} student${done.length === 1 ? '' : 's'}${grp.label ? ' in ' + grp.label : ''}.${failed.length ? ' ⚠️ Failed for: ' + failed.join(', ') : ''}`,
+            `${done.length} student${done.length === 1 ? '' : 's'} ${amount > 0 ? 'received' : 'lost'} ${Math.abs(amount)} RTC each.${failed.length ? ' ⚠️ Failed for: ' + failed.join(', ') : ''}`
+          ]);
+        }
+      );
     }
 
     async terminalUpdateContact(entities) {
@@ -44219,52 +44481,167 @@
     }
 
     _rivenMatchClass(text) {
-      // Match a class by name words appearing in the text. Prefers the
-      // longest (most specific) name; falls back to subject-word matching
-      // ("math class" -> a class whose subject is Mathematics).
+      // Match class(es) mentioned in the text. Resolution order:
+      //  pinned (user clicked the class picker) → name-word candidates →
+      //  qualifier filters ("with <teacher>", level words, "my") →
+      //  single result, or {ambiguous, candidates} for the executors to
+      //  disambiguate (via student enrollment or the class picker dialog).
       const rows = this._terminalAllClasses && this._terminalAllClasses.length
         ? this._terminalAllClasses
         : Object.entries(this._notesPeople?.classes || {}).map(([id, name]) => ({ id, name }));
+      if (this._terminalPinnedClass) {
+        const p = rows.find(r => r.id === this._terminalPinnedClass);
+        if (p) return { id: p.id, name: p.name, row: p, consumed: (p.name || '').toLowerCase().split(/\s+/) };
+      }
       const t = text.toLowerCase();
-      // When several classes tie (e.g. multiple classes literally named
-      // "Math"), prefer one the current user can manage.
-      const pick = (cands) => {
-        if (!cands.length) return null;
-        cands.sort((x, y) =>
-          (this._rivenCanManageClass(y.row) ? 1 : 0) - (this._rivenCanManageClass(x.row) ? 1 : 0)
-          || (y.name || '').length - (x.name || '').length);
-        const c = cands[0];
-        return { id: c.id, name: c.name, row: c.row };
-      };
-      // Pass 1: ALL significant name words present in the text
-      const allWordHits = rows.filter(row => {
+      const esc = (w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const hasWord = (w) => new RegExp('\\b' + esc(w) + '\\b').test(t);
+
+      // Pass 1: ALL significant name words present; Pass 2: any distinctive
+      // word (>=4 chars). Full matches outrank partial ones.
+      const full = [], partial = [];
+      for (const row of rows) {
         const words = (row.name || '').toLowerCase().split(/\s+/).filter(w => w.length >= 3);
-        return words.length && words.every(w => t.includes(w));
-      }).map(row => ({ id: row.id, name: row.name, row }));
-      let best = pick(allWordHits);
-      if (best) return best;
-      // Pass 2: a single distinctive name word (>=4 chars) appears as a whole
-      // word ("filmmaking" -> "Filmmaking - Freshman"); only when unambiguous
-      // among class NAMES (same-named duplicates resolved by pick()).
-      const anyWordHits = rows.filter(row => {
-        const words = (row.name || '').toLowerCase().split(/\s+/).filter(w => w.length >= 4);
-        return words.some(w => new RegExp('\\b' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b').test(t));
-      }).map(row => ({ id: row.id, name: row.name, row }));
-      const distinctNames = [...new Set(anyWordHits.map(h => (h.name || '').toLowerCase()))];
-      if (anyWordHits.length && distinctNames.length === 1) {
-        return pick(anyWordHits);
+        if (!words.length) continue;
+        if (words.every(w => t.includes(w))) full.push(row);
+        else if (words.some(w => w.length >= 4 && hasWord(w))) partial.push(row);
       }
-      // Subject fallback: a text word of >=4 chars that prefixes the subject
-      // ("math" -> Mathematics), but only when exactly one class qualifies
-      const textTokens = t.split(/\s+/).filter(w => w.length >= 4);
-      const subjHits = rows.filter(r => {
-        const subj = (r.subject || '').toLowerCase();
-        return subj && textTokens.some(tok => subj.startsWith(tok));
+      let candidates = full.length ? full : partial;
+      let consumed = [];
+
+      if (!candidates.length) {
+        // Subject fallback: a text word >=4 chars prefixing the subject
+        // ("math" -> Mathematics), only when exactly one class qualifies
+        const textTokens = t.split(/\s+/).filter(w => w.length >= 4);
+        const subjHits = rows.filter(r => {
+          const subj = (r.subject || '').toLowerCase();
+          return subj && textTokens.some(tok => subj.startsWith(tok));
+        });
+        if (subjHits.length === 1) {
+          return { id: subjHits[0].id, name: subjHits[0].name, row: subjHits[0], bySubject: true, consumed: [] };
+        }
+        return null;
+      }
+      candidates.forEach(c => {
+        (c.name || '').toLowerCase().split(/\s+/).forEach(w => { if (w.length >= 3 && t.includes(w)) consumed.push(w); });
       });
-      if (subjHits.length === 1) {
-        return { id: subjHits[0].id, name: subjHits[0].name, row: subjHits[0], bySubject: true };
+
+      // Qualifier: "with <teacher first/last name>"
+      const withM = t.match(/\bwith\s+([a-z]+)\b/);
+      if (withM && candidates.length > 1) {
+        const narrowed = candidates.filter(c =>
+          (c.teacher_name || '').toLowerCase().split(/\s+/).includes(withM[1]) ||
+          (c.secondary_teacher_name || '').toLowerCase().split(/\s+/).includes(withM[1]));
+        if (narrowed.length) { candidates = narrowed; consumed.push('with', withM[1]); }
       }
-      return null;
+      // Qualifier: level words present in class names (ms/hs/es, middle/high/elementary)
+      const levelM = t.match(/\b(ms|hs|es|middle|high|elementary)\b/);
+      if (levelM && candidates.length > 1) {
+        const lvl = { middle: 'ms', high: 'hs', elementary: 'es' }[levelM[1]] || levelM[1];
+        const narrowed = candidates.filter(c => new RegExp('\\b' + lvl + '\\b', 'i').test(c.name || ''));
+        if (narrowed.length) { candidates = narrowed; consumed.push(levelM[1]); }
+      }
+      // Qualifier: "my" — classes the user actually owns/teaches
+      if (/\bmy\b/.test(t) && candidates.length > 1) {
+        const me = this.userInfo?.user?.id;
+        const narrowed = candidates.filter(c => c.teacher_id === me || c.secondary_teacher_id === me);
+        if (narrowed.length) candidates = narrowed;
+      }
+
+      consumed = [...new Set(consumed)];
+      // Dedupe by id
+      candidates = [...new Map(candidates.map(c => [c.id, c])).values()];
+      if (candidates.length === 1) {
+        const c = candidates[0];
+        return { id: c.id, name: c.name, row: c, consumed };
+      }
+      return { ambiguous: true, candidates, name: candidates[0].name, consumed };
+    }
+
+    _showClassPicker(rowsIn, originalInput) {
+      const rows = [...new Map(rowsIn.map(c => [c.id, c])).values()];
+      this.terminalPrint(`I found ${rows.length} classes that could match:`, '#ffd36a');
+      const output = document.getElementById('terminal-output');
+      let html = '<div style="margin-top: 8px; margin-left: 16px;">';
+      rows.slice(0, 8).forEach((c, idx) => {
+        const teach = c.teacher_name ? ` · ${this.escapeHtml(c.teacher_name)}` : '';
+        const subj = c.subject ? ` <span style="font-size: 11px; color: var(--muted);">(${this.escapeHtml(c.subject)})</span>` : '';
+        html += `
+          <div onclick="app._resolveClassAmbiguity('${c.id}', '${this.escapeHtml(originalInput).replace(/'/g, '&#39;')}')"
+               style="padding: 8px 12px; margin: 4px 0; background: rgba(106, 169, 255, 0.1); border-left: 3px solid #6aa9ff; border-radius: 4px; cursor: pointer;"
+               onmouseover="this.style.background='rgba(106, 169, 255, 0.2)'"
+               onmouseout="this.style.background='rgba(106, 169, 255, 0.1)'">
+            <div style="font-weight: bold;">${idx + 1}. ${this.escapeHtml(c.name)}${teach}${subj}</div>
+          </div>`;
+      });
+      html += '</div>';
+      if (output) { output.innerHTML += html; output.scrollTop = output.scrollHeight; }
+    }
+
+    async _resolveClassAmbiguity(classId, originalInput) {
+      const row = (this._terminalAllClasses || []).find(c => c.id === classId);
+      this.terminalPrint(`Selected: ${row ? row.name + (row.teacher_name ? ' · ' + row.teacher_name : '') : 'class'}`, '#8bffb0');
+      this._terminalPinnedClass = classId;
+      await this.executeTerminalCommand(originalInput);
+      this._terminalPinnedClass = null;
+    }
+
+    // One-stop class resolution for executors. Returns:
+    //  { row, enrollment } when resolved (enrollment only when studentId given),
+    //  { asked: true } when a picker/dialog was shown (caller just returns),
+    //  { row: null } when no class was mentioned at all.
+    // Resolution: ambiguous candidates are narrowed by the student's
+    // enrollment when a student is in play; remaining ambiguity asks the user.
+    // Successful resolutions are remembered as lastClass for follow-ups.
+    async _rivenRequireClass(entities, { studentId = null, preferActive = true } = {}) {
+      const cm = entities.classMatch;
+      const originalInput = entities.original || '';
+      if (!cm) return { row: null, enrollment: null, asked: false };
+      let candidates = cm.ambiguous ? [...cm.candidates] : [this._rivenResolveClassRow(cm)].filter(Boolean);
+      // include same-named siblings so "Math" reaches all four Math classes
+      const names = new Set(candidates.map(c => (c.name || '').toLowerCase()));
+      (this._terminalAllClasses || []).forEach(c => {
+        if (names.has((c.name || '').toLowerCase()) && !candidates.find(x => x.id === c.id)) candidates.push(c);
+      });
+
+      if (studentId) {
+        const found = [];
+        for (const c of candidates) {
+          const e = await this._rivenFindEnrollment(c.id, studentId);
+          if (e) found.push({ row: c, enrollment: e });
+        }
+        const active = found.filter(f => f.enrollment.status === 'active');
+        const pool = (preferActive && active.length) ? active : found;
+        if (pool.length === 1) {
+          this._rememberClass(pool[0].row);
+          return { ...pool[0], asked: false };
+        }
+        if (pool.length > 1) {
+          this._showClassPicker(pool.map(f => f.row), originalInput);
+          return { asked: true };
+        }
+        // student is in none of them: a single candidate can still be the
+        // target (e.g. enrolling them); multiple asks the user
+        if (candidates.length === 1) {
+          this._rememberClass(candidates[0]);
+          return { row: candidates[0], enrollment: null, asked: false };
+        }
+        this._showClassPicker(candidates, originalInput);
+        return { asked: true };
+      }
+
+      if (candidates.length === 1) {
+        this._rememberClass(candidates[0]);
+        return { row: candidates[0], enrollment: null, asked: false };
+      }
+      this._showClassPicker(candidates, originalInput);
+      return { asked: true };
+    }
+
+    _rememberClass(row) {
+      if (!row) return;
+      this._nlpContext = this._nlpContext || {};
+      this._nlpContext.lastClass = { id: row.id, name: row.name, timestamp: Date.now() };
     }
 
     _rivenMatchTeacher(text) {
