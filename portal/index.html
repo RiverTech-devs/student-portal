@@ -42080,7 +42080,11 @@
       if (!intent) intent = this._matchIntent(resolvedInput, entities);
 
       if (!intent || intent.confidence < 0.5) {
-        this._handleUnknown(resolvedInput, entities);
+        // Idea #2: semantic fallback — when the regexes can't read a sentence,
+        // a client-side sentence embedding picks the closest intent instead
+        // of giving up. Entities/permissions/undo still run the normal path.
+        const handled = await this._semanticFallback(resolvedInput, entities);
+        if (!handled) this._handleUnknown(resolvedInput, entities);
         return;
       }
 
@@ -42689,6 +42693,7 @@
         // UNDO_RTC (uses context, no student/amount needed)
         {
           intent: 'UNDO_RTC',
+          w: 6,
           patterns: [
             /\bundo\b/,
             /\brevert\b/,
@@ -42702,6 +42707,7 @@
         // actionable command (sensitive ones re-confirm on the way through)
         {
           intent: 'REPEAT',
+          w: 6,
           patterns: [
             /^(do (it|that|this) again|do it once more|again|repeat( that| it)?|same (again|thing)|one more( time)?)[\s!.]*$/
           ]
@@ -42710,6 +42716,7 @@
         // actual request is peeled off earlier in the pipeline and re-run.
         {
           intent: 'CORRECTION',
+          w: 6,
           patterns: [
             /^(no+|nope|wrong|wait)[\s!.,]*$/,
             /^no+[,\s]+(that('s| is)? )?(not|wrong)/,
@@ -42723,6 +42730,7 @@
         // before "note" so "add 5 rtc to eli, note: late" still reads as RTC.
         {
           intent: 'ADD_NOTE',
+          w: 6,
           patterns: [
             /\b(add|write|leave|make|create|log|record|take|save)\s+(\w+\s+)?(a\s+|an\s+)?(quick\s+|new\s+|private\s+|staff\s+)?note\b/,
             /^note\b/,
@@ -42736,12 +42744,14 @@
         {
           intent: 'CAPABILITY',
           capability: 'bank',
+          w: 6,
           patterns: [/\bbank(ed|ing)?\b/]
         },
         // MARK_ATTENDANCE_GROUP — "mark everyone in chess present today",
         // "take attendance for chess" (before the per-student version)
         {
           intent: 'MARK_ATTENDANCE_GROUP',
+          w: 5, notIfNoteCommand: true,
           patterns: [
             /\bmark\b.*\b(everyone|everybody|all|the (whole )?class)\b.*\b(present|absent|late|tardy|here)\b/,
             /\b(everyone|everybody|the (whole )?class)\b.*\b(is|was|are|were)\s*(present|absent|here)\b/,
@@ -42752,6 +42762,7 @@
         // MARK_ATTENDANCE — real write: "mark jordan present in math today"
         {
           intent: 'MARK_ATTENDANCE',
+          w: 5, notIfNoteCommand: true,
           patterns: [
             /\bmark\b.*\b(present|absent|late|tardy|here)\b/,
             /\b(mark|record|log|enter|change|fix|update|set)\b.*\battendance\b/,
@@ -42767,6 +42778,7 @@
         {
           intent: 'CAPABILITY',
           capability: 'tests',
+          w: 5,
           patterns: [
             /\b(test|quiz|exam)s?\b.*\b(score|scores|result|results|grade|grades|got|get|did|do)\b/,
             /\b(score|scores|result|results|got|get|did)\b.*\b(test|quiz|exam)s?\b/
@@ -42775,6 +42787,7 @@
         // UPDATE_CONTACT — "change jordan's phone to 555-1234"
         {
           intent: 'UPDATE_CONTACT',
+          w: 5, notIfNoteCommand: true,
           patterns: [
             /\b(change|update|set|edit|fix)\b.*\b(phone|email|address|contact|dob|date of birth|birthday)\b/
           ],
@@ -42785,6 +42798,7 @@
         // guard already keeps grade phrasings away from ADD/SUBTRACT_RTC.
         {
           intent: 'SET_GRADE',
+          w: 5, notIfNoteCommand: true,
           patterns: [
             /\b(set|change|give|gave|update|make|put|enter|record|override|add)\b.*\bgrade\b/,
             /\bgrade\b.*\bto\b\s*\d/,
@@ -42800,6 +42814,7 @@
         // CREATE_CLASS — "create a class called Robotics"
         {
           intent: 'CREATE_CLASS',
+          w: 5, notIfNoteCommand: true,
           patterns: [
             /\b(create|make|start|set up|open)\b.*\b(new\s+)?class\b/,
             /\bnew class\b/
@@ -42809,6 +42824,7 @@
         // (between classes; before UNENROLL/ENROLL which would half-do it)
         {
           intent: 'MOVE_STUDENT',
+          w: 5, notIfNoteCommand: true,
           patterns: [
             /\b(move|switch|transfer)\b.+\bfrom\b.+\bto\b/
           ],
@@ -42820,6 +42836,7 @@
         // and DELETE_CLASS; currency phrasing falls through to RTC)
         {
           intent: 'UNENROLL_STUDENT',
+          w: 4, notIfNoteCommand: true, notIfFromTo: true,
           patterns: [
             /\b(remove|drop|kick|pull|unenroll|unenrol|withdraw|take)\b.+\bfrom\b/
           ],
@@ -42832,6 +42849,7 @@
         // through to ADD_RTC)
         {
           intent: 'ENROLL_STUDENT',
+          w: 4, notIfNoteCommand: true, notIfFromTo: true,
           patterns: [
             /\b(add|put|enroll|enrol|register|sign(ed)? up|move)\b.+\b(to|in|into)\b/
           ],
@@ -42845,6 +42863,7 @@
         // "remove jordan from math class" stays an unenrollment)
         {
           intent: 'DELETE_CLASS',
+          w: 4, notIfNoteCommand: true,
           patterns: [
             /\b(delete|archive|close|deactivate|shut down|remove)\b.*\bclass\b/
           ],
@@ -42854,6 +42873,7 @@
         // SUBTRACT_RTC ("\d+ from X") and ADD_RTC.
         {
           intent: 'TRANSFER_RTC',
+          w: 4, notIfNoteCommand: true, notIfBank: true,
           patterns: [
             /\d+\s+(rtc\s+)?from\b.+\bto\b/,
             /\b(transfer|move|send)\b.*\d+/,
@@ -42866,6 +42886,7 @@
         // of them" (needs a class mention or a fresh group from a roster)
         {
           intent: 'GROUP_RTC',
+          w: 5, notIfNoteCommand: true, notIfBank: true,
           patterns: [
             /\b(add|remove|subtract|deduct|take)\b.*\b(everyone|everybody|each|all (of )?(them|those|these)|them all|(those|these) (students|kids)|the (whole )?class)\b/,
             /\b(everyone|everybody|each( of them)?|all (of )?(them|those|these))\b.*\d+\s*(rtc)?\b/,
@@ -42882,6 +42903,7 @@
         // "how much gold do each of them have?"
         {
           intent: 'GROUP_BALANCES',
+          w: 4,
           patterns: [
             /\b(rtc|balance|balances)\b.*\b(everyone|everybody|each( of them)?|all (of )?(them|those|these)|them all|(those|these) (students|kids))\b/,
             /\b(everyone|everybody|each( of them)?|all (of )?(them|those|these)|them all|(those|these) (students|kids))\b.*\b(rtc|balance|balances|have|hold)\b/
@@ -42892,6 +42914,7 @@
         // VIEW_STUDENT catch-alls below would shadow these)
         {
           intent: 'SUBTRACT_RTC',
+          w: 3, notIfNoteCommand: true, notIfBank: true,
           patterns: [
             /(remove|subtract|take|deduct) .* \d+/,
             /(remove|subtract|take|deduct) \d+/,
@@ -42905,6 +42928,7 @@
         // ADD_RTC
         {
           intent: 'ADD_RTC',
+          w: 3, notIfNoteCommand: true, notIfBank: true,
           patterns: [
             /(give|award|add) .* \d+/,
             /(^|\s)\+\d+/,                 // "+2 to charlotte"
@@ -42917,6 +42941,7 @@
         // COMPARE_STUDENTS — "compare evelyn and charlotte", "who has more rtc"
         {
           intent: 'COMPARE_STUDENTS',
+          w: 4,
           patterns: [
             /\bcompare\b/,
             /who has (more|less)\b/,
@@ -42929,6 +42954,7 @@
         // attendance" searches notes)
         {
           intent: 'VIEW_NOTES',
+          w: 6,
           patterns: [
             /\bnotes\b/,
             /\b(show|view|see|read|find|search|list|pull up|bring up|any|what|got|have)\b.*\bnote\b/,
@@ -42938,6 +42964,7 @@
         // CLASS_VS — "average grade in chess vs english"
         {
           intent: 'CLASS_VS',
+          w: 5,
           patterns: [
             /\b(vs\.?|versus)\b/,
             /\bcompare\b.*\bclass(es)?\b/
@@ -42948,6 +42975,7 @@
         // math class" (read; before VIEW_STUDENT)
         {
           intent: 'VIEW_GRADES',
+          w: 5,
           patterns: [
             /\bgrades?\b/,
             /\breport card\b/,
@@ -42958,6 +42986,7 @@
         // BRIEFING — "anything I should know?", "catch me up", "what's new"
         {
           intent: 'BRIEFING',
+          w: 5,
           patterns: [
             /\bbriefing\b/,
             /\bbrief me\b/,
@@ -42971,6 +43000,7 @@
         // MARK_READ — "mark them as read", "mark notifications read"
         {
           intent: 'MARK_READ',
+          w: 5,
           patterns: [
             /\bmark\b.*\b(notifications?|messages?|them|those|all|everything)\b.*\bread\b/,
             /\bclear\b.*\bnotifications?\b/
@@ -42979,6 +43009,7 @@
         // ACTIVITY_LOG — "what did you just do?", "what have you changed?"
         {
           intent: 'ACTIVITY_LOG',
+          w: 5,
           patterns: [
             /what (did|have) (you|u)( just)?\b.*\b(do|done|change|changed)\b/,
             /\bwhat changed\b/,
@@ -42990,6 +43021,7 @@
         // ADD_NOTE; targets the most recent note Riven created)
         {
           intent: 'DELETE_NOTE',
+          w: 7,
           patterns: [
             /\b(remove|delete|scrap|trash|get rid of)\b.*\bnote\b/
           ]
@@ -42998,6 +43030,7 @@
         // class", "which math class is that / is jordan in?"
         {
           intent: 'CLASS_INFO',
+          w: 4,
           patterns: [
             /\bwho (teaches|runs|leads)\b/,
             /\b(tell me about|info (on|about)|details (on|about|of))\b/,
@@ -43012,6 +43045,7 @@
         // VIEW_ROSTER — "who's in robotics?"
         {
           intent: 'VIEW_ROSTER',
+          w: 4,
           patterns: [
             /\broster\b/,
             /\bwho('s| is| are| all)?\s+(all\s+)?(in|taking|enrolled)\b/,
@@ -43022,6 +43056,7 @@
         // VIEW_CONTACT — "what's jordan's phone number"
         {
           intent: 'VIEW_CONTACT',
+          w: 5,
           patterns: [
             /\b(phone|address|contact info|contact details|date of birth|birthday|emergency contact)\b/
           ],
@@ -43031,6 +43066,7 @@
         // bad attendance"); must precede VIEW_ATTENDANCE which is per-student
         {
           intent: 'ATTENDANCE_ISSUES',
+          w: 5,
           patterns: [
             /\b(spotty|bad|poor|low|worst|terrible|rough|concerning)\b.*\b(attendance|absences)\b/,
             /\battendance\b.*\b(issues?|problems?|concerns?)\b/,
@@ -43041,6 +43077,7 @@
         // VIEW_ATTENDANCE (before VIEW_STUDENT so "show eli's attendance" works)
         {
           intent: 'VIEW_ATTENDANCE',
+          w: 4,
           patterns: [
             /attendance/,
             /\b(absent|absence|absences)\b/,
@@ -43054,6 +43091,7 @@
         // reconstructed from the transaction ledger). Needs a past timeframe.
         {
           intent: 'BALANCE_AT',
+          w: 4,
           patterns: [
             /\b(did|had)\b.*\brtc\b/,
             /\brtc\b.*\b(did|had|have)\b/
@@ -43064,6 +43102,7 @@
         // VIEW_ENROLLMENTS — "what classes is jordan in"
         {
           intent: 'VIEW_ENROLLMENTS',
+          w: 4,
           patterns: [
             /\bclass(es)?\b.*\b(is|in|taking|enrolled|signed)\b/,
             /\b(what|which|show|list)\b.*\bclass(es)?\b/
@@ -43073,6 +43112,7 @@
         // STUDENT_TENURE — "how long has he been at river tech"
         {
           intent: 'STUDENT_TENURE',
+          w: 5,
           patterns: [
             /how long\b.*\b(been|here|with us|at|enrolled)\b/,
             /when did\b.*\b(join|start|enroll|sign up)\b/
@@ -43082,6 +43122,7 @@
         // VIEW_HISTORY (before VIEW_STUDENT so "show john's history" works)
         {
           intent: 'VIEW_HISTORY',
+          w: 4,
           patterns: [
             /history/,
             /transactions/,
@@ -43092,13 +43133,14 @@
         // VIEW_STUDENT
         {
           intent: 'VIEW_STUDENT',
+          w: 2,
           patterns: [
-            /how (much|many) rtc/,
+            { re: /how (much|many) rtc/, w: 4 },
             /\b(show|view|check|find|look|read|tell|info|lookup|pull up|bring up)\b/,
             /who (is|has)/,
-            /what.*rtc/,
-            /.* balance/,
-            /.* rtc\b/
+            { re: /what.*rtc/, w: 3 },
+            { re: /.* balance/, w: 3 },
+            { re: /.* rtc\b/, w: 3 }
           ],
           requiresStudent: true
         },
@@ -43106,6 +43148,7 @@
         // VIEW_ENROLLMENTS so a named student takes precedence)
         {
           intent: 'LIST_CLASSES',
+          w: 5,
           patterns: [
             /\b(what|which|list|show|how many|all|any)\b.*\bclass(es)?\b/,
             /\bclass(es)?\b.*\b(do we have|are there|in the system|offered|available)\b/
@@ -43114,6 +43157,7 @@
         // LIST_STUDENTS
         {
           intent: 'LIST_STUDENTS',
+          w: 4,
           patterns: [
             /list (all|students|everyone)/,
             /show (all|everyone|students)/,
@@ -43126,6 +43170,7 @@
         // VIEW_STATS
         {
           intent: 'VIEW_STATS',
+          w: 4,
           patterns: [
             /\bstats?\b/,
             /statistics/,
@@ -43136,6 +43181,7 @@
         // VIEW_TOP
         {
           intent: 'VIEW_TOP',
+          w: 4,
           patterns: [
             /\btop\b/,
             /leaderboard/,
@@ -43148,33 +43194,86 @@
       const hasPair = entities.students && entities.students.length >= 2;
       const hasFromTo = entities.studentFrom && entities.studentTo;
 
-      for (const pattern of patterns) {
+      // Position-independent domain rules (formerly encoded as array order):
+      // an explicit note command always wins over other writes; "bank" makes
+      // any RTC phrasing a banking request; "from X to Y" structure belongs
+      // to MOVE_STUDENT, never a bare enroll/unenroll half of it.
+      const isNoteCommand = /(\b(add|write|leave|make|create|log|record|take|save)\s+(\w+\s+)?(a\s+|an\s+)?(quick\s+|new\s+|private\s+|staff\s+)?note\b|^note\b|\bnote that\b)/.test(normalized);
+      const isBank = /\bbank(ed|ing)?\b/.test(normalized);
+      const isFromTo = /\bfrom\b\s+\S.*\bto\b/.test(normalized);
+      const leadingVerb = /^(was|is|were|did|does|has|have|who|when)\b/.test(normalized);
+
+      // Confidence scoring: every intent whose guards pass and whose required
+      // entities are present BIDS on the sentence. Score = base 10 + pattern
+      // weight w (how topical/specific the matched pattern is) + a bonus per
+      // required entity actually in play. Highest bid wins; exact ties keep
+      // the array order; a near-tie between two different WRITE intents asks
+      // the user instead of guessing.
+      const candidates = [];
+      for (let i = 0; i < patterns.length; i++) {
+        const pattern = patterns[i];
         // Safety: don't allow an info-question to mutate balances
         if (blockMutation && (pattern.intent === 'ADD_RTC' || pattern.intent === 'SUBTRACT_RTC')) continue;
         // "add 5 rtc to jordan in math class" is an award, not an enrollment
         if (pattern.notIfCurrency && hasCurrency) continue;
         if (pattern.notIfInfoNoun && hasInfoNoun) continue;
         // question form ("was jordan late?") must not trigger a write
-        if (pattern.notIfLeadingVerb && /^(was|is|were|did|does|has|have|who|when)\b/.test(normalized)) continue;
-        for (const regex of pattern.patterns) {
-          if (regex.test(normalized)) {
-            // Check if required entities are present
-            if (pattern.requiresStudent && !entities.student) continue;
-            if (pattern.requiresAmount && !entities.amount) continue;
-            if (pattern.requiresFromTo && !hasFromTo) continue;
-            if (pattern.requiresPair && !(hasPair || hasFromTo)) continue;
-            if (pattern.requiresSince && !entities.sinceDate) continue;
-            if (pattern.requiresClass && !entities.classMatch) continue;
-            if (pattern.requiresStudentOrClass && !entities.student && !entities.classMatch) continue;
-            if (pattern.requiresGroupContext && !entities.classMatch && !this._nlpContext?.lastGroup) continue;
+        if (pattern.notIfLeadingVerb && leadingVerb) continue;
+        if (pattern.notIfNoteCommand && isNoteCommand) continue;
+        if (pattern.notIfBank && isBank) continue;
+        if (pattern.notIfFromTo && isFromTo) continue;
+        // Required entities — missing pieces knock the intent out entirely
+        if (pattern.requiresStudent && !entities.student) continue;
+        if (pattern.requiresAmount && !entities.amount) continue;
+        if (pattern.requiresFromTo && !hasFromTo) continue;
+        if (pattern.requiresPair && !(hasPair || hasFromTo)) continue;
+        if (pattern.requiresSince && !entities.sinceDate) continue;
+        if (pattern.requiresClass && !entities.classMatch) continue;
+        if (pattern.requiresStudentOrClass && !entities.student && !entities.classMatch) continue;
+        if (pattern.requiresGroupContext && !entities.classMatch && !this._nlpContext?.lastGroup) continue;
 
-            return {
-              intent: pattern.intent,
-              confidence: 0.9,
-              capability: pattern.capability || null
-            };
+        // The most specific pattern that matches decides the weight
+        let w = 0, hit = false;
+        for (const p of pattern.patterns) {
+          const re = p.re || p;
+          if (re.test(normalized)) {
+            hit = true;
+            w = Math.max(w, (p.w !== undefined ? p.w : (pattern.w !== undefined ? pattern.w : 3)));
           }
         }
+        if (!hit) continue;
+
+        let score = 10 + w;
+        if (pattern.requiresStudent) score += 2;
+        if (pattern.requiresAmount) score += 2;
+        if (pattern.requiresClass) score += 2;
+        if (pattern.requiresFromTo) score += 4;
+        if (pattern.requiresPair) score += 3;
+        if (pattern.requiresSince) score += 2;
+        if (pattern.requiresStudentOrClass) score += 2;
+        if (pattern.requiresGroupContext) score += entities.classMatch ? 3 : 2;
+
+        candidates.push({ intent: pattern.intent, capability: pattern.capability || null, score, order: i });
+      }
+
+      if (candidates.length) {
+        candidates.sort((a, b) => (b.score - a.score) || (a.order - b.order));
+        const top = candidates[0];
+        const second = candidates.find(c => c.intent !== top.intent);
+        const margin = second ? top.score - second.score : Infinity;
+        const writeIntents = ['ADD_RTC', 'SUBTRACT_RTC', 'TRANSFER_RTC', 'GROUP_RTC', 'SET_GRADE',
+          'MARK_ATTENDANCE', 'MARK_ATTENDANCE_GROUP', 'ENROLL_STUDENT', 'UNENROLL_STUDENT',
+          'MOVE_STUDENT', 'CREATE_CLASS', 'DELETE_CLASS', 'UPDATE_CONTACT', 'ADD_NOTE', 'DELETE_NOTE'];
+        if (second && margin < 1.5 && writeIntents.includes(top.intent) && writeIntents.includes(second.intent)) {
+          return { intent: 'CLARIFY_INTENT', confidence: 0.9, options: [top, second] };
+        }
+        return {
+          intent: top.intent,
+          confidence: margin >= 3 ? 0.9 : 0.75,
+          capability: top.capability,
+          score: top.score,
+          margin
+        };
       }
 
       // Targeted fallback: a clear add/subtract ACTION is present (verb or
@@ -43230,6 +43329,10 @@
       const student = entities.student?.student || entities.student;
 
       switch (intent.intent) {
+        case 'CLARIFY_INTENT':
+          this._rivenClarifyIntent(intent.options, entities);
+          break;
+
         case 'VIEW_STUDENT':
           if (student) {
             await this.terminalReadStudent([student.full_name]);
@@ -44027,6 +44130,182 @@
       this._showRivenMessage(`Hmm, I didn't quite get that. A few things you can ask me:<br>` +
         tips.map(t => '• ' + this.escapeHtml(t)).join('<br>') +
         `<br>…or type <b>/help</b> for everything I understand.`, true);
+    }
+
+    // ── Semantic fallback (transformers.js + MiniLM, fully client-side) ────
+    // Runs ONLY when the regex matcher returns nothing. The model (~25MB,
+    // quantized, WASM) downloads once and is cached by the browser. It picks
+    // the INTENT only — entity extraction, permission checks, confirmation
+    // gates, and the undo stack are the same machinery a regex match uses.
+    // Writes chosen this way ALWAYS confirm first, because the intent itself
+    // was a guess. Reads execute with a visible hedge. Below-threshold
+    // similarity falls through to the honest "I didn't get that" reply.
+
+    _semanticExampleBank() {
+      // Free-form phrasings the regexes don't cover. Names don't matter —
+      // the real sentence's entities come from _extractEntities as usual.
+      return {
+        VIEW_STUDENT: [
+          'can you pull up jordan for me',
+          'what is the deal with jordan',
+          'how rich is jordan right now',
+          'how is jordan doing on gold',
+          'where does jordan stand'
+        ],
+        ADD_RTC: [
+          'hook jordan up with some gold',
+          'jordan deserves a little reward',
+          'bump jordan up a few coins',
+          'throw some gold at jordan',
+          'jordan earned himself some rtc today'
+        ],
+        SUBTRACT_RTC: [
+          'dock jordan some gold',
+          'jordan needs to lose a few coins',
+          'penalize jordan some rtc',
+          'fine jordan for messing around'
+        ],
+        VIEW_GRADES: [
+          'how is jordan doing academically',
+          'is jordan passing his classes',
+          'what is jordans academic standing',
+          'how are jordans marks looking',
+          'is jordan keeping his head above water in math'
+        ],
+        VIEW_ATTENDANCE: [
+          'has jordan been showing up lately',
+          'is jordan skipping school',
+          'how often does jordan actually come to class',
+          'has jordan been around this week'
+        ],
+        MARK_ATTENDANCE: [
+          'jordan did not show up today',
+          'jordan walked in halfway through class',
+          'jordan ducked out early today'
+        ],
+        VIEW_NOTES: [
+          'anything written down about jordan',
+          'any flags or comments on jordan',
+          'what have teachers said about jordan'
+        ],
+        ADD_NOTE: [
+          'jot down that jordan helped clean up',
+          'remember that jordan forgot his homework again',
+          'put it on record that jordan was disruptive'
+        ],
+        VIEW_ROSTER: [
+          'who do i have in chess',
+          'give me the chess class lineup',
+          'who am i teaching in math today'
+        ],
+        VIEW_ENROLLMENTS: [
+          'what is jordan signed up for',
+          'show me jordans schedule',
+          'which subjects does jordan take'
+        ],
+        BRIEFING: [
+          'what do i need to deal with today',
+          'give me the morning rundown',
+          'fill me in before class starts',
+          'anything on fire today'
+        ],
+        VIEW_TOP: [
+          'who is winning the gold race',
+          'who has the biggest stash',
+          'who is crushing it this quarter'
+        ],
+        VIEW_STATS: [
+          'give me the big picture numbers',
+          'how is the whole school doing on rtc'
+        ],
+        VIEW_CONTACT: [
+          'how do i reach jordans parents',
+          'who do i call about jordan'
+        ],
+        COMPARE_STUDENTS: [
+          'who is doing better jordan or eli',
+          'put jordan and eli side by side'
+        ]
+      };
+    }
+
+    async _loadEmbedder() {
+      if (this._embedder) return this._embedder;
+      if (this._embedderFailed) return null;
+      if (!this._embedderPromise) {
+        this._embedderPromise = (async () => {
+          const { pipeline } = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.3.1');
+          return pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', { dtype: 'q8' });
+        })().then(p => { this._embedder = p; return p; })
+          .catch(err => { console.warn('Riven embedder unavailable:', err); this._embedderFailed = true; return null; });
+      }
+      return this._embedderPromise;
+    }
+
+    async _embedTexts(embedder, texts) {
+      const out = await embedder(texts, { pooling: 'mean', normalize: true });
+      return out.tolist();
+    }
+
+    async _semanticMatchIntent(text) {
+      const embedder = await this._loadEmbedder();
+      if (!embedder) return null;
+      if (!this._semanticBank) {
+        const bank = this._semanticExampleBank();
+        const labels = [], examples = [];
+        for (const [intent, exs] of Object.entries(bank)) {
+          for (const ex of exs) { labels.push(intent); examples.push(ex); }
+        }
+        const vecs = await this._embedTexts(embedder, examples);
+        this._semanticBank = { labels, examples, vecs };
+      }
+      const [q] = await this._embedTexts(embedder, [text]);
+      let best = { sim: -1, intent: null, example: null };
+      this._semanticBank.vecs.forEach((v, i) => {
+        let dot = 0;
+        for (let d = 0; d < v.length; d++) dot += v[d] * q[d];
+        if (dot > best.sim) best = { sim: dot, intent: this._semanticBank.labels[i], example: this._semanticBank.examples[i] };
+      });
+      return best.sim >= 0.55 ? best : null;
+    }
+
+    async _semanticFallback(resolvedInput, entities) {
+      // Skip for trivial inputs — one word is never worth a 25MB model
+      if (resolvedInput.split(/\s+/).length < 3) return false;
+      try {
+        if (!this._embedder && !this._embedderFailed && !this._semanticNoticeShown) {
+          this._semanticNoticeShown = true;
+          this.terminalPrint('🧠 Let me think about that differently… (first time takes a moment)', '#97a2b0');
+        }
+        const match = await this._semanticMatchIntent(resolvedInput);
+        if (!match) return false;
+        const intent = { intent: match.intent, confidence: 0.65, semantic: true };
+        const writeIntents = ['ADD_RTC', 'SUBTRACT_RTC', 'ADD_NOTE', 'MARK_ATTENDANCE'];
+        const labels = {
+          ADD_RTC: 'award RTC', SUBTRACT_RTC: 'take RTC away', ADD_NOTE: 'save a note',
+          MARK_ATTENDANCE: 'mark attendance'
+        };
+        const finish = async () => {
+          await this._executeIntent(intent, entities);
+          const repeatable = ['ADD_RTC', 'SUBTRACT_RTC', 'ADD_NOTE', 'MARK_ATTENDANCE'];
+          if (repeatable.includes(intent.intent)) this._lastRepeatable = { text: resolvedInput, at: Date.now() };
+          this._updateContext(intent, entities);
+        };
+        if (writeIntents.includes(match.intent)) {
+          // The intent is a guess — never write without an explicit yes
+          this._requestConfirmation(
+            `It sounds like you want me to <b>${labels[match.intent] || match.intent}</b> based on: "${this.escapeHtml(resolvedInput)}"`,
+            finish
+          );
+          return true;
+        }
+        this.terminalPrint(`💭 Reading that as: ${match.intent.replace(/_/g, ' ').toLowerCase()}…`, '#97a2b0');
+        await finish();
+        return true;
+      } catch (err) {
+        console.warn('Semantic fallback failed:', err);
+        return false;
+      }
     }
 
     _isAggregateQuery(normalized) {
@@ -45636,6 +45915,45 @@
         return { id: c.id, name: c.name, row: c, consumed, qualified };
       }
       return { ambiguous: true, candidates, name: candidates[0].name, consumed, qualified };
+    }
+
+    // Near-tie between two write intents: show both readings as clickable
+    // options instead of guessing. Anything typed next is just handled as a
+    // fresh message, so the user can also ignore the buttons and rephrase.
+    _rivenClarifyIntent(options, entities) {
+      const labels = {
+        ADD_RTC: '💰 Award RTC', SUBTRACT_RTC: '💸 Take RTC away', TRANSFER_RTC: '🔁 Transfer RTC between students',
+        GROUP_RTC: '👥 RTC for the whole group', SET_GRADE: '📝 Set a grade', MARK_ATTENDANCE: '📅 Mark attendance',
+        MARK_ATTENDANCE_GROUP: '📅 Mark attendance for the class', ENROLL_STUDENT: '➕ Add to a class',
+        UNENROLL_STUDENT: '➖ Remove from a class', MOVE_STUDENT: '🔀 Move between classes',
+        CREATE_CLASS: '🆕 Create a class', DELETE_CLASS: '🗑️ Archive a class', UPDATE_CONTACT: '📇 Update contact info',
+        ADD_NOTE: '🗒️ Save a note', DELETE_NOTE: '🗑️ Delete a note'
+      };
+      this._intentClarify = { options, entities };
+      this.terminalPrint('🤔 I can read that two ways — which did you mean?', '#ffd36a');
+      const output = document.getElementById('terminal-output');
+      let html = '<div style="margin-top: 8px; margin-left: 16px;">';
+      options.forEach((o, idx) => {
+        html += `
+          <div onclick="app._chooseClarifiedIntent(${idx})"
+               style="padding: 8px 12px; margin: 4px 0; background: rgba(106, 169, 255, 0.1); border-left: 3px solid #6aa9ff; border-radius: 4px; cursor: pointer;"
+               onmouseover="this.style.background='rgba(106, 169, 255, 0.2)'"
+               onmouseout="this.style.background='rgba(106, 169, 255, 0.1)'">
+            <div style="font-weight: bold;">${labels[o.intent] || o.intent}</div>
+          </div>`;
+      });
+      html += '</div>';
+      if (output) { output.innerHTML += html; output.scrollTop = output.scrollHeight; }
+    }
+
+    async _chooseClarifiedIntent(idx) {
+      const pending = this._intentClarify;
+      if (!pending || !pending.options[idx]) return;
+      this._intentClarify = null;
+      const choice = pending.options[idx];
+      const picked = { intent: choice.intent, confidence: 0.95, capability: choice.capability || null };
+      await this._executeIntent(picked, pending.entities);
+      this._updateContext(picked, pending.entities);
     }
 
     _showClassPicker(rowsIn, originalInput) {
