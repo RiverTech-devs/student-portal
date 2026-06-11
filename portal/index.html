@@ -42063,6 +42063,14 @@
       // Execute the matched intent
       await this._executeIntent(intent, entities);
 
+      // Remember the last actionable command so "do it again" can repeat it
+      // (stored with pronouns resolved so the same target is hit)
+      const repeatable = ['ADD_RTC', 'SUBTRACT_RTC', 'TRANSFER_RTC', 'GROUP_RTC', 'MARK_ATTENDANCE',
+        'MARK_ATTENDANCE_GROUP', 'ADD_NOTE', 'SET_GRADE', 'ENROLL_STUDENT', 'UNENROLL_STUDENT'];
+      if (repeatable.includes(intent.intent)) {
+        this._lastRepeatable = { text: resolvedInput, at: Date.now() };
+      }
+
       // Phase 3: Update context
       this._updateContext(intent, entities);
     }
@@ -42429,6 +42437,20 @@
             }
           }
 
+          // Nickname / near-prefix: "daeny" -> Daenerys (long shared prefix,
+          // only the final typed character diverges)
+          if (word.length >= 4) {
+            const cpl = (a, b) => { let i = 0; while (i < a.length && i < b.length && a[i] === b[i]) i++; return i; };
+            if (firstName.length > word.length && cpl(word, firstName) >= Math.max(4, word.length - 1)) {
+              score = Math.max(score, 0.75);
+              firstHit = true;
+            }
+            if (lastName.length > word.length && cpl(word, lastName) >= Math.max(4, word.length - 1)) {
+              score = Math.max(score, 0.75);
+              lastHit = true;
+            }
+          }
+
           // Fuzzy match word to first name
           if (firstName.length > 2) {
             const firstSim = this._calculateSimilarity(word, firstName);
@@ -42601,6 +42623,14 @@
             /take (that|it) back/,
             /never ?mind/,
             /scratch that/
+          ]
+        },
+        // REPEAT — "do it again", "again", "one more time": re-run the last
+        // actionable command (sensitive ones re-confirm on the way through)
+        {
+          intent: 'REPEAT',
+          patterns: [
+            /^(do (it|that|this) again|do it once more|again|repeat( that| it)?|same (again|thing)|one more( time)?)[\s!.]*$/
           ]
         },
         // CORRECTION — bare "no" / "not what I meant". A "no" followed by an
@@ -43169,6 +43199,15 @@
 
         case 'CORRECTION':
           this._respondCorrection();
+          break;
+
+        case 'REPEAT':
+          if (this._lastRepeatable && Date.now() - this._lastRepeatable.at < 10 * 60 * 1000) {
+            this.terminalPrint(`🔁 Repeating: "${this._lastRepeatable.text}"`, '#97a2b0');
+            await this._executeNaturalLanguage(this._lastRepeatable.text);
+          } else {
+            this.terminalPrintError("There's nothing recent to repeat — tell me the full command once and then \"again\" works.");
+          }
           break;
 
         case 'CAPABILITY':
@@ -43880,26 +43919,23 @@
         this.terminalPrintError(`${src.full_name} only has ${src.rtc_balance || 0} RTC — not enough to transfer ${amount}.`);
         return;
       }
-      const rpc = (userId, amt, desc) => this.auth.supabase.rpc('process_rtc_transaction', {
-        p_user_id: userId, p_amount: amt, p_transaction_type: 'admin_adjustment',
-        p_description: desc, p_reference_id: null, p_reference_type: 'transfer'
-      });
-      const { data: tx1, error: e1 } = await rpc(src.id, -amount, `Transfer to ${dst.full_name}`);
-      if (e1) { this.terminalPrintError('Transfer failed: ' + e1.message); return; }
-      const { data: tx2, error: e2 } = await rpc(dst.id, amount, `Transfer from ${src.full_name}`);
-      if (e2) {
+      const rpc = (userId, amt, desc) => this._rtcTxn({ userId, amount: amt, type: 'admin_adjustment', description: desc, refType: 'transfer' });
+      try {
+        await rpc(src.id, -amount, `Transfer to ${dst.full_name}`);
+      } catch (e1) { this.terminalPrintError('Transfer failed: ' + e1.message); return; }
+      try {
+        await rpc(dst.id, amount, `Transfer from ${src.full_name}`);
+      } catch (e2) {
         // Roll the first leg back so we never leave a half-done transfer
-        await rpc(src.id, amount, `Reversal: failed transfer to ${dst.full_name}`);
+        await rpc(src.id, amount, `Reversal: failed transfer to ${dst.full_name}`).catch(() => {});
         this.terminalPrintError('Transfer failed on the receiving side (rolled back): ' + e2.message);
         return;
       }
       const srcAfter = (src.rtc_balance || 0) - amount;
       const dstAfter = (dst.rtc_balance || 0) + amount;
       this._pushUndo(`the transfer of ${amount} RTC from ${src.full_name} to ${dst.full_name}`, async () => {
-        const { error: u1 } = await rpc(src.id, amount, `Undo transfer to ${dst.full_name}`);
-        if (u1) throw u1;
-        const { error: u2 } = await rpc(dst.id, -amount, `Undo transfer from ${src.full_name}`);
-        if (u2) throw new Error('half-completed, check balances: ' + u2.message);
+        await rpc(src.id, amount, `Undo transfer to ${dst.full_name}`);
+        await rpc(dst.id, -amount, `Undo transfer from ${src.full_name}`);
       });
       this._naturalSuccess([
         `Moved ${amount} RTC from ${src.full_name} (now ${srcAfter}) to ${dst.full_name} (now ${dstAfter}).`,
@@ -44091,6 +44127,22 @@
     // or — when sensitive — pauses at _requestConfirmation first. Permissions
     // mirror the portal UI: admins manage anything; teachers only their own
     // classes (and RLS enforces the same server-side).
+
+    // Single chokepoint for RTC ledger writes. The hardened RPC returns
+    // {success:false, error} as DATA (no thrown error) — e.g. negative
+    // amounts on earn_* types — so callers must check it or removals fail
+    // silently while printing fake balances. Negative amounts always go
+    // through admin_adjustment.
+    async _rtcTxn({ userId, amount, type = null, description, refId = null, refType = null }) {
+      const txType = type || (amount < 0 ? 'admin_adjustment' : 'earn_manual');
+      const { data, error } = await this.auth.supabase.rpc('process_rtc_transaction', {
+        p_user_id: userId, p_amount: amount, p_transaction_type: txType,
+        p_description: description, p_reference_id: refId, p_reference_type: refType
+      });
+      if (error) throw error;
+      if (data && data.success === false) throw new Error(data.error || 'transaction rejected');
+      return data;
+    }
 
     _isoDaysAgo(n) {
       return new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
@@ -44952,21 +45004,15 @@
       const sb = this.auth.supabase;
       const done = [];
       for (const p of pair) {
-        const { error } = await sb.rpc('process_rtc_transaction', {
-          p_user_id: p.student.id, p_amount: amt,
-          p_transaction_type: amt > 0 ? 'earn_manual' : 'admin_adjustment',
-          p_description: entities.reason || 'Terminal award', p_reference_id: null, p_reference_type: null
-        });
-        if (error) { this.terminalPrintError(`Failed for ${p.student.full_name}: ${error.message}`); }
-        else done.push(p.student);
+        try {
+          await this._rtcTxn({ userId: p.student.id, amount: amt, description: entities.reason || 'Terminal award' });
+          done.push(p.student);
+        } catch (e) { this.terminalPrintError(`Failed for ${p.student.full_name}: ${e.message}`); }
       }
       if (done.length) {
         this._pushUndo(`${amt > 0 ? '+' : ''}${amt} RTC for ${done.map(s => s.full_name).join(' and ')}`, async () => {
           for (const s of done) {
-            await sb.rpc('process_rtc_transaction', {
-              p_user_id: s.id, p_amount: -amt, p_transaction_type: 'admin_adjustment',
-              p_description: 'Undo multi-award', p_reference_id: null, p_reference_type: 'undo'
-            });
+            await this._rtcTxn({ userId: s.id, amount: -amt, type: 'admin_adjustment', description: 'Undo multi-award', refType: 'undo' });
           }
         });
         this._naturalSuccess([
@@ -45045,19 +45091,16 @@
           const done = [];
           const failed = [];
           for (const sid of grp.studentIds) {
-            const { error } = await sb.rpc('process_rtc_transaction', {
-              p_user_id: sid, p_amount: amount, p_transaction_type: amount > 0 ? 'earn_manual' : 'admin_adjustment',
-              p_description: reason, p_reference_id: null, p_reference_type: null
-            });
-            if (error) failed.push(names[sid] || sid); else done.push(sid);
+            try {
+              await this._rtcTxn({ userId: sid, amount, description: reason });
+              done.push(sid);
+            } catch (e) { failed.push(names[sid] || sid); }
           }
           if (done.length) {
             this._pushUndo(`${amount > 0 ? '+' : ''}${amount} RTC for ${done.length} students${grp.label ? ' in ' + grp.label : ''}`, async () => {
               for (const sid of done) {
-                await sb.rpc('process_rtc_transaction', {
-                  p_user_id: sid, p_amount: -amount, p_transaction_type: 'admin_adjustment',
-                  p_description: `Undo group ${amount > 0 ? 'award' : 'deduction'}`, p_reference_id: null, p_reference_type: 'undo'
-                });
+                await this._rtcTxn({ userId: sid, amount: -amount, type: 'admin_adjustment',
+                  description: `Undo group ${amount > 0 ? 'award' : 'deduction'}`, refType: 'undo' });
               }
             });
           }
@@ -45683,17 +45726,9 @@
 
       const student = students[0];
 
-      // Award RTC using the process_rtc_transaction RPC
-      const { data: txData, error: txError } = await this.auth.supabase.rpc('process_rtc_transaction', {
-        p_user_id: student.id,
-        p_amount: amount,
-        p_transaction_type: 'earn_manual',
-        p_description: reason,
-        p_reference_id: null,
-        p_reference_type: null
-      });
-
-      if (txError) throw txError;
+      // Award/deduct via the ledger RPC (negative amounts -> admin_adjustment;
+      // rejections surface as errors instead of silently failing)
+      const txData = await this._rtcTxn({ userId: student.id, amount, description: reason });
 
       const newBalance = (student.rtc_balance || 0) + amount;
       this._addRecentStudent({...student, rtc_balance: newBalance});
@@ -45702,15 +45737,9 @@
       // (rtc_transactions is append-only — nothing is deleted)
       const txId = txData?.transaction_id || null;
       this._pushUndo(`${amount > 0 ? '+' : ''}${amount} RTC for ${student.full_name}`, async () => {
-        const { error } = await this.auth.supabase.rpc('process_rtc_transaction', {
-          p_user_id: student.id,
-          p_amount: -amount,
-          p_transaction_type: 'admin_adjustment',
-          p_description: `Undo of ${amount > 0 ? '+' : ''}${amount} RTC${txId ? ' (txn ' + txId + ')' : ''}`,
-          p_reference_id: txId,
-          p_reference_type: 'undo'
-        });
-        if (error) throw error;
+        await this._rtcTxn({ userId: student.id, amount: -amount, type: 'admin_adjustment',
+          description: `Undo of ${amount > 0 ? '+' : ''}${amount} RTC${txId ? ' (txn ' + txId + ')' : ''}`,
+          refId: txId, refType: 'undo' });
         this._addRecentStudent({ id: student.id, full_name: student.full_name, rtc_balance: newBalance - amount });
       });
 
