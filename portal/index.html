@@ -8398,15 +8398,22 @@
             }));
           })(),
           (async () => {
+            // class_attendance.class_id has no FK to classes — no embedded join
             let q = sb.from('class_attendance')
-              .select('status, date, notes, classes(name)')
+              .select('status, date, notes, class_id')
               .eq('student_id', studentId)
               .order('date', { ascending: false })
               .limit(limit);
             if (sinceDate) q = q.gte('date', sinceDate);
             const { data } = await q;
+            const classIds = [...new Set((data || []).map(r => r.class_id).filter(Boolean))];
+            const classMap = {};
+            if (classIds.length) {
+              const { data: classRows } = await sb.from('classes').select('id, name').in('id', classIds);
+              (classRows || []).forEach(c => { classMap[c.id] = c; });
+            }
             const statusIcon = { present: '✅', absent: '❌', late: '⏰', left_early: '🚪', late_left_early: '⏰🚪' };
-            return (data || []).map(r => ({
+            return (data || []).map(r => ({ ...r, classes: classMap[r.class_id] || null })).map(r => ({
               // class_attendance only has DATE, not TIMESTAMP — use noon for stable sort
               ts: r.date + 'T12:00:00Z',
               type: 'attendance',
@@ -41952,9 +41959,11 @@
       const sinceDate = opts.sinceDate || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
       const sinceLabel = opts.sinceLabel || 'last 30 days';
 
+      // class_attendance.class_id has no FK to classes, so PostgREST can't
+      // embed classes(...) — fetch class names in a second query instead.
       let q = this.auth.supabase
         .from('class_attendance')
-        .select('status, date, notes, classes(name, subject)')
+        .select('status, date, notes, class_id')
         .eq('student_id', student.id)
         .gte('date', sinceDate)
         .order('date', { ascending: false })
@@ -41963,6 +41972,14 @@
       if (error) throw error;
 
       let records = data || [];
+      const classIds = [...new Set(records.map(r => r.class_id).filter(Boolean))];
+      if (classIds.length) {
+        const { data: classRows } = await this.auth.supabase
+          .from('classes').select('id, name, subject').in('id', classIds);
+        const classMap = {};
+        (classRows || []).forEach(c => { classMap[c.id] = c; });
+        records = records.map(r => ({ ...r, classes: classMap[r.class_id] || null }));
+      }
       // Subject filter ("in math") — match against class name or subject
       if (opts.subject) {
         const subj = opts.subject.toLowerCase();
