@@ -42346,9 +42346,12 @@
       // "AI Game Design" can't fuzzy-match a student ("Jordan Games") out of
       // its own name and "english with dan" doesn't match a student "Dan".
       entities.classMatch = this._rivenMatchClass(normalized);
-      // "add jordan to that class" — an unnamed class reference resolves to
-      // the class we were just talking about (created, listed, graded…)
-      if (!entities.classMatch && /\b(that|this|it|the same|the new)\s+class\b/.test(normalized) && this._nlpContext?.lastClass) {
+      // "add jordan to that class" / "add jordan to it" / "who is in it" —
+      // an unnamed class reference resolves to the class we were just
+      // talking about (created, listed, graded…)
+      const classPronoun = /\b(that|this|it|the same|the new)\s+class\b/.test(normalized)
+        || /\b(to|in|into|from)\s+(it|there)\b/.test(normalized);
+      if (!entities.classMatch && classPronoun && this._nlpContext?.lastClass) {
         const lc = (this._terminalAllClasses || []).find(c => c.id === this._nlpContext.lastClass.id);
         if (lc) {
           entities.classMatch = { id: lc.id, name: lc.name, row: lc, fromContext: true, qualified: true, consumed: [] };
@@ -44768,8 +44771,12 @@
     }
 
     async terminalEnrollStudent(entities) {
-      const student = entities.student?.student;
-      if (!student || !entities.classMatch) { this.terminalPrintError('Tell me both — like "add Jordan to Robotics".'); return; }
+      const single = entities.student?.student;
+      // "add jordan and dylan to robotics" — a resolved pair enrolls both
+      const targets = (entities.students && entities.students.length >= 2)
+        ? entities.students.map(w => w.student || w)
+        : (single ? [single] : []);
+      if (!targets.length || !entities.classMatch) { this.terminalPrintError('Tell me both — like "add Jordan to Robotics".'); return; }
       const res = await this._rivenRequireClass(entities);
       if (res.asked) return;
       const row = res.row;
@@ -44779,44 +44786,58 @@
         return;
       }
       const sb = this.auth.supabase;
-      const existing = await this._rivenFindEnrollment(row.id, student.id);
-      if (existing && existing.status === 'active') {
-        this._showRivenMessage(`${this.escapeHtml(student.full_name)} is already enrolled in ${this.escapeHtml(row.name)} — nothing to do.`, true);
-        return;
+      const plans = [];
+      for (const stu of targets) {
+        const existing = await this._rivenFindEnrollment(row.id, stu.id);
+        if (existing && existing.status === 'active') {
+          this._showRivenMessage(`${this.escapeHtml(stu.full_name)} is already enrolled in ${this.escapeHtml(row.name)} — nothing to do there.`, true);
+          continue;
+        }
+        plans.push({ stu, existing });
       }
+      if (!plans.length) return;
+      const names = plans.map(p => `<b>${this.escapeHtml(p.stu.full_name)}</b>`).join(' and ');
       this._requestConfirmation(
-        `Enroll <b>${this.escapeHtml(student.full_name)}</b> in <b>${this.escapeHtml(row.name)}</b>${existing ? ' (re-activating their previous enrollment)' : ''}`,
+        `Enroll ${names} in <b>${this.escapeHtml(row.name)}</b>${plans.some(p => p.existing) ? ' (re-activating previous enrollments where they exist)' : ''}`,
         async () => {
-          const now = new Date().toISOString();
-          if (existing) {
-            const prevStatus = existing.status;
-            const { error } = await sb.from('class_enrollments')
-              .update({ status: 'active', enrolled_at: now, updated_at: now }).eq('id', existing.id);
-            if (error) throw error;
-            this._pushUndo(`enrolling ${student.full_name} in ${row.name}`, async () => {
-              const { error: e } = await sb.from('class_enrollments')
-                .update({ status: prevStatus, updated_at: new Date().toISOString() }).eq('id', existing.id);
-              if (e) throw e;
-            });
-          } else {
-            const { data: ins, error } = await sb.from('class_enrollments')
-              .insert({ class_id: row.id, student_id: student.id, status: 'active', enrolled_at: now })
-              .select().single();
-            if (error) {
-              if (/policy|permission|denied/i.test(error.message)) {
-                throw new Error(`the database refused the new enrollment — teachers can re-activate past enrollments, but brand-new enrollments may need an admin.`);
+          const undos = [];
+          const done = [];
+          for (const { stu, existing } of plans) {
+            const now = new Date().toISOString();
+            if (existing) {
+              const prevStatus = existing.status;
+              const { error } = await sb.from('class_enrollments')
+                .update({ status: 'active', enrolled_at: now, updated_at: now }).eq('id', existing.id);
+              if (error) throw error;
+              undos.push(async () => {
+                const { error: e } = await sb.from('class_enrollments')
+                  .update({ status: prevStatus, updated_at: new Date().toISOString() }).eq('id', existing.id);
+                if (e) throw e;
+              });
+            } else {
+              const { data: ins, error } = await sb.from('class_enrollments')
+                .insert({ class_id: row.id, student_id: stu.id, status: 'active', enrolled_at: now })
+                .select().single();
+              if (error) {
+                if (/policy|permission|denied/i.test(error.message)) {
+                  throw new Error(`the database refused the new enrollment — teachers can re-activate past enrollments, but brand-new enrollments may need an admin.`);
+                }
+                throw error;
               }
-              throw error;
+              undos.push(async () => {
+                const { error: e } = await sb.from('class_enrollments')
+                  .update({ status: 'removed', updated_at: new Date().toISOString() }).eq('id', ins.id);
+                if (e) throw e;
+              });
             }
-            this._pushUndo(`enrolling ${student.full_name} in ${row.name}`, async () => {
-              const { error: e } = await sb.from('class_enrollments')
-                .update({ status: 'removed', updated_at: new Date().toISOString() }).eq('id', ins.id);
-              if (e) throw e;
-            });
+            done.push(stu.full_name);
           }
+          this._pushUndo(`enrolling ${done.join(' and ')} in ${row.name}`, async () => {
+            for (const u of undos) await u();
+          });
           this._naturalSuccess([
-            `${student.full_name} is now enrolled in ${row.name}.`,
-            `Done — added ${student.full_name} to ${row.name}.`
+            `${done.join(' and ')} ${done.length > 1 ? 'are' : 'is'} now enrolled in ${row.name}.`,
+            `Done — added ${done.join(' and ')} to ${row.name}.`
           ]);
         }
       );
