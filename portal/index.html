@@ -14,7 +14,7 @@
   <link rel="stylesheet" href="styles.css">
 
   <!-- Load shared configuration -->
-  <script src="../shared/config.js?v=8"></script>
+  <script src="../shared/config.js?v=9"></script>
   <script src="../shared/components.js"></script>
   <script src="../shared/supabase.min.js"></script>
 
@@ -1873,6 +1873,11 @@
               <!-- Will be populated by renderTeacherTerminal() -->
             </section>
 
+            <!-- Notes Section (Teachers & Admins) -->
+            <section id="notes-section" class="hidden">
+              <!-- Will be populated by renderNotesSection() -->
+            </section>
+
             <!-- IRL Purchases Section (Teachers & Admins) -->
             <section id="irl-purchases-section" class="hidden">
               <!-- Will be populated by renderIRLPurchases() -->
@@ -2342,7 +2347,7 @@
 
         // Navigate to hash section if present, otherwise show home
         const hash = window.location.hash.substring(1);
-        const validSections = ['home', 'classes', 'messaging', 'profile', 'my-students', 'materials-requests', 'testing-center', 'activities', 'admin-dashboard', 'admin-classes', 'admin-users', 'admin-settings', 'admin-reports', 'admin-attendance', 'admin-student-records', 'admin-enrollment', 'admin-activities', 'admin-facilities', 'admin-rtc-management', 'rtc-bank-helper', 'teacher-terminal', 'irl-purchases'];
+        const validSections = ['home', 'classes', 'messaging', 'profile', 'my-students', 'materials-requests', 'testing-center', 'activities', 'admin-dashboard', 'admin-classes', 'admin-users', 'admin-settings', 'admin-reports', 'admin-attendance', 'admin-student-records', 'admin-enrollment', 'admin-activities', 'admin-facilities', 'admin-rtc-management', 'rtc-bank-helper', 'teacher-terminal', 'irl-purchases', 'notes'];
         if (hash && validSections.includes(hash)) {
           this.showSection(hash);
         } else {
@@ -4744,7 +4749,7 @@
 
       handleHashNavigation() {
         const hash = window.location.hash.substring(1);
-        const validSections = ['home', 'classes', 'messaging', 'profile', 'my-students', 'materials-requests', 'testing-center', 'activities', 'admin-dashboard', 'admin-classes', 'admin-users', 'admin-settings', 'admin-reports', 'admin-attendance', 'admin-student-records', 'admin-enrollment', 'admin-activities', 'admin-facilities', 'admin-rtc-management', 'rtc-bank-helper', 'teacher-terminal', 'irl-purchases'];
+        const validSections = ['home', 'classes', 'messaging', 'profile', 'my-students', 'materials-requests', 'testing-center', 'activities', 'admin-dashboard', 'admin-classes', 'admin-users', 'admin-settings', 'admin-reports', 'admin-attendance', 'admin-student-records', 'admin-enrollment', 'admin-activities', 'admin-facilities', 'admin-rtc-management', 'rtc-bank-helper', 'teacher-terminal', 'irl-purchases', 'notes'];
 
         if (hash && validSections.includes(hash)) {
           this.showSection(hash);
@@ -4859,6 +4864,9 @@
             break;
           case 'teacher-terminal':
             this.renderTeacherTerminal();
+            break;
+          case 'notes':
+            this.renderNotesSection();
             break;
           case 'spreadsheet':
             // Sheets are now per-class, opened via showClassSheets()
@@ -39730,6 +39738,668 @@
       }
     }
 
+    // ==================== UNIFIED NOTES SYSTEM ====================
+    // One filterable feed over the new `notes` table (per-student, per-class,
+    // per-teacher targets) plus the three legacy tables (student_notes,
+    // teacher_private_notes, teacher_class_notes). New notes are written to
+    // `notes`. Riven reads/writes through the same _fetchAllNotes/_insertNote
+    // helpers so the tab and the assistant always agree.
+
+    _noteSourceTable(source) {
+      return {
+        unified: 'notes',
+        student: 'student_notes',
+        'private-student': 'teacher_private_notes',
+        class: 'teacher_class_notes'
+      }[source];
+    }
+
+    async _loadNotesPeople() {
+      // Cached roster of all people + classes used for name resolution
+      if (this._notesPeople) return this._notesPeople;
+      const [profilesRes, classesRes] = await Promise.all([
+        this.auth.supabase.from('user_profiles').select('id, first_name, last_name, user_type'),
+        this.auth.supabase.from('classes').select('id, name')
+      ]);
+      const profiles = profilesRes.data || [];
+      const people = {};
+      profiles.forEach(p => {
+        people[p.id] = {
+          id: p.id,
+          name: `${p.first_name || ''} ${p.last_name || ''}`.trim() || 'Unknown',
+          user_type: p.user_type
+        };
+      });
+      const classes = {};
+      (classesRes.data || []).forEach(c => { classes[c.id] = c.name; });
+      this._notesPeople = { people, classes, profiles };
+      return this._notesPeople;
+    }
+
+    async _fetchAllNotes() {
+      // Fetch every notes source in parallel and normalize into one shape.
+      // Legacy table failures are non-fatal; a missing `notes` table (migration
+      // not yet applied) is surfaced as a warning.
+      const sb = this.auth.supabase;
+      const { people, classes } = await this._loadNotesPeople();
+      const results = { rows: [], warnings: [] };
+
+      const queries = [
+        ['unified', sb.from('notes').select('*').order('created_at', { ascending: false })],
+        ['student', sb.from('student_notes').select('*').order('created_at', { ascending: false })],
+        ['private-student', sb.from('teacher_private_notes').select('*').order('created_at', { ascending: false })],
+        ['class', sb.from('teacher_class_notes').select('*').order('created_at', { ascending: false })]
+      ];
+      const settled = await Promise.all(queries.map(([, q]) => q));
+
+      settled.forEach((res, i) => {
+        const source = queries[i][0];
+        if (res.error) {
+          if (source === 'unified') {
+            results.warnings.push('The unified `notes` table is unavailable — run the unified_notes_system.sql migration. (' + res.error.message + ')');
+          }
+          return;
+        }
+        (res.data || []).forEach(r => {
+          const authorId = source === 'unified' ? r.author_id : r.teacher_id;
+          const noteDate = r.note_date || (r.created_at ? r.created_at.split('T')[0] : null);
+          results.rows.push({
+            id: r.id,
+            source,
+            author_id: authorId,
+            author_name: people[authorId]?.name || 'Unknown',
+            student_id: r.student_id || null,
+            student_name: r.student_id ? (people[r.student_id]?.name || 'Unknown') : null,
+            class_id: r.class_id || null,
+            class_name: r.class_id ? (classes[r.class_id] || 'Unknown class') : null,
+            about_teacher_id: r.about_teacher_id || null,
+            about_teacher_name: r.about_teacher_id ? (people[r.about_teacher_id]?.name || 'Unknown') : null,
+            category: r.category || 'general',
+            custom_category: r.custom_category || null,
+            sentiment: r.sentiment || 'neutral',
+            visibility: source === 'unified' ? r.visibility : (source === 'student' ? 'staff' : 'private'),
+            note: r.note || '',
+            note_date: noteDate,
+            created_at: r.created_at,
+            updated_at: r.updated_at || r.modified_at || null
+          });
+        });
+      });
+
+      results.rows.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+      return results;
+    }
+
+    async _insertNote({ studentId = null, classId = null, aboutTeacherId = null, category = 'general', customCategory = null, sentiment = 'neutral', visibility = 'staff', note, noteDate = null }) {
+      // Single write path for the Notes tab AND Riven.
+      if (!note || !note.trim()) throw new Error('Note text is required');
+      if (!studentId && !classId && !aboutTeacherId) throw new Error('A note needs at least one target (student, class, or teacher)');
+      const payload = {
+        author_id: this.userInfo.profile.id,
+        student_id: studentId,
+        class_id: classId,
+        about_teacher_id: aboutTeacherId,
+        category,
+        custom_category: category === 'custom' ? customCategory : null,
+        sentiment,
+        visibility,
+        note: note.trim()
+      };
+      if (noteDate) payload.note_date = noteDate;
+      const { data, error } = await this.auth.supabase.from('notes').insert(payload).select().single();
+      if (error) throw error;
+      return data;
+    }
+
+    _noteCanEdit(n) {
+      const me = this.userInfo.profile.id;
+      const isAdmin = this.userInfo.profile.user_type === 'admin';
+      if (n.author_id === me) return true;
+      if (!isAdmin) return false;
+      // Admins can manage staff-visible notes (unified + legacy student_notes);
+      // legacy private tables are creator-only at the RLS level.
+      return (n.source === 'unified' && n.visibility === 'staff') || n.source === 'student';
+    }
+
+    async renderNotesSection() {
+      const userType = this.userInfo.profile.user_type;
+      const section = document.getElementById('notes-section');
+      if (!section) return;
+      if (userType !== 'teacher' && userType !== 'admin') {
+        section.innerHTML = '<p style="color: var(--muted); padding: 20px;">Notes are only available to staff.</p>';
+        return;
+      }
+
+      section.innerHTML = `
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 16px;">
+          <h2 style="margin: 0;">🗒️ Notes</h2>
+          <button class="btn btn-primary" onclick="app.openNoteComposer()">+ New Note</button>
+        </div>
+        <div id="notes-warnings"></div>
+        <div style="background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 16px;">
+          <div style="display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end;">
+            <div style="flex: 2 1 220px; min-width: 200px;">
+              <label style="display: block; font-size: 0.8em; color: var(--muted); margin-bottom: 4px;">Search keywords</label>
+              <input type="text" id="notes-filter-keyword" placeholder="Search note text, names, categories…" style="width: 100%;" oninput="app.scheduleNotesFilter()">
+            </div>
+            <div style="flex: 1 1 200px; min-width: 180px; position: relative;">
+              <label style="display: block; font-size: 0.8em; color: var(--muted); margin-bottom: 4px;">Students (any number)</label>
+              <input type="text" id="notes-filter-student-input" placeholder="Type a name to add…" style="width: 100%;" oninput="app.renderNotesStudentSuggestions()" autocomplete="off">
+              <div id="notes-student-suggestions" style="position: absolute; top: 100%; left: 0; right: 0; background: var(--card); border: 1px solid var(--border); border-radius: 8px; z-index: 50; display: none; max-height: 220px; overflow-y: auto;"></div>
+            </div>
+            <div style="flex: 1 1 150px;">
+              <label style="display: block; font-size: 0.8em; color: var(--muted); margin-bottom: 4px;">Class</label>
+              <select id="notes-filter-class" style="width: 100%;" onchange="app.applyNotesFilters()"><option value="">All classes</option></select>
+            </div>
+            <div style="flex: 1 1 150px;">
+              <label style="display: block; font-size: 0.8em; color: var(--muted); margin-bottom: 4px;">Written by</label>
+              <select id="notes-filter-author" style="width: 100%;" onchange="app.applyNotesFilters()"><option value="">Anyone</option></select>
+            </div>
+            <div style="flex: 1 1 150px;">
+              <label style="display: block; font-size: 0.8em; color: var(--muted); margin-bottom: 4px;">About teacher</label>
+              <select id="notes-filter-about-teacher" style="width: 100%;" onchange="app.applyNotesFilters()"><option value="">Any / none</option></select>
+            </div>
+          </div>
+          <div style="display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin-top: 10px;">
+            <div style="flex: 1 1 130px;">
+              <label style="display: block; font-size: 0.8em; color: var(--muted); margin-bottom: 4px;">Scope</label>
+              <select id="notes-filter-scope" style="width: 100%;" onchange="app.applyNotesFilters()">
+                <option value="">All notes</option>
+                <option value="student">Student notes</option>
+                <option value="class">Class notes</option>
+                <option value="teacher">Teacher notes</option>
+              </select>
+            </div>
+            <div style="flex: 1 1 130px;">
+              <label style="display: block; font-size: 0.8em; color: var(--muted); margin-bottom: 4px;">Category</label>
+              <select id="notes-filter-category" style="width: 100%;" onchange="app.applyNotesFilters()">
+                <option value="">All categories</option>
+                <option value="academic">Academic</option>
+                <option value="behavior">Behavior</option>
+                <option value="responsibility">Responsibility</option>
+                <option value="attendance">Attendance</option>
+                <option value="communication">Communication</option>
+                <option value="general">General</option>
+                <option value="custom">Custom</option>
+              </select>
+            </div>
+            <div style="flex: 1 1 120px;">
+              <label style="display: block; font-size: 0.8em; color: var(--muted); margin-bottom: 4px;">Sentiment</label>
+              <select id="notes-filter-sentiment" style="width: 100%;" onchange="app.applyNotesFilters()">
+                <option value="">Any</option>
+                <option value="positive">Positive</option>
+                <option value="neutral">Neutral</option>
+                <option value="negative">Negative</option>
+              </select>
+            </div>
+            <div style="flex: 1 1 120px;">
+              <label style="display: block; font-size: 0.8em; color: var(--muted); margin-bottom: 4px;">Visibility</label>
+              <select id="notes-filter-visibility" style="width: 100%;" onchange="app.applyNotesFilters()">
+                <option value="">Any</option>
+                <option value="staff">Staff-visible</option>
+                <option value="private">My private</option>
+              </select>
+            </div>
+            <div style="flex: 1 1 140px;">
+              <label style="display: block; font-size: 0.8em; color: var(--muted); margin-bottom: 4px;">From</label>
+              <input type="date" id="notes-filter-from" style="width: 100%;" onchange="app.applyNotesFilters()">
+            </div>
+            <div style="flex: 1 1 140px;">
+              <label style="display: block; font-size: 0.8em; color: var(--muted); margin-bottom: 4px;">To</label>
+              <input type="date" id="notes-filter-to" style="width: 100%;" onchange="app.applyNotesFilters()">
+            </div>
+            <div style="flex: 0 0 auto;">
+              <button class="btn btn-secondary" onclick="app.clearNotesFilters()">Clear</button>
+            </div>
+          </div>
+          <div id="notes-student-chips" style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px;"></div>
+        </div>
+        <div id="notes-result-count" style="color: var(--muted); font-size: 0.85em; margin-bottom: 10px;"></div>
+        <div id="notes-list"><p style="color: var(--muted);">Loading notes…</p></div>
+      `;
+
+      this._notesState = this._notesState || {};
+      this._notesState.selectedStudents = new Map();
+
+      try {
+        const [{ rows, warnings }, { profiles, classes }] = await Promise.all([
+          this._fetchAllNotes(),
+          this._loadNotesPeople()
+        ]);
+        this._notesState.all = rows;
+
+        const warnEl = document.getElementById('notes-warnings');
+        if (warnEl && warnings.length) {
+          warnEl.innerHTML = warnings.map(w => `<div style="background: rgba(255,165,0,0.12); border: 1px solid orange; border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; color: var(--text);">⚠️ ${this.escapeHtml(w)}</div>`).join('');
+        }
+
+        // Populate filter dropdowns
+        const classSel = document.getElementById('notes-filter-class');
+        if (classSel) {
+          Object.entries(classes).sort((a, b) => a[1].localeCompare(b[1])).forEach(([id, name]) => {
+            classSel.insertAdjacentHTML('beforeend', `<option value="${id}">${this.escapeHtml(name)}</option>`);
+          });
+        }
+        const staff = profiles.filter(p => p.user_type === 'teacher' || p.user_type === 'admin')
+          .map(p => ({ id: p.id, name: `${p.first_name || ''} ${p.last_name || ''}`.trim() }))
+          .sort((a, b) => a.name.localeCompare(b.name));
+        const authorSel = document.getElementById('notes-filter-author');
+        const aboutSel = document.getElementById('notes-filter-about-teacher');
+        staff.forEach(s => {
+          const opt = `<option value="${s.id}">${this.escapeHtml(s.name)}</option>`;
+          if (authorSel) authorSel.insertAdjacentHTML('beforeend', opt);
+          if (aboutSel) aboutSel.insertAdjacentHTML('beforeend', opt);
+        });
+
+        this.applyNotesFilters();
+      } catch (err) {
+        console.error('Notes load error:', err);
+        const list = document.getElementById('notes-list');
+        if (list) list.innerHTML = `<p style="color: var(--danger);">Failed to load notes: ${this.escapeHtml(err.message)}</p>`;
+      }
+    }
+
+    scheduleNotesFilter() {
+      clearTimeout(this._notesFilterTimer);
+      this._notesFilterTimer = setTimeout(() => this.applyNotesFilters(), 200);
+    }
+
+    renderNotesStudentSuggestions() {
+      const input = document.getElementById('notes-filter-student-input');
+      const box = document.getElementById('notes-student-suggestions');
+      if (!input || !box) return;
+      const q = input.value.trim().toLowerCase();
+      if (!q) { box.style.display = 'none'; return; }
+      const { people } = this._notesPeople || { people: {} };
+      const matches = Object.values(people)
+        .filter(p => p.user_type === 'student' && p.name.toLowerCase().includes(q) && !this._notesState.selectedStudents.has(p.id))
+        .slice(0, 8);
+      if (!matches.length) { box.style.display = 'none'; return; }
+      box.innerHTML = matches.map(m => `<div style="padding: 8px 12px; cursor: pointer;" onmouseover="this.style.background='var(--bg)'" onmouseout="this.style.background=''" onclick="app.addNotesStudentFilter('${m.id}')">${this.escapeHtml(m.name)}</div>`).join('');
+      box.style.display = 'block';
+    }
+
+    addNotesStudentFilter(studentId) {
+      const { people } = this._notesPeople || { people: {} };
+      const p = people[studentId];
+      if (!p) return;
+      this._notesState.selectedStudents.set(studentId, p.name);
+      const input = document.getElementById('notes-filter-student-input');
+      const box = document.getElementById('notes-student-suggestions');
+      if (input) input.value = '';
+      if (box) box.style.display = 'none';
+      this._renderNotesStudentChips();
+      this.applyNotesFilters();
+    }
+
+    removeNotesStudentFilter(studentId) {
+      this._notesState.selectedStudents.delete(studentId);
+      this._renderNotesStudentChips();
+      this.applyNotesFilters();
+    }
+
+    _renderNotesStudentChips() {
+      const el = document.getElementById('notes-student-chips');
+      if (!el) return;
+      el.innerHTML = [...this._notesState.selectedStudents.entries()].map(([id, name]) =>
+        `<span style="display: inline-flex; align-items: center; gap: 6px; background: var(--bg); border: 1px solid var(--accent); border-radius: 999px; padding: 3px 10px; font-size: 0.85em;">${this.escapeHtml(name)} <span style="cursor: pointer; color: var(--muted);" onclick="app.removeNotesStudentFilter('${id}')">✕</span></span>`
+      ).join('');
+    }
+
+    clearNotesFilters() {
+      ['notes-filter-keyword', 'notes-filter-from', 'notes-filter-to', 'notes-filter-student-input'].forEach(id => {
+        const el = document.getElementById(id); if (el) el.value = '';
+      });
+      ['notes-filter-class', 'notes-filter-author', 'notes-filter-about-teacher', 'notes-filter-scope', 'notes-filter-category', 'notes-filter-sentiment', 'notes-filter-visibility'].forEach(id => {
+        const el = document.getElementById(id); if (el) el.value = '';
+      });
+      this._notesState.selectedStudents.clear();
+      this._renderNotesStudentChips();
+      this.applyNotesFilters();
+    }
+
+    _filterNotesRows(rows, f) {
+      // Shared by the Notes tab and Riven queries
+      return rows.filter(n => {
+        if (f.studentIds && f.studentIds.length && !f.studentIds.includes(n.student_id)) return false;
+        if (f.classId && n.class_id !== f.classId) return false;
+        if (f.authorId && n.author_id !== f.authorId) return false;
+        if (f.aboutTeacherId && n.about_teacher_id !== f.aboutTeacherId) return false;
+        if (f.scope === 'student' && !n.student_id) return false;
+        if (f.scope === 'class' && (!n.class_id || n.student_id || n.about_teacher_id)) return false;
+        if (f.scope === 'teacher' && !n.about_teacher_id) return false;
+        if (f.category && n.category !== f.category) return false;
+        if (f.sentiment && n.sentiment !== f.sentiment) return false;
+        if (f.visibility && n.visibility !== f.visibility) return false;
+        if (f.from && (!n.note_date || n.note_date < f.from)) return false;
+        if (f.to && (!n.note_date || n.note_date > f.to)) return false;
+        if (f.keyword) {
+          const hay = [n.note, n.student_name, n.class_name, n.about_teacher_name, n.author_name, n.category, n.custom_category]
+            .filter(Boolean).join(' ').toLowerCase();
+          if (!hay.includes(f.keyword.toLowerCase())) return false;
+        }
+        return true;
+      });
+    }
+
+    applyNotesFilters() {
+      const val = id => (document.getElementById(id)?.value || '').trim();
+      const filters = {
+        keyword: val('notes-filter-keyword'),
+        studentIds: [...this._notesState.selectedStudents.keys()],
+        classId: val('notes-filter-class'),
+        authorId: val('notes-filter-author'),
+        aboutTeacherId: val('notes-filter-about-teacher'),
+        scope: val('notes-filter-scope'),
+        category: val('notes-filter-category'),
+        sentiment: val('notes-filter-sentiment'),
+        visibility: val('notes-filter-visibility'),
+        from: val('notes-filter-from'),
+        to: val('notes-filter-to')
+      };
+      const all = this._notesState.all || [];
+      const filtered = this._filterNotesRows(all, filters);
+      const count = document.getElementById('notes-result-count');
+      if (count) count.textContent = `Showing ${filtered.length} of ${all.length} notes`;
+      this._renderNotesList(filtered);
+    }
+
+    _noteCardHtml(n) {
+      const sentimentColor = n.sentiment === 'positive' ? '#4ade80' : (n.sentiment === 'negative' ? 'var(--danger)' : 'var(--border)');
+      const targets = [];
+      if (n.student_name) targets.push(`👤 ${this.escapeHtml(n.student_name)}`);
+      if (n.class_name) targets.push(`📚 ${this.escapeHtml(n.class_name)}`);
+      if (n.about_teacher_name) targets.push(`🧑‍🏫 ${this.escapeHtml(n.about_teacher_name)}`);
+      const cat = n.category === 'custom' && n.custom_category ? n.custom_category : n.category;
+      const visBadge = n.visibility === 'private'
+        ? '<span style="font-size: 0.75em; border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; color: var(--muted);">🔒 private</span>'
+        : '<span style="font-size: 0.75em; border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; color: var(--muted);">staff</span>';
+      const legacyBadge = n.source !== 'unified' ? '<span style="font-size: 0.75em; color: var(--muted);">(legacy)</span>' : '';
+      const actions = this._noteCanEdit(n)
+        ? `<div style="display: flex; gap: 6px;">
+             <button class="btn btn-secondary" style="padding: 2px 10px; font-size: 0.8em;" onclick="app.editUnifiedNote('${n.source}', '${n.id}')">Edit</button>
+             <button class="btn btn-secondary" style="padding: 2px 10px; font-size: 0.8em; color: var(--danger);" onclick="app.deleteUnifiedNote('${n.source}', '${n.id}')">Delete</button>
+           </div>`
+        : '';
+      return `
+        <div style="background: var(--card); border: 1px solid var(--border); border-left: 4px solid ${sentimentColor}; border-radius: 10px; padding: 12px 16px; margin-bottom: 10px;">
+          <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; flex-wrap: wrap;">
+            <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center; font-size: 0.9em;">
+              ${targets.join(' <span style="color: var(--muted);">·</span> ') || '<span style="color: var(--muted);">General</span>'}
+              ${visBadge} ${legacyBadge}
+            </div>
+            ${actions}
+          </div>
+          <div style="margin: 8px 0; white-space: pre-wrap;">${this.escapeHtml(n.note)}</div>
+          <div style="color: var(--muted); font-size: 0.8em;">
+            ${this.escapeHtml(cat || 'general')} · by ${this.escapeHtml(n.author_name)} · ${n.note_date || ''}${n.updated_at ? ' · edited' : ''}
+          </div>
+        </div>`;
+    }
+
+    _renderNotesList(filtered) {
+      const list = document.getElementById('notes-list');
+      if (!list) return;
+      if (!filtered.length) {
+        list.innerHTML = '<p style="color: var(--muted); padding: 20px; text-align: center;">No notes match these filters.</p>';
+        return;
+      }
+      list.innerHTML = filtered.slice(0, 300).map(n => this._noteCardHtml(n)).join('')
+        + (filtered.length > 300 ? `<p style="color: var(--muted); text-align: center;">…and ${filtered.length - 300} more — narrow the filters to see them.</p>` : '');
+    }
+
+    // ---- Composer ----
+
+    async openNoteComposer(prefill = {}) {
+      const { profiles, classes } = await this._loadNotesPeople();
+      this._composerStudents = new Map();
+      if (prefill.studentId) {
+        const p = (this._notesPeople.people || {})[prefill.studentId];
+        if (p) this._composerStudents.set(p.id, p.name);
+      }
+      const staff = profiles.filter(p => p.user_type === 'teacher' || p.user_type === 'admin')
+        .map(p => ({ id: p.id, name: `${p.first_name || ''} ${p.last_name || ''}`.trim() }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      const classOpts = Object.entries(classes).sort((a, b) => a[1].localeCompare(b[1]))
+        .map(([id, name]) => `<option value="${id}" ${prefill.classId === id ? 'selected' : ''}>${this.escapeHtml(name)}</option>`).join('');
+      const staffOpts = staff.map(s => `<option value="${s.id}">${this.escapeHtml(s.name)}</option>`).join('');
+      const today = new Date().toISOString().split('T')[0];
+
+      const content = `
+        <div style="display: flex; flex-direction: column; gap: 12px;">
+          <div style="position: relative;">
+            <label style="display: block; font-size: 0.85em; color: var(--muted); margin-bottom: 4px;">Students (add one or more — one note is saved per student)</label>
+            <input type="text" id="composer-student-input" placeholder="Type a name to add…" style="width: 100%;" oninput="app.renderComposerStudentSuggestions()" autocomplete="off">
+            <div id="composer-student-suggestions" style="position: absolute; top: 100%; left: 0; right: 0; background: var(--card); border: 1px solid var(--border); border-radius: 8px; z-index: 50; display: none; max-height: 200px; overflow-y: auto;"></div>
+            <div id="composer-student-chips" style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px;"></div>
+          </div>
+          <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+            <div style="flex: 1 1 180px;">
+              <label style="display: block; font-size: 0.85em; color: var(--muted); margin-bottom: 4px;">Class (optional)</label>
+              <select id="composer-class" style="width: 100%;"><option value="">None</option>${classOpts}</select>
+            </div>
+            <div style="flex: 1 1 180px;">
+              <label style="display: block; font-size: 0.85em; color: var(--muted); margin-bottom: 4px;">About teacher (optional)</label>
+              <select id="composer-about-teacher" style="width: 100%;"><option value="">None</option>${staffOpts}</select>
+            </div>
+          </div>
+          <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+            <div style="flex: 1 1 140px;">
+              <label style="display: block; font-size: 0.85em; color: var(--muted); margin-bottom: 4px;">Category</label>
+              <select id="composer-category" style="width: 100%;" onchange="document.getElementById('composer-custom-category-wrap').style.display = this.value === 'custom' ? 'block' : 'none'">
+                <option value="general">General</option>
+                <option value="academic">Academic</option>
+                <option value="behavior">Behavior</option>
+                <option value="responsibility">Responsibility</option>
+                <option value="attendance">Attendance</option>
+                <option value="communication">Communication</option>
+                <option value="custom">Custom…</option>
+              </select>
+            </div>
+            <div style="flex: 1 1 130px;">
+              <label style="display: block; font-size: 0.85em; color: var(--muted); margin-bottom: 4px;">Sentiment</label>
+              <select id="composer-sentiment" style="width: 100%;">
+                <option value="neutral">Neutral</option>
+                <option value="positive">Positive</option>
+                <option value="negative">Negative</option>
+              </select>
+            </div>
+            <div style="flex: 1 1 140px;">
+              <label style="display: block; font-size: 0.85em; color: var(--muted); margin-bottom: 4px;">Visibility</label>
+              <select id="composer-visibility" style="width: 100%;">
+                <option value="staff">Staff-visible</option>
+                <option value="private">Private (only me)</option>
+              </select>
+            </div>
+            <div style="flex: 1 1 140px;">
+              <label style="display: block; font-size: 0.85em; color: var(--muted); margin-bottom: 4px;">Date</label>
+              <input type="date" id="composer-date" value="${today}" style="width: 100%;">
+            </div>
+          </div>
+          <div id="composer-custom-category-wrap" style="display: none;">
+            <label style="display: block; font-size: 0.85em; color: var(--muted); margin-bottom: 4px;">Custom category name</label>
+            <input type="text" id="composer-custom-category" style="width: 100%;">
+          </div>
+          <div>
+            <label style="display: block; font-size: 0.85em; color: var(--muted); margin-bottom: 4px;">Note</label>
+            <textarea id="composer-note" rows="5" style="width: 100%; resize: vertical;" placeholder="Write the note…"></textarea>
+          </div>
+          <div style="display: flex; justify-content: flex-end; gap: 10px;">
+            <button class="btn btn-secondary" onclick="app.closeModal('note-composer')">Cancel</button>
+            <button class="btn btn-primary" onclick="app.saveComposedNote()">Save Note</button>
+          </div>
+        </div>`;
+      this.showModal('note-composer', '🗒️ New Note', content);
+      this._renderComposerStudentChips();
+    }
+
+    renderComposerStudentSuggestions() {
+      const input = document.getElementById('composer-student-input');
+      const box = document.getElementById('composer-student-suggestions');
+      if (!input || !box) return;
+      const q = input.value.trim().toLowerCase();
+      if (!q) { box.style.display = 'none'; return; }
+      const { people } = this._notesPeople || { people: {} };
+      const matches = Object.values(people)
+        .filter(p => p.user_type === 'student' && p.name.toLowerCase().includes(q) && !this._composerStudents.has(p.id))
+        .slice(0, 8);
+      if (!matches.length) { box.style.display = 'none'; return; }
+      box.innerHTML = matches.map(m => `<div style="padding: 8px 12px; cursor: pointer;" onmouseover="this.style.background='var(--bg)'" onmouseout="this.style.background=''" onclick="app.addComposerStudent('${m.id}')">${this.escapeHtml(m.name)}</div>`).join('');
+      box.style.display = 'block';
+    }
+
+    addComposerStudent(studentId) {
+      const p = (this._notesPeople?.people || {})[studentId];
+      if (!p) return;
+      this._composerStudents.set(studentId, p.name);
+      const input = document.getElementById('composer-student-input');
+      const box = document.getElementById('composer-student-suggestions');
+      if (input) input.value = '';
+      if (box) box.style.display = 'none';
+      this._renderComposerStudentChips();
+    }
+
+    removeComposerStudent(studentId) {
+      this._composerStudents.delete(studentId);
+      this._renderComposerStudentChips();
+    }
+
+    _renderComposerStudentChips() {
+      const el = document.getElementById('composer-student-chips');
+      if (!el) return;
+      el.innerHTML = [...this._composerStudents.entries()].map(([id, name]) =>
+        `<span style="display: inline-flex; align-items: center; gap: 6px; background: var(--bg); border: 1px solid var(--accent); border-radius: 999px; padding: 3px 10px; font-size: 0.85em;">${this.escapeHtml(name)} <span style="cursor: pointer; color: var(--muted);" onclick="app.removeComposerStudent('${id}')">✕</span></span>`
+      ).join('') || '<span style="color: var(--muted); font-size: 0.85em;">No students selected</span>';
+    }
+
+    async saveComposedNote() {
+      const val = id => (document.getElementById(id)?.value || '').trim();
+      const note = val('composer-note');
+      const classId = val('composer-class') || null;
+      const aboutTeacherId = val('composer-about-teacher') || null;
+      const studentIds = [...this._composerStudents.keys()];
+      if (!note) { this.showNotification('Write the note text first', 'error'); return; }
+      if (!studentIds.length && !classId && !aboutTeacherId) {
+        this.showNotification('Pick at least one target: student(s), a class, or a teacher', 'error');
+        return;
+      }
+      const base = {
+        classId,
+        aboutTeacherId,
+        category: val('composer-category') || 'general',
+        customCategory: val('composer-custom-category') || null,
+        sentiment: val('composer-sentiment') || 'neutral',
+        visibility: val('composer-visibility') || 'staff',
+        noteDate: val('composer-date') || null,
+        note
+      };
+      try {
+        if (studentIds.length) {
+          for (const sid of studentIds) {
+            await this._insertNote({ ...base, studentId: sid });
+          }
+        } else {
+          await this._insertNote(base);
+        }
+        this.closeModal('note-composer');
+        this.showNotification(`Note saved${studentIds.length > 1 ? ` for ${studentIds.length} students` : ''}`, 'success');
+        if (this.currentSection === 'notes') this.renderNotesSection();
+      } catch (err) {
+        console.error('Save note error:', err);
+        this.showNotification('Failed to save note: ' + err.message, 'error');
+      }
+    }
+
+    // ---- Edit / delete (routes to the right source table) ----
+
+    editUnifiedNote(source, noteId) {
+      const n = (this._notesState?.all || []).find(x => x.source === source && x.id === noteId);
+      if (!n) return;
+      const richFields = (source === 'unified' || source === 'student');
+      const content = `
+        <div style="display: flex; flex-direction: column; gap: 12px;">
+          ${richFields ? `
+          <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+            <div style="flex: 1 1 140px;">
+              <label style="display: block; font-size: 0.85em; color: var(--muted); margin-bottom: 4px;">Category</label>
+              <select id="edit-note-category" style="width: 100%;">
+                ${['general', 'academic', 'behavior', 'responsibility', 'attendance', 'communication', 'custom'].map(c => `<option value="${c}" ${n.category === c ? 'selected' : ''}>${c}</option>`).join('')}
+              </select>
+            </div>
+            <div style="flex: 1 1 130px;">
+              <label style="display: block; font-size: 0.85em; color: var(--muted); margin-bottom: 4px;">Sentiment</label>
+              <select id="edit-note-sentiment" style="width: 100%;">
+                ${['neutral', 'positive', 'negative'].map(s => `<option value="${s}" ${n.sentiment === s ? 'selected' : ''}>${s}</option>`).join('')}
+              </select>
+            </div>
+            ${source === 'unified' ? `
+            <div style="flex: 1 1 140px;">
+              <label style="display: block; font-size: 0.85em; color: var(--muted); margin-bottom: 4px;">Visibility</label>
+              <select id="edit-note-visibility" style="width: 100%;">
+                <option value="staff" ${n.visibility === 'staff' ? 'selected' : ''}>Staff-visible</option>
+                <option value="private" ${n.visibility === 'private' ? 'selected' : ''}>Private (only me)</option>
+              </select>
+            </div>` : ''}
+          </div>` : ''}
+          <div>
+            <label style="display: block; font-size: 0.85em; color: var(--muted); margin-bottom: 4px;">Note</label>
+            <textarea id="edit-note-text" rows="5" style="width: 100%; resize: vertical;">${this.escapeHtml(n.note)}</textarea>
+          </div>
+          <div style="display: flex; justify-content: flex-end; gap: 10px;">
+            <button class="btn btn-secondary" onclick="app.closeModal('note-edit')">Cancel</button>
+            <button class="btn btn-primary" onclick="app.saveUnifiedNoteEdit('${source}', '${noteId}')">Save</button>
+          </div>
+        </div>`;
+      this.showModal('note-edit', '✏️ Edit Note', content);
+    }
+
+    async saveUnifiedNoteEdit(source, noteId) {
+      const text = (document.getElementById('edit-note-text')?.value || '').trim();
+      if (!text) { this.showNotification('Note text cannot be empty', 'error'); return; }
+      const table = this._noteSourceTable(source);
+      const update = { note: text };
+      if (source === 'unified' || source === 'student') {
+        const cat = document.getElementById('edit-note-category')?.value;
+        const sent = document.getElementById('edit-note-sentiment')?.value;
+        if (cat) update.category = cat;
+        if (sent) update.sentiment = sent;
+      }
+      if (source === 'unified') {
+        const vis = document.getElementById('edit-note-visibility')?.value;
+        if (vis) update.visibility = vis;
+        update.updated_at = new Date().toISOString();
+        update.updated_by = this.userInfo.profile.id;
+      } else if (source === 'student') {
+        update.modified_at = new Date().toISOString();
+        update.modified_by = this.userInfo.profile.id;
+      } else {
+        update.updated_at = new Date().toISOString();
+      }
+      try {
+        const { error } = await this.auth.supabase.from(table).update(update).eq('id', noteId);
+        if (error) throw error;
+        this.closeModal('note-edit');
+        this.showNotification('Note updated', 'success');
+        this.renderNotesSection();
+      } catch (err) {
+        console.error('Update note error:', err);
+        this.showNotification('Failed to update note: ' + err.message, 'error');
+      }
+    }
+
+    async deleteUnifiedNote(source, noteId) {
+      if (!confirm('Delete this note? This cannot be undone.')) return;
+      try {
+        const { error } = await this.auth.supabase.from(this._noteSourceTable(source)).delete().eq('id', noteId);
+        if (error) throw error;
+        this.showNotification('Note deleted', 'success');
+        this.renderNotesSection();
+      } catch (err) {
+        console.error('Delete note error:', err);
+        this.showNotification('Failed to delete note: ' + err.message, 'error');
+      }
+    }
+
     // ==================== IRL PURCHASES SYSTEM ====================
 
     // ==================== CLASS SHEETS (per-class spreadsheets) ====================
@@ -40652,6 +41322,8 @@
         { cmd: '/recent', desc: 'Recently viewed students', icon: '🕐' },
         { cmd: '/stats', desc: 'System statistics', icon: '📊' },
         { cmd: '/top [n]', desc: 'Top RTC earners', icon: '🏆' },
+        { cmd: '/note <target>: <text>', desc: 'Add a note (student, class, or teacher)', icon: '🗒️' },
+        { cmd: '/notes [filters]', desc: 'Search notes', icon: '📋' },
         { cmd: '/help', desc: 'Show all commands', icon: '❓' },
         { cmd: '/clear', desc: 'Clear terminal', icon: '🧹' },
       ].filter(c => !q || c.cmd.includes(q) || c.desc.toLowerCase().includes(q));
@@ -40930,7 +41602,14 @@
       } else if (cmd === '/attendance') {
         await this.terminalShowAttendance(args.join(' '), {});
       } else if (cmd === '/undo') {
-        await this.terminalUndoRTC();
+        await this.terminalUndoLast();
+
+      // Notes commands
+      } else if (cmd === '/note') {
+        const raw = args.join(' ');
+        await this.terminalAddNote(this._entitiesFromRaw(/^notes?\b/i.test(raw) ? raw : 'note ' + raw));
+      } else if (cmd === '/notes') {
+        await this.terminalShowNotes(this._entitiesFromRaw('show notes ' + args.join(' ')));
 
       // Analytics commands
       } else if (cmd === '/stats') {
@@ -40984,6 +41663,7 @@
         this.terminalPrint(`I'm not sure what you mean. Try using a command like:`, '#ffd36a');
         this.terminalPrint(`  • "How much gold does [name] have?"`, '#97a2b0');
         this.terminalPrint(`  • "Give [name] [amount]"`, '#97a2b0');
+        this.terminalPrint(`  • "Note for [name]: forgot homework"`, '#97a2b0');
         this.terminalPrint(`  • "Show stats" or "List students"`, '#97a2b0');
         return;
       }
@@ -41025,7 +41705,8 @@
         'history', 'transactions', 'balance', 'rtc',
         'add', 'give', 'award', 'set', 'remove', 'subtract', 'take',
         'show', 'view', 'read', 'check', 'info', 'lookup', 'again',
-        'attendance', 'absent', 'absences', 'tardy', 'present'
+        'attendance', 'absent', 'absences', 'tardy', 'present',
+        'note', 'notes'
       ];
 
       // Check if the command contains action words but no student name
@@ -41137,7 +41818,9 @@
         count: null,
         subject: null,
         sinceDate: null,
-        sinceLabel: null
+        sinceLabel: null,
+        original,      // raw text — note executors need original casing/punctuation
+        normalized
       };
 
       // Extract numbers — but NEVER treat a number that's part of a time
@@ -41426,7 +42109,7 @@
       // mention RTC currency, never let it trigger a balance change. Stops
       // "give eli's attendance in math over the last 5 weeks" from awarding RTC.
       // (gold/coins/points are already normalized to "rtc" upstream.)
-      const hasInfoNoun = /\b(attendance|attendances|absent|absence|absences|tardy|tardies|tardiness|grade|grades|gpa|score|scores)\b/.test(normalized);
+      const hasInfoNoun = /\b(attendance|attendances|absent|absence|absences|tardy|tardies|tardiness|grade|grades|gpa|score|scores|note|notes)\b/.test(normalized);
       const hasCurrency = /\brtc\b/.test(normalized);
       const blockMutation = hasInfoNoun && !hasCurrency;
 
@@ -41440,6 +42123,17 @@
             /take (that|it) back/,
             /never ?mind/,
             /scratch that/
+          ]
+        },
+        // ADD_NOTE (before the RTC mutators: "take a note: eli owes 5 problems"
+        // must never parse as "take 5 from eli"). The verb must sit directly
+        // before "note" so "add 5 rtc to eli, note: late" still reads as RTC.
+        {
+          intent: 'ADD_NOTE',
+          patterns: [
+            /\b(add|write|leave|make|create|log|record|take|save)\s+(a\s+|an\s+)?(quick\s+|new\s+|private\s+|staff\s+)?note\b/,
+            /^note\b/,
+            /\bnote that\b/
           ]
         },
         // SUBTRACT_RTC (most specific verbs first - order matters, the
@@ -41467,6 +42161,17 @@
           ],
           requiresStudent: true,
           requiresAmount: true
+        },
+        // VIEW_NOTES (after the RTC mutators so "remove 5 rtc from eli for not
+        // taking notes" still subtracts; before VIEW_ATTENDANCE so "notes about
+        // attendance" searches notes)
+        {
+          intent: 'VIEW_NOTES',
+          patterns: [
+            /\bnotes\b/,
+            /\b(show|view|see|read|find|search|list|pull up|bring up|any|what|got|have)\b.*\bnote\b/,
+            /\bnote\b.*\b(for|on|about|from)\b/
+          ]
         },
         // VIEW_ATTENDANCE (before VIEW_STUDENT so "show eli's attendance" works)
         {
@@ -41657,7 +42362,15 @@
           break;
 
         case 'UNDO_RTC':
-          await this.terminalUndoRTC();
+          await this.terminalUndoLast();
+          break;
+
+        case 'ADD_NOTE':
+          await this.terminalAddNote(entities);
+          break;
+
+        case 'VIEW_NOTES':
+          await this.terminalShowNotes(entities);
           break;
 
         default:
@@ -41675,7 +42388,11 @@
     • "How much gold does [student] have?"<br>
     • "Give [student] 50 RTC for great work"<br>
     • "What's [student]'s attendance in math this month?"<br>
-    • "Undo that" (reverses my last RTC change)<br>
+    • "Note for [student]: forgot homework again"<br>
+    • "Add a private note for [student]: check in tomorrow"<br>
+    • "Show me notes about [student/class/teacher] from last month"<br>
+    • "Any notes mentioning homework this week?"<br>
+    • "Undo that" (reverses my last RTC change or note)<br>
     • "Show me the top 10 students"<br>
     • "What's John's transaction history?"<br>
     • "List all active students"
@@ -42031,7 +42748,7 @@
     async terminalUndoRTC() {
       const last = this._nlpContext?.lastTransaction;
       if (!last) {
-        this.terminalPrintError("There's nothing recent to undo. I can only undo an RTC change I just made.");
+        this.terminalPrintError("There's nothing recent to undo. I can only undo an RTC change or a note I just made.");
         return;
       }
 
@@ -42057,6 +42774,218 @@
 
       // Only the most recent action can be undone, and only once
       this._nlpContext.lastTransaction = null;
+    }
+
+    // ---- Notes (Riven ↔ unified notes system) ----
+
+    _entitiesFromRaw(raw) {
+      // Run the normal NLP extraction pipeline on raw text (used by /note, /notes)
+      const normalized = this._normalizeInput(raw);
+      const resolved = this._resolvePronouns(normalized);
+      return this._extractEntities(resolved, raw);
+    }
+
+    async terminalUndoLast() {
+      // Generic undo: whichever happened most recently — a note or an RTC change
+      const ln = this._nlpContext?.lastNoteAction;
+      const lt = this._nlpContext?.lastTransaction;
+      if (ln && (!lt || ln.timestamp > (lt.timestamp || 0))) {
+        await this.terminalUndoNote();
+      } else {
+        await this.terminalUndoRTC();
+      }
+    }
+
+    async terminalUndoNote() {
+      const last = this._nlpContext?.lastNoteAction;
+      if (!last) {
+        this.terminalPrintError("There's no recent note of mine to undo.");
+        return;
+      }
+      const { error } = await this.auth.supabase.from('notes').delete().eq('id', last.id);
+      if (error) {
+        this.terminalPrintError('Could not remove that note: ' + error.message);
+        return;
+      }
+      this._naturalSuccess([
+        `Undone — I deleted the note ${last.desc}.`,
+        `Scratched that note ${last.desc}.`
+      ]);
+      this._nlpContext.lastNoteAction = null;
+    }
+
+    _rivenMatchClass(text) {
+      // Match a class by name words appearing in the text
+      const classes = this._notesPeople?.classes || {};
+      const t = text.toLowerCase();
+      let best = null;
+      for (const [id, name] of Object.entries(classes)) {
+        const words = name.toLowerCase().split(/\s+/).filter(w => w.length >= 3);
+        if (words.length && words.every(w => t.includes(w))) {
+          if (!best || name.length > best.name.length) best = { id, name };
+        }
+      }
+      return best;
+    }
+
+    _rivenMatchTeacher(text) {
+      // Match a staff member by first or last name appearing as a whole word
+      const people = this._notesPeople?.people || {};
+      const t = text.toLowerCase();
+      let best = null;
+      for (const p of Object.values(people)) {
+        if (p.user_type !== 'teacher' && p.user_type !== 'admin') continue;
+        const parts = p.name.toLowerCase().split(/\s+/).filter(w => w.length >= 3);
+        for (const part of parts) {
+          if (new RegExp('\\b' + part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b').test(t)) {
+            // Prefer last-name matches with an honorific nearby
+            const score = new RegExp('\\b(mr|mrs|ms|miss|mister|teacher)\\.?\\s+' + part).test(t) ? 2 : 1;
+            if (!best || score > best.score) best = { id: p.id, name: p.name, score };
+          }
+        }
+      }
+      return best;
+    }
+
+    async terminalAddNote(entities) {
+      const original = entities.original || '';
+      await this._loadNotesPeople();
+
+      // 1. Pull out the note text
+      let text = null, textIdx = -1;
+      let m = original.match(/\bnote\s+that\s+/i);
+      if (m) { textIdx = m.index; text = original.slice(m.index + m[0].length); }
+      if (!text) {
+        const ci = original.indexOf(':');
+        if (ci > -1 && /\bnotes?\b/i.test(original.slice(0, ci + 12))) {
+          textIdx = ci; text = original.slice(ci + 1);
+        }
+      }
+      if (!text) { m = original.match(/\bsaying\s+/i); if (m) { textIdx = m.index; text = original.slice(m.index + m[0].length); } }
+      text = (text || '').trim().replace(/^["'""]|["'""]$/g, '').trim();
+      if (!text) {
+        this.terminalPrintError('Tell me the note like: "note for Eli: forgot homework", "add a class note for Algebra: great discussion", or "note that Charlotte helped clean up".');
+        return;
+      }
+
+      // 2. Resolve targets from the command part (everything before the note text)
+      const cmdPart = textIdx > -1 ? original.slice(0, textIdx) : original;
+      const cmdLower = cmdPart.toLowerCase();
+      const honorific = /\b(mr|mrs|ms|miss|mister|teacher)\b/i.test(cmdPart);
+
+      const classMatch = this._rivenMatchClass(cmdPart);
+      const teacherMatch = this._rivenMatchTeacher(cmdPart);
+      let student = entities.student?.student || null;
+      // If the name resolved to a fuzzy student but the phrasing points at a
+      // teacher ("note about Mr. Smith"), trust the teacher match.
+      if (student && teacherMatch && honorific && !cmdLower.includes((student.first_name || '').toLowerCase())) {
+        student = null;
+      }
+
+      if (!student && !classMatch && !(teacherMatch && (honorific || /\babout\b/.test(cmdLower)))) {
+        this.terminalPrintError("Who or what is this note about? Name a student, a class, or a teacher — e.g. \"note for Eli: ...\".");
+        return;
+      }
+
+      // 3. Attributes from phrasing
+      const visibility = /\bprivate\b/i.test(cmdPart) ? 'private' : 'staff';
+      const sentiment = /\b(positive|praise|kudos|compliment|good)\b/i.test(cmdLower) ? 'positive'
+        : /\b(negative|concern|warning|incident|bad)\b/i.test(cmdLower) ? 'negative' : 'neutral';
+      const category = ['academic', 'behavior', 'responsibility', 'attendance', 'communication']
+        .find(c => new RegExp('\\b' + c + '\\b').test(cmdLower)) || 'general';
+
+      const useTeacher = teacherMatch && (honorific || /\babout\b/.test(cmdLower)) && !student;
+      try {
+        const saved = await this._insertNote({
+          studentId: student?.id || null,
+          classId: classMatch?.id || null,
+          aboutTeacherId: useTeacher ? teacherMatch.id : null,
+          category,
+          sentiment,
+          visibility,
+          note: text
+        });
+        const targets = [
+          student ? student.full_name : null,
+          classMatch ? classMatch.name : null,
+          useTeacher ? teacherMatch.name : null
+        ].filter(Boolean).join(' / ');
+        this._nlpContext = this._nlpContext || {};
+        this._nlpContext.lastNoteAction = { id: saved.id, desc: `for ${targets}`, timestamp: Date.now() };
+        this._naturalSuccess([
+          `Noted — saved a ${visibility === 'private' ? 'private ' : ''}note for ${targets}: "${text.length > 90 ? text.slice(0, 90) + '…' : text}"`,
+          `Got it. Note saved for ${targets}. Say "undo" if you didn't mean that.`
+        ]);
+      } catch (err) {
+        if (/notes.*(does not exist|schema cache)/i.test(err.message || '')) {
+          this.terminalPrintError('The notes table is not set up yet — an admin needs to run the unified_notes_system.sql migration.');
+        } else {
+          this.terminalPrintError('Could not save the note: ' + err.message);
+        }
+      }
+    }
+
+    async terminalShowNotes(entities) {
+      const original = entities.original || '';
+      this.terminalPrint('Looking through the notes…', '#6aa9ff');
+      try {
+        const [{ rows }] = await Promise.all([this._fetchAllNotes()]);
+        const lower = original.toLowerCase();
+        const student = entities.student?.student || null;
+        const classMatch = this._rivenMatchClass(lower);
+        const teacherMatch = this._rivenMatchTeacher(lower);
+
+        // Keyword: "about/mentioning/containing X" — unless X is just the
+        // student/class/teacher we already resolved
+        let keyword = null;
+        const km = original.match(/\b(?:about|mentioning|containing|regarding)\s+(.+)$/i);
+        if (km) {
+          keyword = km[1].replace(/\b(?:from|over|in)?\s*(?:the\s+)?(last|past|previous|this)\s+\S+(\s+(?:days?|weeks?|months?|years?))?\s*$/i, '').trim();
+          const names = [student?.full_name, classMatch?.name, teacherMatch?.name].filter(Boolean).map(n => n.toLowerCase());
+          if (!keyword || names.some(n => n.includes(keyword.toLowerCase()) || keyword.toLowerCase().includes(n.split(' ')[0]))) keyword = null;
+        }
+
+        const filters = {
+          studentIds: student ? [student.id] : [],
+          classId: classMatch?.id || '',
+          aboutTeacherId: (teacherMatch && !student && /\babout\b/.test(lower)) ? teacherMatch.id : '',
+          from: entities.sinceDate || '',
+          keyword: keyword || ''
+        };
+        const matched = this._filterNotesRows(rows, filters);
+
+        const parts = [];
+        if (student) parts.push('for ' + student.full_name);
+        if (classMatch) parts.push('in ' + classMatch.name);
+        if (filters.aboutTeacherId) parts.push('about ' + teacherMatch.name);
+        if (keyword) parts.push(`mentioning "${keyword}"`);
+        if (entities.sinceLabel) parts.push(entities.sinceLabel);
+        const scopeDesc = parts.length ? ' ' + parts.join(', ') : '';
+
+        if (!matched.length) {
+          this._showRivenMessage(`I didn't find any notes${this.escapeHtml(scopeDesc)}. You can add one — e.g. "note for Eli: great focus today".`, true);
+          return;
+        }
+
+        const shown = matched.slice(0, 8);
+        let html = `<div style="font-weight: 600; margin-bottom: 8px;">Found ${matched.length} note${matched.length === 1 ? '' : 's'}${this.escapeHtml(scopeDesc)}:</div>`;
+        shown.forEach(n => {
+          const who = [n.student_name, n.class_name, n.about_teacher_name].filter(Boolean).join(' · ');
+          const dot = n.sentiment === 'positive' ? '🟢' : (n.sentiment === 'negative' ? '🔴' : '⚪');
+          html += `
+            <div style="background: rgba(0,0,0,0.12); border-radius: 8px; padding: 8px 12px; margin: 6px 0;">
+              <div style="font-size: 12px; color: var(--muted);">${dot} ${this.escapeHtml(who || 'General')} — ${n.note_date || ''} · ${this.escapeHtml(n.author_name)}${n.visibility === 'private' ? ' · 🔒' : ''}</div>
+              <div style="margin-top: 4px;">${this.escapeHtml(n.note)}</div>
+            </div>`;
+        });
+        if (matched.length > shown.length) {
+          html += `<div style="font-size: 12px; color: var(--muted); margin-top: 6px;">…and ${matched.length - shown.length} more.</div>`;
+        }
+        html += `<div style="margin-top: 8px;"><span style="color: var(--accent); cursor: pointer; text-decoration: underline;" onclick="app.showSection('notes')">Open the Notes tab</span> for full filtering.</div>`;
+        this._showRivenMessage(html, true);
+      } catch (err) {
+        this.terminalPrintError('Could not search notes: ' + err.message);
+      }
     }
 
     async terminalShowStats() {

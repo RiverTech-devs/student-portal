@@ -107,7 +107,7 @@ When a task says "teacher side" or "admin side," it almost always means `portal/
 - **RTC currency:** `rtc_transactions` (immutable ledger), `rtc_spend_categories`, `rtc_privileges`, `rtc_student_privileges`, `rtc_cosmetics`, `rtc_cosmetic_purchases`, `irl_purchases`, `irl_store_items`. Balance is mutated via the `process_rtc_transaction()` RPC; clients cannot directly update balances (RLS DENY).
 - **Messaging & notifications:** `notifications` (the in-app bell — only realtime-enabled table). Direct messages live in messaging tables; broadcast announcements write into `notifications` with `metadata.broadcast = true`.
 - **Activities & facilities:** `activities`, `activity_enrollments`, `activity_schedule`, `facilities`, `facility_bookings`, `school_events`.
-- **Student records:** `student_strikes`, `student_waivers`, `student_notes`, `teacher_class_notes`, `teacher_private_notes`, `student_medical_info`, `emergency_contacts`.
+- **Student records:** `student_strikes`, `student_waivers`, `student_notes`, `teacher_class_notes`, `teacher_private_notes`, `student_medical_info`, `emergency_contacts`. New unified notes live in `notes` (per-student / per-class / per-teacher targets, `visibility` private|staff) — see `unified_notes_system.sql`.
 - **Teacher tools:** `teacher_sheets` (per-class CSV-backed spreadsheets — class-scoped via `class_id`).
 - **School config:** `school_settings`, `school_documents`, `site_theme`, `button_color_scheme`.
 - **Enrollment & ops:** `enrollment_applications`, `bug_reports`, `material_requests`, `email_log`, missing/due-date notification tables.
@@ -127,6 +127,7 @@ RLS policies are strict and load-bearing. If a user "can't see something they sh
 - **Messaging & broadcasts** — direct messages between roles, plus admin broadcast announcements (with audience filters: Everyone / All Staff / All Students / All Parents / All Teachers, optionally narrowed by grade or class). Email forwarding via the `send-notification-email` edge function.
 - **Gradebook** — per-class teacher gradebook UI in `portal/index.html`, plus a separate per-class **Class Sheets** spreadsheet system (CSV-backed in `teacher_sheets`).
 - **Class Notes vs Class Sheets** — both live inside the per-class detail modal. Class Notes = simple dated notes (`teacher_class_notes`). Class Sheets = full spreadsheet editor scoped to one class.
+- **Unified Notes tab** — staff-only top-nav section (`notes-section`, `renderNotesSection()` in `portal/index.html`). Merges the new `notes` table with the three legacy notes tables into one filterable feed (students multi-select, class, author, about-teacher, scope, category, sentiment, visibility, date range, keyword). New notes are written to `notes` via `_insertNote()`. Riven reads/writes the same system (ADD_NOTE / VIEW_NOTES intents, `/note`, `/notes`, undo deletes the last note).
 - **Attendance** — daily/period attendance with auto-alerts on absences.
 - **Activities & facilities** — extracurriculars with schedules and rosters; facility booking system.
 - **Enrollment** — `enrollment/index.html` is a public multi-step form. Applications go to `enrollment_applications` for admin approval.
