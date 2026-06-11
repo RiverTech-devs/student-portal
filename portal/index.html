@@ -42312,6 +42312,8 @@
       rtcSynonyms.forEach(syn => {
         normalized = normalized.replace(new RegExp(`\\b${syn}\\b`, 'g'), 'rtc');
       });
+      // "5rtc" (no space) → "5 rtc" so the amount extractor picks it up
+      normalized = normalized.replace(/(\d+)rtc\b/g, '$1 rtc');
 
       // "give me X" / "get me X" is a read request, not an award — must run
       // before the give->add mapping below
@@ -43002,6 +43004,17 @@
           ],
           requiresClass: true
         },
+        // CLOSE_ALL_CLASSES — "close all my classes", "deactivate all classes"
+        // Must precede DELETE_CLASS so the bulk form wins over the single-class form.
+        {
+          intent: 'CLOSE_ALL_CLASSES',
+          w: 7, notIfNoteCommand: true,
+          patterns: [
+            /\b(close|deactivate|archive|shut down)\b.*\ball\b.*\bclass(es)?\b/,
+            /\ball\b.*\bclass(es)?\b.*\b(close|deactivate|archive|shut)\b/,
+            /\b(close|deactivate|archive)\b.*\b(every|each)\b.*\bclass(es)?\b/
+          ]
+        },
         // DELETE_CLASS — "archive the robotics class" (after UNENROLL so
         // "remove jordan from math class" stays an unenrollment)
         {
@@ -43196,9 +43209,10 @@
           intent: 'ADD_SHOP_ITEM',
           w: 6, notIfNoteCommand: true, notIfBank: true,
           patterns: [
-            { re: /\b(add|create|put|make|new)\b[^.]*\bto\s+(the\s+)?(shop|store|catalog)\b/, w: 7 },
-            { re: /\b(add|create|put)\b[^.]*\b(shop|store|catalog)\b[^.]*\bfor\s+\d+/, w: 7 },
-            { re: /\b(add|put)\b[^.]*\bitem\b[^.]*\bfor\s+\d+\s*rtc\b/, w: 7 }
+            { re: /\b(add|create|put|make|new)\b[^.]*\b(to|on|in)\s+(the\s+)?(shop|store|catalog|menu)\b/, w: 7 },
+            { re: /\b(add|create|put)\b[^.]*\b(shop|store|catalog|menu)\b[^.]*\bfor\s+\d+/, w: 7 },
+            { re: /\b(add|put)\b[^.]*\bitem\b[^.]*\bfor\s+\d+\s*rtc\b/, w: 7 },
+            { re: /\b(add|put)\b[^.]*\b(shop|store|catalog|menu)\b.*\bfor\s+\d+/, w: 6 }
           ]
         },
 
@@ -43596,7 +43610,7 @@
         const margin = second ? top.score - second.score : Infinity;
         const writeIntents = ['ADD_RTC', 'SUBTRACT_RTC', 'TRANSFER_RTC', 'GROUP_RTC', 'SET_GRADE',
           'MARK_ATTENDANCE', 'MARK_ATTENDANCE_GROUP', 'ENROLL_STUDENT', 'UNENROLL_STUDENT',
-          'MOVE_STUDENT', 'CREATE_CLASS', 'DELETE_CLASS', 'UPDATE_CONTACT', 'ADD_NOTE', 'DELETE_NOTE',
+          'MOVE_STUDENT', 'CREATE_CLASS', 'DELETE_CLASS', 'CLOSE_ALL_CLASSES', 'UPDATE_CONTACT', 'ADD_NOTE', 'DELETE_NOTE',
           'BUY_ITEM', 'BUY_PRIVILEGE', 'GRANT_PRIVILEGE', 'REVOKE_PRIVILEGE',
           'ADD_SHOP_ITEM', 'EDIT_SHOP_ITEM', 'REMOVE_SHOP_ITEM',
           'ADD_PRIVILEGE', 'EDIT_PRIVILEGE', 'REMOVE_PRIVILEGE'];
@@ -43915,6 +43929,10 @@
 
         case 'DELETE_CLASS':
           await this.terminalDeleteClass(entities);
+          break;
+
+        case 'CLOSE_ALL_CLASSES':
+          await this.terminalCloseAllClasses(entities);
           break;
 
         case 'RENAME_CLASS':
@@ -45624,6 +45642,39 @@
           this._naturalSuccess([
             `${row.name} is deactivated. Say "undo" to bring it back.`,
             `Done — ${row.name} is no longer active (recoverable).`
+          ]);
+        }
+      );
+    }
+
+    async terminalCloseAllClasses(entities) {
+      const isAdmin = this.userInfo.profile.user_type === 'admin';
+      const myId = this.userInfo.user.id;
+      // "close all my classes" closes only the caller's own classes; admin "close all" closes everything they teach
+      const targets = (this._terminalAllClasses || []).filter(c =>
+        c.teacher_id === myId || c.secondary_teacher_id === myId
+      );
+      if (!targets.length) {
+        this._showRivenMessage("You have no active classes to close.", true);
+        return;
+      }
+      const nameList = targets.map(c => `<b>${this.escapeHtml(c.name)}</b>`).join(', ');
+      const ids = targets.map(c => c.id);
+      this._requestConfirmation(
+        `Deactivate all ${targets.length} of your active classes? (${nameList})<br>Nothing is deleted — enrollments and grades stay, and they can be restored.`,
+        async () => {
+          const sb = this.auth.supabase;
+          const { error } = await sb.from('classes').update({ is_active: false }).in('id', ids);
+          if (error) throw error;
+          await this._loadTerminalClasses();
+          this._pushUndo(`deactivating all ${targets.length} classes`, async () => {
+            const { error: e } = await sb.from('classes').update({ is_active: true }).in('id', ids);
+            if (e) throw e;
+            await this._loadTerminalClasses();
+          });
+          this._naturalSuccess([
+            `Done — all ${targets.length} classes are deactivated. Say "undo" to bring them back.`,
+            `Closed ${targets.length} classes. Say "undo" to restore them all.`
           ]);
         }
       );
