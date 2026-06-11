@@ -41169,20 +41169,20 @@
                 <div style="font-weight: 600; font-size: 13px; margin-bottom: 2px;">View Students</div>
                 <div style="font-size: 11px; color: var(--muted);">List all students</div>
               </button>
-              <button onclick="app.terminalQuickAction('stats')" class="card" style="padding: 14px; text-align: left; cursor: pointer; border: 1px solid var(--border); transition: all 0.2s; background: var(--card);" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
-                <div style="font-size: 20px; margin-bottom: 4px;">📊</div>
-                <div style="font-weight: 600; font-size: 13px; margin-bottom: 2px;">Statistics</div>
-                <div style="font-size: 11px; color: var(--muted);">View RTC stats</div>
-              </button>
-              <button onclick="app.terminalQuickAction('recent')" class="card" style="padding: 14px; text-align: left; cursor: pointer; border: 1px solid var(--border); transition: all 0.2s; background: var(--card);" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
-                <div style="font-size: 20px; margin-bottom: 4px;">🕐</div>
-                <div style="font-weight: 600; font-size: 13px; margin-bottom: 2px;">Recent</div>
-                <div style="font-size: 11px; color: var(--muted);">Recently viewed</div>
-              </button>
               <button onclick="app.terminalQuickAction('help')" class="card" style="padding: 14px; text-align: left; cursor: pointer; border: 1px solid var(--border); transition: all 0.2s; background: var(--card);" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
                 <div style="font-size: 20px; margin-bottom: 4px;">❓</div>
-                <div style="font-weight: 600; font-size: 13px; margin-bottom: 2px;">Help</div>
-                <div style="font-size: 11px; color: var(--muted);">What I can do</div>
+                <div style="font-weight: 600; font-size: 13px; margin-bottom: 2px;">What can I do</div>
+                <div style="font-size: 11px; color: var(--muted);">Everything I understand</div>
+              </button>
+              <button onclick="app.terminalQuickAction('briefing')" class="card" style="padding: 14px; text-align: left; cursor: pointer; border: 1px solid var(--border); transition: all 0.2s; background: var(--card);" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
+                <div style="font-size: 20px; margin-bottom: 4px;">📋</div>
+                <div style="font-weight: 600; font-size: 13px; margin-bottom: 2px;">Briefing</div>
+                <div style="font-size: 11px; color: var(--muted);">What needs attention</div>
+              </button>
+              <button onclick="app.clearTerminalChat()" class="card" style="padding: 14px; text-align: left; cursor: pointer; border: 1px solid var(--border); transition: all 0.2s; background: var(--card);" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
+                <div style="font-size: 20px; margin-bottom: 4px;">🧹</div>
+                <div style="font-weight: 600; font-size: 13px; margin-bottom: 2px;">Clear chat</div>
+                <div style="font-size: 11px; color: var(--muted);">Start fresh</div>
               </button>
             </div>
           </details>
@@ -41284,11 +41284,181 @@
       const out = document.getElementById('terminal-output');
       if (!out) return;
       if (this._terminalChatObserver) this._terminalChatObserver.disconnect();
-      this._terminalChatObserver = new MutationObserver(() => {
+      this._terminalChatObserver = new MutationObserver((mutations) => {
+        // Make any student/class name in new chat content clickable (guarded
+        // against the mutations we cause ourselves)
+        if (!this._linkifyBusy) {
+          this._linkifyBusy = true;
+          try {
+            mutations.forEach(m => m.addedNodes.forEach(n => {
+              if (n.nodeType === 1) this._linkifyTerminalEntities(n);
+              else if (n.nodeType === 3 && n.parentElement) this._linkifyTerminalEntities(n.parentElement);
+            }));
+          } catch (e) { console.warn('linkify:', e); }
+          this._linkifyBusy = false;
+        }
         clearTimeout(this._terminalPersistTimer);
         this._terminalPersistTimer = setTimeout(() => this._persistTerminalChat(), 400);
       });
       this._terminalChatObserver.observe(out, { childList: true, subtree: true, characterData: true });
+      // Linkify whatever is already there (restored chat included)
+      this._linkifyBusy = true;
+      try { this._linkifyTerminalEntities(out); } catch (e) {}
+      this._linkifyBusy = false;
+    }
+
+    // ---- Clickable entities: students/classes in chat open a mini popup ----
+
+    _rivenEntityIndex() {
+      const stamp = (this._terminalAllStudents?.length || 0) * 1000 + (this._terminalAllClasses?.length || 0);
+      if (this._entityIndexCache && this._entityIndexCache.stamp === stamp) return this._entityIndexCache;
+      const map = {};
+      const parts = [];
+      const esc = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const add = (text, type, id) => {
+        if (!text || text.length < 3) return;
+        const key = text.toLowerCase();
+        if (map[key]) return; // first registration wins (longest sorted first below)
+        map[key] = { type, id };
+      };
+      (this._terminalAllStudents || []).forEach(s => add(s.full_name, 'student', s.id));
+      (this._terminalAllClasses || []).forEach(c => add(c.name, 'class', c.id));
+      const keys = Object.keys(map).sort((a, b) => b.length - a.length);
+      keys.forEach(k => {
+        // word-boundaries only where the name starts/ends with a word char
+        // (class names can end in "°" etc.)
+        const lead = /^\w/.test(k) ? '\\b' : '';
+        const tail = /\w$/.test(k) ? '\\b' : '';
+        parts.push(lead + esc(k) + tail);
+      });
+      this._entityIndexCache = {
+        stamp, map,
+        regex: keys.length ? new RegExp('(' + parts.join('|') + ')', 'gi') : null
+      };
+      return this._entityIndexCache;
+    }
+
+    _linkifyTerminalEntities(root) {
+      const { map, regex } = this._rivenEntityIndex();
+      if (!regex || !root) return;
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+        acceptNode: (node) => {
+          if (!node.nodeValue || node.nodeValue.length < 3) return NodeFilter.FILTER_REJECT;
+          // never inside interactive elements or existing links
+          let el = node.parentElement;
+          while (el && el !== root.parentElement) {
+            if (el.tagName === 'BUTTON' || el.tagName === 'A' || el.tagName === 'INPUT'
+              || el.classList?.contains('riven-ent') || el.hasAttribute?.('onclick')) {
+              return NodeFilter.FILTER_REJECT;
+            }
+            el = el.parentElement;
+          }
+          return NodeFilter.FILTER_ACCEPT;
+        }
+      });
+      const targets = [];
+      while (walker.nextNode()) targets.push(walker.currentNode);
+      targets.forEach(node => {
+        const text = node.nodeValue;
+        regex.lastIndex = 0;
+        if (!regex.test(text)) return;
+        regex.lastIndex = 0;
+        const frag = document.createDocumentFragment();
+        let last = 0, m;
+        while ((m = regex.exec(text)) !== null) {
+          const ent = map[m[0].toLowerCase()];
+          if (!ent) continue;
+          if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+          const span = document.createElement('span');
+          span.className = 'riven-ent';
+          span.textContent = m[0];
+          span.style.cssText = 'text-decoration: underline dotted; text-underline-offset: 3px; cursor: pointer;';
+          span.setAttribute('onclick', `app._rivenEntityPopup('${ent.type}','${ent.id}')`);
+          frag.appendChild(span);
+          last = m.index + m[0].length;
+        }
+        if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+        node.parentNode.replaceChild(frag, node);
+      });
+    }
+
+    _showRivenPopup(html) {
+      this._closeRivenPopup();
+      const overlay = document.createElement('div');
+      overlay.id = 'riven-popup-overlay';
+      overlay.style.cssText = 'position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 10500; display: flex; align-items: center; justify-content: center; padding: 20px;';
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) this._closeRivenPopup(); });
+      overlay.innerHTML = `<div style="background: #f2e6c9; color: #3d2817; border: 2px solid #b08d5a; border-radius: 14px; max-width: 430px; width: 100%; max-height: 70vh; overflow-y: auto; padding: 18px 20px; box-shadow: 0 18px 50px rgba(0,0,0,0.5); position: relative;">
+        <span onclick="app._closeRivenPopup()" style="position: absolute; top: 8px; right: 12px; cursor: pointer; font-size: 18px; color: #6b5236;">✕</span>${html}</div>`;
+      document.body.appendChild(overlay);
+      this._popupEsc = (e) => { if (e.key === 'Escape') this._closeRivenPopup(); };
+      document.addEventListener('keydown', this._popupEsc);
+    }
+
+    _closeRivenPopup() {
+      document.getElementById('riven-popup-overlay')?.remove();
+      if (this._popupEsc) { document.removeEventListener('keydown', this._popupEsc); this._popupEsc = null; }
+    }
+
+    _popupActionBtn(label, command, pinClassId = null) {
+      const pin = pinClassId ? `app._terminalPinnedClass='${pinClassId}';` : '';
+      return `<button onclick="app._closeRivenPopup(); ${pin} app.executeTerminalCommand('${command.replace(/'/g, '&#39;')}').then(() => { app._terminalPinnedClass = null; })"
+        style="padding: 5px 12px; border-radius: 8px; border: 1px solid #b08d5a; background: rgba(176,141,90,0.15); color: #3d2817; cursor: pointer; font-size: 12px; font-weight: 600;">${label}</button>`;
+    }
+
+    async _rivenEntityPopup(type, id) {
+      if (type === 'student') return this._rivenPopupStudent(id);
+      return this._rivenPopupClass(id);
+    }
+
+    async _rivenPopupStudent(id) {
+      const s = (this._terminalAllStudents || []).find(x => x.id === id);
+      if (!s) return;
+      this._showRivenPopup(`<div style="font-weight: 700; font-size: 16px; margin-bottom: 6px;">👤 ${this.escapeHtml(s.full_name)}</div><div style="color: #6b5236;">Loading…</div>`);
+      const { data: enr } = await this.auth.supabase
+        .from('class_enrollments').select('class_id').eq('student_id', id).eq('status', 'active');
+      const classNames = {};
+      (this._terminalAllClasses || []).forEach(c => { classNames[c.id] = c.name; });
+      const classes = [...new Set((enr || []).map(e => classNames[e.class_id]).filter(Boolean))].sort();
+      const n = s.full_name;
+      this._showRivenPopup(`
+        <div style="font-weight: 700; font-size: 16px; margin-bottom: 8px;">👤 ${this.escapeHtml(n)}</div>
+        <div style="line-height: 1.9; font-size: 13px;">
+          <span style="color: #f39c12; font-weight: 700;">${s.rtc_balance || 0} RTC</span> ·
+          <span style="color: ${s.account_status === 'active' ? '#2f6b6d' : '#b05f24'};">${this.escapeHtml(s.account_status || 'active')}</span><br>
+          ${this.escapeHtml(s.email || '')}<br>
+          <span style="color: #6b5236;">Classes (${classes.length}):</span> ${this.escapeHtml(classes.join(', ') || '—')}
+        </div>
+        <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px;">
+          ${this._popupActionBtn('🎓 Grades', `what are ${n} grades`)}
+          ${this._popupActionBtn('📅 Attendance', `show ${n} attendance`)}
+          ${this._popupActionBtn('🗒️ Notes', `show notes for ${n}`)}
+          ${this._popupActionBtn('📇 Contact', `show ${n} contact info`)}
+          ${this._popupActionBtn('💰 History', `show ${n} history`)}
+        </div>`);
+    }
+
+    async _rivenPopupClass(id) {
+      const c = (this._terminalAllClasses || []).find(x => x.id === id);
+      if (!c) return;
+      this._showRivenPopup(`<div style="font-weight: 700; font-size: 16px; margin-bottom: 6px;">📚 ${this.escapeHtml(c.name)}</div><div style="color: #6b5236;">Loading…</div>`);
+      const { data: enr } = await this.auth.supabase
+        .from('class_enrollments').select('student_id').eq('class_id', id).eq('status', 'active');
+      const names = {};
+      (this._terminalAllStudents || []).forEach(s => { names[s.id] = s.full_name; });
+      const roster = (enr || []).map(e => names[e.student_id] || '').filter(Boolean).sort();
+      this._showRivenPopup(`
+        <div style="font-weight: 700; font-size: 16px; margin-bottom: 8px;">📚 ${this.escapeHtml(c.name)}</div>
+        <div style="line-height: 1.9; font-size: 13px;">
+          Teacher: <b>${this.escapeHtml(c.teacher_name || '—')}</b>${c.secondary_teacher_name ? ` (with ${this.escapeHtml(c.secondary_teacher_name)})` : ''}<br>
+          Subject: ${this.escapeHtml(c.subject || '—')} · ${roster.length} student${roster.length === 1 ? '' : 's'}<br>
+          <span style="color: #6b5236; font-size: 12px;">${this.escapeHtml(roster.slice(0, 12).join(', '))}${roster.length > 12 ? `, +${roster.length - 12} more` : ''}</span>
+        </div>
+        <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px;">
+          ${this._popupActionBtn('👥 Roster', `who is in ${c.name}`, c.id)}
+          ${this._popupActionBtn('🎓 Grades', `grades for ${c.name}`, c.id)}
+          ${this._popupActionBtn('ℹ️ Info', `tell me about ${c.name}`, c.id)}
+        </div>`);
     }
 
     _persistTerminalChat() {
@@ -42087,6 +42257,14 @@
       // "AI Game Design" can't fuzzy-match a student ("Jordan Games") out of
       // its own name and "english with dan" doesn't match a student "Dan".
       entities.classMatch = this._rivenMatchClass(normalized);
+      // "add jordan to that class" — an unnamed class reference resolves to
+      // the class we were just talking about (created, listed, graded…)
+      if (!entities.classMatch && /\b(that|this|it|the same|the new)\s+class\b/.test(normalized) && this._nlpContext?.lastClass) {
+        const lc = (this._terminalAllClasses || []).find(c => c.id === this._nlpContext.lastClass.id);
+        if (lc) {
+          entities.classMatch = { id: lc.id, name: lc.name, row: lc, fromContext: true, qualified: true, consumed: [] };
+        }
+      }
       let studentText = normalized;
       if (entities.classMatch) {
         for (const w of (entities.classMatch.consumed || [])) {
@@ -42597,9 +42775,10 @@
         {
           intent: 'GROUP_RTC',
           patterns: [
-            /\b(add|remove|subtract|deduct|take)\b.*\b(everyone|everybody|each|all of them|them all|the (whole )?class)\b/,
-            /\b(everyone|everybody|each( of them)?|all of them)\b.*\d+\s*(rtc)?\b/,
-            /\d+\s*(rtc\s+)?(to|for)\s+(everyone|everybody|each|all of them|the (whole )?class)\b/
+            /\b(add|remove|subtract|deduct|take)\b.*\b(everyone|everybody|each|all (of )?(them|those|these)|them all|(those|these) (students|kids)|the (whole )?class)\b/,
+            /\b(everyone|everybody|each( of them)?|all (of )?(them|those|these))\b.*\d+\s*(rtc)?\b/,
+            /\d+\s*(rtc\s+)?(to|for)\s+(everyone|everybody|each|all of them|the (whole )?class)\b/,
+            /\b(everyone|everybody|(all )?(those|these) (students|kids))\b.*\b(needs?|gets?|deserves?)\b.*\d+/
           ],
           requiresAmount: true,
           requiresGroupContext: true
@@ -42609,8 +42788,8 @@
         {
           intent: 'GROUP_BALANCES',
           patterns: [
-            /\b(rtc|balance|balances)\b.*\b(everyone|everybody|each( of them)?|all of them|them all)\b/,
-            /\b(everyone|everybody|each( of them)?|all of them|them all)\b.*\b(rtc|balance|balances|have|hold)\b/
+            /\b(rtc|balance|balances)\b.*\b(everyone|everybody|each( of them)?|all (of )?(them|those|these)|them all|(those|these) (students|kids))\b/,
+            /\b(everyone|everybody|each( of them)?|all (of )?(them|those|these)|them all|(those|these) (students|kids))\b.*\b(rtc|balance|balances|have|hold)\b/
           ],
           requiresGroupContext: true
         },
@@ -42675,7 +42854,10 @@
             /\bwho (teaches|runs|leads)\b/,
             /\b(tell me about|info (on|about)|details (on|about|of))\b/,
             /\bwhich\b.*\bclass\b.*\bis\b.*\b(that|this|it)\b/,
-            /\bwhich\b.*\bclass\b.*\bis\b\s+\w+(\s+\w+)?\s+in\b/
+            /\bwhich\b.*\bclass\b.*\bis\b\s+\w+(\s+\w+)?\s+in\b/,
+            // "show/give me the chess class" — a SPECIFIC class (singular
+            // "class" only; "show all classes" still reaches LIST_CLASSES)
+            /\b(show|pull up|bring up|open|view)\b.*\bclass\b/
           ],
           requiresClass: true
         },
@@ -44153,6 +44335,7 @@
           }]).select().single();
           if (error) throw error;
           await this._loadTerminalClasses();
+          this._rememberClass(data);
           this._pushUndo(`creating the class ${name}`, async () => {
             const { error: e } = await sb.from('classes').update({ is_active: false }).eq('id', data.id);
             if (e) throw e;
