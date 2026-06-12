@@ -45089,11 +45089,10 @@
       else if (!hasWebGPU) warnings.push(`⚠️ Your browser doesn't support WebGPU — responses will be slower (~20–40s). Use Chrome 113+ for best results.`);
       const warnHtml = warnings.length ? `<div style="margin-top:10px;padding:10px;background:rgba(217,122,58,0.15);border-radius:8px;font-size:13px;">${warnings.join('<br>')}</div>` : '';
       const html = `
-        <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px;max-width:480px;margin:10px 0;">
-          <div style="font-weight:700;font-size:15px;margin-bottom:8px;color:var(--accent);">✨ Smarter Riven</div>
-          <div style="font-size:13px;color:var(--text);line-height:1.6;">
-            Adds a local AI model that gives Riven real reasoning and personality.
-            I'll understand unclear commands, respond to conversation naturally, and add context to results.
+        <div style="line-height:1.6;font-size:14px;max-width:460px;">
+          <div style="font-size:13px;color:var(--text);">
+            Adds a local AI model that gives Riven real reasoning and personality —
+            it understands unclear commands, holds a natural conversation, and adds context to results.
           </div>
           ${warnHtml}
           <div style="margin-top:12px;font-size:12px;color:var(--muted);">
@@ -45103,16 +45102,25 @@
             • For a smooth load, close other heavy apps/tabs first<br>
             • Can be toggled off at any time
           </div>
-          <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;">
-            <button onclick="app._startPhi3Download()" class="btn" style="font-size:13px;padding:8px 16px;">
+          <div id="riven-dl-progress" style="display:none;margin-top:18px;">
+            <div id="riven-dl-label" style="font-size:12px;color:var(--muted);margin-bottom:6px;">Starting…</div>
+            <div style="height:10px;background:var(--border);border-radius:6px;overflow:hidden;">
+              <div id="riven-dl-bar" style="height:100%;width:0%;background:var(--accent);border-radius:6px;transition:width .25s ease;"></div>
+            </div>
+          </div>
+          <div id="riven-dl-actions" style="display:flex;gap:8px;margin-top:18px;flex-wrap:wrap;">
+            <button id="riven-dl-btn" onclick="app._startPhi3Download()" class="btn" style="font-size:13px;padding:8px 16px;">
               Download (~1 GB)
             </button>
             <button onclick="app.showRivenUpgradeInfo()" style="background:none;border:1px solid var(--border);color:var(--muted);border-radius:8px;padding:8px 14px;font-size:13px;cursor:pointer;">
               Learn more
             </button>
+            <button onclick="app.closeModal('riven-upgrade')" style="background:none;border:1px solid var(--border);color:var(--muted);border-radius:8px;padding:8px 14px;font-size:13px;cursor:pointer;">
+              Cancel
+            </button>
           </div>
         </div>`;
-      this._showRivenMessage(html, true);
+      this.showModal('riven-upgrade', '✨ Smarter Riven', html);
     }
 
     showRivenUpgradeInfo() {
@@ -45130,14 +45138,108 @@
           <p><b>Compatibility:</b> Works best on Chrome 113+ and Edge on desktop. Works on iOS Safari too, but slower (no WebGPU).</p>
           <p><b>Toggling:</b> The upgrade can be turned on or off mid-conversation at any time. The model stays in cache — re-enabling is instant.</p>
           <p style="font-size:12px;color:var(--muted);">Model: onnx-community/Llama-3.2-1B-Instruct · Quantization: 4-bit ONNX · Runtime: transformers.js v3.5</p>
+          <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
+            <p style="font-size:12px;color:var(--muted);margin-bottom:8px;">Uninstalling unloads the model and deletes the cached ~1 GB so you can re-run the download from scratch.</p>
+            <button onclick="app._confirmPhi3Uninstall()" style="background:none;border:1px solid var(--danger,#d9534f);color:var(--danger,#d9534f);border-radius:8px;padding:7px 14px;font-size:13px;cursor:pointer;">
+              🗑️ Uninstall &amp; clear cache
+            </button>
+          </div>
         </div>
       `);
     }
 
     async _startPhi3Download() {
       if (this._phi3State.loading || this._phi3State.pipe) return;
-      this._showRivenMessage(`Downloading the upgrade — this will take a minute or two on WiFi. You can keep using Riven while it loads.`, false);
+      // Reveal the in-modal progress bar and lock the download button instead of
+      // pushing a status line into the chat.
+      const prog = document.getElementById('riven-dl-progress');
+      if (prog) prog.style.display = 'block';
+      const btn = document.getElementById('riven-dl-btn');
+      if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; btn.style.cursor = 'default'; btn.textContent = 'Downloading…'; }
+      const label = document.getElementById('riven-dl-label');
+      if (label) label.textContent = 'Starting…';
       await this._phi3LoadModel(false);
+    }
+
+    _retryPhi3Download() {
+      const bar = document.getElementById('riven-dl-bar');
+      if (bar) bar.style.width = '0%';
+      this._phi3State.error = null;
+      this._phi3Progress = {};
+      this._startPhi3Download();
+    }
+
+    // Live progress for the modal bar. Aggregates loaded/total bytes across all
+    // model shards so the bar advances smoothly instead of resetting per file.
+    // No-ops when the modal isn't open (e.g. silent auto-load on page reload).
+    _renderDownloadProgress(pct, loaded, total) {
+      const bar = document.getElementById('riven-dl-bar');
+      const label = document.getElementById('riven-dl-label');
+      if (!bar && !label) return;
+      const wrap = document.getElementById('riven-dl-progress');
+      if (wrap && wrap.style.display === 'none') wrap.style.display = 'block';
+      if (bar) bar.style.width = Math.max(2, Math.round(pct)) + '%';
+      if (label) {
+        const mb = (b) => Math.round(b / 1048576);
+        label.textContent = total > 0
+          ? `Downloading… ${Math.round(pct)}%  (${mb(loaded)} / ${mb(total)} MB)`
+          : `Downloading… ${Math.round(pct)}%`;
+      }
+    }
+
+    // Terminal success state for the modal. Returns true if the modal was open
+    // (so the caller can skip the chat fallback message).
+    _phi3DownloadUIDone() {
+      const bar = document.getElementById('riven-dl-bar');
+      const label = document.getElementById('riven-dl-label');
+      const actions = document.getElementById('riven-dl-actions');
+      if (bar) bar.style.width = '100%';
+      if (label) { label.textContent = '✓ Ready! Smarter Riven is on.'; label.style.color = 'var(--text)'; }
+      if (actions) actions.innerHTML = `<button onclick="app.closeModal('riven-upgrade')" class="btn" style="font-size:13px;padding:8px 16px;">Done</button>`;
+      return !!(bar || label || actions);
+    }
+
+    _phi3DownloadUIFail(msg) {
+      const wrap = document.getElementById('riven-dl-progress');
+      const label = document.getElementById('riven-dl-label');
+      const actions = document.getElementById('riven-dl-actions');
+      if (wrap) wrap.style.display = 'block';
+      if (label) { label.textContent = '⚠️ ' + msg; label.style.color = 'var(--danger, #d9534f)'; }
+      if (actions) actions.innerHTML =
+        `<button id="riven-dl-btn" onclick="app._retryPhi3Download()" class="btn" style="font-size:13px;padding:8px 16px;">Try again</button>`
+        + `<button onclick="app.closeModal('riven-upgrade')" style="background:none;border:1px solid var(--border);color:var(--muted);border-radius:8px;padding:8px 14px;font-size:13px;cursor:pointer;">Close</button>`;
+      return !!(label || actions);
+    }
+
+    // Remove the in-memory model, the activation flag, AND the cached weights so
+    // the next activation re-downloads from scratch (lets the install flow be
+    // re-tested). Returns the list of cache buckets that were deleted.
+    async _phi3Uninstall() {
+      try { await this._phi3State?.pipe?.dispose?.(); } catch (_) {}
+      this._phi3State = { pipe: null, loading: false, active: false, progress: 0, error: null };
+      this._phi3History = [];
+      this._phi3Progress = {};
+      localStorage.removeItem('riven_upgrade_active');
+      const cleared = [];
+      if (window.caches?.keys) {
+        try {
+          for (const name of await caches.keys()) {
+            // transformers.js stores model shards under 'transformers-cache'
+            if (/transformers/i.test(name)) {
+              if (await caches.delete(name)) cleared.push(name);
+            }
+          }
+        } catch (_) {}
+      }
+      this._renderUpgradeButton();
+      return cleared;
+    }
+
+    async _confirmPhi3Uninstall() {
+      this.closeModal('riven-upgrade-info');
+      const cleared = await this._phi3Uninstall();
+      const detail = cleared.length ? ` (cleared ${cleared.join(', ')})` : ' (no cached files were present)';
+      this._showRivenMessage(`Smarter Riven uninstalled — model unloaded and cached files removed${detail}. Press ✨ Smarter Riven to download it again.`, false);
     }
 
     // Pre-flight crash guard. Browsers can't read free system RAM, so we gate on
@@ -45172,13 +45274,17 @@
       if (!safety.ok) {
         this._phi3State.error = safety.blockReason;
         this._renderUpgradeButton();
-        if (!silent) this._showRivenMessage(safety.blockReason, false);
+        const shown = this._phi3DownloadUIFail(safety.blockReason);
+        if (!silent && !shown) this._showRivenMessage(safety.blockReason, false);
         return;
       }
-      if (!silent && safety.warning) this._showRivenMessage(safety.warning, false);
+      if (!silent && safety.warning && !document.getElementById('riven-dl-progress')) {
+        this._showRivenMessage(safety.warning, false);
+      }
       this._phi3State.loading = true;
       this._phi3State.error = null;
       this._phi3State.progress = 0;
+      this._phi3Progress = {};
       this._renderUpgradeButton();
       try {
         // Llama-3.2-1B-Instruct — coherent, fast (~0.8s/reply on WebGPU), ~1GB in
@@ -45191,9 +45297,14 @@
           device: safety.device,
           dtype: safety.device === 'webgpu' ? 'q4f16' : 'q4',
           progress_callback: (info) => {
-            if (info.status === 'progress' && typeof info.progress === 'number') {
-              this._phi3State.progress = info.progress;
+            if (info.status === 'progress' && info.file && typeof info.total === 'number' && info.total > 0) {
+              this._phi3Progress[info.file] = { loaded: info.loaded || 0, total: info.total };
+              let l = 0, t = 0;
+              for (const f in this._phi3Progress) { l += this._phi3Progress[f].loaded; t += this._phi3Progress[f].total; }
+              const pct = t > 0 ? Math.min(100, (l / t) * 100) : 0;
+              this._phi3State.progress = pct;
               this._renderUpgradeButton();
+              this._renderDownloadProgress(pct, l, t);
             }
           }
         });
@@ -45205,7 +45316,8 @@
         localStorage.setItem('riven_upgrade_active', 'true');
         this._renderUpgradeButton();
         if (!silent) {
-          this._showRivenMessage(`Upgrade ready. I can now understand you better and respond more naturally — toggle it off anytime with the button above.`, false);
+          const shown = this._phi3DownloadUIDone();
+          if (!shown) this._showRivenMessage(`Upgrade ready. I can now understand you better and respond more naturally — toggle it off anytime with the button above.`, false);
         }
       } catch (err) {
         // Always release any half-initialised pipeline so a failed load can't leak
@@ -45220,9 +45332,10 @@
         if (!silent) {
           const oom = /out of memory|oom|allocation|insufficient|exceeds|too large/i.test(err.message || '');
           const msg = oom
-            ? `Couldn't load the upgrade — the device ran low on memory. Close other apps/tabs and try again, and I'll stay in standard mode for now.`
+            ? `Couldn't load the upgrade — the device ran low on memory. Close other apps/tabs and try again.`
             : `Couldn't load the upgrade: ${err.message}. Try Chrome 113+ on desktop, or check your connection.`;
-          this._showRivenMessage(msg, false);
+          const shown = this._phi3DownloadUIFail(msg);
+          if (!shown) this._showRivenMessage(msg, false);
         }
         console.error('[Phi-3 load error]', err);
       }
