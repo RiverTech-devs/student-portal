@@ -42251,7 +42251,7 @@
       // Track the last READ separately so "what about dylan?" works even
       // right after a write (set grade -> ask about another student)
       const readIntents = ['VIEW_STUDENT', 'VIEW_ATTENDANCE', 'VIEW_HISTORY', 'BALANCE_AT',
-        'VIEW_ENROLLMENTS', 'STUDENT_TENURE', 'VIEW_GRADES', 'VIEW_CONTACT', 'VIEW_NOTES', 'CLASS_STATS'];
+        'VIEW_ENROLLMENTS', 'STUDENT_TENURE', 'VIEW_GRADES', 'VIEW_CONTACT', 'VIEW_NOTES', 'CLASS_STATS', 'GRADE_ISSUES', 'ATTENDANCE_ISSUES'];
       if (readIntents.includes(intent.intent)) {
         this._nlpContext.lastReadIntent = intent.intent;
       }
@@ -43156,6 +43156,17 @@
           requiresStudent: true,
           requiresAmount: true
         },
+        // ADD_RTC (vague amount) — "give jordan some rtc", "hook jordan up"
+        // The executor asks "how much?" — no requiresAmount guard needed here
+        {
+          intent: 'ADD_RTC',
+          w: 5, notIfNoteCommand: true, notIfBank: true,
+          patterns: [
+            { re: /\b(give|award|add|throw|toss)\b.+\b(some|a (little|few|bit of|couple|handful))\b.*(rtc|gold|coin)/i, w: 5 },
+            { re: /\b(give|award|add)\b.+\b(some|a little|a few)\b.*(rtc|gold)/i, w: 5 }
+          ],
+          requiresStudent: true
+        },
         // CLASS_STATS — "how is AI class doing?", "which class has best grades?", "compare my classes"
         {
           intent: 'CLASS_STATS',
@@ -43230,7 +43241,10 @@
             /\b(privileges?|perks?)\b.*\b(does|do|has|have)\b/,
             /\b(has|have|does)\b.*\b(privileges?|perks?)\b/,
             { re: /\bshow\b.*\bprivileges?\b(?!.*\bcatalog\b)/, w: 5 },
-            /\bactive\b.*\bprivileges?\b/
+            /\bactive\b.*\bprivileges?\b/,
+            // "what does jordan have access to", "what is jordan allowed to do"
+            /\b(have|has)\s+access\s+to\b/,
+            /\bwhat\b.*(allowed|permitted|can do|able to do)\b/
           ],
           requiresStudent: true
         },
@@ -43510,7 +43524,21 @@
             /\battendance\b.*\b(last|this|past)\b.*(week|month|day|yesterday)\b/
           ]
         },
-        // VIEW_ATTENDANCE (before VIEW_STUDENT so "show eli's attendance" works)
+        // GRADE_ISSUES — "who is failing english", "which students are below 70"
+        // grade-based academic standing queries (distinct from attendance issues)
+        {
+          intent: 'GRADE_ISSUES',
+          w: 6,
+          patterns: [
+            /\bwho (is|are|has been|have been)?\s*(failing|struggling academically|below (passing|70|60|50)|not passing)\b/,
+            /\bwhich students? (is|are|has|have|need)?\s*(failing|struggling academically|below passing|at risk of failing)\b/,
+            /\b(failing|below passing|academic(ally)? (struggling|behind|at.?risk))\b.*(students?|kids?)\b/,
+            /\bwho (needs?|need) (a?\s*grade (boost|help)|to (pass|pull up|bring up) (their|the) grade)\b/,
+            /\bwho (is|are|might)?\s*(in danger of|at risk of)\s*(failing|not passing)\b/,
+            /\bshow (me )?(students?|who) (is |are )?(failing|below passing|not passing|under 70)\b/,
+            /\b(grade|academic)\s+(issues?|problems?|concerns?)\b/
+          ]
+        },
         // requiresStudentOrClass: class-only → terminalShowClassAttendance
         {
           intent: 'VIEW_ATTENDANCE',
@@ -44131,6 +44159,10 @@
 
         case 'MARK_ATTENDANCE_GROUP':
           await this.terminalMarkAttendanceGroup(entities);
+          break;
+
+        case 'GRADE_ISSUES':
+          await this.terminalGradeIssues(entities);
           break;
 
         case 'CLASS_INFO':
@@ -45153,6 +45185,17 @@
           'what does the ai class look like this quarter',
           'which class is struggling the most'
         ],
+        GRADE_ISSUES: [
+          'who is failing right now',
+          'which students are failing this quarter',
+          'any kids in danger of failing',
+          'who needs to bring up their grades',
+          'show me students who are academically struggling',
+          'who might not pass this quarter',
+          'which kids have the worst grades',
+          'who is at risk of not passing',
+          'students below 70 percent this quarter'
+        ],
         RELAY_ACTION: [
           'same for dylan',
           'do it for charlotte too',
@@ -45327,7 +45370,7 @@
           VIEW_CONTACT: 'pull up contact info', VIEW_HISTORY: 'show the transaction history',
           GROUP_BALANCES: 'show the group balances', ATTENDANCE_ISSUES: 'flag attendance problems',
           COMPARE_STUDENTS: 'compare two students', RELAY_ACTION: 'relay that command to another student',
-          CLASS_STATS: 'show class statistics'
+          CLASS_STATS: 'show class statistics', GRADE_ISSUES: 'show students below passing'
         };
         const label = labels[match.intent] || match.intent.replace(/_/g, ' ').toLowerCase();
         const finish = async () => {
@@ -45578,6 +45621,78 @@
         </div>`;
       });
       html += `<div style="color: var(--muted); font-size: 12px; margin-top: 6px;">Ask "show [name]'s attendance" for the full picture on anyone.</div>`;
+      this._showRivenMessage(html, true);
+    }
+
+    async terminalGradeIssues(entities) {
+      const sb = this.auth.supabase;
+      const quarter = await this._rivenCurrentQuarter();
+      if (!quarter) {
+        this._showRivenMessage('No active quarter configured — I can\'t look up grades right now.', true);
+        return;
+      }
+      this.terminalPrint('Checking grades this quarter…', '#6aa9ff');
+
+      // Threshold: extract "below 70" / "below 80" from input if mentioned
+      const normalized = entities.normalized || '';
+      const threshMatch = normalized.match(/\b(?:below|under|less than)\s*(\d{2,3})\b/);
+      const threshold = threshMatch ? parseInt(threshMatch[1]) : 70;
+
+      // Class filter
+      let classRow = null, allowedEnrIds = null;
+      if (entities.classMatch) {
+        const res = await this._rivenRequireClass(entities);
+        if (res.asked) return;
+        classRow = res.row;
+        if (classRow) {
+          const { data: enr } = await sb.from('class_enrollments')
+            .select('id, student_id').eq('class_id', classRow.id).eq('status', 'active');
+          allowedEnrIds = new Set((enr || []).map(e => e.id));
+        }
+      }
+
+      let q = sb.from('quarter_grade_snapshots')
+        .select('class_grade, enrollment_id, class_enrollments!inner(student_id, class_id)')
+        .eq('quarter_id', quarter.id);
+      if (classRow) q = q.eq('class_enrollments.class_id', classRow.id);
+      const { data: snaps, error } = await q;
+      if (error) { this.terminalPrintError('Could not load grades: ' + error.message); return; }
+
+      if (!this._terminalAllStudents?.length) await this._loadTerminalStudents();
+      const nameOf = {};
+      (this._terminalAllStudents || []).forEach(s => { nameOf[s.id] = s.full_name; });
+
+      // Per-student: collect classes where they're failing
+      const byStudent = {};
+      (snaps || []).forEach(snap => {
+        const grade = snap.class_grade;
+        if (grade == null || grade === 0) return;
+        const sid = snap.class_enrollments?.student_id;
+        if (!sid) return;
+        if (grade >= threshold) return;
+        if (!byStudent[sid]) byStudent[sid] = { name: nameOf[sid] || 'Unknown', failing: [], best: grade };
+        byStudent[sid].failing.push({ classId: snap.class_enrollments?.class_id, grade });
+        byStudent[sid].best = Math.min(byStudent[sid].best, grade);
+      });
+
+      const ranked = Object.values(byStudent).sort((a, b) => a.best - b.best);
+      if (!ranked.length) {
+        this._showRivenMessage(`No students are below ${threshold}% this quarter${classRow ? ' in ' + this.escapeHtml(classRow.name) : ''}. 🎉`, true);
+        return;
+      }
+
+      const classNameOf = {};
+      (this._terminalAllClasses || []).forEach(c => { classNameOf[c.id] = c.name; });
+
+      let html = `<div style="font-weight:600;margin-bottom:8px;">📉 Students below ${threshold}%${classRow ? ' in ' + this.escapeHtml(classRow.name) : ''} — ${this.escapeHtml(quarter.name || 'current quarter')}</div>`;
+      ranked.forEach(s => {
+        const classLabels = s.failing.map(f => `${classNameOf[f.classId] || '?'} (${f.grade}%)`).join(', ');
+        const color = s.best < 60 ? '#ff6a6a' : '#ffd36a';
+        html += `<div style="padding: 6px 10px; margin: 4px 0; background: rgba(255,255,255,0.03); border-left: 3px solid ${color}; border-radius: 4px;">
+          <b>${this.escapeHtml(s.name)}</b> — ${this.escapeHtml(classLabels)}
+        </div>`;
+      });
+      html += `<div style="color:var(--muted);font-size:12px;margin-top:6px;">${ranked.length} student${ranked.length !== 1 ? 's' : ''} below ${threshold}%. Ask "show [name]'s grades" for full details.</div>`;
       this._showRivenMessage(html, true);
     }
 
@@ -47491,6 +47606,11 @@
       }
       let m = !text && original.match(/\bnote\s+that\s+/i);
       if (m) { textIdx = m.index; text = original.slice(m.index + m[0].length); }
+      // "log that", "record that", "document that" — same extraction as "note that"
+      if (!text) {
+        m = original.match(/\b(log|record|document|jot\s+down)\s+that\s+/i);
+        if (m) { textIdx = m.index; text = original.slice(m.index + m[0].length); }
+      }
       if (!text) {
         const ci = original.indexOf(':');
         if (ci > -1 && /\bnotes?\b/i.test(original.slice(0, ci + 12))) {
