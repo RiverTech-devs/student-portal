@@ -45085,8 +45085,8 @@
         && /Safari/.test(navigator.userAgent)
         && !/Chrome|CriOS|FxiOS/.test(navigator.userAgent);
       const warnings = [];
-      if (isIOSSafari) warnings.push(`⚠️ <b>iOS Safari may be slow</b> — no WebGPU means responses run on WASM (10–20s). Works, but Chrome on desktop is much faster.`);
-      else if (!hasWebGPU) warnings.push(`⚠️ Your browser doesn't support WebGPU — responses will be slower (~10–20s). Use Chrome 113+ for best results.`);
+      if (isIOSSafari) warnings.push(`⚠️ <b>iOS Safari may be slow</b> — no WebGPU means responses run on WASM (20–40s). Works, but Chrome on desktop is much faster.`);
+      else if (!hasWebGPU) warnings.push(`⚠️ Your browser doesn't support WebGPU — responses will be slower (~20–40s). Use Chrome 113+ for best results.`);
       const warnHtml = warnings.length ? `<div style="margin-top:10px;padding:10px;background:rgba(217,122,58,0.15);border-radius:8px;font-size:13px;">${warnings.join('<br>')}</div>` : '';
       const html = `
         <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px;max-width:480px;margin:10px 0;">
@@ -45097,14 +45097,15 @@
           </div>
           ${warnHtml}
           <div style="margin-top:12px;font-size:12px;color:var(--muted);">
-            • Downloads once (~370 MB) and runs entirely on your device — nothing is sent anywhere<br>
+            • Downloads once (~1 GB) and runs entirely on your device — nothing is sent anywhere<br>
             • Stays cached so future sessions load in seconds<br>
-            • Takes ~2–4s to respond when active<br>
+            • Takes ~1–3s to respond when active<br>
+            • For a smooth load, close other heavy apps/tabs first<br>
             • Can be toggled off at any time
           </div>
           <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;">
             <button onclick="app._startPhi3Download()" class="btn" style="font-size:13px;padding:8px 16px;">
-              Download (~370 MB)
+              Download (~1 GB)
             </button>
             <button onclick="app.showRivenUpgradeInfo()" style="background:none;border:1px solid var(--border);color:var(--muted);border-radius:8px;padding:8px 14px;font-size:13px;cursor:pointer;">
               Learn more
@@ -45117,18 +45118,18 @@
     showRivenUpgradeInfo() {
       this.showModal('riven-upgrade-info', 'About the Smarter Riven Upgrade', `
         <div style="line-height:1.7;font-size:14px;">
-          <p><b>What it is:</b> SmolLM2 360M — a compact instruction-tuned language model built by HuggingFace. It's optimized for fast in-browser inference and gives Riven real reasoning and conversational ability.</p>
-          <p><b>How it runs:</b> Downloaded once (~370 MB) and cached in your browser. All inference happens on your device — nothing leaves it. No API calls, no data sharing.</p>
+          <p><b>What it is:</b> Llama 3.2 1B — a capable instruction-tuned language model from Meta. It's optimized for fast in-browser inference and gives Riven real reasoning and conversational ability.</p>
+          <p><b>How it runs:</b> Downloaded once (~1 GB) and cached in your browser. All inference happens on your device — nothing leaves it. No API calls, no data sharing.</p>
           <p><b>What it adds to Riven:</b></p>
           <ul style="margin:0 0 12px 20px;">
             <li>Natural conversation — ask anything, not just commands</li>
             <li>Personality and context — Riven comments on results meaningfully</li>
             <li>Better fallbacks — unclear inputs get interpreted rather than dead-ending</li>
           </ul>
-          <p><b>Speed:</b> ~2–5 seconds per response on WebGPU (Chrome/Edge on desktop), ~10–20s on other browsers. Reading and writing data is always instant — the model only adds commentary after.</p>
+          <p><b>Speed:</b> ~1–3 seconds per response on WebGPU (Chrome/Edge on desktop), ~20–40s on other browsers. Reading and writing data is always instant — the model only adds commentary after.</p>
           <p><b>Compatibility:</b> Works best on Chrome 113+ and Edge on desktop. Works on iOS Safari too, but slower (no WebGPU).</p>
           <p><b>Toggling:</b> The upgrade can be turned on or off mid-conversation at any time. The model stays in cache — re-enabling is instant.</p>
-          <p style="font-size:12px;color:var(--muted);">Model: HuggingFaceTB/SmolLM2-360M-Instruct · Quantization: 4-bit ONNX · Runtime: transformers.js v3.5</p>
+          <p style="font-size:12px;color:var(--muted);">Model: onnx-community/Llama-3.2-1B-Instruct · Quantization: 4-bit ONNX · Runtime: transformers.js v3.5</p>
         </div>
       `);
     }
@@ -45139,19 +45140,56 @@
       await this._phi3LoadModel(false);
     }
 
+    // Pre-flight crash guard. Browsers can't read free system RAM, so we gate on
+    // what we CAN see: WebGPU availability (Metal-managed memory survives pressure
+    // far better than a giant WASM heap) and the coarse navigator.deviceMemory
+    // floor. Returns { ok, device, blockReason, warning }.
+    async _phi3SafetyCheck() {
+      const dm = navigator.deviceMemory; // approx total GB, capped at 8 in Chrome; undefined elsewhere
+      let device = 'wasm';
+      if (navigator.gpu) {
+        try {
+          const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+          if (adapter) device = 'webgpu';
+        } catch (_) { /* fall through to wasm */ }
+      }
+      // Hard floor: a device reporting ≤2GB total RAM should not attempt even a ~0.5GB model.
+      if (typeof dm === 'number' && dm > 0 && dm <= 2) {
+        return { ok: false, device, blockReason: `This device reports only ~${dm}GB of RAM, so loading the model could make it unstable. I'll stay in standard mode to keep things safe.` };
+      }
+      let warning = '';
+      if (device === 'wasm') {
+        warning = `Heads up: this browser has no WebGPU, so the model runs on CPU — slower (~20–40s per reply) and heavier on memory. Close other heavy tabs/apps first.`;
+      } else if (typeof dm === 'number' && dm > 0 && dm <= 4) {
+        warning = `Heads up: this device is low on RAM. Close other heavy apps before loading so it stays smooth.`;
+      }
+      return { ok: true, device, warning };
+    }
+
     async _phi3LoadModel(silent = false) {
       if (this._phi3State.pipe || this._phi3State.loading) return;
+      const safety = await this._phi3SafetyCheck();
+      if (!safety.ok) {
+        this._phi3State.error = safety.blockReason;
+        this._renderUpgradeButton();
+        if (!silent) this._showRivenMessage(safety.blockReason, false);
+        return;
+      }
+      if (!silent && safety.warning) this._showRivenMessage(safety.warning, false);
       this._phi3State.loading = true;
       this._phi3State.error = null;
       this._phi3State.progress = 0;
       this._renderUpgradeButton();
       try {
-        const MODEL_ID = 'HuggingFaceTB/SmolLM2-360M-Instruct';
+        // Llama-3.2-1B-Instruct — coherent, fast (~0.8s/reply on WebGPU), ~1GB in
+        // 4-bit. Chosen after Qwen2.5-0.5B's ONNX export was found to emit garbage
+        // in transformers.js v3.5.1. Gated behind the WebGPU + deviceMemory preflight
+        // in _phi3SafetyCheck so a RAM-tight machine can't be pushed into a crash.
+        const MODEL_ID = 'onnx-community/Llama-3.2-1B-Instruct';
         const { pipeline, TextStreamer } = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.1');
-        const hasWebGPU = !!navigator.gpu;
         const pipe = await pipeline('text-generation', MODEL_ID, {
-          device: hasWebGPU ? 'webgpu' : 'wasm',
-          dtype: hasWebGPU ? 'q4' : 'q4',
+          device: safety.device,
+          dtype: safety.device === 'webgpu' ? 'q4f16' : 'q4',
           progress_callback: (info) => {
             if (info.status === 'progress' && typeof info.progress === 'number') {
               this._phi3State.progress = info.progress;
@@ -45170,13 +45208,21 @@
           this._showRivenMessage(`Upgrade ready. I can now understand you better and respond more naturally — toggle it off anytime with the button above.`, false);
         }
       } catch (err) {
+        // Always release any half-initialised pipeline so a failed load can't leak
+        // memory or wedge the toggle. The state stays fully recoverable (re-clickable).
+        try { await this._phi3State.pipe?.dispose?.(); } catch (_) {}
+        this._phi3State.pipe = null;
         this._phi3State.loading = false;
         this._phi3State.error = err.message;
         this._phi3State.active = false;
         localStorage.removeItem('riven_upgrade_active');
         this._renderUpgradeButton();
         if (!silent) {
-          this._showRivenMessage(`Couldn't load the upgrade: ${err.message}. Try Chrome 113+ on desktop, or check your connection.`, false);
+          const oom = /out of memory|oom|allocation|insufficient|exceeds|too large/i.test(err.message || '');
+          const msg = oom
+            ? `Couldn't load the upgrade — the device ran low on memory. Close other apps/tabs and try again, and I'll stay in standard mode for now.`
+            : `Couldn't load the upgrade: ${err.message}. Try Chrome 113+ on desktop, or check your connection.`;
+          this._showRivenMessage(msg, false);
         }
         console.error('[Phi-3 load error]', err);
       }
@@ -45184,7 +45230,7 @@
 
     _phi3SystemPrompt() {
       const name = this.userInfo?.profile?.first_name || '';
-      return `You are Riven, a school portal assistant chatting with ${name || 'a teacher'}. Keep replies warm, brief (1-2 sentences), and on-topic for school management. Do not roleplay as a teacher, claim memories, or invent opinions.`;
+      return `You are Riven, a friendly AI assistant built into a school management portal, chatting with ${name || 'a teacher'}. Answer their question or message directly and helpfully in 1-2 short sentences. You can answer general questions too — not only school topics. Be warm and concise.`;
     }
 
     _createStreamingBubble() {
@@ -45237,7 +45283,7 @@
       if (/\b(are you|you'?re|getting|now you'?re|you seem|you sound|you feel|you appear) (smart(er)?|better|upgraded|improved|actually (smart|useful|helpful|good)|pretty (smart|good|clever))\b/i.test(input))
         _meta = _cmpick(['Haha — I try! Ask me something. 😄', "Jury's still out! What do you need?", 'Getting there — what can I help with?']);
       else if (/\b(phi3?\.?5?|smollm|transformers|language model|which model|what model|what ai|what llm|ai model|which ai)\b/i.test(input))
-        _meta = _cmpick(['SmolLM2-360M, running right in your browser!', 'I use SmolLM2-360M — small model, real answers. 😄']);
+        _meta = _cmpick(['Llama 3.2 (1B), running right in your browser!', 'I run on Llama 3.2 1B — right here on your device. 😄']);
       else if (/\bwhy (do|did|are) you (keep|always|still) (saying that?|repeating|saying)\b/i.test(input))
         _meta = "Ha, sorry — I fall back on that when I'm stuck. What did you want to know?";
       else if (/^(well |oh |huh[,.]? )?(this is new|that'?s new|you'?re new|you changed|you'?re different|new feature|smarter now|you upgraded)/i.test(input))
@@ -45261,9 +45307,9 @@
       let result = await this._phi3Run(messages, (_, full) => {
         if (textEl) textEl.textContent = full;
         if (out) out.scrollTop = out.scrollHeight;
-      }, 80);
+      }, 120);
       if (cursor) cursor.remove();
-      // Strip SmolLM2 self-intro openers (multiple layers it can fall back through)
+      // Strip self-intro openers the small model can fall back through (multiple layers)
       if (result) {
         const _stripOpener = s => s
           .replace(/^I'?m (not |glad|happy|pleased|excited|sorry|afraid|here|just|a |an |actually|Riven\b)[^.!?]*[.!?]\s*/i, '')
@@ -45283,10 +45329,12 @@
       // Suppress if identical to the previous assistant turn (model echoing history)
       const prevAssistant = this._phi3History.filter(m => m.role === 'assistant').slice(-1)[0]?.content;
       if (result && prevAssistant && result.trim() === prevAssistant.trim()) result = null;
-      // Discard off-topic responses: long with no school context, OR very short fragment, OR model roleplaying as a teacher with memories
-      const noSchool = result && !/student|class|teach|grade|school|assign|lesson|subject|portal|balance|attendance/i.test(result);
-      const isPersonaHallucination = result && /\b(my (students?|class(es)?|first year|experience|academy|teaching)|i('ve| have) (had|taught|learned from|worked with)|when i (taught|was|worked)|years? (of teaching|in the classroom))\b/i.test(result);
-      if (result && ((result.length > 120 && noSchool) || (result.length < 30 && noSchool && !/[.!?]$/.test(result)) || isPersonaHallucination)) {
+      // Riven is allowed to answer general questions now, so a reply with no
+      // school keyword is NOT discarded. Only drop genuinely broken output:
+      // a roleplay/persona hallucination, or the model echoing its own prompt.
+      const isPersonaHallucination = result && /\b(my (students?|class(es)?|first year|academy)|i('ve| have) (taught|been teaching|spent years)|when i (taught|was a teacher)|years? (of teaching|in the classroom))\b/i.test(result);
+      const echoesPrompt = result && /\b(do not roleplay|claim memories|invent opinions|friendly ai assistant built into|answer their (question|message) directly)\b/i.test(result);
+      if (result && (isPersonaHallucination || echoesPrompt)) {
         result = null;
       }
       if (!result) {
@@ -45355,30 +45403,37 @@
       const studentName = (entities?.student?.student || entities?.student)?.full_name;
       const intentList = `award/deduct RTC, view balance or history, check attendance, show notes, view grades, enroll or unenroll students, send messages, mark attendance, manage classes, show homework, navigate sections, view rosters or store items`;
       const messages = [
-        { role: 'system', content: `You interpret a teacher's unclear command for a school management system.\nAvailable actions: ${intentList}.\nStudent context: ${studentName || 'none'}.\nRule: Output ONLY a clear reformulated command the system can execute, like "give Jordan 5 RTC" or "show attendance issues". If you genuinely cannot interpret it, output: UNKNOWN` },
+        { role: 'system', content: `You convert a teacher's unclear input into a single command for a school management system, when it is one.\nAvailable actions: ${intentList}.\nStudent in context: ${studentName || 'none'}.\nIf the input is a request to perform one of those actions, reply with ONLY the command, e.g. "give Jordan 5 RTC" or "show attendance issues".\nIf the input is a general question, greeting, comment, or anything not in the action list, reply with exactly: CHAT` },
         { role: 'user', content: originalInput }
       ];
       this.terminalPrint('…one moment', '#97a2b0');
-      const result = await this._phi3Run(messages, null, 60);
-      const isGarbage = !result || result === 'UNKNOWN' || result.length < 3
-        || result.length > 80
-        || /\b(i('m| am)|i can|i will|i'?ll|here to|my name is|school management|help you with|your (school|teacher|assistant)|wide range|assist with)\b/i.test(result)
-        // Model generated a meta-response (question, clarification request) instead of a command
-        || /\b(clarify|rephrase|what (do|did) you mean|could you (please )?be|please (be more|provide|give|tell)|are you asking)\b/i.test(result)
-        || (result.endsWith('?') && !/\b(show|give|get|find|check|mark|add|remove|who|what|how much)\b/i.test(result));
-      if (isGarbage) {
-        // Can't interpret as a command — try as conversation before giving up
-        const output2 = document.getElementById('terminal-output');
-        if (output2?.lastElementChild?.innerText?.includes('one moment')) output2.lastElementChild.remove();
-        await this._phi3Chat(originalInput).catch(() => this._handleUnknown(resolvedInput, entities));
-        return;
+      const result = await this._phi3Run(messages, null, 40);
+      const removeMoment = () => {
+        const o = document.getElementById('terminal-output');
+        if (o?.lastElementChild?.innerText?.includes('one moment')) o.lastElementChild.remove();
+      };
+      // The model's reply is only a COMMAND if it actually parses as one. We
+      // validate the reformulation against the real intent matcher instead of
+      // trusting keyword heuristics — this is what stops a conversational answer
+      // ("Yes, this works.") from being force-fed back as a failed command.
+      let cmd = null;
+      if (result && !/^chat\b/i.test(result) && result !== 'UNKNOWN'
+          && result.length >= 3 && result.length <= 80) {
+        const stripped = result.replace(/^["'`]+|["'`]+$/g, '').trim();
+        const norm = this._resolvePronouns(this._normalizeInput(stripped));
+        const reEnt = this._extractEntities(norm, stripped);
+        const reIntent = this._matchIntent(norm, reEnt);
+        if (reIntent && reIntent.confidence >= 0.5) cmd = stripped;
       }
-      // Remove the "one moment" line and run the interpreted command
-      const output = document.getElementById('terminal-output');
-      if (output?.lastElementChild?.innerText?.includes('one moment')) output.lastElementChild.remove();
-      // Only show the "I think you mean" hint for substantive command rewrites (not trivial greetings/short phrases)
-      if (result.length > 20) this.terminalPrint(`💡 I think you mean: "${result}"`, '#97a2b0');
-      await this._executeNaturalLanguage(result, { _fromPhi3: true });
+      removeMoment();
+      if (cmd) {
+        // Only show the "I think you mean" hint for substantive rewrites
+        if (cmd.length > 20) this.terminalPrint(`💡 I think you mean: "${cmd}"`, '#97a2b0');
+        await this._executeNaturalLanguage(cmd, { _fromPhi3: true });
+      } else {
+        // Not a command — answer it conversationally rather than dead-ending
+        await this._phi3Chat(originalInput).catch(() => this._handleUnknown(resolvedInput, entities));
+      }
     }
 
     // ── End Phi-3 upgrade infrastructure ──────────────────────────────────────
