@@ -42015,11 +42015,21 @@
           const left = input.slice(0, seam.index).trim();
           const right = input.slice(seam.index).replace(/^\s*(?:and|then|,)\s*(?:then\s+)?/i, '').trim();
           if (left.split(/\s+/).length >= 3 && right.split(/\s+/).length >= 2) {
-            this._compoundDepth++;
-            try {
-              await this._executeNaturalLanguage(left);
-              await this._executeNaturalLanguage(right);
-            } finally { this._compoundDepth--; }
+            const runHalf = async (h) => {
+              this._compoundDepth++;
+              try { await this._executeNaturalLanguage(h); }
+              finally { this._compoundDepth--; }
+            };
+            await runHalf(left);
+            if (this._pendingAction) {
+              // Left half needs confirmation — queue right half to run after
+              const orig = this._pendingAction.execute;
+              const rightCapture = right;
+              this._pendingAction.execute = async () => { await orig(); await runHalf(rightCapture); };
+              this._showRivenMessage(`<small style="color:var(--muted)">After confirming, I'll also: <em>${this.escapeHtml(right)}</em></small>`, true);
+            } else {
+              await runHalf(right);
+            }
             return;
           }
         }
@@ -47410,8 +47420,11 @@
         // Only use the fallback if we have a student entity — otherwise we'd
         // accidentally try to save random unrecognized sentences as notes.
         if (stripped && entities.student?.student) {
-          text = stripped;
-          textIdx = -1;
+          const stu = entities.student.student;
+          const strippedLower = stripped.toLowerCase();
+          const isJustName = [stu.full_name, stu.first_name, stu.last_name]
+            .some(n => n && n.toLowerCase() === strippedLower);
+          if (!isJustName) { text = stripped; textIdx = -1; }
         }
       }
 
