@@ -42891,7 +42891,11 @@
           patterns: [
             /\b(add|write|leave|make|create|log|record|take|save)\s+(\w+\s+)?(a\s+|an\s+)?(quick\s+|new\s+|private\s+|staff\s+)?note\b/,
             /^note\b/,
-            /\bnote that\b/
+            /\bnote that\b/,
+            // "log that eli talked back", "record that jordan was disruptive"
+            // "document that phoenix helped a classmate"
+            /\b(log|record|document|jot down)\s+that\b/,
+            /\b(log|record|document)\b.+\b(was|is|has|had|did|does|keeps|kept|said|told|showed|helped|refused|arrived|left)\b/
           ]
         },
         // ---- Recognized-but-unsupported actions: answer honestly and point
@@ -43074,7 +43078,8 @@
           requiresAmount: true
         },
         // GROUP_RTC — "give everyone in chess class 2 rtc", "take 1 from each
-        // of them" (needs a class mention or a fresh group from a roster)
+        // of them", "award 10 to the whole class". The executor asks "Which
+        // class?" if no group context exists — no hard guard needed here.
         {
           intent: 'GROUP_RTC',
           w: 5, notIfNoteCommand: true, notIfBank: true,
@@ -43083,12 +43088,15 @@
             /\b(everyone|everybody|each( of them)?|all (of )?(them|those|these))\b.*\d+\s*(rtc)?\b/,
             /\d+\s*(rtc\s+)?(to|for)\s+(everyone|everybody|each|all of them|the (whole )?class)\b/,
             /\b(everyone|everybody|(all )?(those|these) (students|kids))\b.*\b(needs?|gets?|deserves?)\b.*\d+/,
-            // "give all chess class 2 gold" / "give the class 2 rtc"
+            // "give all chess class 2 gold" / "give the class 2 rtc" /
+            // "award 10 to the whole class" / "give everyone 5"
             /\b(add|remove|subtract|deduct|take)\b.*\b(all|whole|entire)\b.*\bclass\b.*\d+/,
-            /\b(add|remove|subtract|deduct|take)\b\s+the\s+class\b.*\d+/
+            /\b(add|remove|subtract|deduct|take)\b\s+the\s+class\b.*\d+/,
+            { re: /\b(add|award|give)\b.*\d+.*\b(whole class|everyone|everybody|the class|all (my\s+)?students?)\b/, w: 7 },
+            { re: /\b(whole class|everyone|everybody|all (my\s+)?students?)\b.*\b(gets?|get|deserves?|earns?)\b.*\d+/, w: 7 }
           ],
           requiresAmount: true,
-          requiresGroupContext: true
+          requiresGroupContext: false
         },
         // GROUP_BALANCES — "how much rtc does everyone in chess have?",
         // "how much gold do each of them have?"
@@ -43119,6 +43127,9 @@
             /(^|\s)-\d+/,                  // "-2 from charlotte"
             /\d+ (rtc )?(from|off)\b/,     // "5 from sam", "5 rtc from sam"
             /minus \d+/,
+            // "fine jordan 5", "penalize eli 10 for cheating" — teacher
+            // discipline vocabulary that means TAKE, not give
+            { re: /\b(fine|fined|fines|penaliz(e|es|ed)?|penalt(y|ies)|assess(ed|es)?)\b.*\d/, w: 5 },
             // purchases SPEND gold: "jordan is buying a privilege for 2
             // gold", "charge dylan 5 for the snack" (buy-verb must precede
             // the amount, so "give X 5 for buying supplies" stays an award).
@@ -43488,8 +43499,15 @@
             /\b(are|is) (all\s+)?(my\s+)?students? (here|present|in|marked)\b/,
             /\bwho (isn.?t|is not|isn.?t) (here|present|in class|marked)( today)?\b/,
             /\bhas everyone (shown up|come in|arrived|checked in)\b/,
-            /\b(everyone|all) (here|present|accounted for|shown up|in)\b/,
-            /\b(took|take|done|taken) (attendance|roll( call)?)\b/
+            /\b(everyone|all)\s+(is\s+)?(here|present|accounted for|showed up)\b/,
+            /\b(took|take|done|taken) (attendance|roll( call)?)\b/,
+            // "who missed class yesterday", "who skipped today"
+            /\bwho (missed|skipped|didn.?t (make|come|attend))\b/,
+            // "show attendance for last week", "attendance summary this week"
+            /\battendance\b.*(summary|report|overview|recap)\b/,
+            /\b(show|see|pull up|give me|view)\b.*\battendance\b.*\b(for|last|this|past|yesterday|week|month)\b/,
+            /\b(last|this|past)\b.*(week|month).*(attendance|absences)\b/,
+            /\battendance\b.*\b(last|this|past)\b.*(week|month|day|yesterday)\b/
           ]
         },
         // VIEW_ATTENDANCE (before VIEW_STUDENT so "show eli's attendance" works)
@@ -43556,7 +43574,12 @@
             // "is dylan spending or saving his rtc?" — behavioural spending
             // query; transaction log is the right answer
             { re: /\b(spending|saving|spend|save)\b.*\brtc\b/, w: 5 },
-            { re: /\brtc\b.*\b(spending|saving|spend|save)\b/, w: 5 }
+            { re: /\brtc\b.*\b(spending|saving|spend|save)\b/, w: 5 },
+            // "what did jordan score/get on his last assignment"
+            // "how did jordan do on his last test" — assignment result query
+            { re: /\b(score|scored|result|how.+do|what.+get)\b.*(on|for).*(assignment|quiz|test|hw|homework|project|last)\b/, w: 6 },
+            { re: /\b(last|recent|latest|most recent)\b.*(assignment|quiz|test|hw|homework|project)\b/, w: 5 },
+            { re: /\b(assignment|quiz|test)\b.*(score|result|grade|how)\b/, w: 5 }
           ],
           requiresStudent: true
         },
@@ -44017,6 +44040,12 @@
           if (!entities.sinceDate && /\btoday\b|\bare (all|my)\b|\bhas everyone\b|\beveryone (here|present)\b|\b(took|take|taken) (attendance|roll)\b/.test(entities.normalized || '')) {
             entities.sinceDate = this._isoDaysAgo(0);
             entities.sinceLabel = 'today';
+          }
+          // "who missed class yesterday"
+          if (!entities.sinceDate && /\byesterday\b/.test(entities.normalized || '')) {
+            entities.sinceDate = this._isoDaysAgo(1);
+            entities.untilDate = this._isoDaysAgo(1);
+            entities.sinceLabel = 'yesterday';
           }
           await this.terminalAttendanceIssues(entities);
           break;
@@ -44948,6 +44977,9 @@
           'fine jordan for messing around',
           'take some gold off jordan',
           'knock a few coins off jordan',
+          'give jordan a fine for his phone',
+          'jordan deserves a penalty today',
+          'hit jordan with a fine',
           // purchases spend gold (from live transcripts)
           'jordan and dylan are buying a privilege for 2 gold',
           'jordan bought a snack at the cafe for 3 gold',
@@ -44995,6 +45027,11 @@
           'put it on record that jordan was disruptive',
           'make a record that jordan was helpful today',
           'write down that jordan needs extra practice',
+          'log that eli talked back during class today',
+          'record that jordan was out of his seat again',
+          'document that phoenix helped resolve the group conflict',
+          'log that dylan refused to participate today',
+          'record that eli completed extra credit work',
           'jordan just helped a classmate without being asked',
           'jordan is really stepping up this week',
           'eli has been struggling with fractions lately',
@@ -45081,7 +45118,11 @@
         VIEW_HISTORY: [
           'what happened with jordans gold lately',
           'show me jordans recent transactions',
-          'did jordan earn anything this week'
+          'did jordan earn anything this week',
+          'what did jordan score on his last assignment',
+          'how did jordan do on the last quiz',
+          'what was jordans result on the most recent test',
+          'did jordan turn in his homework'
         ],
         GROUP_BALANCES: [
           'how much gold does the whole class have',
@@ -45095,7 +45136,12 @@
           'who is struggling in school right now',
           'which students are falling behind',
           'any kids at risk of failing',
-          'who needs the most support right now'
+          'who needs the most support right now',
+          'who missed class yesterday',
+          'which students were absent yesterday',
+          'give me an attendance summary for this week',
+          'show me the attendance report for last week',
+          'who has been absent recently'
         ],
         CLASS_STATS: [
           'how is my math class doing overall',
@@ -45490,6 +45536,7 @@
         .neq('status', 'present')
         .order('date', { ascending: false })
         .limit(1000);
+      if (entities.untilDate) q = q.lte('date', entities.untilDate);
       if (classRow) q = q.eq('class_id', classRow.id);
       const { data, error } = await q;
 
