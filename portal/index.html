@@ -42488,11 +42488,22 @@
           entities.studentTo = b;
         }
       }
+      // "compare jordan to eli" — treat "to" as a pair separator when "compare" is present
+      if (!entities.studentFrom) {
+        const ct = normalized.match(/\bcompare\s+(.+?)\s+to\s+(.+?)(?:\s*$|\s+(?:and|in|for|by|on)\b)/);
+        if (ct) {
+          const a = best(this._fuzzyFindStudent(ct[1].trim(), ct[1].trim()));
+          const b = best(this._fuzzyFindStudent(ct[2].trim(), ct[2].trim()));
+          if (a?.student && b?.student && a.student.id !== b.student.id) {
+            entities.students = [a, b];
+          }
+        }
+      }
       // Multi-student chains of ANY length: "daeny and charlotte and evelyn
       // and larry" / "jordan, dylan and chev". Each comma/and fragment is
       // fuzzy-matched on its own; two or more distinct hits become the set
       // the executors act on (cards, awards, deductions all loop it).
-      if (!entities.studentFrom && (/\b(?:and|or|vs|versus)\b/.test(normalized) || normalized.includes(','))) {
+      if (!entities.studentFrom && !entities.students && (/\b(?:and|or|vs|versus)\b/.test(normalized) || normalized.includes(','))) {
         const frags = normalized.split(/\s*,\s*|\s+(?:and|or|vs|versus)\s+/).filter(f => f.trim().length >= 2);
         if (frags.length >= 2) {
           const found = [];
@@ -43462,11 +43473,15 @@
             /\battendance\b.*\b(issues?|problems?|concerns?)\b/,
             /\b(students|kids|who|which|anyone|anybody)\b.*\b(absent|absences|missing|skipp(ed|ing)|tardy|late)\b/,
             /\b(students|kids|anyone|anybody)\b.*\battendance\b/,
-            // at-risk / struggling phrasing (routes to the same report which
-            // also surfaces frequent absences as an early struggling signal)
+            // at-risk / struggling phrasing
             /\b(who|which|any(one|body)?)\b.*\b(struggling|failing|behind|at.?risk|in trouble|falling behind|losing ground)\b/,
             /\b(struggling|failing|at.?risk)\b.*\b(students?|kids?)\b/,
-            /\bwho (needs|need) (help|attention|support|intervention)\b/
+            /\bwho (needs|need) (help|attention|support|intervention)\b/,
+            // "haven't been here lately", "who keeps missing class"
+            /\b(haven.?t|has ?n.?t|not)\b.*\b(been|come|shown up|here|around|in class)\b/,
+            /\b(keeps?|keep(s|ing)?)\b.*\b(miss(ing)?|skip(ping)?)\b/,
+            /\b(not showing up|stopped coming|never here|always (late|absent|missing))\b/,
+            /\bwho.*(not been|hasn.?t been|haven.?t been)\b/
           ]
         },
         // VIEW_ATTENDANCE (before VIEW_STUDENT so "show eli's attendance" works)
@@ -43599,7 +43614,11 @@
             /\btop\b/,
             /leaderboard/,
             /who has (the )?(most|highest)/,
-            /best students/
+            /best students/,
+            /who (earned|got|gained|received) (the )?most\b/,
+            /most rtc (this|last|in the)\b/,
+            /highest (earner|earners)\b/,
+            /\brtc (leader|leaders|ranking|rankings)\b/
           ]
         }
       ];
@@ -43882,6 +43901,8 @@
           const count = entities.count || entities.amount || 10;
           if (entities.classMatch) {
             await this.terminalTopInClass(entities, count);
+          } else if (entities.sinceDate && /\b(earned?|got|gained|received)\b/.test(entities.normalized || '')) {
+            await this.terminalTopEarners(entities, count);
           } else {
             await this.terminalShowTop([count.toString()]);
           }
@@ -47721,6 +47742,49 @@
       });
 
       html += '</div>';
+      if (output) output.innerHTML += html;
+    }
+
+    async terminalTopEarners(entities, count) {
+      const since = entities.sinceDate || new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+      const label = entities.sinceLabel || 'this week';
+      const limit = count || 10;
+      this.terminalPrint(`Loading top earners (${label})…`, '#6aa9ff');
+
+      const { data, error } = await this.auth.supabase
+        .from('rtc_transactions')
+        .select('user_id, amount')
+        .gt('amount', 0)
+        .gte('created_at', since)
+        .limit(5000);
+
+      if (error) { this.terminalPrintError('Could not load transactions: ' + error.message); return; }
+      if (!this._terminalAllStudents?.length) await this._loadTerminalStudents();
+      const nameOf = {}, isStudent = new Set();
+      (this._terminalAllStudents || []).forEach(s => { nameOf[s.id] = s.full_name; isStudent.add(s.id); });
+
+      const byStudent = {};
+      (data || []).forEach(t => {
+        if (!isStudent.has(t.user_id)) return;
+        byStudent[t.user_id] = (byStudent[t.user_id] || 0) + t.amount;
+      });
+
+      const ranked = Object.entries(byStudent)
+        .sort((a, b) => b[1] - a[1]).slice(0, limit);
+
+      if (!ranked.length) {
+        this._showRivenMessage(`No RTC earned ${this.escapeHtml(label)}.`, true); return;
+      }
+
+      let html = `<div style="font-weight:600;margin-bottom:8px;">🏆 Top ${limit} Earners — ${this.escapeHtml(label)}</div><div>`;
+      ranked.forEach(([id, earned], idx) => {
+        const medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `${idx + 1}.`;
+        html += `<div style="padding:8px;margin:4px 0;background:rgba(243,156,18,${0.15 - idx * 0.01});border-left:3px solid #f39c12;border-radius:6px;display:flex;justify-content:space-between;align-items:center;">
+          <span>${medal} <strong>${this.escapeHtml(nameOf[id] || 'Unknown')}</strong></span>
+          <span style="color:#f39c12;font-weight:bold;">+${earned} RTC</span></div>`;
+      });
+      html += '</div>';
+      const output = document.getElementById('terminal-output');
       if (output) output.innerHTML += html;
     }
 
