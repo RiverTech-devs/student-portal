@@ -42251,8 +42251,9 @@
       // Execute the matched intent
       await this._executeIntent(intent, entities);
 
-      // Phi-3 commentary: fire non-blocking after result renders
-      if (this._phi3State?.active && this._phi3State?.pipe) {
+      // Phi-3 commentary: only for write intents (reads already show the data)
+      const PHI3_COMMENT_INTENTS = new Set(['ADD_RTC','SUBTRACT_RTC','GROUP_RTC','MULTI_AWARD','TRANSFER_RTC','ADD_NOTE','MARK_ATTENDANCE','MARK_ATTENDANCE_GROUP','ENROLL_STUDENT','UNENROLL_STUDENT','RELAY_ACTION','SEND_MESSAGE','GRANT_PRIVILEGE','REVOKE_PRIVILEGE','BUY_ITEM','BUY_PRIVILEGE']);
+      if (this._phi3State?.active && this._phi3State?.pipe && PHI3_COMMENT_INTENTS.has(intent.intent)) {
         this._phi3Comment(input, intent.intent, entities).catch(() => {});
       }
 
@@ -44986,7 +44987,7 @@
       const checks = [
         // Greetings — includes informal / time-of-day variants
         ['greeting', /^(hey there|hey|hi there|hi|hello|yo|hiya|howdy|morning|good (morning|afternoon|evening)|you there|you around|you here)( riven)?$/],
-        ['howareyou', /^(hows it going|how is it going|how are you( doing)?( today)?|how you doing|how are things|how goes it|hows your day( going)?|whats up|what is up|sup|what s up)( riven)?$/],
+        ['howareyou', /^(hows it going|how is it going|how are you( doing)?( today)?|how you doing|how are things|how goes it|hows your day( going)?|whats up|what is up|sup|what s up|wuts up|whts up|wats up|watz up|watsup|wassup|wazzup|whaddup|waddup|wdup|sup riven|yo riven|yo)( riven)?$/],
         ['thanks', /^(ok |okay )?(thanks|thank you|thx|ty|appreciate it|much appreciated|thank you so much)( so much| a lot)?( riven)?$/],
         ['bye', /^(bye|goodbye|goodnight|good night|see ya|see you( later)?|later|cya|ttyl|take care)( riven)?$/],
         ['whoareyou', /^(who|what) are you( again| exactly)?$/],
@@ -45249,13 +45250,13 @@
     async _phi3Comment(input, intent, entities) {
       const studentName = (entities?.student?.student || entities?.student)?.full_name;
       const ctx = [
-        studentName ? `student: ${studentName}` : null,
-        entities?.amount ? `amount: ${entities.amount} RTC` : null,
-      ].filter(Boolean).join(', ');
-      const teacherName = this.userInfo?.profile?.first_name || '';
+        intent.replace(/_/g, ' ').toLowerCase(),
+        studentName ? `for ${studentName}` : null,
+        entities?.amount ? `(${entities.amount} RTC)` : null,
+      ].filter(Boolean).join(' ');
       const messages = [
-        { role: 'system', content: `You are Riven, a smart teaching assistant for ${teacherName || 'a teacher'} at River Tech. Be warm, direct, and brief — 1 to 2 sentences. Never repeat data already shown on screen. Add insight, context, or a helpful follow-up suggestion.` },
-        { role: 'user', content: `You just completed: ${intent}${ctx ? ' (' + ctx + ')' : ''}. The teacher said: "${input}". Add a brief natural comment about this.` }
+        { role: 'system', content: `You are Riven, a friendly school assistant. Respond with a single short, warm sentence reacting to this completed action. No lists, no capability descriptions, just a natural reaction.` },
+        { role: 'user', content: ctx }
       ];
       const bubble = this._createStreamingBubble();
       const textEl = bubble?.querySelector('.phi3-text');
@@ -45279,7 +45280,10 @@
       ];
       this.terminalPrint('…one moment', '#97a2b0');
       const result = await this._phi3Run(messages, null, 60);
-      if (!result || result === 'UNKNOWN' || result.length < 3) {
+      const isGarbage = !result || result === 'UNKNOWN' || result.length < 3
+        || result.length > 80
+        || /\b(i('m| am)|i can|i will|i'?ll|here to|my name is|school management|help you with|your (school|teacher|assistant)|wide range|assist with)\b/i.test(result);
+      if (isGarbage) {
         this._handleUnknown(resolvedInput, entities);
         return;
       }
