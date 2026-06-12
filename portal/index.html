@@ -334,6 +334,37 @@
       from { opacity: 0; transform: translateY(-10px); }
       to { opacity: 1; transform: translateY(0); }
     }
+    @keyframes riven-cursor-blink {
+      0%, 100% { opacity: 1; } 50% { opacity: 0; }
+    }
+    @keyframes riven-upgrade-shimmer {
+      0% { background-position: -200% center; }
+      100% { background-position: 200% center; }
+    }
+    .riven-upgrade-btn-idle {
+      background: linear-gradient(90deg, #2a1f14, #3d2d1a, #2a1f14) !important;
+      background-size: 200% auto !important;
+      animation: riven-upgrade-shimmer 3s linear infinite !important;
+      border-color: #d97a3a !important;
+      color: #f2e6c9 !important;
+    }
+    .riven-upgrade-btn-on {
+      background: #d97a3a !important;
+      color: #fff !important;
+      border-color: #b5622e !important;
+    }
+    .riven-upgrade-btn-loading {
+      opacity: 0.7 !important;
+      cursor: wait !important;
+    }
+    .riven-stream-cursor {
+      display: inline-block;
+      width: 2px; height: 1em;
+      background: #3d2817;
+      margin-left: 2px;
+      vertical-align: text-bottom;
+      animation: riven-cursor-blink 0.8s step-end infinite;
+    }
 
     .notification-header {
       display: flex;
@@ -41127,6 +41158,7 @@
         this._loadTerminalStoreItems(),
         this._loadTerminalPrivileges()
       ]);
+      this._initPhi3State();
 
       section.innerHTML = `
         <div style="max-width: 1200px; margin: 0 auto; padding: 20px;">
@@ -41144,13 +41176,22 @@
                 </div>
               </div>
             </div>
-            <div style="display: flex; gap: 8px;">
+            <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
               <button onclick="app.clearTerminalChat()" class="btn btn-secondary" style="padding: 8px 16px; font-size: 13px;" title="Clear the conversation and start fresh">
                 🧹 Clear chat
               </button>
               <button onclick="app.toggleTerminalPalette()" class="btn" style="padding: 8px 16px; font-size: 13px;">
                 <span style="opacity: 0.7; margin-right: 6px;">⌘K</span> Quick Search
               </button>
+              <div style="display: flex; align-items: center; gap: 4px;">
+                <button id="riven-upgrade-btn" onclick="app.toggleRivenUpgrade()"
+                  class="btn btn-secondary riven-upgrade-btn-idle"
+                  style="padding: 8px 14px; font-size: 13px; border-radius: 8px; border: 1px solid #d97a3a; font-weight: 600; letter-spacing: 0.01em;"
+                  title="Download a smarter AI model for Riven">
+                  ✨ Smarter Riven
+                </button>
+                <button onclick="app.showRivenUpgradeInfo()" style="background:none;border:none;color:var(--muted);font-size:13px;cursor:pointer;padding:4px 6px;border-radius:4px;" title="Learn more">?</button>
+              </div>
             </div>
           </div>
 
@@ -41989,7 +42030,7 @@
       }
     }
 
-    async _executeNaturalLanguage(input) {
+    async _executeNaturalLanguage(input, opts = {}) {
       // Phase 5: conversational layer — handle smalltalk before NLP, and
       // strip a leading greeting ("hi, can you...") so the rest still works
       const small = this._matchSmalltalk(input);
@@ -41998,7 +42039,11 @@
           await this._executeNaturalLanguage(small.remainder);
           return;
         }
-        this._respondSmalltalk(small.key);
+        if (this._phi3State?.active && this._phi3State?.pipe) {
+          this._phi3Chat(input).catch(() => this._respondSmalltalk(small.key));
+        } else {
+          this._respondSmalltalk(small.key);
+        }
         return;
       }
 
@@ -42158,11 +42203,14 @@
       if (!intent) intent = this._matchIntent(resolvedInput, entities);
 
       if (!intent || intent.confidence < 0.5) {
-        // Idea #2: semantic fallback — when the regexes can't read a sentence,
-        // a client-side sentence embedding picks the closest intent instead
-        // of giving up. Entities/permissions/undo still run the normal path.
         const handled = await this._semanticFallback(resolvedInput, entities);
-        if (!handled) this._handleUnknown(resolvedInput, entities);
+        if (!handled) {
+          if (this._phi3State?.active && this._phi3State?.pipe && !opts?._fromPhi3) {
+            this._phi3Interpret(input, resolvedInput, entities).catch(() => this._handleUnknown(resolvedInput, entities));
+          } else {
+            this._handleUnknown(resolvedInput, entities);
+          }
+        }
         return;
       }
 
@@ -42202,6 +42250,11 @@
 
       // Execute the matched intent
       await this._executeIntent(intent, entities);
+
+      // Phi-3 commentary: fire non-blocking after result renders
+      if (this._phi3State?.active && this._phi3State?.pipe) {
+        this._phi3Comment(input, intent.intent, entities).catch(() => {});
+      }
 
       // Remember the last actionable command so "do it again" can repeat it
       // (stored with pronouns resolved so the same target is hit)
@@ -44965,6 +45018,288 @@
       }
       return null;
     }
+
+    // ── Phi-3 upgrade infrastructure ─────────────────────────────────────────
+
+    _initPhi3State() {
+      const active = localStorage.getItem('riven_upgrade_active') === 'true';
+      this._phi3State = { pipe: null, loading: false, active: false, progress: 0, error: null };
+      this._phi3History = [];
+      if (active) {
+        // Auto-load if previously activated — show subtle indicator
+        this._phi3LoadModel(true);
+      }
+      this._renderUpgradeButton();
+    }
+
+    _renderUpgradeButton() {
+      const btn = document.getElementById('riven-upgrade-btn');
+      if (!btn) return;
+      const s = this._phi3State;
+      btn.classList.remove('riven-upgrade-btn-idle', 'riven-upgrade-btn-on', 'riven-upgrade-btn-loading');
+      if (s.loading) {
+        btn.classList.add('riven-upgrade-btn-loading');
+        btn.textContent = `⏳ Loading… ${s.progress > 0 ? Math.round(s.progress) + '%' : ''}`;
+      } else if (s.active && s.pipe) {
+        btn.classList.add('riven-upgrade-btn-on');
+        btn.textContent = '⚡ Upgrade: On';
+      } else if (s.pipe) {
+        btn.classList.add('riven-upgrade-btn-idle');
+        btn.textContent = '⚡ Upgrade: Off';
+      } else if (s.error) {
+        btn.classList.add('riven-upgrade-btn-idle');
+        btn.textContent = '⚠️ Upgrade failed';
+      } else {
+        btn.classList.add('riven-upgrade-btn-idle');
+        btn.textContent = '✨ Smarter Riven';
+      }
+    }
+
+    toggleRivenUpgrade() {
+      const s = this._phi3State;
+      if (s.loading) return;
+      if (s.pipe) {
+        // Toggle on/off — model already in memory
+        s.active = !s.active;
+        localStorage.setItem('riven_upgrade_active', s.active);
+        this._renderUpgradeButton();
+        const msg = s.active
+          ? `Upgrade on — I'll respond more naturally from here.`
+          : `Upgrade paused — back to standard mode. Toggle again to re-enable.`;
+        this._showRivenMessage(msg, false);
+      } else {
+        // First time — show download prompt
+        this._showRivenUpgradePrompt();
+      }
+    }
+
+    _showRivenUpgradePrompt() {
+      const hasWebGPU = !!navigator.gpu;
+      const isIOSSafari = /iP(hone|ad|od)/.test(navigator.userAgent)
+        && /Safari/.test(navigator.userAgent)
+        && !/Chrome|CriOS|FxiOS/.test(navigator.userAgent);
+      const warnings = [];
+      if (isIOSSafari) warnings.push(`⚠️ <b>iOS Safari is not supported</b> — use Chrome or Firefox on desktop for the best experience.`);
+      else if (!hasWebGPU) warnings.push(`⚠️ Your browser doesn't support WebGPU — responses will be slower (use Chrome 113+ for best results).`);
+      const warnHtml = warnings.length ? `<div style="margin-top:10px;padding:10px;background:rgba(217,122,58,0.15);border-radius:8px;font-size:13px;">${warnings.join('<br>')}</div>` : '';
+      const html = `
+        <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px;max-width:480px;margin:10px 0;">
+          <div style="font-weight:700;font-size:15px;margin-bottom:8px;color:var(--accent);">✨ Smarter Riven</div>
+          <div style="font-size:13px;color:var(--text);line-height:1.6;">
+            Adds a local AI model that gives Riven real reasoning and personality.
+            I'll understand unclear commands, respond to conversation naturally, and add context to results.
+          </div>
+          ${warnHtml}
+          <div style="margin-top:12px;font-size:12px;color:var(--muted);">
+            • Downloads once (~2.4 GB) and runs entirely on your device — nothing is sent anywhere<br>
+            • Stays cached so future sessions load in seconds<br>
+            • Takes ~2–4s to respond when active<br>
+            • Can be toggled off at any time
+          </div>
+          <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;">
+            <button onclick="app._startPhi3Download()" class="btn" style="font-size:13px;padding:8px 16px;">
+              Download (~2.4 GB)
+            </button>
+            <button onclick="app.showRivenUpgradeInfo()" style="background:none;border:1px solid var(--border);color:var(--muted);border-radius:8px;padding:8px 14px;font-size:13px;cursor:pointer;">
+              Learn more
+            </button>
+          </div>
+        </div>`;
+      this._showRivenMessage(html, true);
+    }
+
+    showRivenUpgradeInfo() {
+      this.showModal('riven-upgrade-info', 'About the Smarter Riven Upgrade', `
+        <div style="line-height:1.7;font-size:14px;">
+          <p><b>What it is:</b> Microsoft's Phi-3 Mini 4K — a 3.8-billion-parameter instruction-tuned language model. In most conversation and reasoning tasks it performs comparably to GPT-3.5.</p>
+          <p><b>How it runs:</b> Downloaded once (~2.4 GB) and cached in your browser. All inference happens on your device — nothing leaves it. No API calls, no data sharing.</p>
+          <p><b>What it adds to Riven:</b></p>
+          <ul style="margin:0 0 12px 20px;">
+            <li>Natural conversation — ask anything, not just commands</li>
+            <li>Personality and context — Riven comments on results meaningfully</li>
+            <li>Better fallbacks — unclear inputs get interpreted rather than dead-ending</li>
+          </ul>
+          <p><b>Speed:</b> ~2–4 seconds per response on WebGPU (Chrome/Edge on desktop). Reading and writing data is still instant — Phi-3 only adds commentary after.</p>
+          <p><b>Compatibility:</b> Works best on Chrome 113+ and Edge on desktop or Android. <b>Does not work reliably on Safari on iPhone or iPad</b> (iOS lacks WebGPU support).</p>
+          <p><b>Toggling:</b> The upgrade can be turned on or off mid-conversation at any time. The model stays in cache — re-enabling is instant.</p>
+          <p style="font-size:12px;color:var(--muted);">Model: microsoft/Phi-3-mini-4k-instruct · Quantization: 4-bit ONNX · Runtime: transformers.js + WebGPU</p>
+        </div>
+      `);
+    }
+
+    async _startPhi3Download() {
+      if (this._phi3State.loading || this._phi3State.pipe) return;
+      this._showRivenMessage(`Downloading the upgrade — this will take a minute or two on WiFi. You can keep using Riven while it loads.`, false);
+      await this._phi3LoadModel(false);
+    }
+
+    async _phi3LoadModel(silent = false) {
+      if (this._phi3State.pipe || this._phi3State.loading) return;
+      this._phi3State.loading = true;
+      this._phi3State.error = null;
+      this._phi3State.progress = 0;
+      this._renderUpgradeButton();
+      try {
+        const MODEL_ID = 'onnx-community/Phi-3-mini-4k-instruct-onnx-web';
+        const { pipeline, TextStreamer } = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.3.1');
+        const hasWebGPU = !!navigator.gpu;
+        const pipe = await pipeline('text-generation', MODEL_ID, {
+          device: hasWebGPU ? 'webgpu' : 'wasm',
+          dtype: hasWebGPU ? 'q4' : 'q4',
+          progress_callback: (info) => {
+            if (info.status === 'progress' && typeof info.progress === 'number') {
+              this._phi3State.progress = info.progress;
+              this._renderUpgradeButton();
+            }
+          }
+        });
+        this._phi3State.pipe = pipe;
+        this._phi3State._TextStreamer = TextStreamer;
+        this._phi3State.loading = false;
+        this._phi3State.active = true;
+        this._phi3State.progress = 0;
+        localStorage.setItem('riven_upgrade_active', 'true');
+        this._renderUpgradeButton();
+        if (!silent) {
+          this._showRivenMessage(`Upgrade ready. I can now understand you better and respond more naturally — toggle it off anytime with the button above.`, false);
+        }
+      } catch (err) {
+        this._phi3State.loading = false;
+        this._phi3State.error = err.message;
+        this._phi3State.active = false;
+        localStorage.removeItem('riven_upgrade_active');
+        this._renderUpgradeButton();
+        if (!silent) {
+          this._showRivenMessage(`Couldn't load the upgrade: ${err.message}. Try Chrome 113+ on desktop, or check your connection.`, false);
+        }
+        console.error('[Phi-3 load error]', err);
+      }
+    }
+
+    _phi3SystemPrompt() {
+      const name = this.userInfo?.profile?.first_name || '';
+      const last = this._nlpContext?.lastStudent?.full_name || null;
+      return `You are Riven, a smart teaching assistant embedded in River Tech's teacher portal. You help ${name || 'a teacher'} manage their school.
+Be direct, warm, and brief — 1 to 3 sentences maximum. Never robotic.
+Rules:
+- Never repeat data that's already displayed above your response
+- When commenting on a completed action, add insight or useful context (trends, comparisons, suggestions)
+- When answering a question, answer it directly
+- When something is genuinely unclear, ask one specific question
+- You know about: students, RTC currency, attendance, grades, notes, classes, homework, messaging, privileges, and the IRL store${last ? `\nCurrent student context: ${last}` : ''}`;
+    }
+
+    _createStreamingBubble() {
+      const output = document.getElementById('terminal-output');
+      if (!output) return null;
+      const bubble = document.createElement('div');
+      bubble.style.cssText = 'display:flex;gap:12px;margin:16px 0;';
+      bubble.innerHTML = `
+        <div style="width:36px;height:36px;border-radius:50%;background:#f2e6c9;border:2px solid #d97a3a;overflow:hidden;flex-shrink:0;">
+          <img src="../shared/riven-avatar.jpg" alt="Riven" style="width:100%;height:100%;object-fit:cover;object-position:53% 17%;transform:scale(1.8);transform-origin:53% 17%;">
+        </div>
+        <div style="flex:1;max-width:80%;">
+          <div class="phi3-content" style="background:#f2e6c9;padding:12px 16px;border-radius:12px 12px 12px 4px;border:1px solid #b08d5a;color:#3d2817;">
+            <span class="phi3-text"></span><span class="riven-stream-cursor"></span>
+          </div>
+        </div>`;
+      output.appendChild(bubble);
+      output.scrollTop = output.scrollHeight;
+      return bubble;
+    }
+
+    async _phi3Run(messages, onToken, maxTokens = 180) {
+      const { pipe, _TextStreamer } = this._phi3State;
+      if (!pipe) return null;
+      let full = '';
+      try {
+        if (_TextStreamer) {
+          const streamer = new _TextStreamer(pipe.tokenizer, {
+            skip_prompt: true,
+            decode_kwargs: { skip_special_tokens: true },
+            callback_function: (text) => { full += text; if (onToken) onToken(text, full); }
+          });
+          await pipe(messages, { max_new_tokens: maxTokens, do_sample: false, streamer });
+        } else {
+          const out = await pipe(messages, { max_new_tokens: maxTokens, do_sample: false });
+          full = out[0]?.generated_text?.at(-1)?.content || '';
+          if (onToken) onToken(full, full);
+        }
+      } catch (err) {
+        console.error('[Phi-3 inference error]', err);
+        return null;
+      }
+      return full.trim();
+    }
+
+    async _phi3Chat(input) {
+      this._phi3History.push({ role: 'user', content: input });
+      if (this._phi3History.length > 12) this._phi3History = this._phi3History.slice(-12);
+      const messages = [{ role: 'system', content: this._phi3SystemPrompt() }, ...this._phi3History];
+      const bubble = this._createStreamingBubble();
+      const textEl = bubble?.querySelector('.phi3-text');
+      const cursor = bubble?.querySelector('.riven-stream-cursor');
+      const out = document.getElementById('terminal-output');
+      const result = await this._phi3Run(messages, (_, full) => {
+        if (textEl) textEl.textContent = full;
+        if (out) out.scrollTop = out.scrollHeight;
+      });
+      if (cursor) cursor.remove();
+      if (!result && bubble) bubble.querySelector('.phi3-content').textContent = '…';
+      if (result) {
+        this._phi3History.push({ role: 'assistant', content: result });
+        if (this._phi3History.length > 12) this._phi3History = this._phi3History.slice(-12);
+      }
+      this._persistTerminalChat();
+    }
+
+    async _phi3Comment(input, intent, entities) {
+      const studentName = (entities?.student?.student || entities?.student)?.full_name;
+      const contextLine = [
+        intent ? `Action performed: ${intent}` : null,
+        studentName ? `Student: ${studentName}` : null,
+        entities?.amount ? `Amount: ${entities.amount}` : null,
+      ].filter(Boolean).join(', ');
+      const messages = [
+        { role: 'system', content: this._phi3SystemPrompt() },
+        { role: 'user', content: input },
+        { role: 'assistant', content: `[Action completed: ${contextLine || intent}. The result is now shown above.]` },
+        { role: 'user', content: `Add a brief comment. Don't repeat the data shown. 1-2 sentences max.` }
+      ];
+      const bubble = this._createStreamingBubble();
+      const textEl = bubble?.querySelector('.phi3-text');
+      const cursor = bubble?.querySelector('.riven-stream-cursor');
+      const out = document.getElementById('terminal-output');
+      const result = await this._phi3Run(messages, (_, full) => {
+        if (textEl) textEl.textContent = full;
+        if (out) out.scrollTop = out.scrollHeight;
+      }, 120);
+      if (cursor) cursor.remove();
+      if (!result && bubble) bubble.remove();
+      else if (result) this._persistTerminalChat();
+    }
+
+    async _phi3Interpret(originalInput, resolvedInput, entities) {
+      const studentName = (entities?.student?.student || entities?.student)?.full_name;
+      const intentList = `award/deduct RTC, view balance or history, check attendance, show notes, view grades, enroll or unenroll students, send messages, mark attendance, manage classes, show homework, navigate sections, view rosters or store items`;
+      const messages = [
+        { role: 'system', content: `You interpret a teacher's unclear command for a school management system.\nAvailable actions: ${intentList}.\nStudent context: ${studentName || 'none'}.\nRule: Output ONLY a clear reformulated command the system can execute, like "give Jordan 5 RTC" or "show attendance issues". If you genuinely cannot interpret it, output: UNKNOWN` },
+        { role: 'user', content: originalInput }
+      ];
+      this.terminalPrint('…one moment', '#97a2b0');
+      const result = await this._phi3Run(messages, null, 60);
+      if (!result || result === 'UNKNOWN' || result.length < 3) {
+        this._handleUnknown(resolvedInput, entities);
+        return;
+      }
+      // Remove the "one moment" line and run the interpreted command
+      const output = document.getElementById('terminal-output');
+      if (output?.lastElementChild?.innerText?.includes('one moment')) output.lastElementChild.remove();
+      this.terminalPrint(`💡 I think you mean: "${result}"`, '#97a2b0');
+      await this._executeNaturalLanguage(result, { _fromPhi3: true });
+    }
+
+    // ── End Phi-3 upgrade infrastructure ──────────────────────────────────────
 
     _respondSmalltalk(key) {
       const name = this.userInfo?.profile?.first_name || '';
