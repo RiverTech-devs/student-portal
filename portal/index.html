@@ -12470,11 +12470,34 @@
               table: 'notifications',
               filter: `user_id=eq.${this.userInfo.user.id}`
             },
-            (payload) => {
+            async (payload) => {
               console.log('🔔 New notification:', payload.new);
               this.notifications.unshift(payload.new);
               this.updateNotificationUI();
               this.showNotificationToast(payload.new);
+
+              if (payload.new.type === 'new_message') {
+                // Refresh thread list so the unread count is current
+                try { await this.loadMessages(); } catch (_) {}
+                this.updateNavigationBadges();
+
+                // Pulse the Messages nav badge briefly
+                const navBadge = document.querySelector('.nav-item[data-section="messaging"] .nav-badge');
+                if (navBadge) {
+                  navBadge.style.transition = 'transform 0.15s ease';
+                  navBadge.style.transform = 'scale(1.5)';
+                  setTimeout(() => { navBadge.style.transform = 'scale(1)'; }, 300);
+                }
+
+                // Push a Riven chat bubble (terminal is always in DOM even if hidden)
+                const senderMatch = /from (.+)$/.exec(payload.new.message || '');
+                const senderName = senderMatch?.[1] || 'Someone';
+                this._showRivenMessage(
+                  `<span style="font-size:13px;">💬 New message from <strong>${this.escapeHtml(senderName)}</strong> — <a href="#" onclick="event.preventDefault();app.openConversation('${payload.new.metadata?.sender_id || ''}');" style="color:#d97a3a;text-decoration:underline;">open it</a></span>`,
+                  true
+                );
+                this._persistTerminalChat();
+              }
             }
           )
           .subscribe();
@@ -43532,18 +43555,20 @@
           ]
         },
 
-        // SEND_MESSAGE — "message jordan's parents", "send eli a message"
-        // Navigates to messaging section with student context shown
+        // SEND_MESSAGE — "message jordan's parents", "send eli a message",
+        // "message Caitlin", "reach out to Luke Hegelund"
         {
           intent: 'SEND_MESSAGE',
           w: 6, notIfNoteCommand: true,
           patterns: [
             { re: /\b(message|msg|text|email|contact|reach out to|get in touch with)\b.*\b(parents?|mom|dad|family|guardian|folks)\b/, w: 7 },
-            // "send eli a message" — student between verb and target word
+            // "send eli a message" — student/teacher between verb and target word
             { re: /\b(send|write|compose)\b.{1,30}\b(message|msg|email)\b/, w: 6 },
-            { re: /\b(reach|contact|message|email)\b.*\b(student|parent|guardian|family)\b/, w: 6 }
-          ],
-          requiresStudent: true
+            { re: /\b(reach|contact|message|email)\b.*\b(student|parent|guardian|family|teacher|staff)\b/, w: 6 },
+            // "message Caitlin Relvas" / "reach out to Luke" — any named person
+            { re: /^(message|msg|email|contact|text)\b/, w: 5 },
+            { re: /\b(message|reach out to|get in touch with)\b.{2,40}$/, w: 5 }
+          ]
         },
         // DELETE_NOTE — "remove that note", "delete the last note" (before
         // ADD_NOTE; targets the most recent note Riven created)
@@ -47435,20 +47460,62 @@
       }
     }
 
-    terminalSendMessage(entities) {
+    async terminalSendMessage(entities) {
       const student = entities.student?.student || entities.student;
-      if (!student) {
-        this._showRivenMessage(`Who do you want to message? Give me a student name and I'll take you to their messaging thread.`, true);
-        return;
-      }
       const raw = (entities.original || entities.normalized || '').toLowerCase();
       const isParent = /\b(parents?|mom|dad|family|guardian|folks)\b/.test(raw);
-      const target = isParent ? `${student.full_name}'s parents` : student.full_name;
-      this._showRivenMessage(`Opening messaging for ${this.escapeHtml(target)}…`, true);
-      setTimeout(() => {
-        this.showSection('messaging');
-        setTimeout(() => { this.sendMessageInThread(student.id); }, 600);
-      }, 300);
+
+      // Resolve recipient: student first, then teachers/admins by name
+      let recipientId = null, recipientName = null;
+
+      if (student && !isParent) {
+        recipientId = student.id;
+        recipientName = student.full_name;
+      } else if (student && isParent) {
+        // Look up parent linked to this student
+        const { data: links } = await this.auth.supabase
+          .from('parent_student_links')
+          .select('parent_id, user_profiles!parent_student_links_parent_id_fkey(id, first_name, last_name)')
+          .eq('student_id', student.id).limit(1);
+        const parent = links?.[0]?.user_profiles;
+        if (parent) {
+          recipientId = parent.id;
+          recipientName = `${parent.first_name} ${parent.last_name}`;
+        } else {
+          this._showRivenMessage(`I couldn't find a parent account linked to ${this.escapeHtml(student.full_name)}.`, true);
+          return;
+        }
+      } else {
+        // No student entity — try to find a staff member by name from the input
+        const nameGuess = (entities.original || '').replace(/^(message|msg|email|contact|text|reach out to|get in touch with)\s+/i, '').trim();
+        if (nameGuess) {
+          const { data: staff } = await this.auth.supabase
+            .from('user_profiles')
+            .select('id, first_name, last_name, user_type')
+            .in('user_type', ['teacher', 'admin'])
+            .neq('id', this.userInfo.user.id);
+          if (staff?.length) {
+            const lower = nameGuess.toLowerCase();
+            const match = staff.find(s => {
+              const full = `${s.first_name} ${s.last_name}`.toLowerCase();
+              return full.includes(lower) || lower.includes(s.first_name.toLowerCase());
+            });
+            if (match) {
+              recipientId = match.id;
+              recipientName = `${match.first_name} ${match.last_name}`;
+            }
+          }
+        }
+        if (!recipientId) {
+          this._showRivenMessage(`Who do you want to message? Try "message Caitlin", "message Jordan Ezell", or "message Eli's parents".`, true);
+          return;
+        }
+      }
+
+      // Open the conversation modal directly — no tab switch needed
+      this._showRivenMessage(`Opening conversation with ${this.escapeHtml(recipientName)}…`, true);
+      if (!this.messageThreads) await this.loadMessages();
+      await this.openConversation(recipientId);
     }
 
     async terminalDeleteLastNote() {
