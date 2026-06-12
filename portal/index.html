@@ -42182,6 +42182,11 @@
         ? ['him', 'her', 'hers', 'his', 'he', 'she']
         : ['him', 'her', 'hers', 'his', 'them', 'their', 'theirs', 'they', 'he', 'she'];
 
+      // If the input already names a student, pronouns in that sentence refer
+      // to that named person — skip injection so "dock eli 5 for his phone"
+      // doesn't become "dock eli 5 for jordan phone".
+      if (this._fuzzyFindStudent(normalized)?.score >= 0.85) return normalized;
+
       let resolved = normalized;
       for (const pronoun of pronouns) {
         const regex = new RegExp(`\\b${pronoun}\\b`, 'g');
@@ -42226,7 +42231,7 @@
       const studentCentric = ['VIEW_STUDENT', 'ADD_RTC', 'SUBTRACT_RTC', 'VIEW_ATTENDANCE', 'VIEW_HISTORY',
         'BALANCE_AT', 'VIEW_ENROLLMENTS', 'STUDENT_TENURE', 'MARK_ATTENDANCE', 'ENROLL_STUDENT',
         'UNENROLL_STUDENT', 'SET_GRADE', 'VIEW_GRADES', 'UPDATE_CONTACT', 'VIEW_CONTACT',
-        'ADD_NOTE', 'VIEW_NOTES', 'COMPARE_STUDENTS', 'TRANSFER_RTC'];
+        'ADD_NOTE', 'VIEW_NOTES', 'COMPARE_STUDENTS', 'TRANSFER_RTC', 'RELAY_ACTION'];
       const student = entities.student?.student || entities.student;
       if (student && student.full_name && !entities.student?.fromContext && studentCentric.includes(intent.intent)) {
         this._nlpContext.lastStudent = student;
@@ -42830,6 +42835,19 @@
             /^(do (it|that|this) again|do it once more|again|repeat( that| it)?|same (again|thing)|one more( time)?)[\s!.]*$/
           ]
         },
+        // RELAY_ACTION — "same for Dylan", "do it for Charlotte too", "and Eli"
+        // re-runs the last repeatable command with a different student substituted.
+        // notIfAmount: avoids stealing "give X N too" from ADD_RTC
+        {
+          intent: 'RELAY_ACTION',
+          w: 7, notIfAmount: true,
+          patterns: [
+            /^(same|do (it|that)|that)\s+(for|to|with)\s+\w/,
+            /^(and|also)\s+(for|to)\s+\w/,
+            /\b(too|as well)\s*[.!?]*$/
+          ],
+          requiresStudent: true
+        },
         // CORRECTION — bare "no" / "not what I meant". A "no" followed by an
         // actual request is peeled off earlier in the pipeline and re-run.
         {
@@ -42886,7 +42904,16 @@
             /\b(mark|record|log|enter|change|fix|update|set)\b.*\battendance\b/,
             // statement form: "jordan was late (today)" — question form
             // ("was jordan late?") is blocked below and stays a read
-            /\b(was|is|came( in)?|arrived|showed up)\s+(late|tardy|absent)\b/
+            /\b(was|is|came( in)?|arrived|showed up)\s+(late|tardy|absent)\b/,
+            // quick natural phrases teachers say without "mark"
+            // "just" makes these unambiguously statements, not questions
+            /\bjust\s+(got|came|walked|showed|arrived)\s*(in|here|up|back)?\b/,
+            /\bwalked in\b/,
+            // "jordan is out/here today" — statement order, leading-verb guard
+            // blocks the question form "is jordan out?" since it starts with "is"
+            /\b(is|was)\s+(out|absent|gone|here|present|back|late|tardy)\b/,
+            // bare "out today" / "here today" phrasing
+            /\b(out|absent|here|present|late|tardy)\s+(today|now|right now|all day|this morning|this afternoon)\b/
           ],
           requiresStudent: true,
           notIfLeadingVerb: true
@@ -43087,7 +43114,9 @@
             /(give|award|add) .* \d+/,
             /(^|\s)\+\d+/,                 // "+2 to charlotte"
             /\d+ (rtc )?(to|for)\b/,       // "2 to sarah", "2 rtc to sarah"
-            /add \d+/
+            /add \d+/,
+            // slang award verbs teachers use
+            { re: /\b(bless|hook up|spot|front|float)\b/, w: 4 }
           ],
           requiresStudent: true,
           requiresAmount: true
@@ -43403,7 +43432,12 @@
             /\b(spotty|bad|poor|low|worst|terrible|rough|concerning)\b.*\b(attendance|absences)\b/,
             /\battendance\b.*\b(issues?|problems?|concerns?)\b/,
             /\b(students|kids|who|which|anyone|anybody)\b.*\b(absent|absences|missing|skipp(ed|ing)|tardy|late)\b/,
-            /\b(students|kids|anyone|anybody)\b.*\battendance\b/
+            /\b(students|kids|anyone|anybody)\b.*\battendance\b/,
+            // at-risk / struggling phrasing (routes to the same report which
+            // also surfaces frequent absences as an early struggling signal)
+            /\b(who|which|any(one|body)?)\b.*\b(struggling|failing|behind|at.?risk|in trouble|falling behind|losing ground)\b/,
+            /\b(struggling|failing|at.?risk)\b.*\b(students?|kids?)\b/,
+            /\bwho (needs|need) (help|attention|support|intervention)\b/
           ]
         },
         // VIEW_ATTENDANCE (before VIEW_STUDENT so "show eli's attendance" works)
@@ -43465,7 +43499,11 @@
           patterns: [
             /history/,
             /transactions/,
-            /what happened/
+            /what happened/,
+            // "is dylan spending or saving his rtc?" — behavioural spending
+            // query; transaction log is the right answer
+            { re: /\b(spending|saving|spend|save)\b.*\brtc\b/, w: 5 },
+            { re: /\brtc\b.*\b(spending|saving|spend|save)\b/, w: 5 }
           ],
           requiresStudent: true
         },
@@ -43475,6 +43513,8 @@
           w: 2,
           patterns: [
             { re: /how (much|many) rtc/, w: 4 },
+            // "how much does/did/has/have [student]" — balance query without "rtc"
+            { re: /\bhow much (does|do|did|has|have)\b/, w: 5 },
             /\b(show|view|check|find|look|read|tell|info|lookup|pull up|bring up)\b/,
             /who (is|has)/,
             { re: /what.*rtc/, w: 3 },
@@ -43647,7 +43687,7 @@
       // card — that masks the misunderstanding ("mark him present" used to
       // silently show the card). Own up to the limitation instead.
       if (/\b(mark|enrol|enroll|register|assign|schedule|book|cancel|email|message|text|call|change|update|edit|delete|reset|suspend|approve|deny|put|set|send|move|transfer|make|create|upload|export|print|invite|excuse|promote|withdraw|rename)\b/.test(normalized)) {
-        return { intent: 'UNKNOWN_ACTION', confidence: 0.9, lastResort: true };
+        return { intent: 'UNKNOWN_ACTION', confidence: 0.9 };
       }
 
       // Last resort: a student was clearly named (e.g. just "Charlotte", or
@@ -43866,6 +43906,29 @@
             this.terminalPrintError("There's nothing recent to repeat — tell me the full command once and then \"again\" works.");
           }
           break;
+
+        case 'RELAY_ACTION': {
+          if (!this._lastRepeatable || Date.now() - this._lastRepeatable.at >= 10 * 60 * 1000) {
+            this.terminalPrintError("Nothing recent to relay — give me the full command first, then \"same for [name]\" works.");
+            break;
+          }
+          if (!student) { this.terminalPrintError('Same for who? I need a student name.'); break; }
+          const prevStudent = this._nlpContext?.lastStudent;
+          let relayText = this._lastRepeatable.text;
+          if (prevStudent) {
+            // Replace the previous student name (full first) so "jordan" inside
+            // "jordan games" doesn't get double-replaced
+            const escFull = prevStudent.full_name.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const escFirst = (prevStudent.first_name || '').toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            relayText = relayText.replace(new RegExp(`\\b${escFull}\\b`, 'g'), student.full_name.toLowerCase());
+            if (escFirst) relayText = relayText.replace(new RegExp(`\\b${escFirst}\\b`, 'g'), student.first_name.toLowerCase());
+          } else {
+            relayText += ' ' + student.full_name.toLowerCase();
+          }
+          this.terminalPrint(`↩️ Relaying for ${student.full_name}: "${relayText}"`, '#97a2b0');
+          await this._executeNaturalLanguage(relayText);
+          break;
+        }
 
         case 'CAPABILITY':
           this._rivenCapabilityReply(intent.capability);
@@ -44808,7 +44871,19 @@
         ATTENDANCE_ISSUES: [
           'who has been skipping class',
           'which kids keep missing school',
-          'anyone with attendance problems lately'
+          'anyone with attendance problems lately',
+          'who is struggling in school right now',
+          'which students are falling behind',
+          'any kids at risk of failing',
+          'who needs the most support right now'
+        ],
+        RELAY_ACTION: [
+          'same for dylan',
+          'do it for charlotte too',
+          'and eli as well',
+          'also for phoenix',
+          'do that for jordan too',
+          'give that to dylan as well'
         ],
         MARK_READ: [
           'clear out my notifications',
@@ -44975,7 +45050,7 @@
           VIEW_TOP: 'show the leaderboard', VIEW_STATS: 'show overall stats',
           VIEW_CONTACT: 'pull up contact info', VIEW_HISTORY: 'show the transaction history',
           GROUP_BALANCES: 'show the group balances', ATTENDANCE_ISSUES: 'flag attendance problems',
-          COMPARE_STUDENTS: 'compare two students'
+          COMPARE_STUDENTS: 'compare two students', RELAY_ACTION: 'relay that command to another student'
         };
         const label = labels[match.intent] || match.intent.replace(/_/g, ' ').toLowerCase();
         const finish = async () => {
@@ -45090,19 +45165,42 @@
       if (/\bgrades?\b|\bgpa\b/.test(entities.normalized || '')) {
         return this._compareGrades(a, b, entities);
       }
+      const bar = (v, max) => `<div style="background: rgba(243,156,18,0.25); border-radius: 4px; height: 10px; width: ${Math.round((v / max) * 100)}%; min-width: 4px;"></div>`;
+      // 3+ students: show a ranked list instead of the two-student layout
+      if (pair.length >= 3) {
+        const fetched = await Promise.all(pair.map(async p => {
+          const s = p?.student;
+          if (!s) return null;
+          const rows = await this._findStudentsByName(s.full_name, 'id, first_name, last_name, rtc_balance');
+          return rows?.[0] || s;
+        }));
+        const valid = fetched.filter(Boolean);
+        if (valid.length < 2) { this.terminalPrintError('Could not find enough students to compare.'); return; }
+        valid.sort((x, y) => (y.rtc_balance || 0) - (x.rtc_balance || 0));
+        const max = Math.max(...valid.map(s => s.rtc_balance || 0), 1);
+        const medals = ['🥇', '🥈', '🥉'];
+        let html = `<div style="font-weight: 600; margin-bottom: 8px;">⚖️ RTC comparison (${valid.length} students)</div>`;
+        valid.forEach((s, i) => {
+          const bal = s.rtc_balance || 0;
+          html += `<div style="margin: 6px 0;">${medals[i] || `${i + 1}.`} <b>${this.escapeHtml(s.full_name)}</b> — ${bal} RTC ${bar(bal, max)}</div>`;
+        });
+        html += `<div style="color: var(--muted); font-size: 12px; margin-top: 8px;">${this.escapeHtml(valid[0].full_name)} leads the pack.</div>`;
+        this._showRivenMessage(html, true);
+        return;
+      }
+      // Two-student comparison
       const assumed = pair.some(p => p?.assumed);
       const rowsA = await this._findStudentsByName(a.full_name, 'id, first_name, last_name, rtc_balance');
       const rowsB = await this._findStudentsByName(b.full_name, 'id, first_name, last_name, rtc_balance');
       const sa = rowsA?.[0] || a, sb = rowsB?.[0] || b;
       const balA = sa.rtc_balance || 0, balB = sb.rtc_balance || 0;
       const max = Math.max(balA, balB, 1);
-      const bar = (v) => `<div style="background: rgba(243,156,18,0.25); border-radius: 4px; height: 10px; width: ${Math.round((v / max) * 100)}%; min-width: 4px;"></div>`;
       const diff = Math.abs(balA - balB);
       const leader = balA === balB ? null : (balA > balB ? sa : sb);
       let html = assumed ? `<div style="font-size: 12px; color: var(--muted); margin-bottom: 6px;">(assuming you meant ${this.escapeHtml(sa.full_name)} and ${this.escapeHtml(sb.full_name)})</div>` : '';
       html += `<div style="font-weight: 600; margin-bottom: 8px;">⚖️ RTC comparison</div>
-        <div style="margin: 6px 0;"><b>${this.escapeHtml(sa.full_name)}</b> — ${balA} RTC ${bar(balA)}</div>
-        <div style="margin: 6px 0;"><b>${this.escapeHtml(sb.full_name)}</b> — ${balB} RTC ${bar(balB)}</div>
+        <div style="margin: 6px 0;"><b>${this.escapeHtml(sa.full_name)}</b> — ${balA} RTC ${bar(balA, max)}</div>
+        <div style="margin: 6px 0;"><b>${this.escapeHtml(sb.full_name)}</b> — ${balB} RTC ${bar(balB, max)}</div>
         <div style="color: var(--muted); font-size: 12px; margin-top: 8px;">${leader ? this.escapeHtml(leader.full_name) + ' is ahead by ' + diff + ' RTC.' : 'Dead even!'}</div>`;
       this._showRivenMessage(html, true);
     }
@@ -46363,6 +46461,12 @@
     }
 
     async terminalGroupAddRTC(entities) {
+      // "give jordan and eli 10 each" — specific named students, not a roster
+      // group. Route to terminalMultiAward which handles them individually so
+      // the stale lastGroup doesn't hijack the command.
+      if (entities.students?.length >= 2 && entities.amount) {
+        return this.terminalMultiAward(entities);
+      }
       const grp = await this._rivenResolveGroup(entities);
       if (grp.asked) return;
       if (!grp.studentIds.length) {
