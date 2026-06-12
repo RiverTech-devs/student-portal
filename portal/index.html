@@ -42106,13 +42106,14 @@
       // Phase 1 + 2 + 3: NLP with context and pronouns
       const normalized = this._normalizeInput(input);
 
-      // Smart mode vagueness gate: when the 1GB LLM is active, anything without
-      // a clear command verb routes to phi3.interpret instead of the regex NLP.
-      // phi3.interpret re-routes to NLP if it detects a command, or falls through
-      // to phi3.chat. This prevents the fuzzy student matcher from claiming common
-      // English words ("day"→"fay", "rough"→"fay") mid-conversation.
+      // Smart mode vagueness gate: when the 1GB LLM is active, multi-word inputs
+      // with no clear command verb route to phi3.interpret instead of regex NLP.
+      // phi3.interpret converts teacher observations to commands ("charlotte was
+      // great" → "note for charlotte: was great") or falls through to phi3.chat.
+      // Short inputs (1-2 words) always go to NLP — they're bare lookups or names.
       if (this._phi3State?.active && this._phi3State?.pipe && !opts?._fromPhi3) {
-        if (!this._hasCommandVerb(normalized)) {
+        const wordCount = normalized.trim().split(/\s+/).length;
+        if (wordCount >= 3 && !this._hasCommandVerb(normalized)) {
           this._phi3Interpret(input, normalized, {}).catch(() => this._handleUnknown(normalized, {}));
           return;
         }
@@ -45542,11 +45543,17 @@
       const studentName = (entities?.student?.student || entities?.student)?.full_name;
       const intentList = `award/deduct RTC, view balance or history, check attendance, add or show notes, view grades, enroll or unenroll students, send messages, mark attendance, manage classes, show homework, navigate sections, view rosters or store items`;
       const messages = [
-        { role: 'system', content: `You convert a teacher's unclear input into a single command for a school management system, when it is one.\nAvailable actions: ${intentList}.\nStudent in context: ${studentName || 'none'}.\nIf the input is a request to perform one of those actions, reply with ONLY the command, e.g. "give Jordan 5 RTC" or "show attendance issues".\nIf the input is a general question, greeting, comment, or anything not in the action list, reply with exactly: CHAT` },
+        { role: 'system', content: `Convert teacher input into a single command. Actions: ${intentList}. Student in context: ${studentName || 'none'}. Teacher observations about a student are notes. Reply ONLY with the command or CHAT.` },
+        { role: 'user', content: `charlotte was great today` },
+        { role: 'assistant', content: `note for charlotte: was great today` },
+        { role: 'user', content: `eli misbehaved last period` },
+        { role: 'assistant', content: `note for eli: misbehaved last period` },
+        { role: 'user', content: `i'm having a rough day` },
+        { role: 'assistant', content: `CHAT` },
         { role: 'user', content: originalInput }
       ];
       this.terminalPrint('…one moment', '#97a2b0');
-      const result = await this._phi3Run(messages, null, 40);
+      const result = await this._phi3Run(messages, null, 50);
       const removeMoment = () => {
         const o = document.getElementById('terminal-output');
         if (o?.lastElementChild?.innerText?.includes('one moment')) o.lastElementChild.remove();
