@@ -44657,20 +44657,35 @@
       if (g && /\w/.test(raw.slice(g[0].length))) {
         return { remainder: raw.slice(g[0].length) };
       }
-      const lower = raw.toLowerCase().replace(/[!?.,]+/g, ' ').replace(/\s+/g, ' ').trim();
+      const lower = raw.toLowerCase().replace(/[!?.,!]+/g, ' ').replace(/\s+/g, ' ').trim();
       if (!lower) return null;
       const checks = [
-        ['greeting', /^(hey there|hey|hi there|hi|hello|yo|hiya|howdy|good (morning|afternoon|evening))( riven)?$/],
-        ['howareyou', /^(hows it going|how is it going|how are you( doing)?( today)?|how you doing|how are things|how goes it|hows your day( going)?|whats up|what is up|sup)( riven)?$/],
-        ['thanks', /^(ok |okay )?(thanks|thank you|thx|ty|appreciate it)( so much| a lot)?( riven)?$/],
-        ['bye', /^(bye|goodbye|goodnight|good night|see ya|see you( later)?|later|cya)( riven)?$/],
+        // Greetings — includes informal / time-of-day variants
+        ['greeting', /^(hey there|hey|hi there|hi|hello|yo|hiya|howdy|morning|good (morning|afternoon|evening)|you there|you around|you here)( riven)?$/],
+        ['howareyou', /^(hows it going|how is it going|how are you( doing)?( today)?|how you doing|how are things|how goes it|hows your day( going)?|whats up|what is up|sup|what s up)( riven)?$/],
+        ['thanks', /^(ok |okay )?(thanks|thank you|thx|ty|appreciate it|much appreciated|thank you so much)( so much| a lot)?( riven)?$/],
+        ['bye', /^(bye|goodbye|goodnight|good night|see ya|see you( later)?|later|cya|ttyl|take care)( riven)?$/],
         ['whoareyou', /^(who|what) are you( again| exactly)?$/],
-        ['capabilities', /^(what can you do|what do you do|what can you help( me)? with|help|help me)$/],
-        ['ack', /^(nice|cool|awesome|great|perfect|sweet|love it|good job|well done)( riven)?$/],
+        // Capability questions — expanded to catch all natural phrasings
+        ['capabilities', /^(what can you do|what do you do|what can you help( me)? with|help|help me|what can i ask you|what can i ask|what are you good at|what do you (handle|know|cover)|what is possible|what's possible|what are you capable of|what can i tell you|what should i ask|how can you help( me)?|what are your features|what are your capabilities)$/],
+        // Expanded acknowledgments
+        ['ack', /^(nice|cool|awesome|great|perfect|sweet|love it|good job|well done|lovely|got it|nice one|that works|makes sense|sounds good|alright|fair enough|fair point|works for me|will do|sounds right|that s right|sounds great|excellent|wonderful|brilliant|solid|good to know|understood|noted|ok good|okay good|that s it|exactly|precisely)( riven)?( thanks)?$/],
         ['stray_yes', /^(yes|yep|yeah|sure|confirm|ok then)( please)?$/],
-        ['dismiss', /^(never ?mind|scratch that|forget it|don'?t worry( about it)?|nothing)[\s!.]*$/],
-        // FYI statements ("I'm about to run shop now") get a friendly ack,
-        // not a confused "I didn't get that"
+        // Cancellation / dismiss
+        ['dismiss', /^(never ?mind|scratch that|forget it|don'?t worry( about it)?|nothing|disregard that|disregard|ignore that|cancel that|all good)[\s!.]*$/],
+        // Pause signals — teacher needs a moment, not a correction
+        ['pause', /^(wait|hold on|one sec(ond)?|give me a (sec(ond)?|moment|min(ute)?)|hang on|just a sec(ond)?|brb|one moment)[\s!.]*$/],
+        // Oops / soft correction — teacher realizes something was wrong
+        ['oops', /^(oops|whoops|my bad|my mistake|i messed up|i made a mistake|actually( wait)?|on second thought|wait no|wait actually|hmm( wait)?|oh wait|oh no|never mind that|i take that back|wrong student|wrong class|wrong (name|person)|that'?s (not right|wrong|incorrect)|that wasn'?t right|not what i (meant|wanted)|try again|that'?s not it|no that'?s not it|nope that'?s wrong|shoot|dang|darn|ugh|doh|facepalm)[\s!.]*$/],
+        // Frustration / exclamations with no prior undo context
+        ['exclaim', /^(hmm|hm|huh|ah|oh|oh well|meh|sigh|lol|ha|haha)[\s!.]*$/],
+        // Clarification requests about last output
+        ['explain', /^(what was that|explain that|what does that mean|how did you get that|what just happened|why did you do that|where did that come from|what are you (referring to|talking about)|what do you mean( by that)?|can you explain( that)?|what was the (last|previous) (thing|action|result)|what does that show)[\s!.?]*$/],
+        // "Tell me more" — request to expand on last result
+        ['more', /^((tell|show|give) me more( (detail|info|information|context))?|more (detail|details|info|information|context)|elaborate( on that)?|expand( on that)?|more please|what else|and(\?)*)[\s!.?]*$/],
+        // Wrong entity signal — teacher wants to redirect to different student/class
+        ['wrongentity', /^(wrong (student|person|class|name|one)|that'?s the wrong (student|person|class)|not (that student|that class|them|that one)|i meant (someone|somebody) else|different (student|class|person))[\s!.?]*$/],
+        // FYI statements
         ['fyi', /^(i'?m|i am|we'?re|we are|im) (about to|going to|gonna|getting ready to|starting|running|opening|doing)\b[^?]*$/],
         ['bugreport', /(that('s| is|s)? (a bug|broken|buggy)|seems? (like a )?bug|you('re| are) (broken|glitching))/]
       ];
@@ -44683,25 +44698,72 @@
     _respondSmalltalk(key) {
       const name = this.userInfo?.profile?.first_name || '';
       const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+      // Check if there's a recent undoable action for context-aware oops response
+      const recentUndo = (() => {
+        const top = (this._undoStack || [])[this._undoStack?.length - 1];
+        return (top && Date.now() - (top.timestamp || 0) < 5 * 60 * 1000) ? top : null;
+      })();
+      // Last student context for continuation responses
+      const lastStudent = this._nlpContext?.lastStudent?.full_name || null;
       const lines = {
         greeting: [
           `Hey${name ? ' ' + name : ''}! What can I do for you?`,
           `Hi${name ? ' ' + name : ''}! Need a balance, attendance, or a note taken?`,
-          `Hello! I'm all ears — ask me about any student, class, or note.`
+          `Hello! I'm all ears — ask me about any student, class, or note.`,
+          `Hey! Ready when you are.`
         ],
         howareyou: [
           `Doing great, thanks for asking! What can I help you with — balances, attendance, notes?`,
           `All systems humming. 🙂 What do you need${name ? ', ' + name : ''}?`,
           `Pretty good! Ready to work whenever you are.`
         ],
-        thanks: [`Anytime!`, `Happy to help! 🙂`, `You got it.`],
-        bye: [`See you later${name ? ', ' + name : ''}! 👋`, `Bye! I'll be here when you need me.`],
+        thanks: [`Anytime!`, `Happy to help! 🙂`, `You got it.`, `Of course!`],
+        bye: [`See you later${name ? ', ' + name : ''}! 👋`, `Bye! I'll be here when you need me.`, `Take care!`],
         whoareyou: [
           `I'm Riven — your teaching assistant here in the portal. I can look up students, balances, attendance, classes, and notes; award or move RTC; and take notes for you. Ask me anything, or type /help for the full list.`
         ],
-        ack: [`🙂`, `Glad that worked!`, `👍`],
+        ack: [
+          `👍`, `🙂`, `Glad that worked!`, `Got it!`, `Perfect.`, `Sounds good!`,
+          `Happy to help.`, `✓ Noted.`, `Makes sense!`, `Good to know you're on top of it.`
+        ],
         stray_yes: [`There's nothing waiting for a yes right now — what would you like me to do?`],
-        dismiss: [`No problem — standing by. (If you wanted me to reverse something, say "undo".)`, `Okay! I'm here when you need me.`],
+        dismiss: [`No problem — standing by. (If you wanted me to reverse something, say "undo".)`, `Okay! I'm here when you need me.`, `All good — just let me know what you need.`],
+        pause: [
+          `No rush — I'll be here.`,
+          `Take your time! I'm not going anywhere.`,
+          `Sure thing — ready when you are.`
+        ],
+        oops: recentUndo ? [
+          `No worries! My last action was <b>${this.escapeHtml(recentUndo.desc)}</b>. Say "undo" to reverse it, then tell me what you actually wanted.`,
+          `All good — I can undo <b>${this.escapeHtml(recentUndo.desc)}</b> if that was the issue. Just say "undo".`
+        ] : [
+          `No problem — what should I do instead?`,
+          `Got it, let's try again. What did you need?`,
+          `No worries! What were you going for?`
+        ],
+        exclaim: [
+          `Ha — we've all been there. What can I help fix?`,
+          `Tell me what you need and I'll sort it out.`,
+          `What's on your mind?`
+        ],
+        explain: recentUndo ? [
+          `My last action was <b>${this.escapeHtml(recentUndo.desc)}</b>. Want more detail, or should I undo it?`
+        ] : lastStudent ? [
+          `The last student I looked at was <b>${this.escapeHtml(lastStudent)}</b>. Want me to pull up their full profile?`
+        ] : [
+          `What would you like me to explain? Name a student, class, or ask about a specific result.`
+        ],
+        more: lastStudent ? [
+          `Pulling up <b>${this.escapeHtml(lastStudent)}</b> — what specifically do you want to see? (balance, grades, attendance, notes?)`
+        ] : [
+          `More on what? Name a student or class and I'll dig deeper.`,
+          `Sure — who or what would you like more on?`
+        ],
+        wrongentity: [
+          `My bad! Who did you mean? Just name them and I'll use the right one.`,
+          `Got it — who were you thinking of?`,
+          `No problem — which student (or class) did you actually want?`
+        ],
         fyi: [
           `Got it — I'm ready when you are. Balances, purchases, group changes: just say the word.`,
           `Sounds good! Tell me names and amounts as you go and I'll handle the ledger.`
@@ -44714,7 +44776,13 @@
         this.terminalPrintHelp();
         return;
       }
-      this._showRivenMessage(this.escapeHtml(pick(lines[key] || lines.greeting)), true);
+      // oops and explain can have HTML — don't escape them
+      const raw = pick(lines[key] || lines.greeting);
+      if (key === 'oops' || key === 'explain') {
+        this._showRivenMessage(raw, true);
+      } else {
+        this._showRivenMessage(this.escapeHtml(raw), true);
+      }
       // A greeting is a natural moment to surface anything pending
       if (key === 'greeting' || key === 'howareyou') {
         this.terminalBriefing({ auto: true }).catch(() => {});
