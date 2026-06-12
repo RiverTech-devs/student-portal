@@ -42241,7 +42241,7 @@
       // Track the last READ separately so "what about dylan?" works even
       // right after a write (set grade -> ask about another student)
       const readIntents = ['VIEW_STUDENT', 'VIEW_ATTENDANCE', 'VIEW_HISTORY', 'BALANCE_AT',
-        'VIEW_ENROLLMENTS', 'STUDENT_TENURE', 'VIEW_GRADES', 'VIEW_CONTACT', 'VIEW_NOTES'];
+        'VIEW_ENROLLMENTS', 'STUDENT_TENURE', 'VIEW_GRADES', 'VIEW_CONTACT', 'VIEW_NOTES', 'CLASS_STATS'];
       if (readIntents.includes(intent.intent)) {
         this._nlpContext.lastReadIntent = intent.intent;
       }
@@ -43111,7 +43111,8 @@
           intent: 'ADD_RTC',
           w: 3, notIfNoteCommand: true, notIfBank: true,
           patterns: [
-            /(give|award|add) .* \d+/,
+            // w:5 so "give X N for participating" wins over SET_GRADE's w:5
+            { re: /(give|award|add) .* \d+/, w: 5 },
             /(^|\s)\+\d+/,                 // "+2 to charlotte"
             /\d+ (rtc )?(to|for)\b/,       // "2 to sarah", "2 rtc to sarah"
             /add \d+/,
@@ -43120,6 +43121,21 @@
           ],
           requiresStudent: true,
           requiresAmount: true
+        },
+        // CLASS_STATS — "how is AI class doing?", "which class has best grades?", "compare my classes"
+        {
+          intent: 'CLASS_STATS',
+          w: 5, notIfNoteCommand: true,
+          patterns: [
+            { re: /\bhow (is|are|did)\b.*(class|section|period|course)\b.*(doing|going|performing|looking)\b/, w: 6 },
+            /\b(class|section|period|course)\b.*(overview|summary|stats?|snapshot|performance)\b/,
+            /\b(overview|summary|snapshot)\b.*(class|section|period|course)\b/,
+            { re: /\bwhich (class|period|section|course)\b.*(best|worst|highest|lowest|top|bottom|most|least)\b/, w: 6 },
+            { re: /\b(best|worst|highest|lowest)\b.*(class|period|section|course)\b/, w: 5 },
+            { re: /\bcompare (my\s+)?class(es|rooms)\b/, w: 7 },
+            { re: /\brank(ing)?\s+(my\s+)?class(es)\b/, w: 6 },
+            { re: /\bhow (is|are)\s+(my\s+)?class(es)\b/, w: 6 },
+          ]
         },
         // COMPARE_STUDENTS — "compare evelyn and charlotte", "who has more rtc"
         {
@@ -43441,6 +43457,7 @@
           ]
         },
         // VIEW_ATTENDANCE (before VIEW_STUDENT so "show eli's attendance" works)
+        // requiresStudentOrClass: class-only → terminalShowClassAttendance
         {
           intent: 'VIEW_ATTENDANCE',
           w: 4,
@@ -43455,7 +43472,7 @@
             // writes; leading-verb questions block the write and read here
             /\b(late|tardy|on time|left early)\b/
           ],
-          requiresStudent: true
+          requiresStudentOrClass: true
         },
         // BALANCE_AT — "how much rtc did he have yesterday" (point-in-time,
         // reconstructed from the transaction ledger). Needs a past timeframe.
@@ -43879,8 +43896,10 @@
               untilDate: vUntil,
               sinceLabel: vLabel
             });
+          } else if (entities.classMatch) {
+            await this.terminalShowClassAttendance(entities);
           } else {
-            this.terminalPrintError('Whose attendance? Tell me a student name.');
+            this.terminalPrintError('Whose attendance? Tell me a student name or a class name.');
           }
           break;
 
@@ -44019,6 +44038,10 @@
           await this.terminalShowRoster(entities);
           break;
 
+        case 'CLASS_STATS':
+          await this.terminalClassStats(entities);
+          break;
+
         case 'GROUP_BALANCES':
           await this.terminalGroupBalances(entities);
           break;
@@ -44090,6 +44113,10 @@
     • "Give 5 RTC from [student] to [student]" (transfers)<br>
     • "Compare [student] and [student]" (RTC or grades)<br>
     • "Which students have bad attendance recently?"<br>
+    • "Who's been absent in [class] this month?"<br>
+    • "How is [class] doing?" — class overview: enrollment, grade avg, attendance<br>
+    • "Which of my classes has the best grades?" — ranks all your classes<br>
+    • "Show attendance for [class]" — per-student breakdown for the class<br>
     • "What classes is [student] in?" / "Who's in [class]?"<br>
     • "Mark [student] present in [class]" (or absent/late, "yesterday" works)<br>
     • "Add [student] to [class]" / "Remove [student] from [class]"<br>
@@ -44480,6 +44507,68 @@
       });
       html += '</div>';
       if (output) output.innerHTML += html;
+    }
+
+    async terminalShowClassAttendance(entities) {
+      const sb = this.auth.supabase;
+      const res = await this._rivenRequireClass(entities);
+      if (res.asked) return;
+      const row = res.row;
+      if (!row) { this.terminalPrintError('Which class?'); return; }
+
+      this.terminalPrint('Loading attendance…', '#6aa9ff');
+
+      const { data: enr } = await sb.from('class_enrollments')
+        .select('id, student_id').eq('class_id', row.id).eq('status', 'active');
+      if (!enr || !enr.length) {
+        this._showRivenMessage(`${this.escapeHtml(row.name)} has no active students.`, true);
+        return;
+      }
+      const studentIds = enr.map(e => e.student_id);
+      const sinceDate = entities.sinceDate || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+      const sinceLabel = entities.sinceLabel || 'last 30 days';
+
+      const { data: att } = await sb.from('class_attendance')
+        .select('student_id, status, date').eq('class_id', row.id)
+        .gte('date', sinceDate).in('student_id', studentIds)
+        .order('date', { ascending: false }).limit(500);
+
+      if (!this._terminalAllStudents?.length) await this._loadTerminalStudents();
+      const names = {};
+      (this._terminalAllStudents || []).forEach(s => { names[s.id] = s.full_name; });
+
+      // Aggregate per student
+      const byStudent = {};
+      (att || []).forEach(r => {
+        const e = byStudent[r.student_id] = byStudent[r.student_id] || { absent: 0, late: 0, left: 0, last: r.date };
+        if (r.status === 'absent') e.absent++;
+        else if (r.status === 'late' || r.status === 'late_left_early') e.late++;
+        else if (r.status === 'left_early') e.left++;
+        if (r.date > e.last) e.last = r.date;
+      });
+
+      const issues = Object.entries(byStudent)
+        .map(([id, e]) => ({ id, name: names[id] || 'Student', total: e.absent + e.late + e.left, ...e }))
+        .sort((a, b) => b.total - a.total);
+
+      let html = `<div style="font-weight:600;margin-bottom:8px;">📅 ${this.escapeHtml(row.name)} — Attendance (${this.escapeHtml(sinceLabel)})</div>`;
+      if (!issues.length) {
+        html += `<div style="color:#8bffb0;">✅ Perfect attendance — no absences or lates recorded!</div>`;
+      } else {
+        issues.forEach(s => {
+          const parts = [];
+          if (s.absent) parts.push(`❌ ${s.absent} absent`);
+          if (s.late) parts.push(`⏰ ${s.late} late`);
+          if (s.left) parts.push(`🚪 ${s.left} left early`);
+          html += `<div style="padding:5px 10px;margin:3px 0;background:rgba(255,255,255,0.03);border-left:3px solid ${s.absent ? '#ff6a6a' : '#ffd36a'};border-radius:4px;">
+            <b>${this.escapeHtml(s.name)}</b> — ${parts.join(' · ')} <span style="color:var(--muted);font-size:11px;">(last: ${s.last})</span>
+          </div>`;
+        });
+        const clean = enr.length - issues.length;
+        if (clean > 0) html += `<div style="color:#8bffb0;font-size:12px;margin-top:6px;">✅ ${clean} student${clean !== 1 ? 's' : ''} with perfect attendance.</div>`;
+      }
+      html += `<div style="color:var(--muted);font-size:11px;margin-top:6px;">Say "show [name]'s attendance" for their full record.</div>`;
+      this._showRivenMessage(html, true);
     }
 
     // ---- Notes (Riven ↔ unified notes system) ----
@@ -44879,6 +44968,16 @@
           'any kids at risk of failing',
           'who needs the most support right now'
         ],
+        CLASS_STATS: [
+          'how is my math class doing overall',
+          'give me an overview of the robotics class',
+          'which of my classes has the best grades',
+          'compare all my classes by performance',
+          'how are students doing in generative ai',
+          'rank my classes by average grade',
+          'what does the ai class look like this quarter',
+          'which class is struggling the most'
+        ],
         RELAY_ACTION: [
           'same for dylan',
           'do it for charlotte too',
@@ -45052,7 +45151,8 @@
           VIEW_TOP: 'show the leaderboard', VIEW_STATS: 'show overall stats',
           VIEW_CONTACT: 'pull up contact info', VIEW_HISTORY: 'show the transaction history',
           GROUP_BALANCES: 'show the group balances', ATTENDANCE_ISSUES: 'flag attendance problems',
-          COMPARE_STUDENTS: 'compare two students', RELAY_ACTION: 'relay that command to another student'
+          COMPARE_STUDENTS: 'compare two students', RELAY_ACTION: 'relay that command to another student',
+          CLASS_STATS: 'show class statistics'
         };
         const label = labels[match.intent] || match.intent.replace(/_/g, ' ').toLowerCase();
         const finish = async () => {
@@ -45231,26 +45331,52 @@
     }
 
     async terminalAttendanceIssues(entities) {
+      const sb = this.auth.supabase;
       const sinceDate = entities.sinceDate || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
       const sinceLabel = entities.sinceLabel || 'last 30 days';
-      this.terminalPrint('Scanning attendance across all students…', '#6aa9ff');
-      const { data, error } = await this.auth.supabase
-        .from('class_attendance')
+
+      // Class filter: "who's been absent in [class]?" — narrow to enrolled students
+      let classRow = null, allowedIds = null;
+      if (entities.classMatch) {
+        const res = await this._rivenRequireClass(entities);
+        if (res.asked) return;
+        classRow = res.row;
+        if (classRow) {
+          const { data: enr } = await sb.from('class_enrollments')
+            .select('student_id').eq('class_id', classRow.id).eq('status', 'active');
+          allowedIds = new Set((enr || []).map(e => e.student_id));
+        }
+      }
+
+      const scopeLabel = classRow ? `${classRow.name}, ${sinceLabel}` : sinceLabel;
+      this.terminalPrint(`Scanning attendance${classRow ? ' for ' + classRow.name : ' across all students'}…`, '#6aa9ff');
+
+      let q = sb.from('class_attendance')
         .select('student_id, status, date')
         .gte('date', sinceDate)
         .neq('status', 'present')
         .order('date', { ascending: false })
         .limit(1000);
+      if (classRow) q = q.eq('class_id', classRow.id);
+      const { data, error } = await q;
+
       if (error) { this.terminalPrintError('Could not check attendance: ' + error.message); return; }
-      if (!data || data.length === 0) {
-        this._showRivenMessage(`Good news — no absences, lates, or early exits recorded for anyone (${this.escapeHtml(sinceLabel)}). 🎉`, true);
+
+      // If class filter but the query was school-wide (fallback), restrict manually
+      const filtered = (allowedIds && !classRow)
+        ? (data || []).filter(r => allowedIds.has(r.student_id))
+        : (data || []);
+
+      if (!filtered.length) {
+        this._showRivenMessage(`Good news — no absences, lates, or early exits recorded${classRow ? ' for ' + this.escapeHtml(classRow.name) : ' for anyone'} (${this.escapeHtml(sinceLabel)}). 🎉`, true);
         return;
       }
       if (!this._terminalAllStudents || !this._terminalAllStudents.length) await this._loadTerminalStudents();
       const nameOf = {};
       (this._terminalAllStudents || []).forEach(s => { nameOf[s.id] = s.full_name; });
       const byStudent = {};
-      data.forEach(r => {
+      filtered.forEach(r => {
+        if (allowedIds && !allowedIds.has(r.student_id)) return;
         const e = byStudent[r.student_id] = byStudent[r.student_id] || { absent: 0, late: 0, left: 0, last: r.date };
         if (r.status === 'absent') e.absent++;
         else if (r.status === 'late' || r.status === 'late_left_early') e.late++;
@@ -45261,7 +45387,7 @@
         .map(([id, e]) => ({ id, name: nameOf[id] || 'Unknown student', total: e.absent + e.late + e.left, ...e }))
         .sort((x, y) => y.total - x.total)
         .slice(0, 10);
-      let html = `<div style="font-weight: 600; margin-bottom: 8px;">📉 Attendance issues (${this.escapeHtml(sinceLabel)})</div>`;
+      let html = `<div style="font-weight: 600; margin-bottom: 8px;">📉 Attendance issues (${this.escapeHtml(scopeLabel)})</div>`;
       ranked.forEach(s => {
         const parts = [];
         if (s.absent) parts.push(`❌ ${s.absent} absent`);
@@ -45618,7 +45744,8 @@
           });
           this._naturalSuccess([
             `${done.join(' and ')} ${done.length > 1 ? 'are' : 'is'} now enrolled in ${row.name}.`,
-            `Done — added ${done.join(' and ')} to ${row.name}.`
+            `Done — added ${done.join(' and ')} to ${row.name}.`,
+            `Got it — ${done.join(' and ')} ${done.length > 1 ? 'are' : 'is'} in ${row.name}.`
           ]);
         }
       );
@@ -46010,6 +46137,117 @@
         } else {
           html += `<div style="color: var(--muted); font-size: 12px; margin-top: 8px;">No final grades recorded yet this quarter.</div>`;
         }
+        this._showRivenMessage(html, true);
+      }
+    }
+
+    async terminalClassStats(entities) {
+      const sb = this.auth.supabase;
+
+      if (entities.classMatch) {
+        // Single class: detailed overview — enrollment, grade averages, attendance
+        const res = await this._rivenRequireClass(entities);
+        if (res.asked) return;
+        const row = res.row;
+        if (!row) { this.terminalPrintError('Which class?'); return; }
+
+        this.terminalPrint('Loading class overview…', '#6aa9ff');
+
+        // Enrollment
+        const { data: enr } = await sb.from('class_enrollments')
+          .select('id, student_id').eq('class_id', row.id).eq('status', 'active');
+        const enrolled = (enr || []).length;
+        const enrollmentIds = (enr || []).map(e => e.id);
+        const studentIds = (enr || []).map(e => e.student_id);
+
+        // Grade averages
+        const quarter = await this._rivenCurrentQuarter();
+        let gradeHtml = '';
+        if (quarter && enrollmentIds.length) {
+          const { data: snaps } = await sb.from('quarter_grade_snapshots')
+            .select('class_grade, academic_grade, participation_grade')
+            .eq('quarter_id', quarter.id).in('enrollment_id', enrollmentIds);
+          const graded = (snaps || []).filter(s => s.class_grade != null && s.class_grade !== 0);
+          if (graded.length) {
+            const avgFinal = Math.round((graded.reduce((s, g) => s + g.class_grade, 0) / graded.length) * 10) / 10;
+            const acad = graded.filter(g => g.academic_grade).map(g => g.academic_grade);
+            const part = graded.filter(g => g.participation_grade).map(g => g.participation_grade);
+            const avgA = acad.length ? Math.round((acad.reduce((s,v)=>s+v,0)/acad.length)*10)/10 : null;
+            const avgP = part.length ? Math.round((part.reduce((s,v)=>s+v,0)/part.length)*10)/10 : null;
+            gradeHtml = `<div style="margin: 4px 0;">📊 Avg grade: <b>${avgFinal} (${this._pctToLetter(avgFinal)})</b>${avgA != null ? ` · academic ${avgA}` : ''}${avgP != null ? ` · participation ${avgP}` : ''} <span style="color:var(--muted);font-size:11px;">(${graded.length}/${enrolled} graded)</span></div>`;
+          } else {
+            gradeHtml = `<div style="color:var(--muted);margin:4px 0;">📊 No grades recorded yet this quarter.</div>`;
+          }
+        }
+
+        // Attendance summary (last 30 days, class-specific)
+        const sinceDate = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+        let attHtml = '';
+        if (studentIds.length) {
+          const { data: att } = await sb.from('class_attendance')
+            .select('status, student_id').eq('class_id', row.id).gte('date', sinceDate);
+          const issues = (att || []).filter(r => r.status !== 'present');
+          const absent = issues.filter(r => r.status === 'absent').length;
+          const late = issues.filter(r => r.status === 'late' || r.status === 'late_left_early').length;
+          const studentsWithIssues = new Set(issues.map(r => r.student_id)).size;
+          if (!issues.length) {
+            attHtml = `<div style="color:#8bffb0;margin:4px 0;">📅 Perfect attendance this month!</div>`;
+          } else {
+            attHtml = `<div style="margin:4px 0;">📅 Last 30 days: ❌ ${absent} absent, ⏰ ${late} late across <b>${studentsWithIssues}</b> student${studentsWithIssues !== 1 ? 's' : ''}.</div>`;
+          }
+        }
+
+        let html = `<div style="font-weight:600;margin-bottom:8px;">📋 ${this.escapeHtml(row.name)} — Overview</div>`;
+        html += `<div style="color:var(--muted);font-size:12px;margin-bottom:10px;">${this.escapeHtml(row.subject || '')} · ${enrolled} student${enrolled !== 1 ? 's' : ''} enrolled</div>`;
+        html += gradeHtml + attHtml;
+        html += `<div style="color:var(--muted);font-size:11px;margin-top:8px;">Say "show grades for ${this.escapeHtml(row.name)}" or "show attendance for ${this.escapeHtml(row.name)}" for full details.</div>`;
+        this._showRivenMessage(html, true);
+
+      } else {
+        // Cross-class: rank all teacher's classes by grade average
+        this.terminalPrint('Pulling up your classes…', '#6aa9ff');
+        if (!this._terminalAllClasses?.length) await this._loadTerminalClasses();
+        const myId = this.userInfo?.user?.id;
+        const myClasses = (this._terminalAllClasses || []).filter(c =>
+          c.is_active !== false && (c.teacher_id === myId || c.secondary_teacher_id === myId));
+        if (!myClasses.length) {
+          this._showRivenMessage(`You're not listed as the primary or secondary teacher of any active class.`, true);
+          return;
+        }
+        const quarter = await this._rivenCurrentQuarter();
+        if (!quarter) { this.terminalPrint('No active quarter configured.', '#ffd36a'); return; }
+
+        const classStats = await Promise.all(myClasses.map(async cls => {
+          const { data: enr } = await sb.from('class_enrollments')
+            .select('id').eq('class_id', cls.id).eq('status', 'active');
+          const ids = (enr || []).map(e => e.id);
+          if (!ids.length) return { cls, enrolled: 0, avg: null };
+          const { data: snaps } = await sb.from('quarter_grade_snapshots')
+            .select('class_grade').eq('quarter_id', quarter.id).in('enrollment_id', ids);
+          const graded = (snaps || []).filter(s => s.class_grade != null && s.class_grade !== 0);
+          const avg = graded.length
+            ? Math.round((graded.reduce((s, g) => s + g.class_grade, 0) / graded.length) * 10) / 10
+            : null;
+          return { cls, enrolled: ids.length, avg };
+        }));
+
+        classStats.sort((a, b) => {
+          if (a.avg == null && b.avg == null) return 0;
+          if (a.avg == null) return 1;
+          if (b.avg == null) return -1;
+          return b.avg - a.avg;
+        });
+
+        const medals = ['🥇', '🥈', '🥉'];
+        let html = `<div style="font-weight:600;margin-bottom:8px;">📋 Your Classes — Grade Average Ranking</div>`;
+        classStats.forEach((s, i) => {
+          const icon = medals[i] || `${i + 1}.`;
+          const gradeStr = s.avg != null ? `<b>${s.avg} (${this._pctToLetter(s.avg)})</b>` : '<span style="color:var(--muted)">No grades yet</span>';
+          html += `<div style="padding:5px 10px;margin:3px 0;background:rgba(255,255,255,0.03);border-radius:4px;">
+            ${icon} ${this.escapeHtml(s.cls.name)} — ${gradeStr} <span style="color:var(--muted);font-size:11px;">(${s.enrolled} students)</span>
+          </div>`;
+        });
+        html += `<div style="color:var(--muted);font-size:11px;margin-top:8px;">Say "how is [class] doing?" for a detailed breakdown of any class.</div>`;
         this._showRivenMessage(html, true);
       }
     }
@@ -47127,7 +47365,8 @@
         });
         this._naturalSuccess([
           `Noted — saved a ${visibility === 'private' ? 'private ' : ''}note for ${targets}: "${text.length > 90 ? text.slice(0, 90) + '…' : text}"`,
-          `Got it. Note saved for ${targets}. Say "undo" if you didn't mean that.`
+          `Got it. Note saved for ${targets}. Say "undo" if you didn't mean that.`,
+          `Saved. ${visibility === 'private' ? '(Private) ' : ''}Note logged for ${targets}.`
         ]);
       } catch (err) {
         if (/notes.*(does not exist|schema cache)/i.test(err.message || '')) {
