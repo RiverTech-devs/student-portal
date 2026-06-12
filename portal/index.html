@@ -43456,6 +43456,44 @@
             /show (me )?what you('ve| have)? (done|changed)/
           ]
         },
+
+        // NAVIGATE — "go to messaging", "open the gradebook", "take me to activities"
+        {
+          intent: 'NAVIGATE',
+          w: 6,
+          patterns: [
+            { re: /\b(go|navigate|head|jump|take me|bring me)\b.*\b(to|over to)\b/, w: 6 },
+            { re: /\b(open|switch to|pull up)\b.*\b(section|page|tab|panel)\b/, w: 5 },
+            { re: /\b(open|switch to)\b.*\b(messaging|classes|activities|admin|notes|home|profile|store|shop|attendance|gradebook|settings|enrollment|roster|dashboard)\b/, w: 7 },
+            { re: /\b(show me|take me to|go to)\b.*\b(messaging|classes|activities|admin|notes|home|profile|store|shop|attendance|gradebook|settings|enrollment|roster|dashboard|announcements|students)\b/, w: 7 }
+          ]
+        },
+
+        // VIEW_ACTIVITY_ROSTER — "who's in chess club?", "show me the robotics roster"
+        {
+          intent: 'VIEW_ACTIVITY_ROSTER',
+          w: 6,
+          patterns: [
+            { re: /\bwho(s|'s| is)?\s+(in|enrolled in|signed up for|on)\b.*\b(club|team|activity|sport|squad|group|chess|basketball|soccer|robotics|band|choir|drama|art)\b/, w: 7 },
+            { re: /\b(show|list|pull up|give me)\b.*\b(roster|members|kids|students|enrollment)\b.*\b(club|team|activity|sport|chess|basketball|soccer|robotics|band|choir|drama|art)\b/, w: 7 },
+            { re: /\b(club|team|activity|sport|squad|group)\b.*\b(roster|members|list|who)\b/, w: 6 },
+            { re: /\bactivity\b.*\b(roster|members|enrollment|list)\b/, w: 6 },
+            { re: /\b(show|give me|list|pull up|who.*in)\b.*\b(chess|basketball|soccer|robotics|band|choir|drama|art|football|volleyball|tennis|swimming)\b(?!.*\bclass\b)/, w: 6 }
+          ]
+        },
+
+        // SEND_MESSAGE — "message jordan's parents", "send eli a message"
+        // Navigates to messaging section with student context shown
+        {
+          intent: 'SEND_MESSAGE',
+          w: 6, notIfNoteCommand: true,
+          patterns: [
+            { re: /\b(message|msg|text|email|contact|reach out to|get in touch with)\b.*\b(parents?|mom|dad|family|guardian|folks)\b/, w: 7 },
+            { re: /\b(send|write|compose)\b.*\b(message|msg|email)\b.*\b(to|for)\b/, w: 6 },
+            { re: /\b(reach|contact|message|email)\b.*\b(student|parent|guardian|family)\b/, w: 6 }
+          ],
+          requiresStudent: true
+        },
         // DELETE_NOTE — "remove that note", "delete the last note" (before
         // ADD_NOTE; targets the most recent note Riven created)
         {
@@ -44198,6 +44236,18 @@
 
         case 'ACTIVITY_LOG':
           this.terminalActivityLog();
+          break;
+
+        case 'NAVIGATE':
+          this.terminalNavigate(entities);
+          break;
+
+        case 'VIEW_ACTIVITY_ROSTER':
+          await this.terminalViewActivityRoster(entities);
+          break;
+
+        case 'SEND_MESSAGE':
+          this.terminalSendMessage(entities);
           break;
 
         case 'DELETE_NOTE':
@@ -45313,6 +45363,36 @@
           'delete the vip privilege',
           'deactivate the reading privilege',
           'retire the old perk from the list'
+        ],
+        NAVIGATE: [
+          'take me to the messaging section',
+          'open up the classes tab for me',
+          'i want to go to activities',
+          'switch me over to the gradebook',
+          'bring up the admin panel',
+          'head over to student rosters',
+          'i need to check announcements',
+          'show me where to compose a message',
+          'i want to send an announcement to parents'
+        ],
+        VIEW_ACTIVITY_ROSTER: [
+          'who is enrolled in chess club',
+          'show me the kids in robotics',
+          'which students are on the basketball team',
+          'give me the soccer club lineup',
+          'who signed up for band',
+          'list everyone in drama club',
+          'how many kids are in chess',
+          'pull up the activity roster for swimming'
+        ],
+        SEND_MESSAGE: [
+          'message jordans parents about his grades',
+          'reach out to elis family',
+          'i need to contact dylan\'s mom',
+          'send a message to jordan',
+          'email phoenix\'s guardian',
+          'compose a message to eli',
+          'get in touch with charlotte\'s parents'
         ]
       };
     }
@@ -47154,6 +47234,107 @@
         `<div style="font-weight: 600; margin-bottom: 6px;">📜 My changes this session (newest first):</div>
         <div style="font-size: 13px; line-height: 1.9;">${lines.join('<br>')}</div>
         <div style="color: #6b5236; font-size: 12px; margin-top: 6px;">Say "undo" to reverse the most recent one.</div>`, true);
+    }
+
+    terminalNavigate(entities) {
+      // Map natural keywords → portal section IDs
+      const sectionMap = [
+        { keys: ['messaging', 'message', 'messages', 'inbox', 'announcement', 'announcements', 'compose'], section: 'messaging', label: 'Messaging' },
+        { keys: ['classes', 'class', 'gradebook', 'grades', 'grade'], section: 'classes', label: 'Classes' },
+        { keys: ['activities', 'activity', 'clubs', 'club', 'sports', 'sport', 'extracurricular'], section: 'activities', label: 'Activities' },
+        { keys: ['students', 'student', 'roster', 'my students', 'my-students'], section: 'my-students', label: 'My Students' },
+        { keys: ['notes', 'note'], section: 'notes', label: 'Notes' },
+        { keys: ['store', 'shop', 'irl', 'purchases', 'purchase'], section: 'irl-purchases', label: 'IRL Store' },
+        { keys: ['home', 'dashboard'], section: 'home', label: 'Home' },
+        { keys: ['profile', 'settings', 'account'], section: 'profile', label: 'Profile' },
+        { keys: ['admin', 'administration', 'admin-dashboard'], section: 'admin-dashboard', label: 'Admin Dashboard' },
+        { keys: ['attendance', 'absent', 'absences', 'admin-attendance'], section: 'admin-attendance', label: 'Admin Attendance' },
+        { keys: ['enrollment', 'applications', 'enroll'], section: 'admin-enrollment', label: 'Enrollment' },
+        { keys: ['facilities', 'facility', 'booking', 'book', 'gym', 'library'], section: 'admin-facilities', label: 'Facilities' },
+        { keys: ['rtc', 'rtc-management', 'currency', 'gold management'], section: 'admin-rtc-management', label: 'RTC Management' },
+        { keys: ['testing', 'testing-center', 'test center'], section: 'testing-center', label: 'Testing Center' }
+      ];
+      const n = (entities.normalized || '').toLowerCase();
+      const raw = (entities.original || '').toLowerCase();
+      const combined = n + ' ' + raw;
+      const match = sectionMap.find(m => m.keys.some(k => combined.includes(k)));
+      if (!match) {
+        this._showRivenMessage(`I can navigate to: Messaging, Classes, Activities, My Students, Notes, IRL Store, Home, Profile, Admin, Attendance, Enrollment, Facilities, RTC Management, or Testing Center. Which one?`, true);
+        return;
+      }
+      const isAdmin = this.userInfo?.profile?.user_type === 'admin';
+      const adminOnly = ['admin-dashboard', 'admin-attendance', 'admin-enrollment', 'admin-facilities', 'admin-rtc-management'];
+      if (adminOnly.includes(match.section) && !isAdmin) {
+        this._showRivenMessage(`The ${match.label} section is admin-only.`, true);
+        return;
+      }
+      this._showRivenMessage(`Opening ${match.label}…`, true);
+      setTimeout(() => this.showSection(match.section), 300);
+    }
+
+    async terminalViewActivityRoster(entities) {
+      // Extract activity name from the query (strip common words)
+      const raw = entities.original || entities.normalized || '';
+      const stopWords = new Set(['who', 'is', 'are', 'in', 'the', 'show', 'me', 'list', 'give', 'roster', 'members', 'students', 'kids', 'enrolled', 'signed', 'up', 'for', 'on', 'club', 'team', 'activity', 'sport', 'squad', 'group', 'pull', 'that', 'my']);
+      const activityTokens = raw.toLowerCase().split(/\s+/).filter(w => w.length >= 2 && !stopWords.has(w) && !/^\d+$/.test(w));
+      if (!activityTokens.length) {
+        this._showRivenMessage(`Which activity or club? Try "who's in chess club?" or "show me the robotics roster".`, true);
+        return;
+      }
+      try {
+        const { data: activities } = await this.auth.supabase.from('activities').select('id, name, description').eq('status', 'active').order('name');
+        if (!activities?.length) { this._showRivenMessage(`No active activities found.`, true); return; }
+        // Fuzzy match activity name
+        const scored = activities.map(a => {
+          const an = (a.name || '').toLowerCase();
+          const score = activityTokens.filter(t => an.includes(t)).length;
+          return { ...a, score };
+        }).filter(a => a.score > 0).sort((a, b) => b.score - a.score);
+        if (!scored.length) {
+          const names = activities.map(a => this.escapeHtml(a.name)).join(', ');
+          this._showRivenMessage(`I couldn't find that activity. Active activities: ${names}`, true);
+          return;
+        }
+        const act = scored[0];
+        const { data: enrollments } = await this.auth.supabase
+          .from('activity_enrollments')
+          .select('student_id, status, user_profiles!activity_enrollments_student_id_fkey(first_name, last_name)')
+          .eq('activity_id', act.id)
+          .eq('status', 'enrolled');
+        const students = (enrollments || [])
+          .map(e => e.user_profiles ? `${e.user_profiles.first_name} ${e.user_profiles.last_name}` : null)
+          .filter(Boolean)
+          .sort();
+        if (!students.length) {
+          this._showRivenMessage(`<b>${this.escapeHtml(act.name)}</b> has no enrolled students yet.`, true);
+          return;
+        }
+        const list = students.map(s => `<div style="padding: 3px 0; border-bottom: 1px solid rgba(0,0,0,0.06);">${this.escapeHtml(s)}</div>`).join('');
+        this._showRivenMessage(
+          `<div style="font-weight: 600; margin-bottom: 8px;">${this.escapeHtml(act.name)} — ${students.length} enrolled</div>
+          <div style="font-size: 13px; line-height: 1.8;">${list}</div>`, true);
+      } catch (e) {
+        this.terminalPrintError(`Couldn't load activity roster: ${e.message || e}`);
+      }
+    }
+
+    terminalSendMessage(entities) {
+      const student = entities.student;
+      if (!student) {
+        this._showRivenMessage(`Who do you want to message? Give me a student name and I'll take you to their messaging thread.`, true);
+        return;
+      }
+      const raw = (entities.original || '').toLowerCase();
+      const isParent = /\b(parents?|mom|dad|family|guardian|folks)\b/.test(raw);
+      const target = isParent ? `${student.full_name}'s parents` : student.full_name;
+      this._showRivenMessage(`Opening messaging for ${this.escapeHtml(target)}…`, true);
+      setTimeout(() => {
+        this.showSection('messaging');
+        // Pre-open a compose for the student after the section loads
+        setTimeout(() => {
+          this.sendMessageInThread(student.id);
+        }, 600);
+      }, 300);
     }
 
     async terminalDeleteLastNote() {
