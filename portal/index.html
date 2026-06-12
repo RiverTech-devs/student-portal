@@ -47312,6 +47312,21 @@
       }
       if (!text) { m = original.match(/\bsaying\s+/i); if (m) { textIdx = m.index; text = original.slice(m.index + m[0].length); } }
       text = (text || '').trim().replace(/^["'""]|["'""]$/g, '').trim();
+
+      // Observation fallback: if no explicit note syntax was found but there's a
+      // student entity, treat the whole input as the note (e.g. "Jordan has been
+      // improving his handwriting"). Strip common command-verb prefixes first.
+      if (!text) {
+        const cmdPrefixRe = /^(add\s+(a\s+)?(private\s+)?note(\s+(for|about|on))?\s*|note(\s+(for|about|on))?\s*|save(\s+a)?\s+(private\s+)?note(\s+(for|about|on))?\s*|log(\s+a)?\s+note(\s+(for|about|on))?\s*|jot(\s+down)?\s*)/i;
+        const stripped = original.trim().replace(cmdPrefixRe, '').trim();
+        // Only use the fallback if we have a student entity — otherwise we'd
+        // accidentally try to save random unrecognized sentences as notes.
+        if (stripped && entities.student?.student) {
+          text = stripped;
+          textIdx = -1;
+        }
+      }
+
       if (!text) {
         this.terminalPrintError('Tell me the note like: "note for Eli: forgot homework", "add a class note for Algebra: great discussion", or "note that Charlotte helped clean up".');
         return;
@@ -47344,27 +47359,65 @@
         .find(c => new RegExp('\\b' + c + '\\b').test(cmdLower)) || 'general';
 
       const useTeacher = teacherMatch && (honorific || /\babout\b/.test(cmdLower)) && !student;
+
+      // 4. Class-linking: if no explicit class in the command and we have a student,
+      //    check how many of the teacher's classes that student is in.
+      //    One class → auto-link. Multiple → ask which (if any). Zero → no link.
+      let resolvedClassId = classMatch?.id || null;
+      if (!resolvedClassId && student && !useTeacher) {
+        const myId = this.userInfo?.user?.id;
+        if (!this._terminalAllClasses?.length) await this._loadTerminalClasses();
+        const myClasses = (this._terminalAllClasses || []).filter(c =>
+          c.is_active !== false && (c.teacher_id === myId || c.secondary_teacher_id === myId));
+        // Check which of my classes this student is enrolled in
+        const { data: enr } = await this.auth.supabase.from('class_enrollments')
+          .select('class_id').eq('student_id', student.id).eq('status', 'active');
+        const enrolledIds = new Set((enr || []).map(e => e.class_id));
+        const myEnrolled = myClasses.filter(c => enrolledIds.has(c.id));
+
+        if (myEnrolled.length === 1) {
+          resolvedClassId = myEnrolled[0].id;
+        } else if (myEnrolled.length > 1) {
+          // Ask teacher which class to link — store pending state and show buttons
+          this._pendingNoteData = { studentId: student.id, useTeacherId: useTeacher ? teacherMatch?.id : null,
+            category, sentiment, visibility, note: text, targets: student.full_name };
+          const btns = myEnrolled.map(c =>
+            `<button onclick="app._rivenSaveNoteForClass('${this.escapeHtml(c.id)}')" style="padding:4px 10px;margin:2px;border-radius:5px;border:1px solid var(--border);background:rgba(255,255,255,0.05);color:var(--text);cursor:pointer;font-size:12px;">${this.escapeHtml(c.name)}</button>`
+          ).join('');
+          this._showRivenMessage(
+            `💬 Link this note to a class?<div style="margin-top:8px;">${btns}<button onclick="app._rivenSaveNoteForClass(null)" style="padding:4px 10px;margin:2px;border-radius:5px;border:1px solid #6b5236;background:rgba(255,255,255,0.05);color:#97a2b0;cursor:pointer;font-size:12px;">No class</button></div>`,
+            true
+          );
+          return;
+        }
+      }
+
+      await this._rivenDoSaveNote({ studentId: student?.id || null, classId: resolvedClassId,
+        aboutTeacherId: useTeacher ? teacherMatch?.id : null, category, sentiment, visibility,
+        note: text, targets: [student?.full_name, classMatch?.name, useTeacher ? teacherMatch?.name : null].filter(Boolean).join(' / ')
+      });
+    }
+
+    async _rivenSaveNoteForClass(classId) {
+      const d = this._pendingNoteData;
+      if (!d) return;
+      this._pendingNoteData = null;
+      const classRow = classId ? (this._terminalAllClasses || []).find(c => c.id === classId) : null;
+      const targets = d.targets + (classRow ? ' / ' + classRow.name : '');
+      await this._rivenDoSaveNote({ studentId: d.studentId, classId: classId || null,
+        aboutTeacherId: d.useTeacherId || null, category: d.category, sentiment: d.sentiment,
+        visibility: d.visibility, note: d.note, targets });
+    }
+
+    async _rivenDoSaveNote({ studentId, classId, aboutTeacherId, category, sentiment, visibility, note, targets }) {
       try {
-        const saved = await this._insertNote({
-          studentId: student?.id || null,
-          classId: classMatch?.id || null,
-          aboutTeacherId: useTeacher ? teacherMatch.id : null,
-          category,
-          sentiment,
-          visibility,
-          note: text
-        });
-        const targets = [
-          student ? student.full_name : null,
-          classMatch ? classMatch.name : null,
-          useTeacher ? teacherMatch.name : null
-        ].filter(Boolean).join(' / ');
+        const saved = await this._insertNote({ studentId, classId, aboutTeacherId, category, sentiment, visibility, note });
         this._pushUndo(`the note for ${targets}`, async () => {
           const { error } = await this.auth.supabase.from('notes').delete().eq('id', saved.id);
           if (error) throw error;
         });
         this._naturalSuccess([
-          `Noted — saved a ${visibility === 'private' ? 'private ' : ''}note for ${targets}: "${text.length > 90 ? text.slice(0, 90) + '…' : text}"`,
+          `Noted — saved a ${visibility === 'private' ? 'private ' : ''}note for ${targets}: "${note.length > 90 ? note.slice(0, 90) + '…' : note}"`,
           `Got it. Note saved for ${targets}. Say "undo" if you didn't mean that.`,
           `Saved. ${visibility === 'private' ? '(Private) ' : ''}Note logged for ${targets}.`
         ]);
@@ -47651,6 +47704,15 @@
       }
       if (reason !== 'Terminal award') {
         this.terminalPrint(`  💬 ${reason}`, '#97a2b0');
+        // Auto-note: silently log the reason as a student note
+        const noteText = `${amount > 0 ? '+' + amount : amount} RTC — ${reason}`;
+        this._insertNote({
+          studentId: student.id, classId: null,
+          category: 'general', sentiment: 'neutral', visibility: 'staff',
+          note: noteText
+        }).catch(err => {
+          if (!/does not exist|schema cache/i.test(err.message || '')) console.warn('auto-note failed:', err);
+        });
       }
     }
 
