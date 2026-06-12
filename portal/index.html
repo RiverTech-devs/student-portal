@@ -42106,6 +42106,18 @@
       // Phase 1 + 2 + 3: NLP with context and pronouns
       const normalized = this._normalizeInput(input);
 
+      // Smart mode vagueness gate: when the 1GB LLM is active, anything without
+      // a clear command verb routes to phi3.interpret instead of the regex NLP.
+      // phi3.interpret re-routes to NLP if it detects a command, or falls through
+      // to phi3.chat. This prevents the fuzzy student matcher from claiming common
+      // English words ("day"→"fay", "rough"→"fay") mid-conversation.
+      if (this._phi3State?.active && this._phi3State?.pipe && !opts?._fromPhi3) {
+        if (!this._hasCommandVerb(normalized)) {
+          this._phi3Interpret(input, normalized, {}).catch(() => this._handleUnknown(normalized, {}));
+          return;
+        }
+      }
+
       // Phase 3: Check for pronouns and resolve from context
       const resolvedInput = this._resolvePronouns(normalized);
 
@@ -42655,6 +42667,15 @@
       return { sinceDate: iso, label };
     }
 
+    _hasCommandVerb(normalized) {
+      // Returns true when the input contains a clear action/query verb that
+      // signals a Riven command rather than casual conversation. Used by the
+      // smart-mode vagueness gate to decide whether to bypass NLP and go
+      // straight to phi3.interpret.
+      if (/^(who|what|how)\b/.test(normalized.trim())) return true;
+      return /\b(give|add|award|show|view|check|mark|note|log|record|take|dock|deduct|remove|unenroll|enroll|buy|grant|revoke|navigate|open|start|list|send|find|compare|transfer|fine|penaliz|subtract|absent|late|present|missing|balance|rtc|gold|attend)\b/.test(normalized);
+    }
+
     _fuzzyFindStudent(normalized, original) {
       // Phase 2+: Enhanced with word-level matching
       if (!this._terminalAllStudents || this._terminalAllStudents.length === 0) {
@@ -42775,8 +42796,10 @@
             }
           }
 
-          // Fuzzy match word to first name
-          if (firstName.length > 2) {
+          // Fuzzy match word to first/last name — require >= 4 chars to avoid
+          // 3-letter English words ("day", "hey", "big") fuzzy-matching 3-letter
+          // names ("fay", "ray") via a single-char Levenshtein substitution
+          if (word.length >= 4 && firstName.length > 2) {
             const firstSim = this._calculateSimilarity(word, firstName);
             if (firstSim > 0.7) {
               score = Math.max(score, firstSim * 0.9);
@@ -42785,7 +42808,7 @@
           }
 
           // Fuzzy match word to last name
-          if (lastName.length > 2) {
+          if (word.length >= 4 && lastName.length > 2) {
             const lastSim = this._calculateSimilarity(word, lastName);
             if (lastSim > 0.7) {
               score = Math.max(score, lastSim * 0.9);
@@ -42794,9 +42817,11 @@
           }
 
           // Fuzzy match word to full name
-          const fullSim = this._calculateSimilarity(word, fullName);
-          if (fullSim > 0.6) {
-            score = Math.max(score, fullSim * 0.8);
+          if (word.length >= 4) {
+            const fullSim = this._calculateSimilarity(word, fullName);
+            if (fullSim > 0.6) {
+              score = Math.max(score, fullSim * 0.8);
+            }
           }
         }
 
@@ -45343,7 +45368,7 @@
 
     _phi3SystemPrompt() {
       const name = this.userInfo?.profile?.first_name || '';
-      return `You are Riven, a friendly AI assistant built into a school management portal, chatting with ${name || 'a teacher'}. Answer their question or message directly and helpfully in 1-2 short sentences. You can answer general questions too — not only school topics. Be warm and concise.`;
+      return `You are Riven, a school assistant for ${name || 'a teacher'}. Keep replies to 1-2 sentences. If they mention a student's behavior, suggest logging it or awarding/docking RTC. Answer general questions directly.`;
     }
 
     _createStreamingBubble() {
@@ -45471,14 +45496,15 @@
     async _phi3Comment(input, intent, entities) {
       const studentName = (entities?.student?.student || entities?.student)?.full_name;
       const amt = entities?.amount;
+      const firstName = studentName?.split(' ')[0];
       const actionMap = {
-        ADD_RTC: `gave out ${amt ? amt + ' RTC' : 'some RTC'}`,
-        SUBTRACT_RTC: `took away some RTC`,
+        ADD_RTC: `awarded ${amt ? amt + ' RTC' : 'some RTC'}${firstName ? ' to ' + firstName : ''}`,
+        SUBTRACT_RTC: `docked RTC${firstName ? ' from ' + firstName : ''}`,
         GROUP_RTC: `gave RTC to the whole class`,
         MULTI_AWARD: `gave RTC to multiple students`,
         TRANSFER_RTC: `moved some RTC`,
-        ADD_NOTE: `logged a note`,
-        MARK_ATTENDANCE: `marked attendance`,
+        ADD_NOTE: `logged a note${firstName ? ' about ' + firstName : ''}`,
+        MARK_ATTENDANCE: `marked ${firstName || 'a student'}'s attendance`,
         MARK_ATTENDANCE_GROUP: `marked class attendance`,
         ENROLL_STUDENT: `enrolled a student`,
         UNENROLL_STUDENT: `unenrolled a student`,
@@ -45491,22 +45517,22 @@
       };
       const ctx = actionMap[intent] || `completed an action`;
       const messages = [
-        { role: 'system', content: `Reply with 2 to 5 words. Warm and brief. End with ! or .` },
-        { role: 'user', content: `The teacher just gave out some RTC.` },
-        { role: 'assistant', content: `Nice, good reward!` },
-        { role: 'user', content: `The teacher just ${ctx}.` }
+        { role: 'system', content: `React in 2-5 words. Warm, brief. End with ! or .` },
+        { role: 'user', content: `Teacher awarded 5 RTC to Jordan.` },
+        { role: 'assistant', content: `Nice work, Jordan!` },
+        { role: 'user', content: `Teacher ${ctx}.` }
       ];
       const bubble = this._createStreamingBubble();
       const textEl = bubble?.querySelector('.phi3-text');
       const cursor = bubble?.querySelector('.riven-stream-cursor');
       const out = document.getElementById('terminal-output');
-      const userMsg = `The teacher just ${ctx}.`;
+      const userMsg = `Teacher ${ctx}.`;
       const raw = await this._phi3Run(messages, (_, full) => {
         if (textEl) textEl.textContent = full.replace(/^["']+|["']+$/g, '');
         if (out) out.scrollTop = out.scrollHeight;
       }, 25);
       const result = raw?.replace(/^["']+|["']+$/g, '').trim() || null;
-      const isEcho = result && (result === userMsg || result.startsWith('The teacher just') || result.startsWith("I'm"));
+      const isEcho = result && (result === userMsg || result.startsWith('The teacher just') || result.startsWith('Teacher ') || result.startsWith("I'm"));
       if (cursor) cursor.remove();
       if (!result || isEcho) { if (bubble) bubble.remove(); }
       else { if (textEl) textEl.textContent = result; this._persistTerminalChat(); }
@@ -45514,7 +45540,7 @@
 
     async _phi3Interpret(originalInput, resolvedInput, entities) {
       const studentName = (entities?.student?.student || entities?.student)?.full_name;
-      const intentList = `award/deduct RTC, view balance or history, check attendance, show notes, view grades, enroll or unenroll students, send messages, mark attendance, manage classes, show homework, navigate sections, view rosters or store items`;
+      const intentList = `award/deduct RTC, view balance or history, check attendance, add or show notes, view grades, enroll or unenroll students, send messages, mark attendance, manage classes, show homework, navigate sections, view rosters or store items`;
       const messages = [
         { role: 'system', content: `You convert a teacher's unclear input into a single command for a school management system, when it is one.\nAvailable actions: ${intentList}.\nStudent in context: ${studentName || 'none'}.\nIf the input is a request to perform one of those actions, reply with ONLY the command, e.g. "give Jordan 5 RTC" or "show attendance issues".\nIf the input is a general question, greeting, comment, or anything not in the action list, reply with exactly: CHAT` },
         { role: 'user', content: originalInput }
