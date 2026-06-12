@@ -42079,6 +42079,22 @@
         entities.students = this._nlpContext.lastPair.slice(0, 2).map(s => ({ student: s, score: 0.95 }));
       }
 
+      // "them/they/their" after a two-student command (no group fresher than
+      // the pair) — populate entities.students so VIEW_NOTES / VIEW_ENROLLMENTS
+      // can render per-student sections instead of falling back to all records.
+      const pairCtx = this._nlpContext?.lastPair;
+      const pairFresherThanGroup = pairCtx?.length >= 2
+        && !(this._nlpContext?.lastGroup?.timestamp >= (this._nlpContext.timestamp || 0));
+      if ((!entities.students || entities.students.length < 2)
+          && /\b(them|they|their|theirs)\b/.test(normalized)
+          && pairFresherThanGroup) {
+        entities.students = pairCtx.slice(0, 2).map(s => ({ student: s, score: 0.9 }));
+        // Also seed lastStudent so pronoun resolution works on subsequent turns
+        if (!entities.student) {
+          entities.student = { student: pairCtx[pairCtx.length - 1], score: 0.9, fromContext: true };
+        }
+      }
+
       // A pronoun that survived resolution means we have no usable referent.
       // After a two-student command ("compare A and B"), ask which one rather
       // than guessing or falling through to a generic intent.
@@ -42106,7 +42122,7 @@
       // for a different student instead of dumping the generic student card
       let intent = null;
       const reusableIntents = ['VIEW_STUDENT', 'VIEW_ATTENDANCE', 'VIEW_HISTORY', 'BALANCE_AT',
-        'VIEW_ENROLLMENTS', 'STUDENT_TENURE', 'VIEW_GRADES', 'VIEW_CONTACT', 'VIEW_NOTES'];
+        'VIEW_ENROLLMENTS', 'STUDENT_TENURE', 'VIEW_GRADES', 'VIEW_CONTACT', 'VIEW_NOTES', 'VIEW_HOMEWORK'];
       const reuseSrc = (this._nlpContext?.lastIntent && reusableIntents.includes(this._nlpContext.lastIntent))
         ? this._nlpContext.lastIntent
         : this._nlpContext?.lastReadIntent;
@@ -42241,7 +42257,7 @@
       const studentCentric = ['VIEW_STUDENT', 'ADD_RTC', 'SUBTRACT_RTC', 'VIEW_ATTENDANCE', 'VIEW_HISTORY',
         'BALANCE_AT', 'VIEW_ENROLLMENTS', 'STUDENT_TENURE', 'MARK_ATTENDANCE', 'ENROLL_STUDENT',
         'UNENROLL_STUDENT', 'SET_GRADE', 'VIEW_GRADES', 'UPDATE_CONTACT', 'VIEW_CONTACT',
-        'ADD_NOTE', 'VIEW_NOTES', 'COMPARE_STUDENTS', 'TRANSFER_RTC', 'RELAY_ACTION'];
+        'ADD_NOTE', 'VIEW_NOTES', 'VIEW_HOMEWORK', 'COMPARE_STUDENTS', 'TRANSFER_RTC', 'RELAY_ACTION'];
       const student = entities.student?.student || entities.student;
       if (student && student.full_name && !entities.student?.fromContext && studentCentric.includes(intent.intent)) {
         this._nlpContext.lastStudent = student;
@@ -42251,7 +42267,7 @@
       // Track the last READ separately so "what about dylan?" works even
       // right after a write (set grade -> ask about another student)
       const readIntents = ['VIEW_STUDENT', 'VIEW_ATTENDANCE', 'VIEW_HISTORY', 'BALANCE_AT',
-        'VIEW_ENROLLMENTS', 'STUDENT_TENURE', 'VIEW_GRADES', 'VIEW_CONTACT', 'VIEW_NOTES', 'CLASS_STATS', 'GRADE_ISSUES', 'ATTENDANCE_ISSUES'];
+        'VIEW_ENROLLMENTS', 'STUDENT_TENURE', 'VIEW_GRADES', 'VIEW_CONTACT', 'VIEW_NOTES', 'VIEW_HOMEWORK', 'CLASS_STATS', 'GRADE_ISSUES', 'ATTENDANCE_ISSUES'];
       if (readIntents.includes(intent.intent)) {
         this._nlpContext.lastReadIntent = intent.intent;
       }
@@ -42260,7 +42276,15 @@
       // can ask which of the two was meant
       const pair = entities.students || (entities.studentFrom && entities.studentTo && [entities.studentFrom, entities.studentTo]);
       if (pair) {
-        this._nlpContext.lastPair = pair.map(p => p.student).filter(s => s && s.full_name);
+        const pairStudents = pair.map(p => p.student).filter(s => s && s.full_name);
+        this._nlpContext.lastPair = pairStudents;
+        // Multi-student commands should still seed lastStudent (last of the pair)
+        // so pronoun resolution works on the very next turn even when lastStudent
+        // wasn't set by the current command (e.g. after a multi-award).
+        if (!student?.full_name && pairStudents.length) {
+          this._nlpContext.lastStudent = pairStudents[pairStudents.length - 1];
+          this._nlpContext.timestamp = Date.now();
+        }
       } else if (student && student.full_name) {
         this._nlpContext.lastPair = null;
       }
@@ -43375,6 +43399,22 @@
             /\bnote\b.*\b(for|on|about|from)\b/
           ]
         },
+        // VIEW_HOMEWORK — "what homework does eli have", "upcoming homework in math"
+        {
+          intent: 'VIEW_HOMEWORK',
+          w: 7,
+          patterns: [
+            { re: /\bhomework\b.*(due|upcoming|coming up|assigned|pending|overdue)\b/, w: 7 },
+            { re: /\b(upcoming|pending|due|overdue|missing|late)\b.*\bhomework\b/, w: 7 },
+            { re: /\bhomework\b.*(does|do|has|have|for|in)\b/, w: 6 },
+            { re: /\bassignment(s)?\b.*(due|upcoming|coming up|pending|overdue)\b/, w: 6 },
+            { re: /\b(upcoming|pending|due|overdue|missing)\b.*\bassignment(s)?\b/, w: 6 },
+            // "what hw does jordan have", "any hw due this week"
+            { re: /\bhw\b.*(due|upcoming|has|have|does|for)\b/, w: 6 },
+            { re: /\b(any|what|show|check|see)\b.*(homework|hw|assignments?)\b/, w: 5 }
+          ]
+        },
+
         // CLASS_VS — "average grade in chess vs english"
         {
           intent: 'CLASS_VS',
@@ -43466,6 +43506,10 @@
             { re: /\b(open|switch to|pull up)\b.*\b(section|page|tab|panel)\b/, w: 5 },
             { re: /\b(open|switch to)\b.*\b(messaging|classes|activities|admin|notes|home|profile|store|shop|attendance|gradebook|settings|enrollment|roster|dashboard)\b/, w: 7 },
             { re: /\b(show me|take me to|go to)\b.*\b(messaging|classes|activities|admin|notes|home|profile|store|shop|attendance|gradebook|settings|enrollment|roster|dashboard|announcements|students)\b/, w: 7 },
+            // "let's run shop", "let's do attendance", "let's open the gradebook"
+            { re: /\blet'?s\s+(run|do|open|start|pull up|check out|see)\b/, w: 7 },
+            // "run shop", "run the store", "run attendance"
+            { re: /^(run|open up|start up)\s+(the\s+)?(shop|store|irl|classes|gradebook|attendance|messaging|notes|activities|students|roster|admin|profile|settings|enrollment|testing|facilities)\b/, w: 8 },
             // "I want to send an announcement", "post/make an announcement"
             { re: /\b(send|make|post|create|write)\b.*\b(announcement|broadcast|mass message)\b/, w: 7 },
             { re: /\b(want to|need to|going to)\b.{1,25}\b(message|announce|broadcast)\b/, w: 5 }
@@ -44081,6 +44125,10 @@
           await this.terminalShowNotes(entities);
           break;
 
+        case 'VIEW_HOMEWORK':
+          await this.terminalShowHomework(entities);
+          break;
+
         case 'CORRECTION':
           this._respondCorrection();
           break;
@@ -44154,7 +44202,8 @@
           break;
 
         case 'VIEW_ENROLLMENTS':
-          if (student) await this.terminalShowEnrollments(student, entities);
+          if (entities.students?.length >= 2) await this.terminalShowEnrollmentsMulti(entities.students.map(s => s.student || s).filter(s => s?.id), entities);
+          else if (student) await this.terminalShowEnrollments(student, entities);
           else this.terminalPrintError('Whose classes? Tell me a student name.');
           break;
 
@@ -44311,6 +44360,8 @@
     • "Which of my classes has the best grades?" — ranks all your classes<br>
     • "Show attendance for [class]" — per-student breakdown for the class<br>
     • "What classes is [student] in?" / "Who's in [class]?"<br>
+    • "What homework does [student] have coming up?" — pending assignments<br>
+    • "Any overdue homework in [class]?" — overdue assignments<br>
     • "Mark [student] present in [class]" (or absent/late, "yesterday" works)<br>
     • "Add [student] to [class]" / "Remove [student] from [class]"<br>
     • "Create a class called [name]"<br>
@@ -45388,7 +45439,13 @@
           'head over to student rosters',
           'i need to check announcements',
           'show me where to compose a message',
-          'i want to send an announcement to parents'
+          'i want to send an announcement to parents',
+          "let's run shop",
+          "let's do attendance",
+          "let's open the store",
+          "let's check the gradebook",
+          "run the store with me",
+          "open up the irl shop"
         ],
         VIEW_ACTIVITY_ROSTER: [
           'who is enrolled in chess club',
@@ -45408,6 +45465,17 @@
           'email phoenix\'s guardian',
           'compose a message to eli',
           'get in touch with charlotte\'s parents'
+        ],
+        VIEW_HOMEWORK: [
+          'what homework does eli have coming up',
+          'does jordan have any assignments due',
+          'show me upcoming homework for phoenix',
+          'what hw is due this week',
+          'any overdue assignments in math class',
+          'homework due for charlotte',
+          'what assignments are pending for my students',
+          'is there any homework due soon',
+          'show me all overdue homework'
         ]
       };
     }
@@ -45864,6 +45932,28 @@
         html += `<div style="padding: 5px 10px; margin: 3px 0; background: rgba(255,255,255,0.03); border-radius: 4px;">${this.escapeHtml(c.name || 'Unnamed class')}${c.subject ? ` <span style="color: var(--muted); font-size: 11px;">· ${this.escapeHtml(c.subject)}</span>` : ''}</div>`;
       });
       this._showRivenMessage(html, true);
+    }
+
+    async terminalShowEnrollmentsMulti(students, entities = null) {
+      let html = '';
+      for (const student of students) {
+        const { data: enr, error } = await this.auth.supabase
+          .from('class_enrollments').select('class_id').eq('student_id', student.id).eq('status', 'active');
+        if (error) { this.terminalPrintError('Could not read enrollments for ' + student.full_name); continue; }
+        const classIds = [...new Set((enr || []).map(e => e.class_id).filter(Boolean))];
+        html += `<div style="font-weight: 600; color: var(--accent); margin: ${html ? '14px' : '2px'} 0 6px;">
+          👤 ${this.escapeHtml(student.full_name)} — ${classIds.length} class${classIds.length === 1 ? '' : 'es'}
+        </div>`;
+        if (!classIds.length) {
+          html += `<div style="font-size: 13px; color: var(--muted); padding: 4px 8px;">Not enrolled in any classes.</div>`;
+        } else {
+          const { data: classes } = await this.auth.supabase.from('classes').select('id, name, subject').in('id', classIds);
+          (classes || []).sort((a, b) => (a.name || '').localeCompare(b.name || '')).forEach(c => {
+            html += `<div style="padding: 4px 10px; margin: 2px 0; background: rgba(255,255,255,0.03); border-radius: 4px;">${this.escapeHtml(c.name || 'Unnamed')}${c.subject ? ` <span style="color: var(--muted); font-size: 11px;">· ${this.escapeHtml(c.subject)}</span>` : ''}</div>`;
+          });
+        }
+      }
+      if (html) this._showRivenMessage(html, true);
     }
 
     async terminalStudentTenure(student) {
@@ -47030,6 +47120,7 @@
       const names = pair.map(p => p.student.full_name);
       const sb = this.auth.supabase;
       const done = [];
+      const autoNoteIds = [];
       const reason = entities.reason || null;
       for (const p of pair) {
         try {
@@ -47037,16 +47128,26 @@
           done.push(p.student);
           if (reason) {
             const noteText = `${amt > 0 ? '+' + amt : amt} RTC — ${reason}`;
-            this._insertNote({ studentId: p.student.id, classId: null, category: 'general',
-              sentiment: 'neutral', visibility: 'staff', note: noteText
-            }).catch(err => { if (!/does not exist|schema cache/i.test(err.message || '')) console.warn('auto-note failed:', err); });
+            try {
+              const saved = await this._insertNote({ studentId: p.student.id, classId: null, category: 'general',
+                sentiment: 'neutral', visibility: 'staff', note: noteText });
+              if (saved?.id) autoNoteIds.push(saved.id);
+            } catch (err) {
+              if (!/does not exist|schema cache/i.test(err.message || '')) console.warn('auto-note failed:', err);
+            }
           }
         } catch (e) { this.terminalPrintError(`Failed for ${p.student.full_name}: ${e.message}`); }
       }
       if (done.length) {
+        const noteIdsCopy = [...autoNoteIds];
         this._pushUndo(`${amt > 0 ? '+' : ''}${amt} RTC for ${done.map(s => s.full_name).join(' and ')}`, async () => {
           for (const s of done) {
             await this._rtcTxn({ userId: s.id, amount: -amt, type: 'admin_adjustment', description: 'Undo multi-award', refType: 'undo' });
+          }
+          for (const nid of noteIdsCopy) {
+            await this.auth.supabase.from('notes').delete().eq('id', nid).then(({ error }) => {
+              if (error) console.warn('undo auto-note delete failed:', error);
+            });
           }
         });
         this._naturalSuccess([
@@ -47259,7 +47360,7 @@
         { keys: ['activities', 'activity', 'clubs', 'club', 'sports', 'sport', 'extracurricular'], section: 'activities', label: 'Activities' },
         { keys: ['students', 'student', 'roster', 'my students', 'my-students'], section: 'my-students', label: 'My Students' },
         { keys: ['notes', 'note'], section: 'notes', label: 'Notes' },
-        { keys: ['store', 'shop', 'irl', 'purchases', 'purchase'], section: 'irl-purchases', label: 'IRL Store' },
+        { keys: ['store', 'shop', 'irl', 'purchases', 'purchase', 'buy', 'buying'], section: 'irl-purchases', label: 'IRL Store' },
         { keys: ['home', 'dashboard'], section: 'home', label: 'Home' },
         { keys: ['profile', 'settings', 'account'], section: 'profile', label: 'Profile' },
         { keys: ['admin', 'administration', 'admin-dashboard'], section: 'admin-dashboard', label: 'Admin Dashboard' },
@@ -47986,26 +48087,75 @@
       }
     }
 
+    _renderNoteCards(notes, maxShown = 8) {
+      const shown = notes.slice(0, maxShown);
+      let html = '';
+      shown.forEach(n => {
+        const who = [n.class_name, n.about_teacher_name].filter(Boolean).join(' · ');
+        const dot = n.sentiment === 'positive' ? '🟢' : (n.sentiment === 'negative' ? '🔴' : '⚪');
+        html += `
+          <div style="background: rgba(0,0,0,0.12); border-radius: 8px; padding: 8px 12px; margin: 6px 0;">
+            <div style="font-size: 12px; color: var(--muted);">${dot}${who ? ' ' + this.escapeHtml(who) + ' —' : ''} ${n.note_date || ''} · ${this.escapeHtml(n.author_name)}${n.visibility === 'private' ? ' · 🔒' : ''}</div>
+            <div style="margin-top: 4px;">${this.escapeHtml(n.note)}</div>
+          </div>`;
+      });
+      if (notes.length > shown.length) {
+        html += `<div style="font-size: 12px; color: var(--muted); margin-top: 4px;">…and ${notes.length - shown.length} more.</div>`;
+      }
+      return html;
+    }
+
     async terminalShowNotes(entities) {
       const original = entities.original || '';
       this.terminalPrint('Looking through the notes…', '#6aa9ff');
       try {
-        const [{ rows }] = await Promise.all([this._fetchAllNotes()]);
+        const { rows } = await this._fetchAllNotes();
         const lower = original.toLowerCase();
-        const student = entities.student?.student || null;
         const classMatch = this._rivenMatchClass(lower);
         const teacherMatch = this._rivenMatchTeacher(lower);
 
-        // Keyword: "about/mentioning/containing X" — unless X is just the
-        // student/class/teacher we already resolved
+        // Keyword filter
         let keyword = null;
         const km = original.match(/\b(?:about|mentioning|containing|regarding)\s+(.+)$/i);
         if (km) {
           keyword = km[1].replace(/\b(?:from|over|in)?\s*(?:the\s+)?(last|past|previous|this)\s+\S+(\s+(?:days?|weeks?|months?|years?))?\s*$/i, '').trim();
-          const names = [student?.full_name, classMatch?.name, teacherMatch?.name].filter(Boolean).map(n => n.toLowerCase());
+          const names = [classMatch?.name, teacherMatch?.name].filter(Boolean).map(n => n.toLowerCase());
           if (!keyword || names.some(n => n.includes(keyword.toLowerCase()) || keyword.toLowerCase().includes(n.split(' ')[0]))) keyword = null;
         }
 
+        // Multiple students — show per-student sections
+        const multiStudents = (entities.students?.length >= 2)
+          ? entities.students.map(s => s.student || s).filter(s => s?.id)
+          : null;
+
+        if (multiStudents) {
+          let html = '';
+          let totalFound = 0;
+          for (const s of multiStudents) {
+            const filters = {
+              studentIds: [s.id],
+              classId: classMatch?.id || '',
+              from: entities.sinceDate || '',
+              keyword: keyword || ''
+            };
+            const matched = this._filterNotesRows(rows, filters);
+            totalFound += matched.length;
+            html += `<div style="font-weight: 600; color: var(--accent); margin: ${html ? '14px' : '2px'} 0 6px;">
+              👤 ${this.escapeHtml(s.full_name)} — ${matched.length} note${matched.length === 1 ? '' : 's'}
+            </div>`;
+            if (matched.length) {
+              html += this._renderNoteCards(matched, 4);
+            } else {
+              html += `<div style="font-size: 13px; color: var(--muted); padding: 4px 8px;">No notes yet.</div>`;
+            }
+          }
+          html += `<div style="margin-top: 10px;"><span style="color: var(--accent); cursor: pointer; text-decoration: underline;" onclick="app.showSection('notes')">Open the Notes tab</span> for full filtering.</div>`;
+          this._showRivenMessage(html, true);
+          return;
+        }
+
+        // Single student path
+        const student = entities.student?.student || null;
         const filters = {
           studentIds: student ? [student.id] : [],
           classId: classMatch?.id || '',
@@ -48028,24 +48178,92 @@
           return;
         }
 
-        const shown = matched.slice(0, 8);
         let html = `<div style="font-weight: 600; margin-bottom: 8px;">Found ${matched.length} note${matched.length === 1 ? '' : 's'}${this.escapeHtml(scopeDesc)}:</div>`;
-        shown.forEach(n => {
-          const who = [n.student_name, n.class_name, n.about_teacher_name].filter(Boolean).join(' · ');
-          const dot = n.sentiment === 'positive' ? '🟢' : (n.sentiment === 'negative' ? '🔴' : '⚪');
-          html += `
-            <div style="background: rgba(0,0,0,0.12); border-radius: 8px; padding: 8px 12px; margin: 6px 0;">
-              <div style="font-size: 12px; color: var(--muted);">${dot} ${this.escapeHtml(who || 'General')} — ${n.note_date || ''} · ${this.escapeHtml(n.author_name)}${n.visibility === 'private' ? ' · 🔒' : ''}</div>
-              <div style="margin-top: 4px;">${this.escapeHtml(n.note)}</div>
-            </div>`;
-        });
-        if (matched.length > shown.length) {
-          html += `<div style="font-size: 12px; color: var(--muted); margin-top: 6px;">…and ${matched.length - shown.length} more.</div>`;
-        }
+        html += this._renderNoteCards(matched, 8);
         html += `<div style="margin-top: 8px;"><span style="color: var(--accent); cursor: pointer; text-decoration: underline;" onclick="app.showSection('notes')">Open the Notes tab</span> for full filtering.</div>`;
         this._showRivenMessage(html, true);
       } catch (err) {
         this.terminalPrintError('Could not search notes: ' + err.message);
+      }
+    }
+
+    async terminalShowHomework(entities) {
+      const student = entities.student?.student || null;
+      const classMatch = entities.classMatch ? (entities.classMatch.candidates?.[0] || null) : null;
+      const norm = entities.normalized || '';
+      const wantOverdue = /\b(overdue|late|missing|past due)\b/.test(norm);
+      const wantUpcoming = !wantOverdue;
+      this.terminalPrint('Checking homework assignments…', '#6aa9ff');
+      try {
+        const sb = this.auth.supabase;
+        let q = sb.from('homework_assignments')
+          .select('id, title, description, subject, skill_name, assignment_type, due_date, status, student_id, class_id')
+          .order('due_date', { ascending: true })
+          .limit(50);
+
+        if (student) {
+          q = q.eq('student_id', student.id);
+        } else if (classMatch) {
+          q = q.eq('class_id', classMatch.id);
+        } else {
+          // All students the teacher can see — just show pending
+          q = q.in('status', ['assigned', 'in_progress', 'overdue']);
+        }
+
+        if (wantOverdue) {
+          q = q.eq('status', 'overdue');
+        } else {
+          q = q.in('status', ['assigned', 'in_progress', 'overdue']);
+        }
+
+        const { data, error } = await q;
+        if (error) { this.terminalPrintError('Could not load homework: ' + error.message); return; }
+        const rows = data || [];
+
+        // Build student name lookup from cache
+        const studentCache = {};
+        (this._terminalAllStudents || []).forEach(s => { studentCache[s.id] = s.full_name; });
+
+        if (!rows.length) {
+          const whoDesc = student ? student.full_name : classMatch ? classMatch.name : 'your students';
+          const what = wantOverdue ? 'overdue' : 'upcoming';
+          this._showRivenMessage(`No ${what} homework found${(student || classMatch) ? ' for ' + this.escapeHtml(whoDesc) : ''}. 🎉`, true);
+          return;
+        }
+
+        const statusLabel = { assigned: 'Assigned', in_progress: 'In Progress', overdue: '⚠️ Overdue', completed: 'Done', excused: 'Excused' };
+        const typeLabel = { skill_practice: 'Practice', game: 'Game', skill_mastery: 'Mastery' };
+
+        const whoTitle = student ? student.full_name : classMatch ? classMatch.name : null;
+        let html = `<div style="font-weight: 600; margin-bottom: 8px;">📚 ${rows.length} homework assignment${rows.length === 1 ? '' : 's'}${whoTitle ? ' for <b>' + this.escapeHtml(whoTitle) + '</b>' : ''}</div>`;
+
+        rows.slice(0, 10).forEach(hw => {
+          const studentName = studentCache[hw.student_id] || '';
+          const dueStr = hw.due_date ? new Date(hw.due_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
+          const isPast = hw.due_date && new Date(hw.due_date) < new Date();
+          const dueBadge = dueStr
+            ? `<span style="color: ${isPast ? '#e74c3c' : '#f39c12'}; font-size: 11px;">Due ${this.escapeHtml(dueStr)}</span>`
+            : '';
+          const stBadge = `<span style="color: ${hw.status === 'overdue' ? '#e74c3c' : hw.status === 'completed' ? '#8bffb0' : '#6aa9ff'}; font-size: 11px;">${statusLabel[hw.status] || hw.status}</span>`;
+          const typeBadge = hw.assignment_type ? `<span style="color: var(--muted); font-size: 11px;">${typeLabel[hw.assignment_type] || hw.assignment_type}</span>` : '';
+          const sub = (hw.subject || hw.skill_name) ? `<div style="font-size: 12px; color: var(--muted); margin-top: 2px;">${[hw.subject, hw.skill_name].filter(Boolean).join(' · ')}</div>` : '';
+          const showStudent = !student && studentName;
+          html += `
+            <div style="background: rgba(0,0,0,0.12); border-radius: 8px; padding: 8px 12px; margin: 6px 0;">
+              <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 4px;">
+                <span style="font-weight: 500;">${this.escapeHtml(hw.title)}${showStudent ? ` <span style="color: var(--muted); font-size: 11px;">· ${this.escapeHtml(studentName)}</span>` : ''}</span>
+                <span style="display: flex; gap: 8px;">${dueBadge} ${stBadge} ${typeBadge}</span>
+              </div>
+              ${sub}
+              ${hw.description ? `<div style="font-size: 12px; color: var(--muted); margin-top: 3px;">${this.escapeHtml(hw.description.slice(0, 100))}${hw.description.length > 100 ? '…' : ''}</div>` : ''}
+            </div>`;
+        });
+        if (rows.length > 10) {
+          html += `<div style="font-size: 12px; color: var(--muted); margin-top: 6px;">…and ${rows.length - 10} more.</div>`;
+        }
+        this._showRivenMessage(html, true);
+      } catch (err) {
+        this.terminalPrintError('Could not load homework: ' + err.message);
       }
     }
 
@@ -48278,14 +48496,35 @@
       const newBalance = (student.rtc_balance || 0) + amount;
       this._addRecentStudent({...student, rtc_balance: newBalance});
 
-      // Register the reversal so "undo" can post a compensating transaction
-      // (rtc_transactions is append-only — nothing is deleted)
+      // Auto-note: save before pushing undo so we can capture the note ID for rollback
+      let autoNoteId = null;
+      if (reason !== 'Terminal award') {
+        this.terminalPrint(`  💬 ${reason}`, '#97a2b0');
+        const noteText = `${amount > 0 ? '+' + amount : amount} RTC — ${reason}`;
+        try {
+          const saved = await this._insertNote({
+            studentId: student.id, classId: null,
+            category: 'general', sentiment: 'neutral', visibility: 'staff',
+            note: noteText
+          });
+          autoNoteId = saved?.id || null;
+        } catch (err) {
+          if (!/does not exist|schema cache/i.test(err.message || '')) console.warn('auto-note failed:', err);
+        }
+      }
+
+      // Register the reversal — reverses both the RTC transaction AND the auto-note
       const txId = txData?.transaction_id || null;
       this._pushUndo(`${amount > 0 ? '+' : ''}${amount} RTC for ${student.full_name}`, async () => {
         await this._rtcTxn({ userId: student.id, amount: -amount, type: 'admin_adjustment',
           description: `Undo of ${amount > 0 ? '+' : ''}${amount} RTC${txId ? ' (txn ' + txId + ')' : ''}`,
           refId: txId, refType: 'undo' });
         this._addRecentStudent({ id: student.id, full_name: student.full_name, rtc_balance: newBalance - amount });
+        if (autoNoteId) {
+          await this.auth.supabase.from('notes').delete().eq('id', autoNoteId).then(({ error }) => {
+            if (error) console.warn('undo auto-note delete failed:', error);
+          });
+        }
       });
 
       // Phase 4: Natural varied responses (different phrasing for subtractions)
@@ -48300,18 +48539,6 @@
           `Added ${amount} RTC to ${student.full_name}. New balance: ${newBalance}`,
           `Nice! ${student.full_name} earned ${amount} RTC. Total: ${newBalance}`
         ]);
-      }
-      if (reason !== 'Terminal award') {
-        this.terminalPrint(`  💬 ${reason}`, '#97a2b0');
-        // Auto-note: silently log the reason as a student note
-        const noteText = `${amount > 0 ? '+' + amount : amount} RTC — ${reason}`;
-        this._insertNote({
-          studentId: student.id, classId: null,
-          category: 'general', sentiment: 'neutral', visibility: 'staff',
-          note: noteText
-        }).catch(err => {
-          if (!/does not exist|schema cache/i.test(err.message || '')) console.warn('auto-note failed:', err);
-        });
       }
     }
 
