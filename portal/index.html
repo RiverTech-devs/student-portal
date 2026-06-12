@@ -47461,18 +47461,27 @@
     }
 
     async terminalSendMessage(entities) {
-      const student = entities.student?.student || entities.student;
-      const raw = (entities.original || entities.normalized || '').toLowerCase();
+      const rawOriginal = entities.original || '';
+      const raw = rawOriginal.toLowerCase();
       const isParent = /\b(parents?|mom|dad|family|guardian|folks)\b/.test(raw);
 
-      // Resolve recipient: student first, then teachers/admins by name
+      // Honorific or "teacher" keyword → unambiguously staff; ignore student entity that shares name
+      const hasTitle = /\b(mr|mrs|ms|miss|dr|prof|coach|teacher)\.?\s/i.test(rawOriginal);
+
+      // Recipient name: strip command verb + title/honorific
+      const nameGuess = rawOriginal
+        .replace(/^(message|msg|email|contact|text|reach out to|get in touch with)\s+/i, '')
+        .replace(/\b(mr|mrs|ms|miss|dr|prof|coach|teacher)\.?\s+/i, '')
+        .replace(/\s*'s\s*(parents?|mom|dad|family|guardian|folks).*$/i, '')
+        .trim();
+
+      // Suppress student entity when a title was present (e.g. "Mr. Jordan" → don't open student Jordan)
+      const student = hasTitle ? null : (entities.student?.student || entities.student);
+
       let recipientId = null, recipientName = null;
 
-      if (student && !isParent) {
-        recipientId = student.id;
-        recipientName = student.full_name;
-      } else if (student && isParent) {
-        // Look up parent linked to this student
+      // Parent path: student entity + parent keyword
+      if (student && isParent) {
         const { data: links } = await this.auth.supabase
           .from('parent_student_links')
           .select('parent_id, user_profiles!parent_student_links_parent_id_fkey(id, first_name, last_name)')
@@ -47485,31 +47494,45 @@
           this._showRivenMessage(`I couldn't find a parent account linked to ${this.escapeHtml(student.full_name)}.`, true);
           return;
         }
-      } else {
-        // No student entity — try to find a staff member by name from the input
-        const nameGuess = (entities.original || '').replace(/^(message|msg|email|contact|text|reach out to|get in touch with)\s+/i, '').trim();
-        if (nameGuess) {
-          const { data: staff } = await this.auth.supabase
-            .from('user_profiles')
-            .select('id, first_name, last_name, user_type')
-            .in('user_type', ['teacher', 'admin'])
-            .neq('id', this.userInfo.user.id);
-          if (staff?.length) {
-            const lower = nameGuess.toLowerCase();
-            const match = staff.find(s => {
-              const full = `${s.first_name} ${s.last_name}`.toLowerCase();
-              return full.includes(lower) || lower.includes(s.first_name.toLowerCase());
-            });
-            if (match) {
-              recipientId = match.id;
-              recipientName = `${match.first_name} ${match.last_name}`;
-            }
+      }
+
+      // Staff lookup: runs when title present OR no student entity resolved.
+      // Staff takes priority over ambiguous student name matches so "message Luke"
+      // reaches teacher Luke even when a student named Luke also exists.
+      // No .neq(self) so messaging yourself for testing works.
+      if (!recipientId && nameGuess && !isParent) {
+        const { data: staff } = await this.auth.supabase
+          .from('user_profiles')
+          .select('id, first_name, last_name, user_type')
+          .in('user_type', ['teacher', 'admin']);
+        if (staff?.length) {
+          const nl = nameGuess.toLowerCase();
+          const scored = staff.map(s => {
+            const full = `${s.first_name} ${s.last_name}`.toLowerCase();
+            const first = s.first_name.toLowerCase();
+            const last = s.last_name.toLowerCase();
+            if (full === nl) return { s, score: 4 };
+            if (full.includes(nl) || nl.includes(full)) return { s, score: 3 };
+            if (first === nl || last === nl) return { s, score: 2 };
+            if (new RegExp(`\\b${first}\\b`).test(nl) || new RegExp(`\\b${last}\\b`).test(nl)) return { s, score: 1 };
+            return null;
+          }).filter(Boolean).sort((a, b) => b.score - a.score);
+          if (scored.length) {
+            recipientId = scored[0].s.id;
+            recipientName = `${scored[0].s.first_name} ${scored[0].s.last_name}`;
           }
         }
-        if (!recipientId) {
-          this._showRivenMessage(`Who do you want to message? Try "message Caitlin", "message Jordan Ezell", or "message Eli's parents".`, true);
-          return;
-        }
+      }
+
+      // Fall back to student entity (no title, no staff match)
+      if (!recipientId && student && !isParent) {
+        recipientId = student.id;
+        recipientName = student.full_name;
+      }
+
+      if (!recipientId) {
+        this._showRivenMessage(`Who do you want to message? Try "message Caitlin", "message Mr. Jordan", or "message Eli's parents".`, true);
+        return;
       }
 
       // Open the conversation modal directly — no tab switch needed
