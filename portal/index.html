@@ -42283,7 +42283,18 @@
       // GROUP_RTC, MULTI_AWARD, MARK_ATTENDANCE_GROUP require user confirmation —
       // phi3.comment fires before the action, which is premature for those intents.
       const PHI3_COMMENT_INTENTS = new Set(['ADD_RTC','SUBTRACT_RTC','TRANSFER_RTC','ADD_NOTE','MARK_ATTENDANCE','ENROLL_STUDENT','UNENROLL_STUDENT','SEND_MESSAGE','GRANT_PRIVILEGE','REVOKE_PRIVILEGE','BUY_ITEM','BUY_PRIVILEGE']);
-      if (this._phi3State?.active && this._phi3State?.pipe && PHI3_COMMENT_INTENTS.has(intent.intent)) {
+      // Only comment if execution actually completed (not a clarification/confirmation request)
+      const _commentWillExecute = (() => {
+        // If _requestConfirmation was called, _pendingAction is set — action hasn't happened yet
+        if (this._pendingAction) return false;
+        const n = intent.intent, e = entities, s = e.student || e.students?.[0];
+        if (['ADD_RTC','SUBTRACT_RTC','TRANSFER_RTC','BUY_ITEM','BUY_PRIVILEGE','GRANT_PRIVILEGE','REVOKE_PRIVILEGE'].includes(n)) return !!(s && e.amount);
+        if (n === 'ADD_NOTE') return !!(s || e.class) && !!(e.noteText || e.reason);
+        if (n === 'MARK_ATTENDANCE') return !!(s);
+        if (n === 'SEND_MESSAGE') return !!(s);
+        return true;
+      })();
+      if (this._phi3State?.active && this._phi3State?.pipe && PHI3_COMMENT_INTENTS.has(intent.intent) && _commentWillExecute) {
         this._phi3Comment(input, intent.intent, entities).catch(() => {});
       }
 
@@ -45479,6 +45490,9 @@
         _meta = _cmpick(["I work with student data — grades, RTC, notes, attendance. What do you need in the portal?", "I can look up grades, log notes, award RTC, and more. What are you trying to do?", "That's a bit outside my lane! I handle portal data. What student info can I pull up?"]);
       else if (/\bcan (you|i ask|we)\b.{0,15}\b(remind|schedule|plan|create|write|draft)\b/i.test(input))
         _meta = _cmpick(["I can't schedule or create content, but I can look up student data! What do you need?", "That's outside my scope — I focus on portal data. What can I help look up?"]);
+      // Off-topic: weather, news, time, sports, etc.
+      else if (/\b(weather|temperature|forecast|outside|rain|sunny|cloudy|wind|snow)\b/i.test(input) || /\b(what time is it|current time|what day is it|today'?s date)\b/i.test(input) || /\b(news|sports|score|game|politics|stocks|crypto|bitcoin)\b/i.test(input))
+        _meta = _cmpick(["I stick to student data! Try a weather app for that.", "That's outside my scope — I handle portal data. What student info can I pull up?", "Not my area! I do student records, RTC, notes. What do you need?"]);
       // Teacher win/vent expressions — respond warmly without hallucinating details
       else if (/\b(i had|had a|we had|that was)\b.{0,30}\b(great|good|amazing|awesome|fun|fantastic|excellent|productive|wonderful|solid|rough|terrible|hard|difficult|tough|exhausting|stressful|long|crazy)\b.{0,20}\b(class|lesson|day|period|session|week|morning|afternoon)\b/i.test(input) || /\b(class|lesson|day|period|session|week|morning|afternoon)\b.{0,30}\b(was|were|felt|went|seemed)\b.{0,30}\b(great|good|amazing|awesome|fun|rough|terrible|hard|difficult|tough|exhausting|stressful|crazy|all over|productive|wonderful)\b/i.test(input))
         _meta = _cmpick(["Sounds like quite a day! Anything I can help with?", "Got it — want to log a note or award some RTC?", "Noted! What do you need?", "Thanks for the update! What can I do?"]);
@@ -45630,13 +45644,29 @@
           // "note for you: having a rough day" (no real student) from executing,
           // and "charlotte was great" → "note for charlotte: was great" (charlotte
           // IS in the original) from being rejected.
-          const origHasStudent = !!this._fuzzyFindStudent(
+          const origStudentMatch = this._fuzzyFindStudent(
             this._normalizeInput(originalInput), originalInput);
+          const origHasStudent = !!origStudentMatch;
           const needsStudent = ['ADD_NOTE','ADD_RTC','SUBTRACT_RTC','MARK_ATTENDANCE',
             'ENROLL_STUDENT','UNENROLL_STUDENT','TRANSFER_RTC'].includes(reIntent.intent);
           const hallucinated = (reEnt.student && !origHasStudent) // invented student
             || (needsStudent && !origHasStudent); // student required but none in original
-          if (!hallucinated) cmd = stripped;
+          if (!hallucinated) {
+            cmd = stripped;
+            // If phi3 wrote a different student name than what's in the original input,
+            // correct it — the model sometimes normalises "evelyn" → "evan" etc.
+            if (origStudentMatch && reEnt.student) {
+              const origStu = origStudentMatch.student || origStudentMatch;
+              const foundStu = reEnt.student.student || reEnt.student;
+              if (origStu?.id && foundStu?.id && origStu.id !== foundStu.id) {
+                const wrongFirst = (foundStu.full_name || '').split(' ')[0].toLowerCase();
+                const rightFirst = (origStu.full_name || '').split(' ')[0].toLowerCase();
+                if (wrongFirst && rightFirst && cmd.includes(wrongFirst)) {
+                  cmd = cmd.replace(new RegExp('\\b' + wrongFirst + '\\b', 'gi'), rightFirst);
+                }
+              }
+            }
+          }
         }
       }
       removeMoment();
