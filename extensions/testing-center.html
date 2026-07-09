@@ -595,6 +595,25 @@
         let authReady = false;
         let isEmbedded = window.parent !== window; // Check if running in iframe
 
+        // Parent portal is same-origin (rivertech.me). Constrain all postMessage
+        // traffic to it — validate incoming event.origin and target replies explicitly
+        // instead of using the wildcard '*' (which leaks Supabase tokens to any frame).
+        const PARENT_ORIGIN = window.location.origin;
+
+        // Escape user- or teacher-entered strings before injecting into innerHTML.
+        // Stored-XSS guard: student answers, feedback, question/option text, test
+        // titles, class/student names all pass through here. Quote-safe so it is also
+        // valid inside HTML attribute values. null/undefined collapse to ''.
+        function escapeHtml(value) {
+            if (value === null || value === undefined) return '';
+            return String(value)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
         // ==================== DATA STORES ====================
         let currentRole = 'teacher';
         let editingTestId = null;
@@ -624,6 +643,11 @@
 
         // Listen for auth from parent portal
         window.addEventListener('message', async (event) => {
+            // Only trust messages from the parent portal (same origin). This listener
+            // drives auth (Supabase tokens) and DB-backed data, so reject anything
+            // from a foreign origin or a non-parent source.
+            if (event.origin !== PARENT_ORIGIN) return;
+            if (isEmbedded && event.source !== window.parent) return;
             if (!event.data || !event.data.type) return;
 
             switch (event.data.type) {
@@ -676,7 +700,7 @@
                 authReady = true;
 
                 // Notify portal that auth is ready
-                window.parent.postMessage({ type: 'TESTING_CENTER_AUTH_READY', payload: { success: true } }, '*');
+                window.parent.postMessage({ type: 'TESTING_CENTER_AUTH_READY', payload: { success: true } }, PARENT_ORIGIN);
 
                 // Initialize the app
                 await initializeApp();
@@ -685,7 +709,7 @@
                 window.parent.postMessage({
                     type: 'TESTING_CENTER_ERROR',
                     payload: { error: 'Failed to initialize authentication' }
-                }, '*');
+                }, PARENT_ORIGIN);
             }
         }
 
@@ -792,7 +816,7 @@
 
                 // Request classes from portal (for teachers)
                 if (currentRole === 'teacher' && isEmbedded) {
-                    window.parent.postMessage({ type: 'TESTING_CENTER_REQUEST_CLASSES' }, '*');
+                    window.parent.postMessage({ type: 'TESTING_CENTER_REQUEST_CLASSES' }, PARENT_ORIGIN);
                 }
             } catch (error) {
                 console.error('Error loading data:', error);
@@ -1198,7 +1222,7 @@
                                 maxPoints: maxPoints,
                                 testAssignmentId: data.id
                             }
-                        }, '*');
+                        }, PARENT_ORIGIN);
                     }
                 }
 
@@ -1364,7 +1388,7 @@
                             maxScore: maxScore,
                             testAssignmentId: testAssignmentId
                         }
-                    }, '*');
+                    }, PARENT_ORIGIN);
                 }
 
                 return submission;
@@ -1518,7 +1542,7 @@
                             maxScore: submission?.max_possible_score || 100,
                             linkedSubmissionId: linkedSubId
                         }
-                    }, '*');
+                    }, PARENT_ORIGIN);
                 }
             } catch (error) {
                 console.error('Error saving grades:', error);
@@ -1646,8 +1670,8 @@
                     <div class="test-card fade-in" style="animation-delay: ${index * 0.1}s">
                         <div class="test-card-header">
                             <div>
-                                <h3 class="test-title">${test.title}</h3>
-                                <div class="test-subject">${test.subject}</div>
+                                <h3 class="test-title">${escapeHtml(test.title)}</h3>
+                                <div class="test-subject">${escapeHtml(test.subject)}</div>
                             </div>
                             <span class="test-status status-${test.status}">${test.status}</span>
                         </div>
@@ -1703,8 +1727,8 @@
                     <div class="test-card fade-in" style="animation-delay: ${index * 0.1}s">
                         <div class="test-card-header">
                             <div>
-                                <h3 class="test-title">${test.title}</h3>
-                                <div class="test-subject">${test.subject}</div>
+                                <h3 class="test-title">${escapeHtml(test.title)}</h3>
+                                <div class="test-subject">${escapeHtml(test.subject)}</div>
                             </div>
                             <span class="test-status ${statusClass}">${statusText}</span>
                         </div>
@@ -1811,7 +1835,7 @@
 
             // Request classes from portal if embedded and classes not loaded
             if (isEmbedded && classesDatabase.length === 0) {
-                window.parent.postMessage({ type: 'TESTING_CENTER_REQUEST_CLASSES' }, '*');
+                window.parent.postMessage({ type: 'TESTING_CENTER_REQUEST_CLASSES' }, PARENT_ORIGIN);
             }
 
             populateAssignModal();
@@ -1834,8 +1858,8 @@
                     const isChecked = assignedClassIds.includes(c.id);
                     return `
                         <label class="checkbox-item ${isChecked ? 'checked' : ''}">
-                            <input type="checkbox" value="${c.id}" ${isChecked ? 'checked' : ''} onchange="updateCheckboxStyle(this)">
-                            ${c.name} (${studentCount} students)
+                            <input type="checkbox" value="${escapeHtml(c.id)}" ${isChecked ? 'checked' : ''} onchange="updateCheckboxStyle(this)">
+                            ${escapeHtml(c.name)} (${studentCount} students)
                         </label>
                     `;
                 }).join('');
@@ -2035,13 +2059,13 @@
                     const selectorHtml = `
                         <label style="font-weight: 500; margin-right: 10px;">Select Class:</label>
                         <select id="submissionsClassSelect" class="form-input" style="width: auto; display: inline-block;" onchange="renderSubmissionsForClass(this.value)">
-                            ${classesData.map(c => `<option value="${c.id}">${c.name}</option>`).join('')}
+                            ${classesData.map(c => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)}</option>`).join('')}
                         </select>
                     `;
                     document.getElementById('submissionsClassSelector').innerHTML = selectorHtml;
                     currentViewClassId = classesData[0].id;
                 } else if (classesData.length === 1) {
-                    document.getElementById('submissionsClassSelector').innerHTML = `<p style="color: var(--text-muted);">Class: <strong>${classesData[0].name}</strong></p>`;
+                    document.getElementById('submissionsClassSelector').innerHTML = `<p style="color: var(--text-muted);">Class: <strong>${escapeHtml(classesData[0].name)}</strong></p>`;
                     currentViewClassId = classesData[0].id;
                 } else {
                     currentViewClassId = null;
@@ -2079,7 +2103,7 @@
 
                 if (submission) {
                     html += `<tr>
-                        <td>${studentName}</td>
+                        <td>${escapeHtml(studentName)}</td>
                         <td><span class="test-status status-${submission.status === 'graded' ? 'graded' : 'pending'}">${submission.status === 'graded' ? 'Graded' : 'Pending Review'}</span></td>
                         <td>${submission.autoScore}%</td>
                         <td>${submission.finalScore !== null ? submission.finalScore + '%' : '--'}</td>
@@ -2088,7 +2112,7 @@
                     </tr>`;
                 } else {
                     html += `<tr>
-                        <td>${studentName}</td>
+                        <td>${escapeHtml(studentName)}</td>
                         <td><span class="test-status status-draft">Not Submitted</span></td>
                         <td>--</td><td>--</td><td>--</td><td>--</td>
                     </tr>`;
@@ -2111,7 +2135,7 @@
             const studentName = viewSubmissionsData.studentProfiles[studentId] ||
                 (studentsDatabase.find(s => s.id === studentId) || {}).name || 'Unknown Student';
 
-            let html = `<h3 style="margin-bottom: 20px;">${studentName}'s Submission</h3>`;
+            let html = `<h3 style="margin-bottom: 20px;">${escapeHtml(studentName)}'s Submission</h3>`;
 
             test.questions.forEach((q, i) => {
                 const answer = submission.answers[q.id];
@@ -2122,7 +2146,7 @@
                         <span class="question-number">Question ${i + 1}</span>
                         <span class="question-type-badge">${q.type === 'multiple-choice' ? 'Multiple Choice' : 'Written Response'}</span>
                     </div>
-                    <p class="question-text">${q.text}</p>`;
+                    <p class="question-text">${escapeHtml(q.text)}</p>`;
 
                 if (q.type === 'multiple-choice') {
                     const isCorrect = answer === q.correctAnswer;
@@ -2133,7 +2157,7 @@
                         else if (j === answer && !isCorrect) cls = 'incorrect';
                         html += `<div class="option-item ${cls}" style="cursor: default;">
                             <span class="option-marker">${String.fromCharCode(65 + j)}</span>
-                            <span class="option-text">${opt}</span>
+                            <span class="option-text">${escapeHtml(opt)}</span>
                             ${j === q.correctAnswer ? '<span style="margin-left:auto; color: var(--accent-success);">✓ Correct</span>' : ''}
                             ${j === answer && j !== q.correctAnswer ? '<span style="margin-left:auto; color: var(--accent-danger);">✗ Student\'s answer</span>' : ''}
                         </div>`;
@@ -2142,13 +2166,13 @@
                 } else {
                     html += `<div style="background: var(--bg-tertiary); padding: 16px; border-radius: 10px; margin: 12px 0;">
                         <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 8px;">Student's Answer:</div>
-                        <div style="white-space: pre-wrap;">${answer || '<em style="color: var(--text-muted);">No answer provided</em>'}</div>
+                        <div style="white-space: pre-wrap;">${answer ? escapeHtml(answer) : '<em style="color: var(--text-muted);">No answer provided</em>'}</div>
                     </div>
                     <div style="display: flex; align-items: center; gap: 16px; margin-top: 12px;">
                         <label style="font-size: 13px; color: var(--text-secondary);">Score:</label>
-                        <input type="number" class="grade-input" id="grade-${q.id}" value="${graded.score ?? ''}" min="0" max="${q.maxPoints || 1}" placeholder="0-${q.maxPoints || 1}"> / ${q.maxPoints || 1}
+                        <input type="number" class="grade-input" id="grade-${q.id}" value="${escapeHtml(graded.score ?? '')}" min="0" max="${q.maxPoints || 1}" placeholder="0-${q.maxPoints || 1}"> / ${q.maxPoints || 1}
                     </div>
-                    <textarea class="feedback-input" id="feedback-${q.id}" placeholder="Feedback for student...">${graded.feedback || ''}</textarea>`;
+                    <textarea class="feedback-input" id="feedback-${q.id}" placeholder="Feedback for student...">${escapeHtml(graded.feedback || '')}</textarea>`;
                 }
                 html += `</div>`;
             });
@@ -2312,14 +2336,14 @@
                             <option value="all">All Classes (${submissions.length} submissions)</option>
                             ${classesData.map(c => {
                                 const count = submissions.filter(s => s.class_id === c.id).length;
-                                return `<option value="${c.id}">${c.name} (${count} submissions)</option>`;
+                                return `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)} (${count} submissions)</option>`;
                             }).join('')}
                         </select>
                     `;
                     document.getElementById('analyticsClassSelector').innerHTML = selectorHtml;
                     analyticsClassId = 'all';
                 } else if (classesData.length === 1) {
-                    document.getElementById('analyticsClassSelector').innerHTML = `<p style="color: var(--text-muted);">Class: <strong>${classesData[0].name}</strong> (${submissions.length} submissions)</p>`;
+                    document.getElementById('analyticsClassSelector').innerHTML = `<p style="color: var(--text-muted);">Class: <strong>${escapeHtml(classesData[0].name)}</strong> (${submissions.length} submissions)</p>`;
                     analyticsClassId = classesData[0].id;
                 }
 
@@ -2445,7 +2469,7 @@
                             ${hardestQuestions.slice(0, 5).map(q => `
                                 <div style="display: flex; align-items: center; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--border-color);">
                                     <span style="width: 30px; font-weight: 600; color: var(--text-primary);">Q${q.number}</span>
-                                    <div style="flex: 1; font-size: 12px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-right: 8px;">${q.text.substring(0, 40)}...</div>
+                                    <div style="flex: 1; font-size: 12px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-right: 8px;">${escapeHtml(q.text.substring(0, 40))}...</div>
                                     <span style="font-weight: 600; color: ${q.correctPct < 50 ? 'var(--accent-danger)' : q.correctPct < 70 ? 'var(--accent-warning)' : 'var(--accent-success)'};">${q.correctPct}%</span>
                                 </div>
                             `).join('')}
@@ -2471,7 +2495,7 @@
                             ${questionStats.map(q => `
                                 <tr style="border-bottom: 1px solid var(--border-color);">
                                     <td style="padding: 10px 8px; font-weight: 600;">${q.number}</td>
-                                    <td style="padding: 10px 8px; font-size: 13px; max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${q.text}</td>
+                                    <td style="padding: 10px 8px; font-size: 13px; max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(q.text)}</td>
                                     <td style="padding: 10px 8px; text-align: center;"><span class="question-type-badge">${q.type === 'multiple-choice' ? 'MC' : 'Written'}</span></td>
                                     <td style="padding: 10px 8px; text-align: center; color: var(--accent-success);">${q.correct}</td>
                                     <td style="padding: 10px 8px; text-align: center; color: var(--accent-danger);">${q.incorrect}</td>
@@ -2550,7 +2574,7 @@
             let html = options.map((opt, i) => `
                 <div class="option-item ${i === correctAnswer ? 'selected' : ''}" onclick="selectCorrectAnswer(${qId}, ${i})" data-option-index="${i}">
                     <span class="option-marker">${String.fromCharCode(65 + i)}</span>
-                    <input type="text" class="form-input" id="opt-${qId}-${i}" value="${opt}" placeholder="Option ${String.fromCharCode(65 + i)}" onclick="event.stopPropagation()" style="flex:1; margin:0;">
+                    <input type="text" class="form-input" id="opt-${qId}-${i}" value="${escapeHtml(opt)}" placeholder="Option ${String.fromCharCode(65 + i)}" onclick="event.stopPropagation()" style="flex:1; margin:0;">
                     ${!isLocked && options.length > 2 ? `<button type="button" class="btn btn-danger btn-sm" onclick="event.stopPropagation(); removeOption(${qId}, ${i})" style="padding: 4px 8px;">✕</button>` : ''}
                 </div>
             `).join('');
@@ -2596,7 +2620,7 @@
             let html = options.map((opt, i) => `
                 <div class="option-item ${i === correctAnswer ? 'selected' : ''}" onclick="selectCorrectAnswer(${qId}, ${i})" data-option-index="${i}">
                     <span class="option-marker">${String.fromCharCode(65 + i)}</span>
-                    <input type="text" class="form-input" id="opt-${qId}-${i}" value="${opt}" placeholder="Option ${String.fromCharCode(65 + i)}" onclick="event.stopPropagation()" style="flex:1; margin:0;">
+                    <input type="text" class="form-input" id="opt-${qId}-${i}" value="${escapeHtml(opt)}" placeholder="Option ${String.fromCharCode(65 + i)}" onclick="event.stopPropagation()" style="flex:1; margin:0;">
                     ${options.length > 2 ? `<button type="button" class="btn btn-danger btn-sm" onclick="event.stopPropagation(); removeOption(${qId}, ${i})" style="padding: 4px 8px;">✕</button>` : ''}
                 </div>
             `).join('');
@@ -2736,19 +2760,19 @@
                     <span class="question-number">Question ${currentQuestionIndex + 1}</span>
                     <span class="question-type-badge">${question.type === 'multiple-choice' ? 'Multiple Choice' : 'Written Response'}</span>
                 </div>
-                <p class="question-text">${question.text}</p>`;
+                <p class="question-text">${escapeHtml(question.text)}</p>`;
 
             if (question.type === 'multiple-choice') {
                 html += `<div class="options-list">`;
                 question.options.forEach((opt, i) => {
                     html += `<div class="option-item ${studentAnswers[question.id] === i ? 'selected' : ''}" onclick="selectAnswer('${question.id}', ${i})">
                         <span class="option-marker">${String.fromCharCode(65 + i)}</span>
-                        <span class="option-text">${opt}</span>
+                        <span class="option-text">${escapeHtml(opt)}</span>
                     </div>`;
                 });
                 html += `</div>`;
             } else {
-                html += `<textarea class="write-in-input" id="writeAnswer-${question.id}" placeholder="Type your answer here..." onchange="saveWriteInAnswer('${question.id}')">${studentAnswers[question.id] || ''}</textarea>`;
+                html += `<textarea class="write-in-input" id="writeAnswer-${question.id}" placeholder="Type your answer here..." onchange="saveWriteInAnswer('${question.id}')">${escapeHtml(studentAnswers[question.id] || '')}</textarea>`;
             }
 
             html += `</div>`;
@@ -2856,7 +2880,7 @@
                         <span class="question-number">Question ${i + 1}</span>
                         <span class="question-type-badge">${q.type === 'multiple-choice' ? 'Multiple Choice' : 'Written Response'}</span>
                     </div>
-                    <p class="question-text">${q.text}</p>`;
+                    <p class="question-text">${escapeHtml(q.text)}</p>`;
 
                 if (q.type === 'multiple-choice') {
                     html += `<div class="options-list">`;
@@ -2870,7 +2894,7 @@
 
                         html += `<div class="option-item ${cls}">
                             <span class="option-marker">${String.fromCharCode(65 + j)}</span>
-                            <span class="option-text">${opt}</span>
+                            <span class="option-text">${escapeHtml(opt)}</span>
                             ${isCorrect ? '<span style="margin-left:auto; color: var(--accent-success);">✓ Correct</span>' : ''}
                             ${isSelected && !isCorrect ? '<span style="margin-left:auto; color: var(--accent-danger);">✗ Your answer</span>' : ''}
                         </div>`;
@@ -2879,7 +2903,7 @@
                 } else {
                     html += `<div style="background: var(--bg-tertiary); padding: 16px; border-radius: 10px; margin-top: 12px;">
                         <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 8px;">Your Answer:</div>
-                        <div style="white-space: pre-wrap;">${answer || '<em style="color: var(--text-muted);">No answer provided</em>'}</div>
+                        <div style="white-space: pre-wrap;">${answer ? escapeHtml(answer) : '<em style="color: var(--text-muted);">No answer provided</em>'}</div>
                     </div>
                     <div style="font-size: 13px; color: var(--text-muted); margin-top: 12px;">⏳ Pending teacher review</div>`;
                 }
@@ -2915,7 +2939,7 @@
                         <span class="question-number">Question ${i + 1}</span>
                         <span class="question-type-badge">${q.type === 'multiple-choice' ? 'Multiple Choice' : 'Written Response'}</span>
                     </div>
-                    <p class="question-text">${q.text}</p>`;
+                    <p class="question-text">${escapeHtml(q.text)}</p>`;
 
                 if (q.type === 'multiple-choice') {
                     html += `<div class="options-list">`;
@@ -2929,7 +2953,7 @@
 
                         html += `<div class="option-item ${cls}">
                             <span class="option-marker">${String.fromCharCode(65 + j)}</span>
-                            <span class="option-text">${opt}</span>
+                            <span class="option-text">${escapeHtml(opt)}</span>
                             ${isCorrect ? '<span style="margin-left:auto; color: var(--accent-success);">✓ Correct</span>' : ''}
                             ${isSelected && !isCorrect ? '<span style="margin-left:auto; color: var(--accent-danger);">✗ Your answer</span>' : ''}
                         </div>`;
@@ -2938,12 +2962,12 @@
                 } else {
                     html += `<div style="background: var(--bg-tertiary); padding: 16px; border-radius: 10px; margin-top: 12px;">
                         <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 8px;">Your Answer:</div>
-                        <div style="white-space: pre-wrap;">${answer || '<em style="color: var(--text-muted);">No answer provided</em>'}</div>
+                        <div style="white-space: pre-wrap;">${answer ? escapeHtml(answer) : '<em style="color: var(--text-muted);">No answer provided</em>'}</div>
                     </div>`;
                     if (graded) {
                         html += `<div style="background: rgba(99, 102, 241, 0.1); padding: 12px; border-radius: 8px; margin-top: 12px; border-left: 3px solid var(--accent-primary);">
-                            <div style="font-weight: 600; margin-bottom: 4px;">Score: ${graded.score}/${graded.maxScore}</div>
-                            ${graded.feedback ? `<div style="font-size: 13px; color: var(--text-secondary);">${graded.feedback}</div>` : ''}
+                            <div style="font-weight: 600; margin-bottom: 4px;">Score: ${escapeHtml(graded.score)}/${escapeHtml(graded.maxScore)}</div>
+                            ${graded.feedback ? `<div style="font-size: 13px; color: var(--text-secondary);">${escapeHtml(graded.feedback)}</div>` : ''}
                         </div>`;
                     } else {
                         html += `<div style="font-size: 13px; color: var(--text-muted); margin-top: 12px;">⏳ Pending teacher review</div>`;

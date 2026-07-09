@@ -35,6 +35,9 @@ const NN_ITERATIONS = 340;         // more iterations for equilibrium
 // ============================================================
 const state = {
   activeDomains: new Set(DOMAINS.map(d => d.id)),
+  // View-only mode (teacher/parent viewing a student's tree): suppress the
+  // interactive "Learn in Math Dojo" launcher. Passed as ?readonly=true.
+  readOnly: new URLSearchParams(location.search).get('readonly') === 'true',
   crossDomainHighlight: false,
   viewMode: '3d',
   selected2dDomain: DOMAINS[0].id,
@@ -1408,6 +1411,9 @@ function showInfoPanel(key, node, ancestryKeys, orderedLevels) {
     const lessonSkillName = node.data.legacy_name || node.data.name;
     if (isLocked) {
       html += `<button class="info-action-btn locked" disabled title="Complete prerequisites to unlock">🔒 Locked — complete prerequisites first</button>`;
+    } else if (state.readOnly) {
+      // Teacher/parent view-only: no launcher, just show the skill is unlocked.
+      html += `<button class="info-action-btn locked" disabled title="View only">📖 Available in Math Dojo</button>`;
     } else {
       html += `<button class="info-action-btn" data-action="learn-dojo" data-skill="${lessonSkillName.replace(/"/g, '&quot;')}">📖 Learn in Math Dojo</button>`;
     }

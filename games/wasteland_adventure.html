@@ -3169,26 +3169,56 @@
                     // profile id, not auth.uid(). For split-id accounts those
                     // two values differ, and using the wrong one would cause
                     // progress to fragment across two different key spaces.
-                    let profileId = session.user.id;
-                    try {
-                        const { data: prof } = await skillSystem.supabase
-                            .from('user_profiles')
-                            .select('id')
-                            .or(`auth_user_id.eq.${session.user.id},id.eq.${session.user.id}`)
-                            .limit(1)
-                            .maybeSingle();
-                        if (prof && prof.id) profileId = prof.id;
-                    } catch (e) {
-                        console.warn('🎮 Profile lookup failed, falling back to auth id', e);
+                    // M5: resolve the profile id, but do NOT silently fall back to
+                    // auth.uid on failure — for split-id accounts that would fragment
+                    // skill_progress across two key spaces. Retry once; if we still
+                    // can't resolve a trustworthy profile id, block persistence
+                    // entirely rather than writing to the wrong id space.
+                    let profileId = null;
+                    let profileResolved = false;
+                    for (let attempt = 0; attempt < 2 && !profileResolved; attempt++) {
+                        try {
+                            const { data: prof, error: profErr } = await skillSystem.supabase
+                                .from('user_profiles')
+                                .select('id')
+                                .or(`auth_user_id.eq.${session.user.id},id.eq.${session.user.id}`)
+                                .limit(1)
+                                .maybeSingle();
+                            if (profErr) {
+                                console.warn('🎮 Profile lookup error (attempt ' + (attempt + 1) + ')', profErr);
+                                continue; // transient — retry
+                            }
+                            if (prof && prof.id) {
+                                profileId = prof.id;
+                                profileResolved = true;
+                            } else {
+                                // Query succeeded but no matching profile row exists.
+                                // This is definitive (not transient) — stop retrying.
+                                break;
+                            }
+                        } catch (e) {
+                            console.warn('🎮 Profile lookup threw (attempt ' + (attempt + 1) + ')', e);
+                        }
                     }
 
-                    skillSystem.currentUser = { ...session.user, id: profileId };
-                    skillSystem.isConnected = true;
-                    skillSystem.isGuestMode = false;
-                    console.log('🎮 Skill System: Connected as', session.user.email, '(profile id:', profileId + ')');
+                    if (profileResolved) {
+                        skillSystem.currentUser = { ...session.user, id: profileId };
+                        skillSystem.isConnected = true;
+                        skillSystem.isGuestMode = false;
+                        console.log('🎮 Skill System: Connected as', session.user.email, '(profile id:', profileId + ')');
 
-                    // Load player's skills
-                    await loadPlayerSkills();
+                        // Load player's skills
+                        await loadPlayerSkills();
+                    } else {
+                        // Could not resolve the profile id. Block writes so progress
+                        // isn't fragmented under auth.uid; play continues locally.
+                        console.error('🎮 Skill System: could not resolve user_profiles.id — progress will NOT be saved this session (avoiding split-id fragmentation).');
+                        skillSystem.currentUser = null;
+                        skillSystem.isConnected = false;
+                        skillSystem.isGuestMode = true;
+                        skillSystem.profileUnresolved = true;
+                        enableAllSkillsForGuest();
+                    }
                 } else {
                     // Guest mode - all skills available for demo
                     console.log('🎮 Skill System: Guest mode (all skills available)');
@@ -3335,11 +3365,57 @@
             if (p >= 0.85) return 'mastered';
             if (p >= 0.60) return 'activated';
             if (p >= 0.30) return 'in_progress';
-            if (p >= 0.05) return 'available';
-            return 'locked';
+            // H-25: the game must NEVER write 'locked' over a curriculum-unlocked
+            // skill (loadPlayerSkills doesn't even load 'locked' rows, so the skill
+            // would vanish from the tree). Floor any game-written state at
+            // 'in_progress' — the game raises progress, it never locks a skill.
+            return 'in_progress';
         }
 
-        async function applyBktAndPersist(skillName, correct) {
+        // Ordering used to guard against downgrades (H-25 / M6). The game may only
+        // RAISE a student's state; it must never demote a mastery/activation that a
+        // teacher or test set. 'needs_review' is treated as equivalent to
+        // 'in_progress' for ranking purposes.
+        const WASTELAND_STATE_RANK = {
+            locked: 0,
+            available: 1,
+            needs_review: 2,
+            in_progress: 2,
+            activated: 3,
+            mastered: 4
+        };
+        function stateRank(state) {
+            return WASTELAND_STATE_RANK[state] != null ? WASTELAND_STATE_RANK[state] : 2;
+        }
+
+        // H-26 (mastery inflation): games generate their own equations, and BKT can
+        // reach the mastery threshold after only ~4 correct answers — including
+        // trivial ones. Require a minimum number of DISTINCT correct problems before
+        // the game is allowed to write an elevated state, so a handful of trivial
+        // self-generated equations can't drive a skill straight to 'mastered'.
+        const MIN_DISTINCT_FOR_ACTIVATED = 3;
+        const MIN_DISTINCT_FOR_MASTERED = 6;
+
+        function problemSignature(skillName, problemData) {
+            if (!problemData) return null;
+            // A signature that is stable for identical problems but distinct across
+            // genuinely different ones. Prefer the literal question text; fall back
+            // to challenge type + correct answer.
+            if (problemData.question) return String(problemData.question).trim();
+            const type = problemData.type != null ? problemData.type : '';
+            const ans = problemData.correctAnswer != null ? problemData.correctAnswer : problemData.answer;
+            return type + '|' + ans;
+        }
+
+        // Count distinct correct problems seen this session for a canonical skill.
+        function recordCorrectProblem(canonical, sig) {
+            if (!skillSystem.bktEvidence) skillSystem.bktEvidence = {};
+            if (!skillSystem.bktEvidence[canonical]) skillSystem.bktEvidence[canonical] = new Set();
+            if (sig != null) skillSystem.bktEvidence[canonical].add(sig);
+            return skillSystem.bktEvidence[canonical].size;
+        }
+
+        async function applyBktAndPersist(skillName, correct, problemData) {
             if (!skillSystem.supabase || !skillSystem.currentUser || skillSystem.isGuestMode) return;
             const canonical = canonicalSkillName(skillName);
             const entry = skillSystem.playerSkills[canonical] || skillSystem.playerSkills[skillName];
@@ -3359,6 +3435,38 @@
             skillSystem.playerSkills[canonical].p_mastered = p;
             skillSystem.playerSkills[canonical].mastery = Math.round(p * 100);
 
+            // H-26: gate elevated states on a minimum number of DISTINCT correct
+            // problems this session, so trivial self-generated equations can't
+            // inflate a skill to 'mastered'.
+            const distinctCorrect = correct
+                ? recordCorrectProblem(canonical, problemSignature(skillName, problemData))
+                : ((skillSystem.bktEvidence && skillSystem.bktEvidence[canonical]) ? skillSystem.bktEvidence[canonical].size : 0);
+
+            let newState = stateFromP(p);
+            if (newState === 'mastered' && distinctCorrect < MIN_DISTINCT_FOR_MASTERED) {
+                newState = 'activated';
+            }
+            if (newState === 'activated' && distinctCorrect < MIN_DISTINCT_FOR_ACTIVATED) {
+                newState = 'in_progress';
+            }
+
+            // H-25 / M6: never demote a state a teacher/test set. Only raise.
+            // If the newly computed state is below the stored state, keep the
+            // stored state and do not lower the stored mastery score / p_mastered.
+            const currentState = entry && entry.state;
+            let writeScore = Math.round(p * 100);
+            let writeP = p;
+            if (currentState && stateRank(newState) < stateRank(currentState)) {
+                newState = currentState;
+                const prevScore = entry && typeof entry.mastery === 'number' ? entry.mastery : writeScore;
+                if (writeScore < prevScore) writeScore = prevScore;
+                if (entry && typeof entry.p_mastered === 'number' && writeP < entry.p_mastered) {
+                    writeP = entry.p_mastered;
+                }
+            }
+            // Keep the in-memory state in sync so the skill tree reflects the clamp.
+            skillSystem.playerSkills[canonical].state = newState;
+
             try {
                 const now = new Date().toISOString();
                 const { error } = await skillSystem.supabase
@@ -3367,9 +3475,9 @@
                         user_id: skillSystem.currentUser.id,
                         subject: 'Math',
                         skill_name: canonical,
-                        state: stateFromP(p),
-                        mastery_score: Math.round(p * 100),
-                        p_mastered: p,
+                        state: newState,
+                        mastery_score: writeScore,
+                        p_mastered: writeP,
                         last_evidence_at: now,
                         last_practiced: now,
                         decay_steps_applied: 0,
@@ -3392,7 +3500,7 @@
 
             // Phase 2 BKT — fire and forget; the Bayesian update doesn't
             // need to block the existing practice-session insert.
-            applyBktAndPersist(skillName, correct);
+            applyBktAndPersist(skillName, correct, problemData);
 
             try {
                 const sessionData = {
@@ -12610,10 +12718,14 @@
                 });
             } else if (recipe.result.type === 'money') {
                 var currentMoney = gameState.player.money;
-                var amount = recipe.result.amount;
+                // M7: player.money is stored in CENTS (see formatMoney / loot rewards).
+                // The recipe's amount is a human-dollar value, so convert to cents
+                // before adding — otherwise a "$30" kit only pays $0.30.
+                var dollarValue = recipe.result.amount;
+                var amount = dollarValue * 100;
                 requireCalculation({
                     title: '💰 CRAFTING RESULT',
-                    description: 'Crafted item worth ' + amount + ' dollars!<br>Your cash: ' + currentMoney,
+                    description: 'Crafted item worth $' + dollarValue + '!<br>Your cash: ' + formatMoney(currentMoney),
                     formula: currentMoney + ' + ' + amount,
                     answer: currentMoney + amount,
                     xpReward: 0,

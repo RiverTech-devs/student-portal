@@ -4517,7 +4517,11 @@
                 // evaluations (invalid equations) apply a negative update.
                 // Seeded from the parent's SKILL_DATA_RESPONSE so progress
                 // continues across sessions.
-                this.bktState = { skillP: {}, touched: new Set() };
+                // skillEvidence (H-26): per-skill Set of distinct NON-TRIVIAL
+                // successful-equation signatures. Used to gate the 'mastered'/
+                // 'activated' transitions so a handful of trivial self-built
+                // equations can't inflate a skill to mastery.
+                this.bktState = { skillP: {}, touched: new Set(), skillEvidence: {} };
 
                 if (this.homeworkId) {
                     console.log(`📝 Homework assignment mode: ${this.homeworkId}`);
@@ -6992,6 +6996,37 @@
                 // Convert cards to mathematical expression
                 let expression = '';
 
+                // H-7 / PEMDAS: a function card (square / sqrt / factorial) must apply
+                // ONLY to the immediately preceding operand — the trailing number, a
+                // parenthesized group, or an existing Math.pow/Math.sqrt(...) call — not
+                // to the entire prefix expression. This splits the expression into
+                // { prefix, operand } so the function can wrap just the operand.
+                const splitLastOperand = (expr) => {
+                    let i = expr.length - 1;
+                    while (i >= 0 && /\s/.test(expr[i])) i--;
+                    if (i < 0) return { prefix: expr, operand: '' };
+                    const end = i + 1;
+                    let start;
+                    if (expr[i] === ')') {
+                        // Walk back to the matching '(' (balanced), then absorb any
+                        // preceding function name (Math.pow / Math.sqrt).
+                        let depth = 0, j = i;
+                        for (; j >= 0; j--) {
+                            if (expr[j] === ')') depth++;
+                            else if (expr[j] === '(') { depth--; if (depth === 0) break; }
+                        }
+                        let k = j - 1;
+                        while (k >= 0 && /[A-Za-z.]/.test(expr[k])) k--;
+                        start = k + 1;
+                    } else {
+                        // Trailing number (digits + decimal point).
+                        let k = i;
+                        while (k >= 0 && /[0-9.]/.test(expr[k])) k--;
+                        start = k + 1;
+                    }
+                    return { prefix: expr.slice(0, start), operand: expr.slice(start, end) };
+                };
+
                 equationCards.forEach(cardId => {
                     const card = CARD_DATABASE[cardId];
                     if (!card) return; // Skip invalid cards
@@ -7008,15 +7043,19 @@
                         };
                         expression += opMap[card.operator];
                     } else if (card.type === 'function') {
-                        // Handle functions
-                        if (card.func === 'square') {
-                            expression = `Math.pow(${expression}, 2)`;
+                        // Handle functions — apply ONLY to the last operand (PEMDAS).
+                        const { prefix, operand } = splitLastOperand(expression);
+                        if (!operand) {
+                            expression = 'NaN';
+                        } else if (card.func === 'square') {
+                            expression = `${prefix}Math.pow(${operand}, 2)`;
                         } else if (card.func === 'sqrt') {
-                            expression = `Math.sqrt(${expression})`;
+                            expression = `${prefix}Math.sqrt(${operand})`;
                         } else if (card.func === 'factorial') {
-                            // Factorial calculates n! normally (capped at 12! to prevent overflow)
+                            // Factorial calculates n! on the last operand only
+                            // (capped at 12! to prevent overflow).
                             try {
-                                const num = eval(expression);
+                                const num = new Function('return ' + operand)();
                                 if (!Number.isInteger(num) || num < 0 || num > 12) {
                                     expression = 'NaN';
                                 } else {
@@ -7024,7 +7063,7 @@
                                     for (let i = 2; i <= num; i++) {
                                         fact *= i;
                                     }
-                                    expression = String(fact);
+                                    expression = `${prefix}${fact}`;
                                 }
                             } catch (e) {
                                 expression = 'NaN';
@@ -7047,10 +7086,13 @@
                     return null; // Unbalanced parentheses
                 }
             
-                // Validate expression contains only safe characters before evaluating
-                // Allow: digits, operators, parentheses, Math functions, dots, spaces
-                if (!/^[\d\+\-\*\/\(\)\.\s]*(Math\.(pow|sqrt)\([\d\+\-\*\/\(\)\.\s,]*\))*[\d\+\-\*\/\(\)\.\s]*$/.test(expression) &&
-                    !/^[\d\+\-\*\/\(\)\.\s]+$/.test(expression)) {
+                // Validate expression contains only safe characters before evaluating.
+                // Allow arithmetic plus any number of Math.pow/Math.sqrt calls (which
+                // can now appear interspersed after the PEMDAS fix). Strip those two
+                // known-safe tokens, then require the remainder to be pure arithmetic.
+                // This also rejects the 'NaN' sentinel set by an invalid factorial.
+                const sanitized = expression.replace(/Math\.(pow|sqrt)/g, '');
+                if (!/^[\d\+\-\*\/\(\)\.\,\s]+$/.test(sanitized)) {
                     console.log('Expression contains unsafe characters:', expression);
                     return null;
                 }
@@ -7810,7 +7852,17 @@
                 for (let i = 0; i < this.enemies.length; i++) {
                     const enemy = this.enemies[i];
                     const intent = enemy.nextIntent;
-                    
+
+                    // H-7 / M11: the exponent shield (all player damage capped at 1)
+                    // must only last until this enemy acts again. Both of the Eagle's
+                    // exponent intents are value:0 and nothing else resets the shield,
+                    // so once raised it latched forever and made the fight unwinnable.
+                    // Clear it at the start of this enemy's turn unless this very turn
+                    // re-raises it. exponentShield = 1 means x^1 → damage passes through.
+                    if (enemy.hasExponentShield && enemy.exponentShield === 0 && intent.intent !== 'exponent') {
+                        enemy.exponentShield = 1;
+                    }
+
                     // Highlight the attacking enemy
                     const enemyElements = document.querySelectorAll('.enemy');
                     if (enemyElements[i]) {
@@ -9827,6 +9879,35 @@
                 this.bktState.touched.add(skillName);
             }
 
+            // H-26: an equation is a "genuine" (non-trivial) attempt only if it
+            // combines at least two numbers and isn't built entirely from trivial
+            // operands (0/1). Trivial equations still exercise the mechanic but
+            // must not, on their own, drive a skill to mastery.
+            isNonTrivialEquation(equationCards) {
+                let numberCount = 0;
+                let hasNonTrivialOperand = false;
+                let hasOperatorOrFunction = false;
+                for (const cardId of equationCards) {
+                    const card = CARD_DATABASE[cardId];
+                    if (!card) continue;
+                    if (card.type === 'number') {
+                        numberCount++;
+                        if (typeof card.value === 'number' && Math.abs(card.value) >= 2) {
+                            hasNonTrivialOperand = true;
+                        }
+                    } else if (card.type === 'operator' || card.type === 'function') {
+                        hasOperatorOrFunction = true;
+                    }
+                }
+                return numberCount >= 2 && hasOperatorOrFunction && hasNonTrivialOperand;
+            }
+
+            // A distinctness signature for an equation (sequence of card names),
+            // so replaying the same trivial equation doesn't accrue new evidence.
+            equationSignature(equationCards) {
+                return equationCards.map(id => (CARD_DATABASE[id]?.name ?? id)).join(' ');
+            }
+
             // Walk an equation and credit each unique curriculum skill
             // represented by its cards' skillRequired tags.
             applyBktForEquation(equationCards, success) {
@@ -9837,7 +9918,16 @@
                     const canonical = MATHSPIRE_SKILL_TO_CURRICULUM[card.skillRequired];
                     if (canonical) skills.add(canonical);
                 }
-                for (const skill of skills) this.applyBkt(skill, success);
+                // H-26: record distinct non-trivial successful-equation evidence.
+                const sig = this.equationSignature(equationCards);
+                const genuine = success && this.isNonTrivialEquation(equationCards);
+                for (const skill of skills) {
+                    this.applyBkt(skill, success);
+                    if (genuine) {
+                        if (!this.bktState.skillEvidence[skill]) this.bktState.skillEvidence[skill] = new Set();
+                        this.bktState.skillEvidence[skill].add(sig);
+                    }
+                }
             }
 
             seedBktFromParent(progress) {
@@ -9854,12 +9944,26 @@
             getBktUpdates() {
                 if (!this.bktState || this.bktState.touched.size === 0) return [];
                 const now = new Date().toISOString();
+                // H-26: gate elevated states on the count of DISTINCT non-trivial
+                // successful equations for the skill, so trivial self-built
+                // equations can't inflate a skill straight to 'mastered'.
+                const MIN_DISTINCT_FOR_ACTIVATED = 3;
+                const MIN_DISTINCT_FOR_MASTERED = 6;
                 return Array.from(this.bktState.touched).map(skill => {
                     const p = this.bktState.skillP[skill];
+                    const distinct = this.bktState.skillEvidence[skill]
+                        ? this.bktState.skillEvidence[skill].size
+                        : 0;
                     let derivedState = 'available';
                     if (p >= 0.85) derivedState = 'mastered';
                     else if (p >= 0.60) derivedState = 'activated';
                     else if (p >= 0.30) derivedState = 'in_progress';
+                    if (derivedState === 'mastered' && distinct < MIN_DISTINCT_FOR_MASTERED) {
+                        derivedState = 'activated';
+                    }
+                    if (derivedState === 'activated' && distinct < MIN_DISTINCT_FOR_ACTIVATED) {
+                        derivedState = 'in_progress';
+                    }
                     return { skill, p_mastered: p, last_evidence_at: now, derivedState };
                 });
             }

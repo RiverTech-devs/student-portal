@@ -1088,7 +1088,7 @@
     <!-- Graph engine: Supabase client + CurriculumGraph (optional, graceful fallback if missing) -->
     <!-- NOTE: Do NOT load config.js here — PortalAuth fires auth events that interfere with the parent portal -->
     <script src="shared/supabase.min.js" onerror="console.warn('Supabase client not loaded — using hardcoded data')"></script>
-    <script src="shared/graph-data.js" onerror="console.warn('CurriculumGraph not loaded — using hardcoded data')"></script>
+    <script src="shared/graph-data.js?v=10" onerror="console.warn('CurriculumGraph not loaded — using hardcoded data')"></script>
 
     <script>
         class MultiSubjectSkillTreeManager {
@@ -1439,7 +1439,11 @@
                         progress[skillName] = entry;
                     });
 
-                    localStorage.setItem('math_skill_states', JSON.stringify({
+                    // Subject-scoped key so activating a Science/Language skill
+                    // doesn't clobber Math state. For Math this resolves to
+                    // 'math_skill_states', preserving the Dojo read contract.
+                    const storageKey = `${this.currentSubject.toLowerCase()}_skill_states`;
+                    localStorage.setItem(storageKey, JSON.stringify({
                         skills: progress,
                         lastSync: Date.now()
                     }));
@@ -1537,6 +1541,7 @@
 
             // === MESSAGE HANDLING ===
             handleMessage(event) {
+                if (!event || !event.data || typeof event.data !== 'object') return;
                 console.log('Skill tree received message:', event.data.type);
 
                 switch (event.data.type) {
@@ -3218,8 +3223,10 @@
               // Merge with localStorage data so we never lose local progress
               let merged = {};
               try {
-                  const localData = localStorage.getItem('math_skill_states');
-                  if (localData && this.currentSubject === 'Math') {
+                  // Read the subject-scoped key so each subject merges its own
+                  // saved state (Math resolves to 'math_skill_states').
+                  const localData = localStorage.getItem(`${this.currentSubject.toLowerCase()}_skill_states`);
+                  if (localData) {
                       const parsed = JSON.parse(localData);
                       const localSkills = parsed.skills || parsed;
                       Object.assign(merged, localSkills);
@@ -3646,6 +3653,48 @@
                 }
             }
 
+            // === WORLD BOUNDS (derived from actual node coordinates) ===
+            // Computes the min/max x/y of every loaded node (plus constellation
+            // labels), padded, so canvas sizing and pan-clamping always contain
+            // the real compiled coordinates instead of stale hardcoded worlds.
+            computeWorldBounds() {
+                let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+                Object.values(this.SKILL_TREE || {}).forEach(s => {
+                    if (!s || typeof s.x !== 'number' || typeof s.y !== 'number') return;
+                    minX = Math.min(minX, s.x); maxX = Math.max(maxX, s.x);
+                    minY = Math.min(minY, s.y); maxY = Math.max(maxY, s.y);
+                });
+                Object.values(this.CONSTELLATION_POSITIONS || {}).forEach(p => {
+                    if (!p || typeof p.x !== 'number' || typeof p.y !== 'number') return;
+                    minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+                    minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
+                });
+                // Fallback if the tree isn't loaded yet.
+                if (!isFinite(minX) || !isFinite(minY)) {
+                    minX = 0; minY = 0; maxX = 2400; maxY = 2000;
+                }
+                // Pad for node radius (~90px roots) + label overhang.
+                const pad = 200;
+                this._worldBounds = {
+                    minX: minX - pad, minY: minY - pad,
+                    maxX: maxX + pad, maxY: maxY + pad
+                };
+                return this._worldBounds;
+            }
+
+            // Size the transformed canvas to cover the loaded coordinates.
+            resizeContainer() {
+                if (!this.container) return;
+                const b = this.computeWorldBounds();
+                // transform-origin is 0 0, so the box must reach the positive
+                // extent; negative-coordinate nodes still render (overflow is not
+                // clipped on the container) and the viewport handles clipping.
+                const w = Math.max(2400, Math.ceil(b.maxX));
+                const h = Math.max(2000, Math.ceil(b.maxY));
+                this.container.style.width = w + 'px';
+                this.container.style.height = h + 'px';
+            }
+
             // === UI SETUP ===
             setupUI() {
                 const elements = ['controls', 'legend', 'viewport', 'zoomControls'];
@@ -3657,22 +3706,12 @@
                 this.viewport = document.getElementById('viewport');
                 this.container = document.getElementById('constellation');
                 
-                // Adjust container size based on subject
-                if (this.container) {
-                    if (this.currentSubject === 'Robotics') {
-                        this.container.style.width = '4000px';
-                        this.container.style.height = '4000px';
-                    } else if (this.currentSubject === 'Programming') {
-                        this.container.style.width = '3000px';
-                        this.container.style.height = '3500px';
-                    } else if (this.currentSubject === 'Math'){
-                        this.container.style.width = '2400px';
-                        this.container.style.height = '3000px';
-                    } else {
-                        this.container.style.width = '2400px';
-                        this.container.style.height = '2000px';
-                    }
-                }
+                // Size the container to the ACTUAL loaded node coordinates
+                // (compiled coordinates no longer fit the old per-subject
+                // constants — e.g. Technology spans x -759..4389 / y 200..6322).
+                // Recomputed again in initializeSkillTree() once the tree is
+                // fully populated, since data can still be loading here.
+                this.resizeContainer();
                 
                 this.currentX = 0;
                 this.currentY = 0;
@@ -3946,45 +3985,37 @@
                 const vpW = this.viewport.offsetWidth;
                 const vpH = this.viewport.offsetHeight;
                 
-                // Use different world sizes based on subject for pan limits
-                let worldW, worldH;
-                if (this.currentSubject === 'Robotics') {
-                    worldW = 4000;
-                    worldH = 4000;
-                } else if (this.currentSubject === 'Programming') {
-                    worldW = 3000;
-                    worldH = 3500;
-                } else if (this.currentSubject === 'Math') {
-                    // Math tree spans x: 60-2040, y: -200 to 2800
-                    worldW = 2200;
-                    worldH = 3200;
-                } else {
-                    worldW = 2400;
-                    worldH = 2000;
-                }
-
-                const scaledW = worldW * this.currentScale;
-                const scaledH = worldH * this.currentScale;
+                // Derive pan limits from the ACTUAL loaded node coordinates
+                // (bounds can include negative x/y, e.g. Technology x -759),
+                // not stale per-subject constants that clipped most nodes.
+                const b = this._worldBounds || this.computeWorldBounds();
+                const scaledLeft = b.minX * this.currentScale;
+                const scaledRight = b.maxX * this.currentScale;
+                const scaledTop = b.minY * this.currentScale;
+                const scaledBottom = b.maxY * this.currentScale;
+                const scaledW = scaledRight - scaledLeft;
+                const scaledH = scaledBottom - scaledTop;
 
                 const overpanX = Math.max(scaledW, vpW) * 0.10;
                 const overpanY = Math.max(scaledH, vpH) * 0.10;
 
                 let minX, maxX, minY, maxY;
 
+                // Screen x of content = scaledLeft/scaledRight + currentX.
                 if (scaledW >= vpW) {
-                    minX = vpW - scaledW - overpanX;
-                    maxX = overpanX;
+                    minX = vpW - scaledRight - overpanX;
+                    maxX = -scaledLeft + overpanX;
                 } else {
-                    const centerX = (vpW - scaledW) / 2;
+                    const centerX = vpW / 2 - (scaledLeft + scaledRight) / 2;
                     minX = centerX - overpanX;
                     maxX = centerX + overpanX;
                 }
 
                 if (scaledH >= vpH) {
-                    minY = vpH - scaledH - overpanY;
-                    maxY = overpanY;
+                    minY = vpH - scaledBottom - overpanY;
+                    maxY = -scaledTop + overpanY;
                 } else {
-                    const centerY = (vpH - scaledH) / 2;
+                    const centerY = vpH / 2 - (scaledTop + scaledBottom) / 2;
                     minY = centerY - overpanY;
                     maxY = centerY + overpanY;
                 }
@@ -4772,6 +4803,10 @@
                     this.container.appendChild(this.createSkillNode(name, skill));
                 });
                 
+                // Tree is fully populated now — size the canvas and refresh the
+                // pan-clamp bounds from the real coordinates before first render.
+                this.resizeContainer();
+
                 this.createStars();
                 this.updateAvailableSkills();
                 this.updateConnections();

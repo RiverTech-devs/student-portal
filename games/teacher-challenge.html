@@ -1672,13 +1672,40 @@
             return prompt;
         }
         
+        // SECURITY (H-8): The Gemini API key must NOT be hardcoded in client source —
+        // a hardcoded key is public to every student and can be used to burn the
+        // school's billing. It has been removed. The correct long-term fix is to
+        // route this call through a server-side edge-function proxy that holds the
+        // key as a secret (e.g. supabase/functions/gemini-proxy) and to call that
+        // proxy from here. Until that proxy exists, we read an optionally-injected
+        // key from a non-committed runtime source; if none is present the AI
+        // conversation feature is disabled gracefully rather than shipping a key.
+        function getGeminiApiKey() {
+            try {
+                return (typeof window !== 'undefined' && window.GEMINI_API_KEY)
+                    || (typeof localStorage !== 'undefined' && localStorage.getItem('GEMINI_API_KEY'))
+                    || null;
+            } catch (e) {
+                return null;
+            }
+        }
+
         async function getTeacherResponse(npc, message) {
             conversationHistory.push({ role: "student", content: message });
-            
+
             const prompt = createTeacherPrompt(npc, conversationHistory);
-            
+
+            const geminiApiKey = getGeminiApiKey();
+            if (!geminiApiKey) {
+                // AI feature unavailable: no key configured (see H-8 note above).
+                // Route through an edge-function proxy to re-enable this feature.
+                const fallback = "The teachers are away at a staff meeting right now, so I can't chat at the moment. Please try again later!";
+                conversationHistory.push({ role: npc.name, content: fallback });
+                return fallback;
+            }
+
             try {
-                const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=AIzaSyBF9kLa911sOy1G1xT13lI2RSdSLY0wUII', {
+                const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' + encodeURIComponent(geminiApiKey), {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',

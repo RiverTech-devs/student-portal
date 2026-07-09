@@ -137,46 +137,6 @@ function extractBalanced(code, startIdx, open, close) {
     return code.substring(startIdx);
 }
 
-function parseJSObject(objStr) {
-    // Convert JS object literal to something JSON.parse can handle
-    // Replace unquoted keys with quoted keys
-    let json = objStr
-        // Handle keys that aren't quoted (word characters, spaces, &, /, etc.)
-        .replace(/(\{|,)\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[\w\s&/\-().]+)\s*:/g, (match, prefix, key) => {
-            key = key.trim();
-            if (key.startsWith('"') || key.startsWith("'")) {
-                // Already quoted — normalize to double quotes
-                key = key.replace(/^'|'$/g, '"');
-                return `${prefix} ${key}:`;
-            }
-            return `${prefix} "${key}":`;
-        })
-        // Replace single-quoted values with double-quoted
-        .replace(/:\s*'([^']*)'/g, ': "$1"')
-        // Remove trailing commas before } or ]
-        .replace(/,\s*([\]}])/g, '$1');
-
-    try {
-        return JSON.parse(json);
-    } catch (e) {
-        // Fallback: evaluate as JS (safe since we control the source)
-        return evalSafeObject(objStr);
-    }
-}
-
-function parseJSArray(arrStr) {
-    // The CONNECTIONS arrays contain nested arrays of strings
-    let json = arrStr
-        .replace(/'/g, '"')
-        .replace(/,\s*([\]}])/g, '$1');
-
-    try {
-        return JSON.parse(json);
-    } catch (e) {
-        return evalSafeArray(arrStr);
-    }
-}
-
 function evalSafeObject(str) {
     // Use Function constructor to safely eval JS object literals
     try {

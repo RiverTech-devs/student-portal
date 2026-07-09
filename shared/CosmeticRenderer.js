@@ -4,6 +4,20 @@
 
 window.CosmeticRenderer = {
   /**
+   * Escape a string for safe interpolation into HTML/attribute context.
+   * Display names / title names / badge names are user-controlled and are
+   * rendered on shared surfaces (leaderboards), so they are a stored-XSS
+   * vector without this.
+   * @param {*} s
+   * @returns {string}
+   */
+  _esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+  },
+
+  /**
    * Render a cosmetic icon — detects emoji vs filename
    * @param {string} icon - Emoji character or asset filename
    * @param {string} category - avatar, title, badge
@@ -17,7 +31,10 @@ window.CosmeticRenderer = {
       return `<span style="font-size:${size}px">${icon}</span>`;
     }
     const folder = category.endsWith('s') ? category : category + 's';
-    return `<img src="assets/cosmetics/${folder}/${icon}.svg" alt="${category} icon" style="width:${size}px;height:${size}px;object-fit:contain;" onerror="this.onerror=function(){this.outerHTML='<span style=\\'font-size:${size}px\\'>🎨</span>'};this.src='assets/cosmetics/${folder}/${icon}.png'">`;
+    // Root-absolute path: assets live at /portal/assets/cosmetics/... — a
+    // page-relative path 404s when this renderer runs from a games page
+    // outside /portal/.
+    return `<img src="/portal/assets/cosmetics/${folder}/${icon}.svg" alt="${category} icon" style="width:${size}px;height:${size}px;object-fit:contain;" onerror="this.onerror=function(){this.outerHTML='<span style=\\'font-size:${size}px\\'>🎨</span>'};this.src='/portal/assets/cosmetics/${folder}/${icon}.png'">`;
   },
 
   /**
@@ -36,14 +53,14 @@ window.CosmeticRenderer = {
       : `<span style="font-size:${avatarSize}px">👤</span>`;
 
     const titleHtml = cos.title?.name
-      ? `<span style="font-size:11px;color:#9b59b6;font-weight:600;">${cos.title.name}</span>`
+      ? `<span style="font-size:11px;color:#9b59b6;font-weight:600;">${this._esc(cos.title.name)}</span>`
       : '';
 
     let badgesHtml = '';
     if (showBadges) {
       ['badge1', 'badge2', 'badge3'].forEach(slot => {
         if (cos[slot]?.icon) {
-          badgesHtml += `<span title="${cos[slot].name || ''}">${this.renderIcon(cos[slot].icon, 'badge', badgeSize)}</span>`;
+          badgesHtml += `<span title="${this._esc(cos[slot].name || '')}">${this.renderIcon(cos[slot].icon, 'badge', badgeSize)}</span>`;
         }
       });
     }
@@ -53,7 +70,7 @@ window.CosmeticRenderer = {
         <div style="width:${avatarSize}px;height:${avatarSize}px;border-radius:50%;background:var(--surface-2,#27272a);display:flex;align-items:center;justify-content:center;flex-shrink:0;">${avatarIcon}</div>
         <div>
           ${titleHtml}
-          <div style="font-weight:600;">${name}</div>
+          <div style="font-weight:600;">${this._esc(name)}</div>
           ${badgesHtml ? `<div style="display:flex;gap:4px;margin-top:2px;">${badgesHtml}</div>` : ''}
         </div>
       </div>

@@ -1,8 +1,48 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 const RESEND_API_KEY = Deno.env.get('RESEND_API_KEY')!
+const SUPABASE_URL = Deno.env.get('SUPABASE_URL') || ''
+const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
 
 const ALLOWED_ORIGINS = ['https://rivertech.me', 'https://www.rivertech.me']
+
+// H-1: the raw to/subject/html branch is an open email/phishing relay
+// (attacker-controlled HTML from a DKIM-signed sender) unless the caller is
+// trusted. This resolves the caller and returns true only for the
+// service-role key (exact match — unforgeable) or an authenticated
+// teacher/admin. Only invoked on the raw branch, so templated paths keep
+// their existing latency.
+async function callerIsStaffOrService(req: Request): Promise<boolean> {
+  const authHeader = req.headers.get('Authorization') || ''
+  const token = authHeader.replace(/^Bearer\s+/i, '').trim()
+  if (!token) return false
+
+  // Service-role fast path: byte-equal to the project's service role key.
+  if (SUPABASE_SERVICE_ROLE_KEY && token === SUPABASE_SERVICE_ROLE_KEY) {
+    return true
+  }
+
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) return false
+
+  try {
+    // Admin client validates the JWT signature via getUser, then we look up
+    // the caller's role. Anon-key callers resolve to no user -> not staff.
+    const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    const { data: { user }, error } = await admin.auth.getUser(token)
+    if (error || !user) return false
+
+    const { data: profile } = await admin
+      .from('user_profiles')
+      .select('user_type')
+      .eq('auth_user_id', user.id)
+      .maybeSingle()
+
+    return profile?.user_type === 'teacher' || profile?.user_type === 'admin'
+  } catch (_e) {
+    return false
+  }
+}
 
 function getCorsHeaders(req: Request) {
   const origin = req.headers.get('Origin') || ''
@@ -615,6 +655,15 @@ serve(async (req) => {
         </div>
       `
     } else {
+      // H-1: raw attacker-controllable to/subject/html. Open-relay risk —
+      // require the caller to be service-role or an authenticated staff user.
+      const authorized = await callerIsStaffOrService(req)
+      if (!authorized) {
+        return new Response(
+          JSON.stringify({ error: 'Forbidden: staff or service-role required to send custom emails' }),
+          { status: 403, headers: { ...getCorsHeaders(req), 'Content-Type': 'application/json' } },
+        )
+      }
       subject = payload.subject
       html = payload.html
     }

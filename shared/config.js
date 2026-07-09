@@ -24,6 +24,7 @@ class PortalAuth {
             }
         };
         this.initialized = false;
+        this.initFailed = false;
     }
 
     async initialize() {
@@ -61,6 +62,10 @@ class PortalAuth {
 
         } catch (error) {
             console.error('❌ PortalAuth initialization failed:', error);
+            // Mark failure so callers polling on `initialized` (waitForAuth)
+            // can detect the terminal state instead of looping forever when
+            // Supabase fails to load.
+            this.initFailed = true;
         }
 
         return this;
@@ -267,7 +272,7 @@ class PortalAuth {
             }
 
             const script = document.createElement('script');
-            script.src = '/student-portal/shared/supabase.min.js';
+            script.src = '/shared/supabase.min.js';
             script.onload = () => {
                 console.log('📦 Supabase loaded');
                 resolve();

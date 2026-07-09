@@ -9,7 +9,7 @@
     <link rel="stylesheet" href="shared/styles.css">
 
     <!-- Load shared configuration first -->
-    <script src="shared/config.js?v=9"></script>
+    <script src="shared/config.js?v=10"></script>
     <script src="shared/supabase.min.js"></script>
 
     <style>
@@ -981,17 +981,31 @@
                 this.skillTreeIntegration = null;
                 
                 // Wait for shared auth to be ready
-                this.waitForAuth().then(() => {
-                    this.init();
+                this.waitForAuth().then((ok) => {
+                    if (ok) this.init();
                 });
             }
 
             async waitForAuth() {
-                // Wait for portalAuth to be initialized
-                while (!window.portalAuth || !window.portalAuth.initialized) {
+                // Wait for portalAuth to reach a terminal state (initialized OR
+                // initFailed). Without the initFailed check this polls forever
+                // when Supabase fails to load. Hard-cap the wait as a backstop.
+                let waited = 0;
+                while (!window.portalAuth || (!window.portalAuth.initialized && !window.portalAuth.initFailed)) {
                     await new Promise(resolve => setTimeout(resolve, 100));
+                    waited += 100;
+                    if (waited >= 15000) break;
                 }
                 this.auth = window.portalAuth;
+                if (!window.portalAuth || window.portalAuth.initFailed || !window.portalAuth.initialized) {
+                    console.error('❌ Auth failed to initialize; portal cannot start.');
+                    const container = document.querySelector('.content') || document.body;
+                    if (container) {
+                        container.innerHTML = '<div class="alert alert-error" style="max-width:500px;margin:50px auto;text-align:center;">Failed to connect. Please refresh the page or try again later.</div>';
+                    }
+                    return false;
+                }
+                return true;
             }
 
             async init() {
@@ -1087,9 +1101,19 @@
 
             handleAuthStateChange(detail) {
                 if (detail.event === 'SIGNED_IN') {
+                    // SIGNED_IN re-fires on every tab refocus with the SAME session.
+                    // Without this guard a tab return re-runs the full authenticated
+                    // rebuild, yanks the user back to Dashboard, and re-shows the
+                    // welcome toast. Only act on a genuinely new session.
+                    const uid = detail.user?.id || detail.profile?.id || null;
+                    if (this._lastSignedInUserId && this._lastSignedInUserId === uid) {
+                        return;
+                    }
+                    this._lastSignedInUserId = uid;
                     this.showAuthenticatedState();
                     window.PortalUI.showNotification(`Welcome back, ${detail.profile?.first_name || 'User'}!`, 'success');
                 } else if (detail.event === 'SIGNED_OUT') {
+                    this._lastSignedInUserId = null;
                     this.showLoginForm();
                     document.body.classList.remove('authenticated');
                 }
@@ -1527,7 +1551,7 @@
                         email: email,
                         password: password,
                         options: {
-                            emailRedirectTo: `${window.location.origin}/student-portal/confirm.html`
+                            emailRedirectTo: `${window.location.origin}/confirm.html`
                         }
                     });
             
@@ -2057,27 +2081,38 @@
                         throw new Error('Failed to create authentication account');
                     }
                     
-                    // Step 4: Update the profile to link to auth user and activate
-                    const { error: updateError } = await this.auth.supabase
+                    // Step 4: Link the new auth user to the pre-created profile.
+                    // auth_user_id/email are NOT protected by the
+                    // protect_user_profile_columns trigger, so this direct
+                    // update persists for an anon/authenticated caller.
+                    const { error: linkError } = await this.auth.supabase
                         .from('user_profiles')
                         .update({
                             auth_user_id: authData.user.id,
                             email: email,
-                            account_status: 'active',
-                            can_login: true,
                             updated_at: new Date().toISOString()
                         })
                         .eq('username', username)
                         .eq('account_status', 'inactive');
-                    
-                    if (updateError) {
-                        console.error('Profile update error:', updateError);
-                        // Try to clean up the auth user
-                        try {
-                            await this.auth.supabase.auth.admin.deleteUser(authData.user.id);
-                        } catch (cleanupError) {
-                            console.error('Cleanup error:', cleanupError);
-                        }
+
+                    if (linkError) {
+                        console.error('Profile link error:', linkError);
+                        // NOTE: browser-side auth.admin.deleteUser() always fails
+                        // (no service-role key in the client), so no cleanup call
+                        // here — it would only log a confusing 403. Orphaned auth
+                        // users are reaped server-side.
+                        throw new Error('Failed to activate account. Please contact your teacher.');
+                    }
+
+                    // Step 5: Flip account_status/can_login via the SECURITY DEFINER
+                    // RPC. A direct UPDATE of those columns is silently reverted by
+                    // the protect_user_profile_columns trigger for anon/authenticated
+                    // callers (H-10 activation loop), so it MUST go through an RPC.
+                    const { error: activateError } = await this.auth.supabase
+                        .rpc('reactivate_student', { p_student_id: profile.id });
+
+                    if (activateError) {
+                        console.error('Account activation RPC error:', activateError);
                         throw new Error('Failed to activate account. Please contact your teacher.');
                     }
                     
@@ -2500,7 +2535,7 @@
                     if (!sessions || sessions.length === 0) {
                         container.innerHTML = `
                             <p style="color: var(--muted); font-size: 13px; margin-bottom: 10px;">No practice sessions this week yet.</p>
-                            <button class="btn btn-primary" onclick="window.portal.showSection('games')" style="width: 100%;">🥋 Open Math Dojo</button>
+                            <button class="btn btn-primary" onclick="window.portal.showTab('games')" style="width: 100%;">🥋 Open Math Dojo</button>
                         `;
                         return;
                     }
@@ -2550,13 +2585,13 @@
                             </div>
                         </div>
                         ${recentRows}
-                        <button class="btn btn-primary" onclick="window.portal.showSection('games')" style="width: 100%; margin-top: 10px;">🥋 Open Math Dojo</button>
+                        <button class="btn btn-primary" onclick="window.portal.showTab('games')" style="width: 100%; margin-top: 10px;">🥋 Open Math Dojo</button>
                     `;
                 } catch (err) {
                     console.error('Error loading weekly activity:', err);
                     container.innerHTML = `
                         <p style="color: var(--muted); font-size: 13px;">No practice sessions this week yet.</p>
-                        <button class="btn btn-primary" onclick="window.portal.showSection('games')" style="width: 100%;">🥋 Open Math Dojo</button>
+                        <button class="btn btn-primary" onclick="window.portal.showTab('games')" style="width: 100%;">🥋 Open Math Dojo</button>
                     `;
                 }
             }
@@ -3108,7 +3143,7 @@
 
                         const { data: assignments } = await this.auth.supabase
                             .from('assignments')
-                            .select('id, title, class_id, due_date, points_possible')
+                            .select('id, title, class_id, due_date, max_points')
                             .in('class_id', classIds)
                             .eq('is_published', true)
                             .order('due_date', { ascending: true });
@@ -3116,7 +3151,7 @@
                         if (assignments && assignments.length > 0) {
                             const assignmentIds = assignments.map(a => a.id);
                             const { data: submissions } = await this.auth.supabase
-                                .from('submissions')
+                                .from('assignment_submissions')
                                 .select('assignment_id, grade, submitted_at, status')
                                 .eq('student_id', childId)
                                 .in('assignment_id', assignmentIds);
@@ -3175,7 +3210,9 @@
 
             async loadTeacherDashboard(dashboardSection, userInfo, firstName) {
                 const isAdmin = userInfo.profile?.user_type === 'admin';
-                const userId = userInfo.profile?.id;
+                // classes.teacher_id stores the auth uid, not the profile row id,
+                // so match it the same way loadCalendarEvents does.
+                const userId = userInfo.profile?.auth_user_id || userInfo.user?.id;
 
                 // Fetch real stats
                 let classCount = 0;
@@ -3657,7 +3694,9 @@
                 if (!area) return;
 
                 const sb = this.auth.supabase;
-                const userId = this.auth.getUserInfo().profile?.id;
+                // classes.teacher_id stores the auth uid, not the profile row id.
+                const quickAddUserInfo = this.auth.getUserInfo();
+                const userId = quickAddUserInfo.profile?.auth_user_id || quickAddUserInfo.user?.id;
 
                 // Fetch teacher's classes
                 const { data: classes } = await sb.from('classes').select('id, name').eq('teacher_id', userId);
@@ -5171,7 +5210,7 @@
                         });
                         const { error: demoteErr } = await this.portal.auth.supabase
                             .from('skill_progress')
-                            .upsert(rows);
+                            .upsert(rows, { onConflict: 'user_id,subject,skill_name' });
                         if (demoteErr) console.error('Failed to demote gauntlet failures:', demoteErr);
                         else console.log(`✅ Demoted ${rows.length} skills from gauntlet failure`);
                     }
@@ -5197,7 +5236,7 @@
                         });
                         const { error: clearedErr } = await this.portal.auth.supabase
                             .from('skill_progress')
-                            .upsert(rows);
+                            .upsert(rows, { onConflict: 'user_id,subject,skill_name' });
                         if (clearedErr) console.error('Failed to refresh cleared gauntlet skills:', clearedErr);
                     }
 
@@ -5207,24 +5246,21 @@
                     let actualAwarded = 0;
                     const rewardedByCategory = { recent: 0, touch_on: 0, retention: 0 };
                     if (eligibleForRtc.length > 0) {
-                        const ts = Date.now();
-                        for (const c of eligibleForRtc) {
-                            const skillName = c.skill || c.domain;
-                            const cat = c.category || 'recent';
-                            const amt = PER_CATEGORY_RTC[cat] ?? 1;
-                            const refId = `retention:${userId}:${skillName}:${ts}`;
-                            const { error: rtcErr } = await this.portal.auth.supabase.rpc('process_rtc_transaction', {
-                                p_user_id: userId,
-                                p_amount: amt,
-                                p_transaction_type: 'earn_skill',
-                                p_description: `${label} (${cat}): defended ${skillName}`,
-                                p_reference_id: refId,
-                                p_reference_type: refType
-                            });
-                            if (rtcErr) console.error('Failed to award gauntlet RTC for', skillName, rtcErr);
-                            else { actualAwarded += amt; rewardedByCategory[cat] = (rewardedByCategory[cat] || 0) + amt; }
+                        // H-11: process_rtc_transaction with 'earn_skill' is rejected
+                        // for student callers by the hardened RPC (awards 0). Route
+                        // gauntlet awards through the dedicated system-granted RPC,
+                        // which computes and mints the amount server-side. Swallow any
+                        // error (e.g. RPC not yet deployed) and fall back to 0 so the
+                        // gauntlet flow never crashes.
+                        try {
+                            const { data: awarded, error: rtcErr } = await this.portal.auth.supabase
+                                .rpc('award_skill_gauntlet_rtc', { p_skill_count: eligibleForRtc.length });
+                            if (rtcErr) console.error('Failed to award gauntlet RTC:', rtcErr);
+                            else actualAwarded = Number(awarded) || 0;
+                        } catch (rtcEx) {
+                            console.error('Gauntlet RTC RPC unavailable, awarding 0:', rtcEx);
                         }
-                        console.log(`🪙 Awarded ${actualAwarded} RTC for ${label}`, rewardedByCategory);
+                        console.log(`🪙 Awarded ${actualAwarded} RTC for ${label}`);
                     }
 
                     // Log session to math_dojo_sessions so the weekly card picks it up
@@ -5250,7 +5286,7 @@
                     }
 
                     // Refresh RTC balance display if present
-                    try { this.portal?.refreshRtcBalance?.(); } catch (_) {}
+                    try { this.portal?.loadRTCBalance?.(); } catch (_) {}
 
                     // Post the actual award back to the dojo so it can show the real number
                     // (client-side projection doesn't know about the diminishing returns).
@@ -5419,8 +5455,8 @@
                                 practice_count: 1,
                                 mastered_at: isMastery ? now : null,
                                 updated_at: now
-                            });
-                        
+                            }, { onConflict: 'user_id,subject,skill_name' });
+
                         if (error) {
                             console.warn('Failed to save to database:', error);
                             // Fallback to localStorage

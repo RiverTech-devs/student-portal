@@ -14,7 +14,7 @@
   <link rel="stylesheet" href="styles.css">
 
   <!-- Load shared configuration -->
-  <script src="../shared/config.js?v=9"></script>
+  <script src="../shared/config.js?v=10"></script>
   <script src="../shared/components.js"></script>
   <script src="../shared/supabase.min.js"></script>
 
@@ -1518,7 +1518,7 @@
   </style>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
   <script src="https://apis.google.com/js/api.js" async defer></script>
-  <script src="../shared/CosmeticRenderer.js"></script>
+  <script src="../shared/CosmeticRenderer.js?v=10"></script>
 </head>
   <body>
     <!-- Loading Screen -->
@@ -2378,7 +2378,7 @@
 
         // Navigate to hash section if present, otherwise show home
         const hash = window.location.hash.substring(1);
-        const validSections = ['home', 'classes', 'messaging', 'profile', 'my-students', 'materials-requests', 'testing-center', 'activities', 'admin-dashboard', 'admin-classes', 'admin-users', 'admin-settings', 'admin-reports', 'admin-attendance', 'admin-student-records', 'admin-enrollment', 'admin-activities', 'admin-facilities', 'admin-rtc-management', 'rtc-bank-helper', 'teacher-terminal', 'irl-purchases', 'notes'];
+        const validSections = ['home', 'classes', 'documents', 'messaging', 'profile', 'my-students', 'materials-requests', 'testing-center', 'activities', 'admin-dashboard', 'admin-classes', 'admin-users', 'admin-settings', 'admin-reports', 'admin-attendance', 'admin-student-records', 'admin-enrollment', 'admin-rtc-management', 'rtc-bank-helper', 'teacher-terminal', 'irl-purchases', 'notes'];
         if (hash && validSections.includes(hash)) {
           this.showSection(hash);
         } else {
@@ -2766,6 +2766,11 @@
       // ==================== GAME MESSAGE HANDLING ====================
       setupGameMessageListener() {
         window.addEventListener('message', async (event) => {
+          // Security: only trust messages from our own origin. Games, the skill
+          // tree, and the testing center are all served same-origin (GitHub
+          // Pages). Reject cross-origin frames before touching any DB handler.
+          if (event.origin !== window.location.origin) return;
+          if (!event.data || typeof event.data.type !== 'string') return;
           // Handle messages from Math Dojo and Skill Tree
           switch (event.data.type) {
             case 'DOGO_SKILL_PROGRESS':
@@ -3803,7 +3808,7 @@
               lastName: this.userInfo.profile.last_name,
               email: this.userInfo.user.email
             }
-          }, '*');
+          }, window.location.origin);
 
           console.log('Auth sent to testing center');
 
@@ -4043,12 +4048,51 @@
             );
 
             if (testAssignments && testAssignments.length > 0) {
-              linkedAssignmentId = testAssignments[0].linked_assignment_id;
+              // Prefer the linked assignment for a class the student is actually
+              // enrolled in, rather than blindly taking the first row (which can
+              // belong to a different class when a test is assigned to several).
+              const { data: enrolls } = await this.supabaseQuery(() =>
+                this.auth.supabase
+                  .from('class_enrollments')
+                  .select('class_id')
+                  .eq('student_id', studentId)
+                  .eq('status', 'active')
+              );
+              const enrolledClassIds = new Set((enrolls || []).map(e => e.class_id));
+              const match = testAssignments.find(ta => enrolledClassIds.has(ta.class_id));
+              linkedAssignmentId = (match || testAssignments[0]).linked_assignment_id;
             }
           }
 
           if (!linkedAssignmentId) {
             console.log('No linked assignment found for test submission');
+            return;
+          }
+
+          // Don't clobber an already-finalized submission: if the teacher has
+          // already graded (or excused) this assignment, keep that status/grade
+          // instead of downgrading it back to 'submitted'.
+          const { data: existingSub } = await this.supabaseQuery(() =>
+            this.auth.supabase
+              .from('assignment_submissions')
+              .select('id, status')
+              .eq('assignment_id', linkedAssignmentId)
+              .eq('student_id', studentId)
+              .limit(1)
+              .maybeSingle()
+          );
+
+          if (existingSub && (existingSub.status === 'graded' || existingSub.status === 'excused')) {
+            // Already finalized — just make sure the test submission is linked.
+            if (submissionId) {
+              await this.supabaseQuery(() =>
+                this.auth.supabase
+                  .from('test_submissions')
+                  .update({ linked_submission_id: existingSub.id })
+                  .eq('id', submissionId)
+              );
+            }
+            console.log('Assignment submission already finalized; not downgrading status.');
             return;
           }
 
@@ -4375,6 +4419,25 @@
                   reject(error);
               }
           });
+      }
+
+      // Fetch every row of a query that could exceed Supabase's default 1000-row
+      // cap. `buildQuery(from, to)` must return a query with `.range(from, to)`
+      // applied. Loops page-by-page until a short page signals the end.
+      async fetchAllRows(buildQuery, pageSize = 1000) {
+        let all = [];
+        let from = 0;
+        // Hard stop at 100 pages (100k rows) to avoid an accidental infinite loop.
+        for (let page = 0; page < 100; page++) {
+          const to = from + pageSize - 1;
+          const { data, error } = await this.supabaseQuery(() => buildQuery(from, to));
+          if (error) throw error;
+          if (!data || data.length === 0) break;
+          all = all.concat(data);
+          if (data.length < pageSize) break;
+          from += pageSize;
+        }
+        return all;
       }
 
       async waitForAuth() {
@@ -4765,7 +4828,7 @@
 
       handleHashNavigation() {
         const hash = window.location.hash.substring(1);
-        const validSections = ['home', 'classes', 'messaging', 'profile', 'my-students', 'materials-requests', 'testing-center', 'activities', 'admin-dashboard', 'admin-classes', 'admin-users', 'admin-settings', 'admin-reports', 'admin-attendance', 'admin-student-records', 'admin-enrollment', 'admin-activities', 'admin-facilities', 'admin-rtc-management', 'rtc-bank-helper', 'teacher-terminal', 'irl-purchases', 'notes'];
+        const validSections = ['home', 'classes', 'documents', 'messaging', 'profile', 'my-students', 'materials-requests', 'testing-center', 'activities', 'admin-dashboard', 'admin-classes', 'admin-users', 'admin-settings', 'admin-reports', 'admin-attendance', 'admin-student-records', 'admin-enrollment', 'admin-rtc-management', 'rtc-bank-helper', 'teacher-terminal', 'irl-purchases', 'notes'];
 
         if (hash && validSections.includes(hash)) {
           this.showSection(hash);
@@ -4959,12 +5022,13 @@
         // Batch query enrollment counts (fixes N+1 timeout issue)
         if (this.classes.length > 0) {
           const classIds = this.classes.map(c => c.id);
-          const { data: allEnrollments } = await this.supabaseQuery(() =>
+          const allEnrollments = await this.fetchAllRows((from, to) =>
             this.auth.supabase
               .from('class_enrollments')
               .select('class_id, student_id')
               .in('class_id', classIds)
-              .eq('status', 'active'));
+              .eq('status', 'active')
+              .range(from, to));
 
           // Count enrollments per class
           const countMap = {};
@@ -5389,13 +5453,14 @@
               });
             }
             
-            // Get all students
-            const { data: students } = await this.supabaseQuery(() =>
+            // Get all students (paginated — a full school can exceed 1000 rows)
+            const students = await this.fetchAllRows((from, to) =>
         this.auth.supabase
               .from('user_profiles')
               .select('id, first_name, last_name, email, user_type')
               .eq('user_type', 'student')
-              .neq('student_status', 'past'));
+              .neq('student_status', 'past')
+              .range(from, to));
 
             if (students) {
               students.forEach(student => {
@@ -5427,13 +5492,14 @@
               });
             }
             
-            // Get all parents
-            const { data: parents } = await this.supabaseQuery(() => 
+            // Get all parents (paginated — a full school can exceed 1000 rows)
+            const parents = await this.fetchAllRows((from, to) =>
         this.auth.supabase
               .from('user_profiles')
               .select('id, first_name, last_name, email, user_type')
-              .eq('user_type', 'parent'));
-            
+              .eq('user_type', 'parent')
+              .range(from, to));
+
             if (parents) {
               parents.forEach(parent => {
                 recipients.push({
@@ -7005,6 +7071,7 @@
         ) || [];
 
         if (enrolledChildren.length === 0) {
+          this.hideLoading();
           this.showNotification('No children enrolled in this class', 'warning');
           return;
         }
@@ -8962,7 +9029,7 @@
                     <td style="padding: 12px; text-align: center;">
                       <div style="display: flex; gap: 6px; align-items: center; justify-content: center;">
                         ${pinDisplay}
-                        <button class="btn btn-secondary" style="padding: 2px 6px; font-size: 11px;" onclick="app.adminRegenerateStudentPin('${student.id}', '${student.first_name} ${student.last_name}')" title="${student.games_pin ? 'Generate new PIN' : 'Generate PIN'}">${student.games_pin ? '↻' : 'Generate'}</button>
+                        <button class="btn btn-secondary" style="padding: 2px 6px; font-size: 11px;" onclick="app.adminRegenerateStudentPin('${student.id}', '${this.jsAttr((student.first_name || '') + ' ' + (student.last_name || ''))}')" title="${student.games_pin ? 'Generate new PIN' : 'Generate PIN'}">${student.games_pin ? '↻' : 'Generate'}</button>
                       </div>
                     </td>
                     <td style="padding: 12px; text-align: center;">
@@ -8977,11 +9044,11 @@
                         </button>
                         ${isPast
                           ? `<button class="btn btn-primary" style="padding: 6px 12px; font-size: 13px;"
-                                    onclick="app.reactivateStudent('${student.id}')">
+                                    onclick="app.reactivateStudentAccount('${student.id}')">
                               Reactivate
                             </button>`
                           : `<button class="btn btn-warning small"
-                                    onclick="app.showMarkStudentAsPastModal('${student.id}', '${student.first_name} ${student.last_name}')">
+                                    onclick="app.showMarkStudentAsPastModal('${student.id}', '${this.jsAttr((student.first_name || '') + ' ' + (student.last_name || ''))}')">
                               Mark as Past
                             </button>`
                         }
@@ -9124,7 +9191,7 @@
         }
       }
 
-      async reactivateStudent(studentId) {
+      async reactivateStudentAccount(studentId) {
         if (!confirm('Are you sure you want to reactivate this student? They will need to be manually re-enrolled in classes.')) {
           return;
         }
@@ -10311,6 +10378,9 @@
         } catch (error) {
           console.error('Error saving admin grade:', error);
           this.showNotification('Error: ' + error.message, 'error');
+          // Re-throw so batch callers (saveAllAdminGrades) can count failures
+          // instead of always reporting 0 errors.
+          throw error;
         }
       }
 
@@ -12524,7 +12594,7 @@
                 const senderMatch = /from (.+)$/.exec(payload.new.message || '');
                 const senderName = senderMatch?.[1] || 'Someone';
                 this._showRivenMessage(
-                  `<span style="font-size:13px;">💬 New message from <strong>${this.escapeHtml(senderName)}</strong> — <a href="#" onclick="event.preventDefault();app.openConversation('${payload.new.metadata?.sender_id || ''}');" style="color:#d97a3a;text-decoration:underline;">open it</a></span>`,
+                  `<span style="font-size:13px;">💬 New message from <strong>${this.escapeHtml(senderName)}</strong> — <a href="#" onclick="event.preventDefault();app.openConversation('${this.jsAttr(payload.new.metadata?.sender_id || '')}');" style="color:#d97a3a;text-decoration:underline;">open it</a></span>`,
                   true
                 );
                 this._persistTerminalChat();
@@ -12610,7 +12680,7 @@
 
         return `
           <div class="notification-item ${notification.is_read ? '' : 'unread'}"
-               onclick="app.handleNotificationClick('${notification.id}', '${notification.link || ''}')">
+               onclick="app.handleNotificationClick('${this.jsAttr(notification.id)}')">
             <div class="notification-icon ${config.class}">${config.icon}</div>
             <div class="notification-content">
               <div class="notification-title">${this.escapeHtml(notification.title)}</div>
@@ -12638,10 +12708,43 @@
       }
 
       escapeHtml(text) {
-        if (!text) return '';
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
+        if (text == null) return '';
+        return String(text)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      }
+
+      // Escape a value for safe use as a JS string literal inside a
+      // double-quoted inline event-handler attribute (e.g. onclick="fn('${...}')").
+      // Backslash + quote escaping survives HTML attribute decoding, so the JS
+      // engine sees a properly terminated string; "&<> get HTML-encoded so the
+      // attribute itself cannot be broken out of.
+      jsAttr(text) {
+        if (text == null) return '';
+        return String(text)
+          .replace(/\\/g, '\\\\')
+          .replace(/'/g, "\\'")
+          .replace(/"/g, '&quot;')
+          .replace(/</g, '\\x3C')
+          .replace(/>/g, '\\x3E')
+          .replace(/&/g, '&amp;')
+          .replace(/\r/g, '\\r')
+          .replace(/\n/g, '\\n');
+      }
+
+      // Validate a notification/navigation link. Returns a safe link string
+      // (internal "#section", root-relative "/path", or http(s) URL) or '' if
+      // the link is missing or uses a disallowed scheme (javascript:, data:, etc.).
+      sanitizeLink(link) {
+        if (!link || typeof link !== 'string') return '';
+        const trimmed = link.trim();
+        if (trimmed.startsWith('#')) return trimmed;
+        if (trimmed.startsWith('/')) return trimmed;
+        if (/^https?:\/\//i.test(trimmed)) return trimmed;
+        return '';
       }
 
       toggleNotificationDropdown(event) {
@@ -12745,14 +12848,14 @@
             </div>
 
             <div style="display: flex; gap: 10px; justify-content: flex-end;">
-              <button class="btn btn-secondary" onclick="app.deleteNotificationAndClose('${notification.id}')" style="color: var(--danger);">
+              <button class="btn btn-secondary" onclick="app.deleteNotificationAndClose('${this.jsAttr(notification.id)}')" style="color: var(--danger);">
                 🗑️ Delete
               </button>
-              ${notification.link ? `
-                <button class="btn btn-secondary" onclick="app.closeModal('notification-detail-modal'); app.navigateToLink('${notification.link}');">
-                  📍 Go to ${notification.link.replace('#', '')}
+              ${(() => { const safeLink = this.sanitizeLink(notification.link); return safeLink ? `
+                <button class="btn btn-secondary" onclick="app.closeModal('notification-detail-modal'); app.navigateToLink('${this.jsAttr(safeLink)}');">
+                  📍 Go to ${this.escapeHtml(safeLink.replace('#', ''))}
                 </button>
-              ` : ''}
+              ` : ''; })()}
               <button class="btn btn-primary" onclick="app.closeModal('notification-detail-modal')">
                 Close
               </button>
@@ -12768,11 +12871,13 @@
       }
 
       navigateToLink(link) {
-        if (link.startsWith('#')) {
-          const section = link.substring(1);
+        const safe = this.sanitizeLink(link);
+        if (!safe) return;
+        if (safe.startsWith('#')) {
+          const section = safe.substring(1);
           this.showSection(section);
         } else {
-          window.location.href = link;
+          window.location.href = safe;
         }
       }
 
@@ -12837,7 +12942,10 @@
       // Create a notification for another user
       async createNotificationFor(userId, type, title, message, link = null, metadata = {}) {
         try {
-          await this.auth.supabase
+          // Supabase returns constraint violations (e.g. an unknown `type` not in
+          // the notifications_type_check set) as { error } rather than throwing,
+          // so capture and surface it instead of silently dropping the row.
+          const { error } = await this.auth.supabase
             .from('notifications')
             .insert([{
               user_id: userId,
@@ -12847,8 +12955,29 @@
               link,
               metadata
             }]);
+          if (error) console.warn('Failed to create notification:', error);
         } catch (error) {
           console.warn('Failed to create notification:', error);
+        }
+      }
+
+      // Notifications are read by the bell via .eq('user_id', auth uid), so a
+      // notification row's user_id must be the recipient's AUTH uid. Callers
+      // frequently hand us a profile id; resolve it to the auth uid (falling back
+      // to the given id when they already coincide) so split-id users still get
+      // their notifications.
+      async _resolveNotifyUserId(id) {
+        if (!id) return id;
+        try {
+          const { data } = await this.auth.supabase
+            .from('user_profiles')
+            .select('id, auth_user_id')
+            .or(`id.eq.${id},auth_user_id.eq.${id}`)
+            .limit(1)
+            .maybeSingle();
+          return data?.auth_user_id || id;
+        } catch (e) {
+          return id;
         }
       }
 
@@ -13126,7 +13255,10 @@
           // Default to true if no preference set
           if (teacherEmailPrefs[prefKey] === false) return;
 
-          const notificationType = isLate ? 'late_submission' : 'submission_received';
+          // Both use the DB-allowed 'submission_received' type; the late/normal
+          // distinction is carried in the title/message ('late_submission' is not
+          // in the notifications_type_check set and would be rejected).
+          const notificationType = 'submission_received';
           const title = isLate ? 'Late Submission' : 'New Submission';
           const message = isLate
             ? `${studentName} submitted "${assignment.title}" late in ${classData.name}`
@@ -13194,11 +13326,11 @@
             // Create in-app notification for admin
             await this.createNotificationFor(
               admin.id,
-              'new_user_registration',
+              'system',
               'New User Registration',
               `${userName} registered as a ${userTypeLabel} (${email})`,
               null,
-              { userId, userName, email, userType }
+              { alertType: 'new_user_registration', userId, userName, email, userType }
             );
 
             // Send email to admin
@@ -13241,7 +13373,7 @@
             // Create in-app notification for admin
             await this.createNotificationFor(
               admin.id,
-              'system_alert',
+              'system',
               title,
               message,
               null,
@@ -13531,29 +13663,33 @@
             }
           }
 
-          // Get users to notify
-          let query = this.auth.supabase
-            .from('user_profiles')
-            .select('id, email, first_name, user_type, account_status')
-            .or('account_status.eq.active,account_status.is.null');
-
-          if (audience === 'staff') {
-            query = query.in('user_type', ['teacher', 'admin']);
-          } else if (audience !== 'all') {
-            query = query.eq('user_type', audience);
+          // Bail early if the filters resolved to an empty target set
+          if (targetUserIds && targetUserIds.size === 0) {
+            window.PortalUI?.showNotification('No users match the selected filters', 'warning');
+            return;
           }
 
-          // If we have targeted user IDs, filter to only those
-          if (targetUserIds) {
-            if (targetUserIds.size === 0) {
-              window.PortalUI?.showNotification('No users match the selected filters', 'warning');
-              return;
+          // Get users to notify (paginated — a school-wide broadcast audience
+          // can exceed the 1000-row cap and would otherwise silently drop people)
+          const targetIdList = targetUserIds ? [...targetUserIds] : null;
+          const users = await this.fetchAllRows((from, to) => {
+            let query = this.auth.supabase
+              .from('user_profiles')
+              .select('id, email, first_name, user_type, account_status')
+              .or('account_status.eq.active,account_status.is.null')
+              .range(from, to);
+
+            if (audience === 'staff') {
+              query = query.in('user_type', ['teacher', 'admin']);
+            } else if (audience !== 'all') {
+              query = query.eq('user_type', audience);
             }
-            query = query.in('id', [...targetUserIds]);
-          }
 
-          const { data: users, error } = await query;
-          if (error) throw error;
+            if (targetIdList) {
+              query = query.in('id', targetIdList);
+            }
+            return query;
+          });
 
           if (!users || users.length === 0) {
             window.PortalUI?.showNotification('No users found for selected audience', 'warning');
@@ -13966,7 +14102,7 @@
             <div style="max-width: 70%; ${isSent ? 'text-align: right' : 'text-align: left'};">
               ${msg.subject && msg.subject !== 'Re: ' && msg.subject !== '' ? `
                 <div style="font-size: 11px; color: var(--muted); margin-bottom: 4px;">
-                  ${msg.subject}
+                  ${this.escapeHtml(msg.subject)}
                 </div>
               ` : ''}
               <div style="
@@ -13979,7 +14115,7 @@
                 word-wrap: break-word;
                 text-align: left;
               ">
-                ${msg.content.replace(/\n/g, '<br>')}
+                ${this.escapeHtml(msg.content).replace(/\n/g, '<br>')}
               </div>
               <div style="font-size: 10px; color: var(--muted); margin-top: 4px;">
                 ${time} • ${date}
@@ -14017,10 +14153,12 @@
       
           if (error) throw error;
 
-          // Create notification for recipient
+          // Create notification for recipient (resolve to their auth uid so
+          // split-id recipients still receive it)
           const senderName = `${this.userInfo.profile.first_name} ${this.userInfo.profile.last_name}`;
+          const notifyUserId = await this._resolveNotifyUserId(recipientId);
           this.createNotificationFor(
-            recipientId,
+            notifyUserId,
             'new_message',
             'New Message',
             `You have a new message from ${senderName}`,
@@ -14112,9 +14250,11 @@
           const recipientName = selectedRecipient ? selectedRecipient.name : 'recipient';
           const senderName = `${this.userInfo.profile.first_name} ${this.userInfo.profile.last_name}`;
 
-          // Create notification for recipient
+          // Create notification for recipient (resolve to their auth uid so
+          // split-id recipients still receive it)
+          const notifyUserId = await this._resolveNotifyUserId(recipientId);
           this.createNotificationFor(
-            recipientId,
+            notifyUserId,
             'new_message',
             'New Message',
             `You have a new message from ${senderName}`,
@@ -14322,14 +14462,14 @@
               <div style="flex: 1;">
                 <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
                   ${typeIcon}
-                  <h4 style="margin: 0;">${discussion.title || 'Untitled Discussion'}</h4>
+                  <h4 style="margin: 0;">${this.escapeHtml(discussion.title || 'Untitled Discussion')}</h4>
                   ${discussion.is_pinned ? '<span style="background: var(--warning); color: black; padding: 2px 6px; border-radius: 4px; font-size: 10px;">PINNED</span>' : ''}
                 </div>
                 <p style="margin-bottom: 10px; color: var(--muted); font-size: 14px; line-height: 1.4;">
-                  ${truncatedContent}
+                  ${this.escapeHtml(truncatedContent)}
                 </p>
                 <div style="font-size: 12px; color: var(--muted);">
-                  By ${author.first_name} ${author.last_name} (${author.user_type}) • ${createdDate} • ${replyCount} ${replyCount === 1 ? 'reply' : 'replies'}
+                  By ${this.escapeHtml(author.first_name)} ${this.escapeHtml(author.last_name)} (${this.escapeHtml(author.user_type)}) • ${createdDate} • ${replyCount} ${replyCount === 1 ? 'reply' : 'replies'}
                 </div>
               </div>
               <div style="margin-left: 15px; display: flex; gap: 5px;">
@@ -14423,11 +14563,11 @@
             <form id="edit-discussion-form">
               <div class="form-group">
                 <label for="edit-discussion-title">Title *</label>
-                <input type="text" id="edit-discussion-title" value="${discussion.title}" required>
+                <input type="text" id="edit-discussion-title" value="${this.escapeHtml(discussion.title)}" required>
               </div>
               <div class="form-group">
                 <label for="edit-discussion-content">Content *</label>
-                <textarea id="edit-discussion-content" rows="5" required>${discussion.content}</textarea>
+                <textarea id="edit-discussion-content" rows="5" required>${this.escapeHtml(discussion.content)}</textarea>
               </div>
             </form>
 
@@ -14546,12 +14686,12 @@
               <div class="card" style="background: var(--card); margin-bottom: 20px;">
                 <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
                   ${typeIcon}
-                  <h3 style="margin: 0;">${discussion.title || 'Untitled Discussion'}</h3>
+                  <h3 style="margin: 0;">${this.escapeHtml(discussion.title || 'Untitled Discussion')}</h3>
                   ${discussion.is_pinned ? '<span style="background: var(--warning); color: black; padding: 2px 6px; border-radius: 4px; font-size: 10px;">PINNED</span>' : ''}
                 </div>
-                <p style="line-height: 1.6; margin-bottom: 10px;">${discussion.content || 'No content'}</p>
+                <p style="line-height: 1.6; margin-bottom: 10px;">${this.escapeHtml(discussion.content || 'No content')}</p>
                 <div style="font-size: 12px; color: var(--muted); margin-bottom: 10px;">
-                  Posted by ${authorProfile?.first_name || 'Unknown'} ${authorProfile?.last_name || 'User'} • ${new Date(discussion.created_at).toLocaleDateString()}
+                  Posted by ${this.escapeHtml(authorProfile?.first_name || 'Unknown')} ${this.escapeHtml(authorProfile?.last_name || 'User')} • ${new Date(discussion.created_at).toLocaleDateString()}
                 </div>
                 <button class="btn btn-secondary small" onclick="app.showReplyForm('${discussionId}', null, 'main-discussion')">
                   💬 Reply
@@ -14645,8 +14785,8 @@
                         </button>
                       ` : ''}
                       <div>
-                        <strong>${author.first_name} ${author.last_name}</strong> 
-                        <span style="color: var(--muted); font-size: 12px;">(${author.user_type})</span>
+                        <strong>${this.escapeHtml(author.first_name)} ${this.escapeHtml(author.last_name)}</strong>
+                        <span style="color: var(--muted); font-size: 12px;">(${this.escapeHtml(author.user_type)})</span>
                         <span style="font-size: 11px; color: var(--muted); margin-left: 10px;">
                           ${replyDate} at ${replyTime}
                         </span>
@@ -14655,7 +14795,7 @@
                     </div>
                     ${isDeleted ? 
                       `<p style="margin: 10px 0; line-height: 1.5; color: var(--muted); font-style: italic;">This comment has been ${deletedByText}</p>` :
-                      `<p style="margin: 10px 0; line-height: 1.5;">${reply.content}</p>`
+                      `<p style="margin: 10px 0; line-height: 1.5;">${this.escapeHtml(reply.content)}</p>`
                     }
                     ${!isDeleted ? `
                       <div style="display: flex; gap: 10px; margin-top: 10px;">
@@ -16195,9 +16335,9 @@
               return `
                 <div class="list-item">
                   <div class="list-item-content">
-                    <div class="list-item-title">${student.first_name || 'Unknown'} ${student.last_name || ''}</div>
+                    <div class="list-item-title">${this.escapeHtml(student.first_name || 'Unknown')} ${this.escapeHtml(student.last_name || '')}</div>
                     <div class="list-item-meta">
-                      ${student.email || ''} • Grade ${student.grade_level || 'N/A'} • Enrolled: ${enrollDate}
+                      ${this.escapeHtml(student.email || '')} • Grade ${this.escapeHtml(student.grade_level || 'N/A')} • Enrolled: ${enrollDate}
                       • Credit: <strong>${effectiveCredit}</strong>${hasCreditOverride ? ' <span style="color: var(--accent);">(override)</span>' : ''}
                     </div>
                   </div>
@@ -16205,10 +16345,10 @@
                     <button class="btn btn-secondary small" onclick="app.editCreditOverride('${enrollment.id}', '${classId}', ${hasCreditOverride ? Number(enrollment.credits_override) : 'null'}, ${classDefaultCredit})" title="Override the credit value this student earns for this class">
                       🎓 Credit
                     </button>
-                    <button class="btn btn-secondary small" onclick="app.showPrivateNotes('${classId}', '${student.id}', '${student.first_name} ${student.last_name}')" title="Private notes only visible to you">
+                    <button class="btn btn-secondary small" onclick="app.showPrivateNotes('${classId}', '${student.id}', '${this.jsAttr((student.first_name || '') + ' ' + (student.last_name || ''))}')" title="Private notes only visible to you">
                       🔒 My Notes
                     </button>
-                    <button class="btn btn-secondary small" onclick="app.addStudentNote('${classId}', '${student.id}', '${student.first_name} ${student.last_name}')" title="Add to permanent record">
+                    <button class="btn btn-secondary small" onclick="app.addStudentNote('${classId}', '${student.id}', '${this.jsAttr((student.first_name || '') + ' ' + (student.last_name || ''))}')" title="Add to permanent record">
                       📝 Record
                     </button>
                     <button class="btn btn-secondary small" onclick="app.messageStudent('${student.id}')">
@@ -16236,15 +16376,15 @@
                 <div class="list-item" style="opacity: 0.7; background: var(--bg);">
                   <div class="list-item-content">
                     <div class="list-item-title">
-                      <span style="color: var(--muted);">⊘</span> ${student.first_name || 'Unknown'} ${student.last_name || ''}
+                      <span style="color: var(--muted);">⊘</span> ${this.escapeHtml(student.first_name || 'Unknown')} ${this.escapeHtml(student.last_name || '')}
                       <span style="font-size: 0.75rem; background: var(--muted); color: var(--card); padding: 2px 6px; border-radius: 4px; margin-left: 8px;">Withdrawn</span>
                     </div>
                     <div class="list-item-meta">
-                      ${student.email || ''} • Withdrawn: ${withdrawDate}
+                      ${this.escapeHtml(student.email || '')} • Withdrawn: ${withdrawDate}
                     </div>
                   </div>
                   <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                    <button class="btn btn-secondary small" onclick="app.viewStudentGrades('${classId}', '${student.id}', '${student.first_name} ${student.last_name}')" title="View historical grades">
+                    <button class="btn btn-secondary small" onclick="app.viewStudentGrades('${classId}', '${student.id}', '${this.jsAttr((student.first_name || '') + ' ' + (student.last_name || ''))}')" title="View historical grades">
                       📊 Grades
                     </button>
                     <button class="btn btn-success small" onclick="app.reactivateStudent('${enrollment.id}', '${classId}')">
@@ -16261,7 +16401,7 @@
           const modalContent = `
             <div>
               <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                <h3 style="margin: 0;">👥 Students - ${classData?.name}</h3>
+                <h3 style="margin: 0;">👥 Students - ${this.escapeHtml(classData?.name)}</h3>
                 <button class="btn btn-secondary small" onclick="app.viewClassNotes('${classId}')">
                   📋 View All Notes
                 </button>
@@ -16640,13 +16780,15 @@
 
           if (error) throw error;
 
-          // Get enrollment info for class grade
+          // Get enrollment info for class grade (maybeSingle: a withdrawn or
+          // missing enrollment returns null instead of throwing)
           const { data: enrollment } = await this.supabaseQuery(() => this.auth.supabase
             .from('class_enrollments')
             .select('class_grade, participation_grade')
             .eq('class_id', classId)
             .eq('student_id', studentId)
-            .single());
+            .limit(1)
+            .maybeSingle());
 
           let gradesHtml = '';
           if (submissions && submissions.length > 0) {
@@ -16659,9 +16801,9 @@
               return `
                 <div class="list-item">
                   <div class="list-item-content">
-                    <div class="list-item-title">${assignment.title}</div>
+                    <div class="list-item-title">${this.escapeHtml(assignment.title)}</div>
                     <div class="list-item-meta">
-                      ${assignment.assignment_type || 'assignment'} • Due: ${new Date(assignment.due_date).toLocaleDateString()}
+                      ${this.escapeHtml(assignment.assignment_type || 'assignment')} • Due: ${new Date(assignment.due_date).toLocaleDateString()}
                     </div>
                   </div>
                   <div style="text-align: right;">
@@ -16680,10 +16822,10 @@
 
           const modalContent = `
             <div>
-              <h3 style="margin-bottom: 10px;">📊 Grades for ${studentName}</h3>
+              <h3 style="margin-bottom: 10px;">📊 Grades for ${this.escapeHtml(studentName)}</h3>
               <p style="color: var(--muted); margin-bottom: 15px;">
-                ${classData?.name || 'Class'} •
-                ${enrollment?.class_grade !== null ? `Overall: ${enrollment.class_grade}%` : 'No overall grade'}
+                ${this.escapeHtml(classData?.name || 'Class')} •
+                ${enrollment && enrollment.class_grade != null ? `Overall: ${enrollment.class_grade}%` : 'No overall grade'}
               </p>
 
               <div class="list" style="max-height: 60vh; overflow-y: auto;">
@@ -16861,14 +17003,14 @@
             return;
           }
 
-          // Get all notes for these students across ALL classes
-          const { data: notes, error } = await this.supabaseQuery(() => this.auth.supabase
+          // Get all notes for these students across ALL classes (paginated —
+          // a full roster's note history can exceed the 1000-row cap)
+          const notes = await this.fetchAllRows((from, to) => this.auth.supabase
             .from('student_notes')
             .select('*')
             .in('student_id', studentIds)
-            .order('created_at', { ascending: false }));
-
-          if (error) throw error;
+            .order('created_at', { ascending: false })
+            .range(from, to));
 
           // Get student and teacher names
           const teacherIds = [...new Set((notes || []).map(n => n.teacher_id))];
@@ -16912,19 +17054,19 @@
                 <div style="background: #0b1017; border: 1px solid #1a2330; border-radius: 8px; padding: 12px; margin-bottom: 10px; border-left: 3px solid ${sentimentColor};">
                   <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px;">
                     <div>
-                      <div style="font-weight: 600;">${studentMap[note.student_id] || 'Unknown'}</div>
-                      <div style="font-size: 12px; color: var(--muted);">${classMap[note.class_id] || 'Unknown Class'}</div>
+                      <div style="font-weight: 600;">${this.escapeHtml(studentMap[note.student_id] || 'Unknown')}</div>
+                      <div style="font-size: 12px; color: var(--muted);">${this.escapeHtml(classMap[note.class_id] || 'Unknown Class')}</div>
                     </div>
                     <div style="display: flex; gap: 6px; align-items: center;">
-                      <span style="padding: 2px 6px; border-radius: 4px; background: ${sentimentBg}; color: ${sentimentColor}; font-size: 11px; text-transform: capitalize;">${note.sentiment}</span>
-                      <span style="padding: 2px 6px; background: #1a2330; border-radius: 4px; font-size: 11px; color: #97a2b0;">${note.category === 'custom' ? note.custom_category : note.category}</span>
+                      <span style="padding: 2px 6px; border-radius: 4px; background: ${sentimentBg}; color: ${sentimentColor}; font-size: 11px; text-transform: capitalize;">${this.escapeHtml(note.sentiment)}</span>
+                      <span style="padding: 2px 6px; background: #1a2330; border-radius: 4px; font-size: 11px; color: #97a2b0;">${this.escapeHtml(note.category === 'custom' ? note.custom_category : note.category)}</span>
                       ${note.value !== null ? `<span style="padding: 2px 6px; background: #1a2330; border-radius: 4px; font-size: 11px; color: #ffd36a;">${note.value > 0 ? '+' : ''}${note.value}</span>` : ''}
                     </div>
                   </div>
-                  <div style="color: #c7d2de; line-height: 1.5; white-space: pre-wrap; margin-bottom: 8px;">${note.note}</div>
+                  <div style="color: #c7d2de; line-height: 1.5; white-space: pre-wrap; margin-bottom: 8px;">${this.escapeHtml(note.note)}</div>
                   <div style="display: flex; justify-content: space-between; align-items: center; padding-top: 8px; border-top: 1px solid #1a2330;">
                     <div>
-                      <div style="font-size: 12px; font-style: italic; color: var(--muted);">— ${teacherMap[note.teacher_id] || 'Unknown'}</div>
+                      <div style="font-size: 12px; font-style: italic; color: var(--muted);">— ${this.escapeHtml(teacherMap[note.teacher_id] || 'Unknown')}</div>
                       <div style="font-size: 11px; color: var(--muted);">${new Date(note.created_at).toLocaleString()}</div>
                     </div>
                   </div>
@@ -18107,21 +18249,22 @@
             if (existingEnrollment.status === 'active') {
               this.showNotification('You are already enrolled in this class', 'info');
               return;
-            } else if (existingEnrollment.status === 'removed') {
-              // Reactivate enrollment
+            } else if (existingEnrollment.status === 'removed' || existingEnrollment.status === 'archived') {
+              // Reactivate enrollment (covers both 'removed' and the 'archived'
+              // status set by the class-management Withdraw flow)
               const { error: updateError } = await this.supabaseQuery(() => this.auth.supabase
                 .from('class_enrollments')
-                .update({ 
+                .update({
                   status: 'active',
                   enrolled_at: new Date().toISOString()
                 })
                 .eq('id', existingEnrollment.id));
-              
+
               if (updateError) throw updateError;
-              
+
               this.showNotification(`Successfully re-enrolled in ${classData.name}!`, 'success');
               this.closeModal('enroll-class');
-              await this.loadTeacherOrAdminData();
+              await this.loadStudentData();
               this.renderClasses();
               return;
             }
@@ -19926,17 +20069,19 @@
       
           // Handle student assignments if selective
           if (assignToSpecific) {
-            // Delete existing assignments
-            await this.supabaseQuery(() => this.auth.supabase
-              .from('assignment_students')
-              .delete()
-              .eq('assignment_id', assignmentId));
-            
             // Get selected students (deduplicate in case of stacked modals)
             const selectedStudents = [...new Set(
               Array.from(document.querySelectorAll('.edit-student-checkbox:checked'))
                 .map(cb => cb.value)
             )];
+
+            // Delete existing assignments — but bail if it fails so we never wipe
+            // the assignee list without being able to write the new one.
+            const { error: delError } = await this.supabaseQuery(() => this.auth.supabase
+              .from('assignment_students')
+              .delete()
+              .eq('assignment_id', assignmentId));
+            if (delError) throw delError;
 
             // Insert new assignments
             if (selectedStudents.length > 0) {
@@ -19944,10 +20089,11 @@
                 assignment_id: assignmentId,
                 student_id: studentId
               }));
-              
-              await this.supabaseQuery(() => this.auth.supabase
+
+              const { error: insError } = await this.supabaseQuery(() => this.auth.supabase
                 .from('assignment_students')
                 .insert(insertData));
+              if (insError) throw insError;
             }
           } else {
             // Remove any specific assignments if switching to all students
@@ -20662,8 +20808,11 @@
           }
 
           if (hw.assignment_type === 'game') {
-            // Launch the game
-            const gameUrl = `games/${hw.game_id}.html?homework=${homeworkId}&subject=${encodeURIComponent(hw.subject || 'Math')}`;
+            // Launch the game. Games live at the repo root (/games/), not under
+            // /portal/, so use a root-relative path. Normalize the known
+            // hyphenated id whose file is actually underscore-named.
+            const gameFile = hw.game_id === 'wasteland-adventure' ? 'wasteland_adventure' : hw.game_id;
+            const gameUrl = `/games/${gameFile}.html?homework=${homeworkId}&subject=${encodeURIComponent(hw.subject || 'Math')}`;
 
             // Open game in modal or new window
             this.showModal('game-player', `🎮 ${hw.title}`, `
@@ -20845,15 +20994,15 @@
                 <div style="margin: 15px 0;">
                   <strong>Your Answer:</strong>
                   <div style="background: var(--bg); padding: 15px; border-radius: 8px; margin-top: 10px; white-space: pre-wrap;">
-                    ${submission.content}
+                    ${this.escapeHtml(submission.content)}
                   </div>
                 </div>
       
                 ${submission.file_url ? `
                   <div style="margin: 15px 0;">
                     <strong>Attached File:</strong> 
-                    <a href="${submission.file_url}" target="_blank" class="btn btn-secondary small" style="margin-left: 10px;">
-                      📎 ${submission.file_name || 'View File'}
+                    <a href="${this.sanitizeLink(submission.file_url)}" target="_blank" class="btn btn-secondary small" style="margin-left: 10px;">
+                      📎 ${this.escapeHtml(submission.file_name || 'View File')}
                     </a>
                   </div>
                 ` : ''}
@@ -20980,7 +21129,7 @@
           const [studentsResult, submissionsResult] = await Promise.all([
             this.supabaseQuery(() => this.auth.supabase
               .from('user_profiles')
-              .select('id, first_name, last_name, email, grade_level')
+              .select('id, auth_user_id, first_name, last_name, email, grade_level')
               .in('id', studentIds)
               .order('last_name')),
             this.supabaseQuery(() => this.auth.supabase
@@ -21094,7 +21243,10 @@
                 ${students && students.length > 0 ? `
                   <div class="list">
                     ${students.map(student => {
-                      const submission = submissionMap[student.id];
+                      // Submissions may be keyed by profile id OR auth uid (split-id
+                      // students); match under either so the teacher never sees a
+                      // false "Not submitted" or grades a phantom row.
+                      const submission = submissionMap[student.id] || submissionMap[student.auth_user_id];
                       const hasSubmitted = !!submission;
                       const isGraded = submission?.status === 'graded';
                       const isExcused = submission?.status === 'excused';
@@ -21207,7 +21359,7 @@
               <div class="card" style="margin: 20px 0;">
                 <h4>Submission Content</h4>
                 <div style="background: var(--bg); padding: 15px; border-radius: 8px; margin-top: 10px; white-space: pre-wrap; max-height: 400px; overflow-y: auto;">
-                  ${submission.content}
+                  ${this.escapeHtml(submission.content)}
                 </div>
                 
                 ${submission.file_url ? `
@@ -21216,8 +21368,8 @@
                       <span style="font-size: 20px;">📎</span>
                       <div style="flex: 1;">
                         <strong style="font-size: 13px;">File Attachment:</strong>
-                        <a href="${submission.file_url}" target="_blank" style="display: block; color: var(--accent); font-size: 13px; margin-top: 4px; text-decoration: underline;">
-                          ${submission.file_name || 'View File'} →
+                        <a href="${this.sanitizeLink(submission.file_url)}" target="_blank" style="display: block; color: var(--accent); font-size: 13px; margin-top: 4px; text-decoration: underline;">
+                          ${this.escapeHtml(submission.file_name || 'View File')} →
                         </a>
                       </div>
                     </div>
@@ -21347,7 +21499,7 @@
                     <h4 style="margin-bottom: 10px;">Your Submission</h4>
                     ${submission.content ? `
                       <div style="padding: 15px; background: rgba(0,0,0,0.2); border-radius: 8px; margin-bottom: 10px;">
-                        <p style="white-space: pre-wrap; line-height: 1.6;">${submission.content}</p>
+                        <p style="white-space: pre-wrap; line-height: 1.6;">${this.escapeHtml(submission.content)}</p>
                       </div>
                     ` : ''}
                     ${submission.file_url ? `
@@ -21356,8 +21508,8 @@
                           <span style="font-size: 20px;">📎</span>
                           <div style="flex: 1;">
                             <strong style="font-size: 13px;">File Attachment:</strong>
-                            <a href="${submission.file_url}" target="_blank" style="display: block; color: var(--accent); font-size: 13px; margin-top: 4px; text-decoration: underline;">
-                              ${submission.file_name || 'View File'} →
+                            <a href="${this.sanitizeLink(submission.file_url)}" target="_blank" style="display: block; color: var(--accent); font-size: 13px; margin-top: 4px; text-decoration: underline;">
+                              ${this.escapeHtml(submission.file_name || 'View File')} →
                             </a>
                           </div>
                         </div>
@@ -21399,7 +21551,7 @@
                     <h4 style="margin-bottom: 10px;">Your Submission</h4>
                     ${submission.content ? `
                       <div style="padding: 15px; background: rgba(0,0,0,0.2); border-radius: 8px;">
-                        <p style="white-space: pre-wrap; line-height: 1.6;">${submission.content}</p>
+                        <p style="white-space: pre-wrap; line-height: 1.6;">${this.escapeHtml(submission.content)}</p>
                       </div>
                     ` : ''}
                     <p style="color: var(--warning); margin-top: 10px;">This submission was not graded.</p>
@@ -21650,7 +21802,7 @@
                     <h4 style="margin-bottom: 10px;">Your Submission</h4>
                     ${existingSubmission.content ? `
                       <div style="padding: 15px; background: rgba(0,0,0,0.2); border-radius: 8px; margin-bottom: 10px;">
-                        <p style="white-space: pre-wrap; line-height: 1.6;">${existingSubmission.content}</p>
+                        <p style="white-space: pre-wrap; line-height: 1.6;">${this.escapeHtml(existingSubmission.content)}</p>
                       </div>
                     ` : ''}
                     ${existingSubmission.file_url ? `
@@ -21659,8 +21811,8 @@
                           <span style="font-size: 20px;">📎</span>
                           <div style="flex: 1;">
                             <strong style="font-size: 13px;">File Attachment:</strong>
-                            <a href="${existingSubmission.file_url}" target="_blank" style="display: block; color: var(--accent); font-size: 13px; margin-top: 4px; text-decoration: underline;">
-                              ${existingSubmission.file_name || 'View File'} →
+                            <a href="${this.sanitizeLink(existingSubmission.file_url)}" target="_blank" style="display: block; color: var(--accent); font-size: 13px; margin-top: 4px; text-decoration: underline;">
+                              ${this.escapeHtml(existingSubmission.file_name || 'View File')} →
                             </a>
                           </div>
                         </div>
@@ -21701,7 +21853,7 @@
                     <h4 style="margin-bottom: 10px;">Your Submission</h4>
                     ${existingSubmission.content ? `
                       <div style="padding: 15px; background: rgba(0,0,0,0.2); border-radius: 8px; margin-bottom: 10px;">
-                        <p style="white-space: pre-wrap; line-height: 1.6;">${existingSubmission.content}</p>
+                        <p style="white-space: pre-wrap; line-height: 1.6;">${this.escapeHtml(existingSubmission.content)}</p>
                       </div>
                     ` : ''}
                     ${existingSubmission.file_url ? `
@@ -21710,8 +21862,8 @@
                           <span style="font-size: 20px;">📎</span>
                           <div style="flex: 1;">
                             <strong style="font-size: 13px;">File Attachment:</strong>
-                            <a href="${existingSubmission.file_url}" target="_blank" style="display: block; color: var(--accent); font-size: 13px; margin-top: 4px; text-decoration: underline;">
-                              ${existingSubmission.file_name || 'View File'} →
+                            <a href="${this.sanitizeLink(existingSubmission.file_url)}" target="_blank" style="display: block; color: var(--accent); font-size: 13px; margin-top: 4px; text-decoration: underline;">
+                              ${this.escapeHtml(existingSubmission.file_name || 'View File')} →
                             </a>
                           </div>
                         </div>
@@ -22041,8 +22193,8 @@
                   <div style="display: flex; align-items: center; gap: 10px;">
                     <span style="font-size: 24px;">📎</span>
                     <div style="flex: 1;">
-                      <strong>${submission.file_name}</strong>
-                      <a href="${submission.file_url}" target="_blank" style="display: block; color: var(--accent); font-size: 12px; margin-top: 4px;">
+                      <strong>${this.escapeHtml(submission.file_name)}</strong>
+                      <a href="${this.sanitizeLink(submission.file_url)}" target="_blank" style="display: block; color: var(--accent); font-size: 12px; margin-top: 4px;">
                         View Current File →
                       </a>
                     </div>
@@ -22061,7 +22213,7 @@
                     rows="6" 
                     style="font-family: inherit;"
                     placeholder="Type your response, paste links, or add notes..."
-                  >${submission.content || ''}</textarea>
+                  >${this.escapeHtml(submission.content || '')}</textarea>
                 </div>
       
                 <div class="form-group">
@@ -22436,12 +22588,14 @@
           
           if (error) throw error;
           
-          // Load student info separately
+          // Load student info separately. submission.student_id may be a profile
+          // id OR an auth uid (split-id students), so match on either key.
           const { data: student } = await this.supabaseQuery(() => this.auth.supabase
             .from('user_profiles')
             .select('first_name, last_name, email')
-            .eq('id', submission.student_id)
-            .single());
+            .or(`id.eq.${submission.student_id},auth_user_id.eq.${submission.student_id}`)
+            .limit(1)
+            .maybeSingle());
           
           const assignment = submission.assignments;
           
@@ -22486,7 +22640,7 @@
                 <h4>Student's Work</h4>
                 ${submission.content ? `
                   <div style="padding: 15px; background: rgba(0,0,0,0.2); border-radius: 8px; margin-top: 10px;">
-                    <p style="white-space: pre-wrap; line-height: 1.6;">${submission.content}</p>
+                    <p style="white-space: pre-wrap; line-height: 1.6;">${this.escapeHtml(submission.content)}</p>
                   </div>
                 ` : '<p style="color: var(--muted);">No text submission</p>'}
                 
@@ -22496,8 +22650,8 @@
                       <span style="font-size: 20px;">📎</span>
                       <div style="flex: 1;">
                         <strong style="font-size: 13px;">File Attachment:</strong>
-                        <a href="${submission.file_url}" target="_blank" style="display: block; color: var(--accent); font-size: 13px; margin-top: 4px; text-decoration: underline;">
-                          ${submission.file_name || 'View File'} →
+                        <a href="${this.sanitizeLink(submission.file_url)}" target="_blank" style="display: block; color: var(--accent); font-size: 13px; margin-top: 4px; text-decoration: underline;">
+                          ${this.escapeHtml(submission.file_name || 'View File')} →
                         </a>
                       </div>
                     </div>
@@ -24635,14 +24789,17 @@
         try {
           const classData = this.classes.find(c => c.id === classId);
       
-          // Get current quarter
+          // Get current quarter (limit(1)+maybeSingle so a duplicate or missing
+          // "current" quarter doesn't throw)
           const { data: currentQuarter } = await this.supabaseQuery(() => this.auth.supabase
             .from('quarters')
             .select('*')
             .eq('is_current', true)
-            .single());
-      
+            .limit(1)
+            .maybeSingle());
+
           if (!currentQuarter) {
+            this.hideLoading();
             const modalContent = `
               <div>
                 <h3>📊 My Grades - ${classData?.name}</h3>
@@ -24669,6 +24826,7 @@
             .single());
       
           if (!enrollment) {
+            this.hideLoading();
             const modalContent = `
               <div>
                 <h3>📊 My Grades - ${classData?.name}</h3>
@@ -25158,23 +25316,27 @@
               .from('quarters')
               .select('*')
               .eq('is_current', true)
-              .single());
-            
+              .limit(1)
+              .maybeSingle());
+
             currentQuarter = existing;
           }
-          
+
           // If setting as current, snapshot current quarter grades first
           if (setCurrent && currentQuarter) {
             this.showNotification('Snapshotting current quarter grades...', 'info');
-            
+
             const { error: snapshotError } = await this.supabaseQuery(() => this.auth.supabase
               .rpc('snapshot_quarter_grades', { p_quarter_id: currentQuarter.id }));
-            
+
             if (snapshotError) {
               console.error('Snapshot error:', snapshotError);
-              // Continue anyway - this is not critical
+              // Critical: we are about to null participation grades & teacher notes
+              // on every active enrollment below. If the snapshot failed those
+              // grades have nowhere to be recovered from, so abort instead.
+              throw new Error('Could not snapshot the outgoing quarter grades — aborting quarter switch so participation grades and notes are not lost. (' + (snapshotError.message || 'unknown error') + ')');
             }
-            
+
             // Unset all other quarters
             await this.supabaseQuery(() => this.auth.supabase
               .from('quarters')
@@ -25257,10 +25419,11 @@
             window.portalLoading.show('snapshot', `Snapshotting grades for ${quarterName}...`);
           }
 
-          const { data: activeEnrollments } = await this.supabaseQuery(() => this.auth.supabase
+          const activeEnrollments = await this.fetchAllRows((from, to) => this.auth.supabase
             .from('class_enrollments')
             .select('id')
-            .eq('status', 'active'));
+            .eq('status', 'active')
+            .range(from, to));
 
           if (!activeEnrollments || activeEnrollments.length === 0) {
             this.showNotification('No active enrollments found.', 'warning');
@@ -25309,21 +25472,25 @@
             window.portalLoading.show('set-current', 'Transitioning to new quarter...');
           }
 
-          // Get current quarter to snapshot its grades before switching
+          // Get current quarter to snapshot its grades before switching.
+          // Use limit(1)+maybeSingle so a stray second "current" row (or none)
+          // doesn't throw and abort the transition.
           const { data: currentQuarter } = await this.supabaseQuery(() => this.auth.supabase
             .from('quarters')
             .select('*')
             .eq('is_current', true)
-            .single());
+            .limit(1)
+            .maybeSingle());
 
           // Snapshot outgoing quarter grades using calculate_quarter_grades per enrollment.
           // This stores grades in quarter_grade_snapshots keyed by (enrollment_id, quarter_id),
           // so they won't be lost when the enrollment's live fields change.
           if (currentQuarter) {
-            const { data: activeEnrollments } = await this.supabaseQuery(() => this.auth.supabase
+            const activeEnrollments = await this.fetchAllRows((from, to) => this.auth.supabase
               .from('class_enrollments')
               .select('id')
-              .eq('status', 'active'));
+              .eq('status', 'active')
+              .range(from, to));
 
             if (activeEnrollments && activeEnrollments.length > 0) {
               await Promise.allSettled(activeEnrollments.map(enrollment =>
@@ -25446,8 +25613,9 @@
             .eq('id', quarterId)
             .single());
           
-          // Load snapshots for this quarter
-          const { data: snapshots, error } = await this.supabaseQuery(() => this.auth.supabase
+          // Load snapshots for this quarter (paginated — students × classes can
+          // exceed the 1000-row cap)
+          const snapshots = await this.fetchAllRows((from, to) => this.auth.supabase
             .from('quarter_grade_snapshots')
             .select(`
               *,
@@ -25456,10 +25624,9 @@
                 student_id
               )
             `)
-            .eq('quarter_id', quarterId));
-          
-          if (error) throw error;
-          
+            .eq('quarter_id', quarterId)
+            .range(from, to));
+
           if (!snapshots || snapshots.length === 0) {
             this.showModal('view-quarter-grades', `📊 ${quarter.name} Grades`, `
               <div class="card" style="text-align: center; padding: 40px;">
@@ -25564,24 +25731,25 @@
             .eq('id', quarterId)
             .single());
           
-          // Load snapshots or current grades
+          // Load snapshots or current grades (paginated — students × classes can
+          // exceed the 1000-row cap)
           let gradeData;
           if (quarter.is_archived) {
-            const { data: snapshots } = await this.supabaseQuery(() => this.auth.supabase
+            gradeData = await this.fetchAllRows((from, to) => this.auth.supabase
               .from('quarter_grade_snapshots')
               .select(`
                 *,
                 class_enrollments!inner(class_id, student_id)
               `)
-              .eq('quarter_id', quarterId));
-            gradeData = snapshots;
+              .eq('quarter_id', quarterId)
+              .range(from, to));
           } else {
-            const { data: enrollments } = await this.supabaseQuery(() => this.auth.supabase
+            gradeData = await this.fetchAllRows((from, to) => this.auth.supabase
               .from('class_enrollments')
               .select('*')
               .eq('current_quarter_id', quarterId)
-              .eq('status', 'active'));
-            gradeData = enrollments;
+              .eq('status', 'active')
+              .range(from, to));
           }
           
           if (!gradeData || gradeData.length === 0) {
@@ -25738,6 +25906,7 @@
           if (error) throw error;
           
           if (!quarters || quarters.length === 0) {
+            this.hideLoading();
             this.showNotification('No quarter history available', 'info');
             return;
           }
@@ -27359,24 +27528,25 @@
             }
           }
 
-          // Step 1: Get assignments (with optional date range and class filters)
-          let assignmentsQuery = this.auth.supabase
-            .from('assignments')
-            .select('id, title, class_id, due_date, max_points');
+          // Step 1: Get assignments (with optional date range and class filters).
+          // Paginated so a whole-school "All Time" report isn't capped at 1000.
+          const assignments = await this.fetchAllRows((from, to) => {
+            let assignmentsQuery = this.auth.supabase
+              .from('assignments')
+              .select('id, title, class_id, due_date, max_points')
+              .range(from, to);
 
-          if (startDate && endDate) {
-            assignmentsQuery = assignmentsQuery
-              .gte('due_date', startDate)
-              .lte('due_date', endDate);
-          }
+            if (startDate && endDate) {
+              assignmentsQuery = assignmentsQuery
+                .gte('due_date', startDate)
+                .lte('due_date', endDate);
+            }
 
-          if (classId !== 'all') {
-            assignmentsQuery = assignmentsQuery.eq('class_id', classId);
-          }
-
-          const { data: assignments, error: assignmentsError } = await this.supabaseQuery(() => assignmentsQuery);
-
-          if (assignmentsError) throw assignmentsError;
+            if (classId !== 'all') {
+              assignmentsQuery = assignmentsQuery.eq('class_id', classId);
+            }
+            return assignmentsQuery;
+          });
 
           if (!assignments || assignments.length === 0) {
             reportDisplay.innerHTML = '<p style="color: var(--muted); text-align: center; padding: 40px;">No assignments found for selected filters</p>';
@@ -27404,18 +27574,21 @@
           const submissions = [];
           for (let i = 0; i < assignmentIds.length; i += CHUNK_SIZE) {
             const chunk = assignmentIds.slice(i, i + CHUNK_SIZE);
-            let submissionsQuery = this.auth.supabase
-              .from('assignment_submissions')
-              .select('*')
-              .in('assignment_id', chunk)
-              .eq('status', 'graded');
+            // Paginate within each chunk — a 100-assignment chunk across a full
+            // roster can easily exceed the 1000-row cap.
+            const chunkSubs = await this.fetchAllRows((from, to) => {
+              let submissionsQuery = this.auth.supabase
+                .from('assignment_submissions')
+                .select('*')
+                .in('assignment_id', chunk)
+                .eq('status', 'graded')
+                .range(from, to);
 
-            if (studentId !== 'all') {
-              submissionsQuery = submissionsQuery.eq('student_id', studentId);
-            }
-
-            const { data: chunkSubs, error: submissionsError } = await this.supabaseQuery(() => submissionsQuery);
-            if (submissionsError) throw submissionsError;
+              if (studentId !== 'all') {
+                submissionsQuery = submissionsQuery.eq('student_id', studentId);
+              }
+              return submissionsQuery;
+            });
             if (chunkSubs && chunkSubs.length) submissions.push(...chunkSubs);
           }
 
@@ -28552,21 +28725,21 @@
           let records = [];
 
           if (type === 'class') {
-            // Query class attendance
-            let query = this.auth.supabase
-              .from('class_attendance')
-              .select('*')
-              .gte('date', startDate)
-              .lte('date', endDate)
-              .order('date', { ascending: false });
+            // Query class attendance (paginated so large date ranges aren't capped at 1000)
+            records = await this.fetchAllRows((from, to) => {
+              let query = this.auth.supabase
+                .from('class_attendance')
+                .select('*')
+                .gte('date', startDate)
+                .lte('date', endDate)
+                .order('date', { ascending: false })
+                .range(from, to);
 
-            if (studentId !== 'all') query = query.eq('student_id', studentId);
-            if (classId !== 'all') query = query.eq('class_id', classId);
-            if (status !== 'all') query = query.eq('status', status);
-
-            const { data, error } = await query;
-            if (error) throw error;
-            records = data || [];
+              if (studentId !== 'all') query = query.eq('student_id', studentId);
+              if (classId !== 'all') query = query.eq('class_id', classId);
+              if (status !== 'all') query = query.eq('status', status);
+              return query;
+            });
 
             // Fetch class info separately (no FK relationship)
             const classIds = [...new Set(records.map(r => r.class_id).filter(Boolean))];
@@ -28585,20 +28758,20 @@
               });
             }
           } else {
-            // Query daily attendance
-            let query = this.auth.supabase
-              .from('daily_attendance')
-              .select('*')
-              .gte('date', startDate)
-              .lte('date', endDate)
-              .order('date', { ascending: false });
+            // Query daily attendance (paginated so large date ranges aren't capped at 1000)
+            records = await this.fetchAllRows((from, to) => {
+              let query = this.auth.supabase
+                .from('daily_attendance')
+                .select('*')
+                .gte('date', startDate)
+                .lte('date', endDate)
+                .order('date', { ascending: false })
+                .range(from, to);
 
-            if (studentId !== 'all') query = query.eq('student_id', studentId);
-            if (status !== 'all') query = query.eq('status', status);
-
-            const { data, error } = await query;
-            if (error) throw error;
-            records = data || [];
+              if (studentId !== 'all') query = query.eq('student_id', studentId);
+              if (status !== 'all') query = query.eq('status', status);
+              return query;
+            });
           }
 
           // Get student info for all records
@@ -28776,10 +28949,10 @@
 
             html += `
               <tr style="border-bottom: 1px solid var(--border);">
-                <td style="padding: 12px;">${new Date(record.date).toLocaleDateString()}</td>
-                <td style="padding: 12px; font-weight: 600;">${studentName}</td>
-                <td style="padding: 12px;">${student.grade_level || 'N/A'}</td>
-                ${type === 'class' ? `<td style="padding: 12px;">${record.class?.name || 'Unknown'}</td>` : ''}
+                <td style="padding: 12px;">${new Date(record.date + 'T12:00:00').toLocaleDateString()}</td>
+                <td style="padding: 12px; font-weight: 600;">${this.escapeHtml(studentName)}</td>
+                <td style="padding: 12px;">${this.escapeHtml(student.grade_level || 'N/A')}</td>
+                ${type === 'class' ? `<td style="padding: 12px;">${this.escapeHtml(record.class?.name || 'Unknown')}</td>` : ''}
                 ${type === 'class' ? `<td style="padding: 12px; text-align: center;">${record.period || '-'}</td>` : ''}
                 <td style="padding: 12px; text-align: center;">
                   <span style="padding: 4px 8px; border-radius: 4px; background: ${record.status === 'present' ? 'rgba(139, 255, 176, 0.2)' : record.status === 'absent' ? 'rgba(255, 106, 106, 0.2)' : 'rgba(255, 211, 106, 0.2)'};">
@@ -28787,7 +28960,7 @@
                   </span>
                 </td>
                 ${type === 'daily' ? `<td style="padding: 12px; text-align: center;">${record.excused ? '✓ Yes' : '-'}</td>` : ''}
-                <td style="padding: 12px; color: var(--muted); font-size: 13px;">${record.notes || record.excuse_note || '-'}</td>
+                <td style="padding: 12px; color: var(--muted); font-size: 13px;">${this.escapeHtml(record.notes || record.excuse_note || '-')}</td>
               </tr>
             `;
           });
@@ -29535,7 +29708,7 @@
                 <select id="enrollment-year-filter" style="padding: 8px 12px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);"
                         onchange="app._enrollmentFilters.schoolYear = this.value; app.renderEnrollmentDashboard();">
                   <option value="all">All Years</option>
-                  ${schoolYears.map(y => `<option value="${y}" ${filters.schoolYear === y ? 'selected' : ''}>${y}</option>`).join('')}
+                  ${schoolYears.map(y => `<option value="${this.escapeHtml(y)}" ${filters.schoolYear === y ? 'selected' : ''}>${this.escapeHtml(y)}</option>`).join('')}
                 </select>
                 <input type="text" placeholder="Search student or parent name..." value="${this.escapeHtml(filters.search)}"
                        style="padding: 8px 12px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text); flex: 1; min-width: 200px;"
@@ -29587,7 +29760,7 @@
           <div style="background: var(--card); border-radius: 12px; max-width: 700px; width: 100%; max-height: 90vh; overflow-y: auto; padding: 24px; position: relative;">
             <button onclick="document.getElementById('enrollment-detail-modal').remove()" style="position: absolute; top: 12px; right: 16px; background: none; border: none; color: var(--muted); font-size: 24px; cursor: pointer;">&times;</button>
             <h2 style="margin: 0 0 4px;">Application ${this.escapeHtml(app.application_number)}</h2>
-            <p style="color: var(--muted); margin: 0 0 20px; font-size: 13px;">${app.application_type === 're-enrollment' ? 'Re-Enrollment' : 'New Application'} &bull; ${app.school_year}</p>
+            <p style="color: var(--muted); margin: 0 0 20px; font-size: 13px;">${app.application_type === 're-enrollment' ? 'Re-Enrollment' : 'New Application'} &bull; ${this.escapeHtml(app.school_year)}</p>
 
             <!-- Tabs -->
             <div style="display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--border); padding-bottom: 8px;" id="enrollment-detail-tabs">
@@ -29601,7 +29774,7 @@
             <div id="enrollment-tab-student" class="enrollment-tab-content">
               <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
                 <div><span style="color: var(--muted); font-size: 12px;">Name</span><br>${this.escapeHtml(app.student_first_name)} ${this.escapeHtml(app.student_last_name)}</div>
-                <div><span style="color: var(--muted); font-size: 12px;">Date of Birth</span><br>${app.student_dob}</div>
+                <div><span style="color: var(--muted); font-size: 12px;">Date of Birth</span><br>${this.escapeHtml(app.student_dob)}</div>
                 <div><span style="color: var(--muted); font-size: 12px;">Gender</span><br>${this.escapeHtml(app.student_gender || 'Not specified')}</div>
                 <div><span style="color: var(--muted); font-size: 12px;">Grade Applying</span><br>${this.escapeHtml(app.student_grade_applying)}</div>
                 <div><span style="color: var(--muted); font-size: 12px;">Enrollment Type</span><br>${app.student_enrollment_type === 'homeschool' ? 'Homeschool' : 'Full-Time'}</div>
@@ -29685,7 +29858,7 @@
                 <div style="margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border);">
                   <span style="color: var(--muted); font-size: 12px;">Parent Signature</span>
                   <p style="font-style: italic; font-size: 16px;">${this.escapeHtml(app.parent_signature)}</p>
-                  <span style="color: var(--muted); font-size: 12px;">Signed: ${app.signature_date}</span>
+                  <span style="color: var(--muted); font-size: 12px;">Signed: ${this.escapeHtml(app.signature_date)}</span>
                 </div>
               ` : ''}
             </div>
@@ -29970,7 +30143,15 @@
           a.parent1_email, a.parent1_phone, new Date(a.created_at).toLocaleDateString()
         ]);
 
-        const csv = [headers, ...rows].map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+        // CSV formula-injection guard: a cell starting with = + - @ (or a leading
+        // tab/CR that a spreadsheet trims) can execute as a formula in Excel/Sheets.
+        // Prefix such applicant-controlled values with a single quote to neutralize.
+        const csvCell = (c) => {
+          let s = String(c ?? '');
+          if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+          return `"${s.replace(/"/g, '""')}"`;
+        };
+        const csv = [headers, ...rows].map(r => r.map(csvCell).join(',')).join('\n');
         const blob = new Blob([csv], { type: 'text/csv' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -30667,10 +30848,10 @@
                           <td>
                             ${user.id !== this.userInfo.user.id ? `
                               <div style="display: flex; gap: 5px; flex-wrap: wrap;">
-                                <button class="btn btn-danger small" onclick="app.demoteFromAdmin('${user.id}', '${user.first_name} ${user.last_name}')">
+                                <button class="btn btn-danger small" onclick="app.demoteFromAdmin('${user.id}', '${this.jsAttr((user.first_name || '') + ' ' + (user.last_name || ''))}')">
                                   Demote to Teacher
                                 </button>
-                                <button class="btn btn-danger small" style="background: #8b0000;" onclick="app.hardDeleteUserAccount('${user.id}', '${user.first_name} ${user.last_name}', 'admin')">
+                                <button class="btn btn-danger small" style="background: #8b0000;" onclick="app.hardDeleteUserAccount('${user.id}', '${this.jsAttr((user.first_name || '') + ' ' + (user.last_name || ''))}', 'admin')">
                                   Delete
                                 </button>
                               </div>
@@ -30703,13 +30884,13 @@
                           <td>${user.email || 'N/A'}</td>
                           <td>${user.username}</td>
                           <td style="display: flex; gap: 5px; flex-wrap: wrap;">
-                            <button class="btn btn-primary small" onclick="app.promoteToAdmin('${user.id}', '${user.first_name} ${user.last_name}')">
+                            <button class="btn btn-primary small" onclick="app.promoteToAdmin('${user.id}', '${this.jsAttr((user.first_name || '') + ' ' + (user.last_name || ''))}')">
                               Promote to Admin
                             </button>
-                            <button class="btn btn-danger small" onclick="app.deactivateTeacher('${user.id}', '${user.first_name} ${user.last_name}')">
+                            <button class="btn btn-danger small" onclick="app.deactivateTeacher('${user.id}', '${this.jsAttr((user.first_name || '') + ' ' + (user.last_name || ''))}')">
                               Deactivate
                             </button>
-                            <button class="btn btn-danger small" style="background: #8b0000;" onclick="app.hardDeleteUserAccount('${user.id}', '${user.first_name} ${user.last_name}', 'teacher')">
+                            <button class="btn btn-danger small" style="background: #8b0000;" onclick="app.hardDeleteUserAccount('${user.id}', '${this.jsAttr((user.first_name || '') + ' ' + (user.last_name || ''))}', 'teacher')">
                               Delete
                             </button>
                           </td>
@@ -30740,10 +30921,10 @@
                           <td>${user.email || 'N/A'}</td>
                           <td>${user.username}</td>
                           <td style="display: flex; gap: 5px; flex-wrap: wrap;">
-                            <button class="btn btn-primary small" onclick="app.reactivateTeacher('${user.id}', '${user.first_name} ${user.last_name}')">
+                            <button class="btn btn-primary small" onclick="app.reactivateTeacher('${user.id}', '${this.jsAttr((user.first_name || '') + ' ' + (user.last_name || ''))}')">
                               Reactivate
                             </button>
-                            <button class="btn btn-danger small" style="background: #8b0000;" onclick="app.hardDeleteUserAccount('${user.id}', '${user.first_name} ${user.last_name}', 'teacher')">
+                            <button class="btn btn-danger small" style="background: #8b0000;" onclick="app.hardDeleteUserAccount('${user.id}', '${this.jsAttr((user.first_name || '') + ' ' + (user.last_name || ''))}', 'teacher')">
                               Delete
                             </button>
                           </td>
@@ -30790,10 +30971,10 @@
                                 ` : '<span style="color: var(--muted); font-size: 12px;">No children linked</span>'}
                               </td>
                               <td style="display: flex; gap: 5px; flex-wrap: wrap;">
-                                <button class="btn btn-secondary small" onclick="app.showLinkChildToParentModal('${parent.id}', '${parent.first_name} ${parent.last_name}')">
+                                <button class="btn btn-secondary small" onclick="app.showLinkChildToParentModal('${parent.id}', '${this.jsAttr((parent.first_name || '') + ' ' + (parent.last_name || ''))}')">
                                   ➕ Link Child
                                 </button>
-                                <button class="btn btn-danger small" style="background: #8b0000;" onclick="app.hardDeleteUserAccount('${parent.id}', '${parent.first_name} ${parent.last_name}', 'parent')">
+                                <button class="btn btn-danger small" style="background: #8b0000;" onclick="app.hardDeleteUserAccount('${parent.id}', '${this.jsAttr((parent.first_name || '') + ' ' + (parent.last_name || ''))}', 'parent')">
                                   Delete
                                 </button>
                               </td>
@@ -30831,7 +31012,7 @@
                             <td>${user.enrollment_type === 'homeschool' ? 'Homeschool' : 'Full-Time'}</td>
                             <td>${user.username}</td>
                             <td>
-                              <button class="btn btn-danger small" style="background: #8b0000;" onclick="app.hardDeleteUserAccount('${user.id}', '${user.first_name} ${user.last_name}', 'student')">
+                              <button class="btn btn-danger small" style="background: #8b0000;" onclick="app.hardDeleteUserAccount('${user.id}', '${this.jsAttr((user.first_name || '') + ' ' + (user.last_name || ''))}', 'student')">
                                 Delete
                               </button>
                             </td>
@@ -30868,7 +31049,7 @@
                             <td>${user.activation_grade_level || 'N/A'}</td>
                             <td>${user.username}</td>
                             <td>
-                              <button class="btn btn-danger small" style="background: #8b0000;" onclick="app.hardDeleteUserAccount('${user.id}', '${user.first_name} ${user.last_name}', 'student')">
+                              <button class="btn btn-danger small" style="background: #8b0000;" onclick="app.hardDeleteUserAccount('${user.id}', '${this.jsAttr((user.first_name || '') + ' ' + (user.last_name || ''))}', 'student')">
                                 Delete
                               </button>
                             </td>
@@ -31014,7 +31195,7 @@
                          style="padding: 12px 15px; border-bottom: 1px solid var(--border); cursor: pointer; display: flex; justify-content: space-between; align-items: center;"
                          onmouseover="this.style.background='rgba(106, 169, 255, 0.1)'"
                          onmouseout="this.style.background='transparent'"
-                         onclick="app.linkChildToParent('${parentId}', '${student.id}', '${parentName}', '${student.first_name} ${student.last_name}')">
+                         onclick="app.linkChildToParent('${parentId}', '${student.id}', '${parentName}', '${this.jsAttr((student.first_name || '') + ' ' + (student.last_name || ''))}')">
                       <div>
                         <strong>${student.first_name} ${student.last_name}</strong>
                         ${student.account_status === 'inactive' ? '<span style="background: var(--muted); color: var(--bg); padding: 2px 6px; border-radius: 4px; font-size: 10px; margin-left: 8px;">INACTIVE</span>' : ''}
@@ -31181,7 +31362,7 @@
             email: email,
             password: tempPassword,
             options: {
-              emailRedirectTo: `${window.location.origin}/student-portal/confirm.html?teacher_setup=true`,
+              emailRedirectTo: `${window.location.origin}/confirm.html?teacher_setup=true`,
               data: {
                 first_name: firstName,
                 last_name: lastName,
@@ -31413,7 +31594,7 @@
                                 <button class="btn btn-secondary small" onclick="app.viewStudentDetails('${student.id}')">
                                   View Details
                                 </button>
-                                <button class="btn btn-primary small" onclick="app.activateStudent('${student.id}', '${student.first_name} ${student.last_name}')">
+                                <button class="btn btn-primary small" onclick="app.activateStudent('${student.id}', '${this.jsAttr((student.first_name || '') + ' ' + (student.last_name || ''))}')">
                                   Activate
                                 </button>
                               </div>
@@ -31752,7 +31933,7 @@
                     ` : ''}
                     <div style="display: flex; gap: 5px;">
                       <button class="btn btn-secondary small" onclick="app.openClass('${cls.id}')">View Class</button>
-                      <button class="btn btn-danger small" onclick="app.removeStudentFromClass('${studentId}', '${cls.id}', '${student.first_name} ${student.last_name}', '${cls.name}')">Remove from Class</button>
+                      <button class="btn btn-danger small" onclick="app.removeStudentFromClass('${studentId}', '${cls.id}', '${this.jsAttr((student.first_name || '') + ' ' + (student.last_name || ''))}', '${cls.name}')">Remove from Class</button>
                     </div>
                   </div>
                 `;
@@ -31844,15 +32025,15 @@
 
             <div style="display: flex; gap: 10px; flex-wrap: wrap;">
               ${student.account_status === 'inactive' ? `
-                <button class="btn btn-primary" onclick="app.activateStudent('${studentId}', '${student.first_name} ${student.last_name}')">
+                <button class="btn btn-primary" onclick="app.activateStudent('${studentId}', '${this.jsAttr((student.first_name || '') + ' ' + (student.last_name || ''))}')">
                   ✅ Activate Account
                 </button>
               ` : `
-                <button class="btn btn-danger" onclick="app.deactivateStudent('${studentId}', '${student.first_name} ${student.last_name}')">
+                <button class="btn btn-danger" onclick="app.deactivateStudent('${studentId}', '${this.jsAttr((student.first_name || '') + ' ' + (student.last_name || ''))}')">
                   ⊘ Deactivate Account
                 </button>
               `}
-              <button class="btn btn-warning" onclick="app.showMarkStudentAsPastModal('${studentId}', '${student.first_name} ${student.last_name}')">
+              <button class="btn btn-warning" onclick="app.showMarkStudentAsPastModal('${studentId}', '${this.jsAttr((student.first_name || '') + ' ' + (student.last_name || ''))}')">
                 Mark as Past Student
               </button>
             </div>
@@ -32089,7 +32270,8 @@
         const selectedDays = Array.from(checkboxes).map(cb => parseInt(cb.value));
 
         try {
-          await this.auth.supabase.from('student_schedule').delete().eq('student_id', studentId);
+          const { error: deleteError } = await this.auth.supabase.from('student_schedule').delete().eq('student_id', studentId);
+          if (deleteError) throw deleteError;
 
           if (selectedDays.length > 0) {
             const scheduleData = selectedDays.map(day => ({ student_id: studentId, day_of_week: day }));
@@ -33173,7 +33355,7 @@
     
             await this.supabaseQuery(() => this.auth.supabase.auth.signOut({ scope: 'local' }));
             alert('Account deleted successfully');
-            window.location.href = '/student-portal/index.html';
+            window.location.href = '/index.html';
             
         } catch (error) {
             console.error('Error deleting account:', error);
@@ -34283,7 +34465,7 @@
                       return `
                         <tr data-student-id="${student.id}" style="border-bottom: 1px solid var(--border);">
                           <td style="padding: 12px;">
-                            <div style="font-weight: 600;">${student.first_name} ${student.last_name}</div>
+                            <div style="font-weight: 600;">${this.escapeHtml(student.first_name)} ${this.escapeHtml(student.last_name)}</div>
                             <div style="font-size: 12px; color: var(--muted);">${student.enrollment_type === 'homeschool' ? 'Homeschool' : 'Full-Time'}</div>
                           </td>
                           <td style="padding: 12px;">${student.grade_level || 'N/A'}</td>
@@ -34420,11 +34602,18 @@
         if (!statusSelect || !statusSelect.value) return;
 
         const status = statusSelect.value;
+        // Every row object MUST have the SAME set of keys — PostgREST rejects a
+        // bulk upsert whose objects have differing key sets. Default the optional
+        // columns to null/false and fill them in below where applicable.
         const record = {
           student_id: studentId,
           date: date,
           status: status,
-          marked_by: this.userInfo.user.id
+          marked_by: this.userInfo.user.id,
+          arrived_at_period: null,
+          left_at_period: null,
+          excused: false,
+          excuse_note: null
         };
 
         // Add period details if applicable
@@ -34828,7 +35017,7 @@
                       return `
                         <tr data-student-id="${student.id}" style="border-bottom: 1px solid var(--border);">
                           <td style="padding: 12px;">
-                            <div style="font-weight: 600;">${student.first_name} ${student.last_name}</div>
+                            <div style="font-weight: 600;">${this.escapeHtml(student.first_name)} ${this.escapeHtml(student.last_name)}</div>
                           </td>
                           <td style="padding: 12px;">${student.grade_level || 'N/A'}</td>
                           <td style="padding: 12px; text-align: center;">
@@ -34937,7 +35126,10 @@
           deleteQuery = deleteQuery.is('period', null);
         }
 
-        await deleteQuery;
+        // Abort before we destroy anything if the delete failed — otherwise a
+        // failed insert after a successful delete would wipe the roster's marks.
+        const { error: deleteError } = await deleteQuery;
+        if (deleteError) throw deleteError;
 
         // Insert new records
         const { error } = await this.auth.supabase
@@ -34969,12 +35161,14 @@
           deleteSessionQuery = deleteSessionQuery.is('period', null);
         }
 
-        await deleteSessionQuery;
+        const { error: deleteSessionError } = await deleteSessionQuery;
+        if (deleteSessionError) throw deleteSessionError;
 
         // Insert new session
-        await this.auth.supabase
+        const { error: sessionInsertError } = await this.auth.supabase
           .from('class_attendance_sessions')
           .insert(sessionData);
+        if (sessionInsertError) throw sessionInsertError;
 
         const periodLabel = period ? ` for Period ${period}` : '';
         this.showNotification(`Saved attendance for ${attendanceRecords.length} students${periodLabel}`, 'success');
@@ -36886,6 +37080,29 @@
       document.body.appendChild(modal);
     }
 
+    // Expand a recurring booking into its individual occurrence dates
+    // (local-date arithmetic, YYYY-MM-DD) from startDate through endDate.
+    // Hard-capped at 400 iterations to avoid a runaway loop on bad input.
+    _expandBookingOccurrences(startDate, endDate, type) {
+      const parse = (s) => { const [y, m, d] = String(s).split('-').map(Number); return new Date(y, m - 1, d); };
+      const fmt = (dt) => `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+      const start = parse(startDate), end = parse(endDate);
+      if (isNaN(start) || isNaN(end) || end < start) return [String(startDate)];
+      const out = [];
+      const cur = new Date(start);
+      let guard = 0;
+      while (cur <= end && guard < 400) {
+        out.push(fmt(cur));
+        if (type === 'daily') cur.setDate(cur.getDate() + 1);
+        else if (type === 'weekly') cur.setDate(cur.getDate() + 7);
+        else if (type === 'biweekly') cur.setDate(cur.getDate() + 14);
+        else if (type === 'monthly') cur.setMonth(cur.getMonth() + 1);
+        else break;
+        guard++;
+      }
+      return out;
+    }
+
     async checkBookingConflict(facilityId, bookingDate, startTime, endTime) {
       try {
         const { data, error } = await this.supabaseQuery(() => this.auth.supabase
@@ -36920,13 +37137,33 @@
         return;
       }
 
-      // Check for conflicts
+      // Check for conflicts (first / start occurrence)
       const hasConflict = await this.checkBookingConflict(facilityId, bookingDate, startTime, endTime);
       if (hasConflict) {
         const msg = document.getElementById('booking-conflict-msg');
         if (msg) { msg.style.display = 'block'; msg.textContent = 'Time conflict! Another booking exists for this room at the selected date/time.'; }
         this.showNotification('Booking conflict detected', 'error');
         return;
+      }
+
+      // Recurring bookings: validate EVERY occurrence, not just the first, so
+      // weeks 2..N can't silently double-book. Abort the whole booking if any
+      // occurrence conflicts.
+      const recurrenceType = document.getElementById('booking-recurrence').value;
+      const recurrenceEnd = recurrenceType !== 'none' ? (document.getElementById('booking-recurrence-end-date').value || null) : null;
+      if (recurrenceType !== 'none' && recurrenceEnd) {
+        const occurrences = this._expandBookingOccurrences(bookingDate, recurrenceEnd, recurrenceType);
+        // occurrences[0] is the start date, already checked above
+        for (let i = 1; i < occurrences.length; i++) {
+          const occ = occurrences[i];
+          const occConflict = await this.checkBookingConflict(facilityId, occ, startTime, endTime);
+          if (occConflict) {
+            const msg = document.getElementById('booking-conflict-msg');
+            if (msg) { msg.style.display = 'block'; msg.textContent = `Time conflict on ${occ} — another booking already exists for this room on one of the recurring dates. Adjust the time or the recurrence end date.`; }
+            this.showNotification(`Recurring booking conflict on ${occ}`, 'error');
+            return;
+          }
+        }
       }
 
       // Determine status based on room's requires_approval
@@ -37478,6 +37715,15 @@
         return;
       }
 
+      // Double-award guard: reference_id is null so the ledger dedup doesn't
+      // apply, and a fast double-click would award twice. Block re-entry per
+      // student and disable the button for the duration (mirror of _bankBusy).
+      this._quickAwardBusy = this._quickAwardBusy || new Set();
+      if (this._quickAwardBusy.has(studentId)) return;
+      this._quickAwardBusy.add(studentId);
+      const awardBtn = document.querySelector(`button[onclick="app.quickAwardRTC('${studentId}')"]`);
+      if (awardBtn) awardBtn.disabled = true;
+
       try {
         const { data, error } = await this.auth.supabase.rpc('process_rtc_transaction', {
           p_user_id: studentId,
@@ -37516,6 +37762,9 @@
       } catch (error) {
         console.error('Error awarding RTC:', error);
         this.showNotification('Error: ' + error.message, 'error');
+      } finally {
+        this._quickAwardBusy.delete(studentId);
+        if (awardBtn) awardBtn.disabled = false;
       }
     }
 
@@ -39796,11 +40045,11 @@
     async _loadNotesPeople() {
       // Cached roster of all people + classes used for name resolution
       if (this._notesPeople) return this._notesPeople;
-      const [profilesRes, classesRes] = await Promise.all([
-        this.auth.supabase.from('user_profiles').select('id, first_name, last_name, user_type'),
+      const [profiles, classesRes] = await Promise.all([
+        this.fetchAllRows((from, to) => this.auth.supabase
+          .from('user_profiles').select('id, first_name, last_name, user_type').range(from, to)),
         this.auth.supabase.from('classes').select('id, name')
       ]);
-      const profiles = profilesRes.data || [];
       const people = {};
       profiles.forEach(p => {
         people[p.id] = {
@@ -39823,16 +40072,27 @@
       const { people, classes } = await this._loadNotesPeople();
       const results = { rows: [], warnings: [] };
 
-      const queries = [
-        ['unified', sb.from('notes').select('*').order('created_at', { ascending: false })],
-        ['student', sb.from('student_notes').select('*').order('created_at', { ascending: false })],
-        ['private-student', sb.from('teacher_private_notes').select('*').order('created_at', { ascending: false })],
-        ['class', sb.from('teacher_class_notes').select('*').order('created_at', { ascending: false })]
+      const sources = [
+        ['unified', 'notes'],
+        ['student', 'student_notes'],
+        ['private-student', 'teacher_private_notes'],
+        ['class', 'teacher_class_notes']
       ];
-      const settled = await Promise.all(queries.map(([, q]) => q));
+      // Paginate each source (years of notes can exceed the 1000-row cap).
+      // Keep per-source error tolerance: a missing legacy/unified table must
+      // not abort the others.
+      const settled = await Promise.all(sources.map(async ([source, table]) => {
+        try {
+          const data = await this.fetchAllRows((from, to) => sb.from(table)
+            .select('*').order('created_at', { ascending: false }).range(from, to));
+          return { source, data, error: null };
+        } catch (error) {
+          return { source, data: null, error };
+        }
+      }));
 
-      settled.forEach((res, i) => {
-        const source = queries[i][0];
+      settled.forEach((res) => {
+        const source = res.source;
         if (res.error) {
           if (source === 'unified') {
             results.warnings.push('The unified `notes` table is unavailable — run the unified_notes_system.sql migration. (' + res.error.message + ')');
@@ -42686,10 +42946,10 @@
       } else if ((m = normalized.match(/(\d+)\s+(day|days|week|weeks|month|months|year|years)\s+ago/))) {
         days = parseInt(m[1]) * unitDays[m[2]]; label = `${m[1]} ${m[2]} ago`;
       } else if (/\byesterday\b/.test(normalized)) {
-        const d = new Date(Date.now() - dayMs).toISOString().slice(0, 10);
+        const d = this._isoDaysAgo(1);
         return { sinceDate: d, untilDate: d, label: 'yesterday' };
       } else if (/\btoday\b/.test(normalized)) {
-        const d = new Date().toISOString().slice(0, 10);
+        const d = this._isoDaysAgo(0);
         return { sinceDate: d, untilDate: d, label: 'today' };
       } else if ((m = normalized.match(/\b(?:on|last|this)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/))) {
         // most recent occurrence of that weekday (today counts)
@@ -42698,12 +42958,11 @@
         const now = new Date();
         let back = (now.getDay() - target + 7) % 7;
         if (/\blast\b/.test(m[0]) && back === 0) back = 7;
-        const d = new Date(Date.now() - back * dayMs).toISOString().slice(0, 10);
+        const d = this._isoDaysAgo(back);
         return { sinceDate: d, untilDate: d, label: m[1].charAt(0).toUpperCase() + m[1].slice(1) + ' (' + d + ')' };
       }
       if (days === null) return null;
-      const since = new Date(Date.now() - days * dayMs);
-      const iso = since.toISOString().slice(0, 10);
+      const iso = this._isoDaysAgo(days);
       return { sinceDate: iso, label };
     }
 
@@ -43019,6 +43278,15 @@
       const hasCurrency = /\brtc\b/.test(normalized);
       const blockMutation = hasInfoNoun && !hasCurrency;
 
+      // Question / hypothetical / past-tense phrasings ("should i give eli 5 rtc?",
+      // "did you move 5 from eli to jordan?", "has jordan spent 5 rtc?") must NEVER
+      // auto-execute a balance change. Any leading interrogative auxiliary or a
+      // trailing "?" flags the utterance as a question so the RTC mutators
+      // (ADD/SUBTRACT/TRANSFER/GROUP/BUY) drop out and it falls through to a
+      // read/clarification instead of silently mutating.
+      const isQuestion = /^(should|shall|did|does|do|has|have|had|is|are|was|were|would|could|can|may|might|will|am)\b/.test(normalized.trim())
+        || /\?\s*$/.test(normalized.trim());
+
       const patterns = [
         // UNDO_RTC (uses context, no student/amount needed)
         {
@@ -43047,7 +43315,7 @@
         // notIfAmount: avoids stealing "give X N too" from ADD_RTC
         {
           intent: 'RELAY_ACTION',
-          w: 7, notIfAmount: true, notIfReadQuery: true,
+          w: 7, notIfAmount: true, notIfReadQuery: true, notIfCommandVerb: true,
           patterns: [
             /^(same|do (it|that)|that)\s+(for|to|with)\s+\w/,
             /^(and|also)\s+(for|to)\s+\w/,
@@ -43262,7 +43530,7 @@
         // SUBTRACT_RTC ("\d+ from X") and ADD_RTC.
         {
           intent: 'TRANSFER_RTC',
-          w: 4, notIfNoteCommand: true, notIfBank: true,
+          w: 4, notIfNoteCommand: true, notIfBank: true, notIfQuestion: true,
           patterns: [
             /\d+\s+(rtc\s+)?from\b.+\bto\b/,
             /\b(transfer|move|send)\b.*\d+/,
@@ -43276,7 +43544,7 @@
         // class?" if no group context exists — no hard guard needed here.
         {
           intent: 'GROUP_RTC',
-          w: 5, notIfNoteCommand: true, notIfBank: true,
+          w: 5, notIfNoteCommand: true, notIfBank: true, notIfQuestion: true,
           patterns: [
             /\b(add|remove|subtract|deduct|take)\b.*\b(everyone|everybody|each|all (of )?(them|those|these)|them all|(those|these) (students|kids)|the (whole )?class)\b/,
             /\b(everyone|everybody|each( of them)?|all (of )?(them|those|these))\b.*\d+\s*(rtc)?\b/,
@@ -43316,7 +43584,7 @@
         // VIEW_STUDENT catch-alls below would shadow these)
         {
           intent: 'SUBTRACT_RTC',
-          w: 3, notIfNoteCommand: true, notIfBank: true,
+          w: 3, notIfNoteCommand: true, notIfBank: true, notIfQuestion: true,
           patterns: [
             // a LEADING subtract verb is decisive ("charge X 5 for buying a
             // treat" normalizes to "remove X 5 …" — the trailing "for buying"
@@ -43343,7 +43611,7 @@
         // ADD_RTC
         {
           intent: 'ADD_RTC',
-          w: 3, notIfNoteCommand: true, notIfBank: true,
+          w: 3, notIfNoteCommand: true, notIfBank: true, notIfQuestion: true,
           patterns: [
             // w:5 so "give X N for participating" wins over SET_GRADE's w:5
             { re: /(give|award|add) .* \d+/, w: 5 },
@@ -43360,7 +43628,7 @@
         // The executor asks "how much?" — no requiresAmount guard needed here
         {
           intent: 'ADD_RTC',
-          w: 5, notIfNoteCommand: true, notIfBank: true,
+          w: 5, notIfNoteCommand: true, notIfBank: true, notIfQuestion: true,
           patterns: [
             { re: /\b(give|award|add|throw|toss)\b.+\b(some|a (little|few|bit of|couple|handful))\b.*(rtc|gold|coin)/i, w: 5 },
             { re: /\b(give|award|add)\b.+\b(some|a little|a few)\b.*(rtc|gold)/i, w: 5 }
@@ -44000,6 +44268,15 @@
       const isReadQuery = /^(what|how|show|who|can i|can you|could|is there|do you|are there)\b/i.test(normalized)
         || /\b(balance|history|grades?|notes?|attendance|info|contact|homework|records?)\b.*\b(too|as well)\s*[.!?]*$/.test(normalized);
 
+      // An explicit write command (attendance status, enroll, grade, award verb
+      // with a named target) must beat the bare "…too/as well" relay, so
+      // "mark eli present too" marks attendance instead of re-running the last
+      // write. EXCEPTION: relay-pronoun forms ("do it/that for X", "give that to
+      // X", "same for X") are genuine relays even though they contain a verb.
+      const hasRelayPronoun = /\b(it|that|this|same|likewise|the same)\b/.test(normalized);
+      const hasExplicitWriteVerb = /\b(mark|present|absent|tardy|late|excuse[d]?|enroll|unenroll|drop|withdraw|set|assign|award|give|add|grant|deduct|dock|subtract|remove|fine|penaliz|note|record|log)\b/.test(normalized);
+      const isExplicitCommand = hasExplicitWriteVerb && !hasRelayPronoun;
+
       // Confidence scoring: every intent whose guards pass and whose required
       // entities are present BIDS on the sentence. Score = base 10 + pattern
       // weight w (how topical/specific the matched pattern is) + a bonus per
@@ -44024,6 +44301,11 @@
         if (pattern.requiresAmount && !entities.amount) continue;
         if (pattern.notIfAmount && entities.amount) continue;
         if (pattern.notIfReadQuery && isReadQuery) continue;
+        // Explicit write command (e.g. "mark eli present too") outranks the
+        // "…too" relay; relay-pronoun forms are exempted via isExplicitCommand.
+        if (pattern.notIfCommandVerb && isExplicitCommand) continue;
+        // Question/hypothetical phrasing must not fire a balance mutation.
+        if (pattern.notIfQuestion && isQuestion) continue;
         if (pattern.requiresFromTo && !hasFromTo) continue;
         if (pattern.requiresPair && !(hasPair || hasFromTo)) continue;
         if (pattern.requiresSince && !entities.sinceDate) continue;
@@ -44084,7 +44366,7 @@
       // +/- sign) with an amount, but a required piece (usually the student)
       // is missing. Return the intent anyway so _executeIntent can ask for
       // the specific missing piece instead of a generic "I'm not sure".
-      if (entities.amount && !blockMutation) {
+      if (entities.amount && !blockMutation && !isQuestion) {
         const subAction = /(^|\s)-\d|\b(remove|subtract|deduct|minus|take)\b/.test(normalized);
         const addAction = /(^|\s)\+\d|\b(add|plus)\b|\d+ (rtc )?(to|for)\b/.test(normalized);
         if (subAction) return { intent: 'SUBTRACT_RTC', confidence: 0.7 };
@@ -46461,28 +46743,38 @@
         this.terminalPrintError(`${src.full_name} only has ${src.rtc_balance || 0} RTC — not enough to transfer ${amount}.`);
         return;
       }
-      const rpc = (userId, amt, desc) => this._rtcTxn({ userId, amount: amt, type: 'admin_adjustment', description: desc, refType: 'transfer' });
-      try {
-        await rpc(src.id, -amount, `Transfer to ${dst.full_name}`);
-      } catch (e1) { this.terminalPrintError('Transfer failed: ' + e1.message); return; }
-      try {
-        await rpc(dst.id, amount, `Transfer from ${src.full_name}`);
-      } catch (e2) {
-        // Roll the first leg back so we never leave a half-done transfer
-        await rpc(src.id, amount, `Reversal: failed transfer to ${dst.full_name}`).catch(() => {});
-        this.terminalPrintError('Transfer failed on the receiving side (rolled back): ' + e2.message);
-        return;
-      }
       const srcAfter = (src.rtc_balance || 0) - amount;
       const dstAfter = (dst.rtc_balance || 0) + amount;
-      this._pushUndo(`the transfer of ${amount} RTC from ${src.full_name} to ${dst.full_name}`, async () => {
-        await rpc(src.id, amount, `Undo transfer to ${dst.full_name}`);
-        await rpc(dst.id, -amount, `Undo transfer from ${src.full_name}`);
-      });
-      this._naturalSuccess([
-        `Moved ${amount} RTC from ${src.full_name} (now ${srcAfter}) to ${dst.full_name} (now ${dstAfter}).`,
-        `Done — ${dst.full_name} received ${amount} RTC from ${src.full_name}. Balances: ${src.full_name} ${srcAfter}, ${dst.full_name} ${dstAfter}.`
-      ]);
+
+      // Sensitive write: confirm before moving any balance (the docs describe
+      // transfers as confirmation-gated — this makes the code match).
+      const doIt = async () => {
+        const rpc = (userId, amt, desc) => this._rtcTxn({ userId, amount: amt, type: 'admin_adjustment', description: desc, refType: 'transfer' });
+        try {
+          await rpc(src.id, -amount, `Transfer to ${dst.full_name}`);
+        } catch (e1) { this.terminalPrintError('Transfer failed: ' + e1.message); return; }
+        try {
+          await rpc(dst.id, amount, `Transfer from ${src.full_name}`);
+        } catch (e2) {
+          // Roll the first leg back so we never leave a half-done transfer
+          await rpc(src.id, amount, `Reversal: failed transfer to ${dst.full_name}`).catch(() => {});
+          this.terminalPrintError('Transfer failed on the receiving side (rolled back): ' + e2.message);
+          return;
+        }
+        this._pushUndo(`the transfer of ${amount} RTC from ${src.full_name} to ${dst.full_name}`, async () => {
+          await rpc(src.id, amount, `Undo transfer to ${dst.full_name}`);
+          await rpc(dst.id, -amount, `Undo transfer from ${src.full_name}`);
+        });
+        this._naturalSuccess([
+          `Moved ${amount} RTC from ${src.full_name} (now ${srcAfter}) to ${dst.full_name} (now ${dstAfter}).`,
+          `Done — ${dst.full_name} received ${amount} RTC from ${src.full_name}. Balances: ${src.full_name} ${srcAfter}, ${dst.full_name} ${dstAfter}.`
+        ]);
+      };
+
+      this._requestConfirmation(
+        `Transfer <b>${amount} RTC</b> from <b>${this.escapeHtml(src.full_name)}</b> (${src.rtc_balance || 0} → ${srcAfter}) to <b>${this.escapeHtml(dst.full_name)}</b> (${dst.rtc_balance || 0} → ${dstAfter})`,
+        doIt
+      );
     }
 
     async terminalCompareStudents(entities) {
@@ -46860,7 +47152,15 @@
     }
 
     _isoDaysAgo(n) {
-      return new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
+      // LOCAL date n days ago (YYYY-MM-DD). Must use local getFullYear/Month/Date
+      // rather than toISOString() (UTC) — otherwise after ~5pm Pacific "today"
+      // rolls forward a day and attendance/date lookups target the wrong day.
+      const d = new Date();
+      d.setDate(d.getDate() - n);
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
     }
 
     _letterToPct(letter) {
@@ -49378,57 +49678,69 @@
 
       const student = students[0];
 
-      // Award/deduct via the ledger RPC (negative amounts -> admin_adjustment;
-      // rejections surface as errors instead of silently failing)
-      const txData = await this._rtcTxn({ userId: student.id, amount, description: reason });
-
+      // Sensitive write: pause for confirmation before mutating a balance, like
+      // the other RTC/grade/attendance writes. The actual ledger change, undo
+      // registration, and auto-note all run only after the user confirms.
       const newBalance = (student.rtc_balance || 0) + amount;
-      this._addRecentStudent({...student, rtc_balance: newBalance});
+      const reasonSuffix = (reason && reason !== 'Terminal award') ? ` — ${this.escapeHtml(reason)}` : '';
+      const summary = amount < 0
+        ? `Deduct <b>${-amount} RTC</b> from <b>${this.escapeHtml(student.full_name)}</b> (${student.rtc_balance || 0} → ${newBalance})${reasonSuffix}`
+        : `Award <b>${amount} RTC</b> to <b>${this.escapeHtml(student.full_name)}</b> (${student.rtc_balance || 0} → ${newBalance})${reasonSuffix}`;
 
-      // Auto-note: save before pushing undo so we can capture the note ID for rollback
-      let autoNoteId = null;
-      if (reason !== 'Terminal award') {
-        this.terminalPrint(`  💬 ${reason}`, '#97a2b0');
-        const noteText = `${amount > 0 ? '+' + amount : amount} RTC — ${reason}`;
-        try {
-          const saved = await this._insertNote({
-            studentId: student.id, classId: null,
-            category: 'general', sentiment: 'neutral', visibility: 'staff',
-            note: noteText
-          });
-          autoNoteId = saved?.id || null;
-        } catch (err) {
-          if (!/does not exist|schema cache/i.test(err.message || '')) console.warn('auto-note failed:', err);
+      const doIt = async () => {
+        // Award/deduct via the ledger RPC (negative amounts -> admin_adjustment;
+        // rejections surface as errors instead of silently failing)
+        const txData = await this._rtcTxn({ userId: student.id, amount, description: reason });
+
+        this._addRecentStudent({...student, rtc_balance: newBalance});
+
+        // Auto-note: save before pushing undo so we can capture the note ID for rollback
+        let autoNoteId = null;
+        if (reason !== 'Terminal award') {
+          this.terminalPrint(`  💬 ${reason}`, '#97a2b0');
+          const noteText = `${amount > 0 ? '+' + amount : amount} RTC — ${reason}`;
+          try {
+            const saved = await this._insertNote({
+              studentId: student.id, classId: null,
+              category: 'general', sentiment: 'neutral', visibility: 'staff',
+              note: noteText
+            });
+            autoNoteId = saved?.id || null;
+          } catch (err) {
+            if (!/does not exist|schema cache/i.test(err.message || '')) console.warn('auto-note failed:', err);
+          }
         }
-      }
 
-      // Register the reversal — reverses both the RTC transaction AND the auto-note
-      const txId = txData?.transaction_id || null;
-      this._pushUndo(`${amount > 0 ? '+' : ''}${amount} RTC for ${student.full_name}`, async () => {
-        await this._rtcTxn({ userId: student.id, amount: -amount, type: 'admin_adjustment',
-          description: `Undo of ${amount > 0 ? '+' : ''}${amount} RTC${txId ? ' (txn ' + txId + ')' : ''}`,
-          refId: txId, refType: 'undo' });
-        this._addRecentStudent({ id: student.id, full_name: student.full_name, rtc_balance: newBalance - amount });
-        if (autoNoteId) {
-          await this.auth.supabase.from('notes').delete().eq('id', autoNoteId).then(({ error }) => {
-            if (error) console.warn('undo auto-note delete failed:', error);
-          });
+        // Register the reversal — reverses both the RTC transaction AND the auto-note
+        const txId = txData?.transaction_id || null;
+        this._pushUndo(`${amount > 0 ? '+' : ''}${amount} RTC for ${student.full_name}`, async () => {
+          await this._rtcTxn({ userId: student.id, amount: -amount, type: 'admin_adjustment',
+            description: `Undo of ${amount > 0 ? '+' : ''}${amount} RTC${txId ? ' (txn ' + txId + ')' : ''}`,
+            refId: txId, refType: 'undo' });
+          this._addRecentStudent({ id: student.id, full_name: student.full_name, rtc_balance: newBalance - amount });
+          if (autoNoteId) {
+            await this.auth.supabase.from('notes').delete().eq('id', autoNoteId).then(({ error }) => {
+              if (error) console.warn('undo auto-note delete failed:', error);
+            });
+          }
+        });
+
+        // Phase 4: Natural varied responses (different phrasing for subtractions)
+        if (amount < 0) {
+          this._naturalSuccess([
+            `Removed ${-amount} RTC from ${student.full_name}. New balance: ${newBalance}`,
+            `Done! ${student.full_name} now has ${newBalance} RTC (was ${student.rtc_balance || 0})`
+          ]);
+        } else {
+          this._naturalSuccess([
+            `Done! ${student.full_name} now has ${newBalance} RTC (was ${student.rtc_balance || 0})`,
+            `Added ${amount} RTC to ${student.full_name}. New balance: ${newBalance}`,
+            `Nice! ${student.full_name} earned ${amount} RTC. Total: ${newBalance}`
+          ]);
         }
-      });
+      };
 
-      // Phase 4: Natural varied responses (different phrasing for subtractions)
-      if (amount < 0) {
-        this._naturalSuccess([
-          `Removed ${-amount} RTC from ${student.full_name}. New balance: ${newBalance}`,
-          `Done! ${student.full_name} now has ${newBalance} RTC (was ${student.rtc_balance || 0})`
-        ]);
-      } else {
-        this._naturalSuccess([
-          `Done! ${student.full_name} now has ${newBalance} RTC (was ${student.rtc_balance || 0})`,
-          `Added ${amount} RTC to ${student.full_name}. New balance: ${newBalance}`,
-          `Nice! ${student.full_name} earned ${amount} RTC. Total: ${newBalance}`
-        ]);
-      }
+      this._requestConfirmation(summary, doIt);
     }
 
     async terminalSetRTC(args) {
@@ -49651,9 +49963,13 @@
     }
 
     escapeHtml(text) {
-      const div = document.createElement('div');
-      div.textContent = text;
-      return div.innerHTML;
+      if (text == null) return '';
+      return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
     }
 
     // ==================== IRL PURCHASES ====================

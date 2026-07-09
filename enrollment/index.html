@@ -1325,6 +1325,30 @@
       }
 
       // ---- Validation ----
+      // ---- E5: client-side format validators (defense-in-depth; RLS still governs server-side) ----
+      isValidEmail(v) {
+        return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test((v || '').trim());
+      }
+      isValidPhone(v) {
+        const digits = (v || '').replace(/\D/g, '');
+        return digits.length >= 10 && digits.length <= 15;
+      }
+      isValidZip(v) {
+        return /^\d{5}(-\d{4})?$/.test((v || '').trim());
+      }
+      // Returns null if the DOB is sane, otherwise a human-readable reason.
+      dobError(dob) {
+        const d = new Date(`${dob}T00:00:00`);
+        if (isNaN(d.getTime())) return 'is not a valid date';
+        const now = new Date();
+        if (d > now) return 'cannot be in the future';
+        let age = now.getFullYear() - d.getFullYear();
+        const m = now.getMonth() - d.getMonth();
+        if (m < 0 || (m === 0 && now.getDate() < d.getDate())) age--;
+        if (age < 3 || age > 21) return 'must be a plausible K-12 age (3-21 years)';
+        return null;
+      }
+
       validateStep(step) {
         const errors = [];
         switch (step) {
@@ -1334,26 +1358,39 @@
               if (!s.first_name.trim()) errors.push(`First name is required${label}`);
               if (!s.last_name.trim()) errors.push(`Last name is required${label}`);
               if (!s.dob) errors.push(`Date of birth is required${label}`);
+              else {
+                const dErr = this.dobError(s.dob);
+                if (dErr) errors.push(`Date of birth ${dErr}${label}`);
+              }
               if (!s.grade_applying) errors.push(`Grade is required${label}`);
+              if (s.email && s.email.trim() && !this.isValidEmail(s.email)) errors.push(`Student email is not a valid email address${label}`);
+              if (s.phone && s.phone.trim() && !this.isValidPhone(s.phone)) errors.push(`Student phone must be a valid phone number${label}`);
             });
             if (!this.formData.family.address_line1.trim()) errors.push('Address is required');
             if (!this.formData.family.city.trim()) errors.push('City is required');
             if (!this.formData.family.state.trim()) errors.push('State is required');
             if (!this.formData.family.zip.trim()) errors.push('ZIP code is required');
+            else if (!this.isValidZip(this.formData.family.zip)) errors.push('ZIP code must be 5 digits (or ZIP+4, e.g. 83814-1234)');
             break;
           case 2:
             const p1 = this.formData.family.parent1;
             if (!p1.first_name.trim()) errors.push('Parent 1 first name is required');
             if (!p1.last_name.trim()) errors.push('Parent 1 last name is required');
             if (!p1.email.trim()) errors.push('Parent 1 email is required');
+            else if (!this.isValidEmail(p1.email)) errors.push('Parent 1 email is not a valid email address');
             if (!p1.phone.trim()) errors.push('Parent 1 phone is required');
+            else if (!this.isValidPhone(p1.phone)) errors.push('Parent 1 phone must be a valid phone number');
             if (!p1.relationship) errors.push('Parent 1 relationship is required');
+            const p2 = this.formData.family.parent2;
+            if (p2.email && p2.email.trim() && !this.isValidEmail(p2.email)) errors.push('Parent 2 email is not a valid email address');
+            if (p2.phone && p2.phone.trim() && !this.isValidPhone(p2.phone)) errors.push('Parent 2 phone must be a valid phone number');
             break;
           case 3:
             this.formData.emergency_contacts.forEach((c, i) => {
               if (!c.name.trim()) errors.push(`Emergency contact ${i + 1} name is required`);
               if (!c.relationship.trim()) errors.push(`Emergency contact ${i + 1} relationship is required`);
               if (!c.phone.trim()) errors.push(`Emergency contact ${i + 1} phone is required`);
+              else if (!this.isValidPhone(c.phone)) errors.push(`Emergency contact ${i + 1} phone must be a valid phone number`);
             });
             break;
           case 4:
@@ -1391,8 +1428,69 @@
         window.scrollTo({ top: 0, behavior: 'smooth' });
       }
 
+      // Build the row payload for a single student application.
+      buildApplicationRow(i, appNumber, familyId, schoolYear, today) {
+        const s = this.formData.students[i];
+        return {
+          application_number: appNumber,
+          school_year: schoolYear,
+          status: 'submitted',
+          application_type: this.isReEnrollment ? 're-enrollment' : 'new',
+          family_application_id: familyId,
+          existing_student_id: (i === 0 && this.existingStudentId) ? this.existingStudentId : null,
+          existing_parent_id: this.existingParentId || null,
+          student_first_name: s.first_name.trim(),
+          student_last_name: s.last_name.trim(),
+          student_dob: s.dob,
+          student_gender: s.gender || null,
+          student_grade_applying: s.grade_applying,
+          student_enrollment_type: s.enrollment_type,
+          student_email: s.email.trim() || null,
+          student_phone: s.phone.trim() || null,
+          student_previous_school: s.previous_school.trim() || null,
+          student_address_line1: this.formData.family.address_line1.trim(),
+          student_address_line2: this.formData.family.address_line2.trim() || null,
+          student_city: this.formData.family.city.trim(),
+          student_state: this.formData.family.state.trim(),
+          student_zip: this.formData.family.zip.trim(),
+          parent1_first_name: this.formData.family.parent1.first_name.trim(),
+          parent1_last_name: this.formData.family.parent1.last_name.trim(),
+          parent1_email: this.formData.family.parent1.email.trim(),
+          parent1_phone: this.formData.family.parent1.phone.trim(),
+          parent1_relationship: this.formData.family.parent1.relationship || null,
+          parent2_first_name: this.formData.family.parent2.first_name.trim() || null,
+          parent2_last_name: this.formData.family.parent2.last_name.trim() || null,
+          parent2_email: this.formData.family.parent2.email.trim() || null,
+          parent2_phone: this.formData.family.parent2.phone.trim() || null,
+          parent2_relationship: this.formData.family.parent2.relationship || null,
+          emergency_contacts: this.formData.emergency_contacts,
+          medical_allergies: this.formData.medical[i]?.allergies || null,
+          medical_conditions: this.formData.medical[i]?.conditions || null,
+          medical_medications: this.formData.medical[i]?.medications || null,
+          medical_dietary_restrictions: this.formData.medical[i]?.dietary_restrictions || null,
+          medical_physical_limitations: this.formData.medical[i]?.physical_limitations || null,
+          medical_emergency_instructions: this.formData.medical[i]?.emergency_instructions || null,
+          medical_doctor_name: this.formData.medical[i]?.doctor_name || null,
+          medical_doctor_phone: this.formData.medical[i]?.doctor_phone || null,
+          medical_insurance_provider: this.formData.medical[i]?.insurance_provider || null,
+          medical_insurance_policy: this.formData.medical[i]?.insurance_policy || null,
+          medical_notes: this.formData.medical[i]?.notes || null,
+          agreed_to_terms: this.formData.agreements.terms,
+          agreed_to_privacy: this.formData.agreements.privacy,
+          waiver_insurance: this.formData.agreements.waiver_insurance,
+          waiver_media_release: this.formData.agreements.waiver_media_release,
+          waiver_liability: this.formData.agreements.waiver_liability,
+          waiver_emergency_medical_auth: this.formData.agreements.waiver_emergency_medical_auth,
+          parent_signature: this.formData.agreements.signature.trim(),
+          signature_date: today
+        };
+      }
+
       // ---- Submit ----
       async submitApplication() {
+        // E6: guard against a double-click / concurrent re-entry creating a duplicate family.
+        if (this._submitting) return;
+
         this.saveCurrentStepData();
         const errors = this.validateStep(5);
         if (errors.length > 0) {
@@ -1400,100 +1498,73 @@
           return;
         }
 
-        // Disable submit button
+        this._submitting = true;
+
+        // Disable submit button immediately on click.
         const submitBtn = document.querySelector('.btn-submit');
         if (submitBtn) {
           submitBtn.disabled = true;
           submitBtn.textContent = 'Submitting...';
         }
 
+        // Track what actually landed in the DB so a mid-loop failure can be surfaced clearly
+        // instead of leaving a silent half-submitted family.
+        const insertedNumbers = [];
+        const insertedIds = [];
+
         try {
-          // Generate a shared family_application_id
+          // Fresh family id per submit so a retry never collides with a prior attempt.
           const familyId = crypto.randomUUID();
           const schoolYear = this.getSchoolYear();
           const today = new Date().toISOString().split('T')[0];
 
-          // Generate application numbers for each student
-          const appNumbers = [];
+          // E1 FIX: insert children ONE AT A TIME. generate_application_number returns
+          // MAX(existing number for this school year) + 1, so the previous child's row must
+          // already be committed before we generate the next number — otherwise every sibling
+          // gets the same number and the UNIQUE constraint rejects the whole submission.
           for (let i = 0; i < this.formData.students.length; i++) {
-            const { data: numData, error: numError } = await this.supabase.rpc('generate_application_number', {
+            const { data: appNumber, error: numError } = await this.supabase.rpc('generate_application_number', {
               p_school_year: schoolYear
             });
             if (numError) throw numError;
-            appNumbers.push(numData);
+
+            const row = this.buildApplicationRow(i, appNumber, familyId, schoolYear, today);
+
+            const { data: inserted, error: insErr } = await this.supabase
+              .from('enrollment_applications')
+              .insert(row)
+              .select('id, application_number')
+              .single();
+            if (insErr) throw insErr;
+
+            insertedNumbers.push(appNumber);
+            insertedIds.push(inserted.id);
           }
-
-          // Insert one row per student
-          const rows = this.formData.students.map((s, i) => ({
-            application_number: appNumbers[i],
-            school_year: schoolYear,
-            status: 'submitted',
-            application_type: this.isReEnrollment ? 're-enrollment' : 'new',
-            family_application_id: familyId,
-            existing_student_id: (i === 0 && this.existingStudentId) ? this.existingStudentId : null,
-            existing_parent_id: this.existingParentId || null,
-            student_first_name: s.first_name.trim(),
-            student_last_name: s.last_name.trim(),
-            student_dob: s.dob,
-            student_gender: s.gender || null,
-            student_grade_applying: s.grade_applying,
-            student_enrollment_type: s.enrollment_type,
-            student_email: s.email.trim() || null,
-            student_phone: s.phone.trim() || null,
-            student_previous_school: s.previous_school.trim() || null,
-            student_address_line1: this.formData.family.address_line1.trim(),
-            student_address_line2: this.formData.family.address_line2.trim() || null,
-            student_city: this.formData.family.city.trim(),
-            student_state: this.formData.family.state.trim(),
-            student_zip: this.formData.family.zip.trim(),
-            parent1_first_name: this.formData.family.parent1.first_name.trim(),
-            parent1_last_name: this.formData.family.parent1.last_name.trim(),
-            parent1_email: this.formData.family.parent1.email.trim(),
-            parent1_phone: this.formData.family.parent1.phone.trim(),
-            parent1_relationship: this.formData.family.parent1.relationship || null,
-            parent2_first_name: this.formData.family.parent2.first_name.trim() || null,
-            parent2_last_name: this.formData.family.parent2.last_name.trim() || null,
-            parent2_email: this.formData.family.parent2.email.trim() || null,
-            parent2_phone: this.formData.family.parent2.phone.trim() || null,
-            parent2_relationship: this.formData.family.parent2.relationship || null,
-            emergency_contacts: this.formData.emergency_contacts,
-            medical_allergies: this.formData.medical[i]?.allergies || null,
-            medical_conditions: this.formData.medical[i]?.conditions || null,
-            medical_medications: this.formData.medical[i]?.medications || null,
-            medical_dietary_restrictions: this.formData.medical[i]?.dietary_restrictions || null,
-            medical_physical_limitations: this.formData.medical[i]?.physical_limitations || null,
-            medical_emergency_instructions: this.formData.medical[i]?.emergency_instructions || null,
-            medical_doctor_name: this.formData.medical[i]?.doctor_name || null,
-            medical_doctor_phone: this.formData.medical[i]?.doctor_phone || null,
-            medical_insurance_provider: this.formData.medical[i]?.insurance_provider || null,
-            medical_insurance_policy: this.formData.medical[i]?.insurance_policy || null,
-            medical_notes: this.formData.medical[i]?.notes || null,
-            agreed_to_terms: this.formData.agreements.terms,
-            agreed_to_privacy: this.formData.agreements.privacy,
-            waiver_insurance: this.formData.agreements.waiver_insurance,
-            waiver_media_release: this.formData.agreements.waiver_media_release,
-            waiver_liability: this.formData.agreements.waiver_liability,
-            waiver_emergency_medical_auth: this.formData.agreements.waiver_emergency_medical_auth,
-            parent_signature: this.formData.agreements.signature.trim(),
-            signature_date: today
-          }));
-
-          const { error } = await this.supabase
-            .from('enrollment_applications')
-            .insert(rows);
-
-          if (error) throw error;
 
           // Show confirmation
           sessionStorage.removeItem('enrollment_draft');
-          this.showConfirmation(appNumbers);
+          this.showConfirmation(insertedNumbers);
 
         } catch (err) {
           console.error('Submission error:', err);
-          this.showErrors([`Submission failed: ${err.message}. Please try again or contact the school office.`]);
-          if (submitBtn) {
-            submitBtn.disabled = false;
-            submitBtn.textContent = 'Submit Application';
+          if (insertedIds.length > 0) {
+            // A partial family already landed in the DB. Do NOT re-enable submit — resubmitting
+            // the whole family would duplicate the students that succeeded. Tell the applicant
+            // exactly which ones went through so the office can reconcile the rest.
+            this.showErrors([
+              `Some of your students were saved (${insertedIds.length} of ${this.formData.students.length}) ` +
+              `under application number(s): ${insertedNumbers.join(', ')}, but a later student failed ` +
+              `(${err.message}). Please DO NOT resubmit the whole family — contact the school office with ` +
+              `the number(s) above so the remaining student(s) can be added.`
+            ]);
+          } else {
+            // Nothing was saved — safe to let the applicant retry.
+            this.showErrors([`Submission failed: ${err.message}. Please try again or contact the school office.`]);
+            this._submitting = false;
+            if (submitBtn) {
+              submitBtn.disabled = false;
+              submitBtn.textContent = 'Submit Application';
+            }
           }
         }
       }
@@ -1513,7 +1584,7 @@
             <div class="confirmation-icon">&#10003;</div>
             <h2>Application Submitted!</h2>
             <p style="color: var(--muted); max-width: 500px; margin: 0 auto 20px;">
-              Your enrollment application has been submitted successfully. You will receive a confirmation email at <strong style="color: var(--text);">${this.esc(this.formData.family.parent1.email)}</strong>.
+              Your enrollment application has been submitted successfully. Please save your application number(s) below &mdash; the admissions team will review your application and reach out to you at <strong style="color: var(--text);">${this.esc(this.formData.family.parent1.email)}</strong>.
             </p>
             <div class="app-numbers">
               <p style="color: var(--muted); font-size: 13px; margin-bottom: 8px;">Your Application Number(s):</p>

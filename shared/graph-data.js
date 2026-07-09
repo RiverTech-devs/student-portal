@@ -210,7 +210,14 @@ class CurriculumGraph {
         const idToName = {}; // map node ID to the name used as SKILL_TREE key
 
         for (const node of nodes) {
-            const displayName = node.legacy_name || node.title;
+            let displayName = node.legacy_name || node.title;
+            // Distinct nodes can share a display name (e.g. two "Linear
+            // Equations": M-114 and M24). Keying SKILL_TREE by name alone makes
+            // the second overwrite the first and merges their edges. Disambiguate
+            // colliding names by appending the unique node id so no node is lost.
+            if (Object.prototype.hasOwnProperty.call(SKILL_TREE, displayName)) {
+                displayName = `${displayName} (${node.id})`;
+            }
             idToName[node.id] = displayName;
 
             const visual = typeof node.visual === 'string' ? JSON.parse(node.visual) : (node.visual || {});
@@ -231,10 +238,15 @@ class CurriculumGraph {
             };
         }
 
-        // Build CONNECTIONS: only prerequisite_hard and leads_to edges within this domain
+        // Build CONNECTIONS: only prerequisite_hard edges within this domain.
+        // The viewer derives unlock gates (canUnlock) from CONNECTIONS, so soft
+        // deps (leads_to / reinforces / cross_domain) must NOT go here or they'd
+        // be treated as hard prerequisites. Mirrors viewer/3d/data.js, which
+        // builds prereqs from prerequisite_hard only. (Per TreeGraphPlan.txt,
+        // leads_to is a soft "suggested next" edge, not a gate.)
         const CONNECTIONS = [];
         for (const edge of edges) {
-            if (edge.edge_type === 'prerequisite_hard' || edge.edge_type === 'leads_to') {
+            if (edge.edge_type === 'prerequisite_hard') {
                 const fromName = idToName[edge.from_node];
                 const toName = idToName[edge.to_node];
                 if (fromName && toName) {

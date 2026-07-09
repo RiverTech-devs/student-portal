@@ -2222,10 +2222,22 @@ function sendSessionResults(){
     skillState: skillState(s),
   }));
   if (skillProgress.length===0) return;
-  const bktUpdates = Object.entries(State.bkt).map(([name,p])=>({
-    skill:name, p_mastered:p, last_evidence_at:new Date().toISOString(),
-    derivedState: p>=0.85?'mastered':(p>=0.6?'activated':'in_progress')
-  }));
+  // H-26: mirror skillState()'s genuine-attempt guard on the BKT-derived state,
+  // so a handful of correct answers can't push a skill to 'mastered' via this
+  // path (which otherwise derived state from p_mastered alone). Aggregate the
+  // answered count per curriculum (tree) skill from State.scores.
+  const answeredByTree = {};
+  for (const [sk,s] of Object.entries(State.scores)){
+    const tn = treeName(sk);
+    answeredByTree[tn] = (answeredByTree[tn]||0) + (s.total||0);
+  }
+  const bktUpdates = Object.entries(State.bkt).map(([name,p])=>{
+    const answered = answeredByTree[name]||0;
+    let derivedState = p>=0.85?'mastered':(p>=0.6?'activated':'in_progress');
+    if (derivedState==='mastered' && answered<3) derivedState='activated';
+    if (derivedState==='activated' && answered<2) derivedState='in_progress';
+    return { skill:name, p_mastered:p, last_evidence_at:new Date().toISOString(), derivedState };
+  });
   window.parent.postMessage({
     type:'DOGO_SESSION_COMPLETE', subject:SUBJECT, game:GAME,
     mode: ({placement:'placement',study:'study_hall',desk:'writing_desk',recall:'recall'}[State.mode]||State.mode),

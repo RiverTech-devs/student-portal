@@ -2111,7 +2111,7 @@
 <script src="../shared/arcade/LeaderboardManager.js"></script>
 <script src="../shared/arcade/RatingManager.js"></script>
 <script src="../shared/arcade/FriendsManager.js"></script>
-<script src="../shared/CosmeticRenderer.js"></script>
+<script src="../shared/CosmeticRenderer.js?v=10"></script>
 
 <!-- Game Modules -->
 <script src="riutiz/RiutizGame.js"></script>
@@ -2250,8 +2250,9 @@ async function joinLobbyById(lobbyId) {
   }
 
   try {
-    // Initialize multiplayer
-    multiplayer = new RiutizMultiplayer(window.arcade, CARD_DATA);
+    // Initialize multiplayer (H-29: constructor is (game, arcade) — must match startQuickMatch)
+    game = new RiutizGame({ mode: 'online-pvp', cardData: CARD_DATA });
+    multiplayer = new RiutizMultiplayer(game, window.arcade);
     await multiplayer.initialize();
 
     // Join the lobby (works with both ID and code)
@@ -2276,8 +2277,9 @@ async function handleBattleInvite(fromUserId) {
   }
 
   try {
-    // Initialize multiplayer
-    multiplayer = new RiutizMultiplayer(window.arcade, CARD_DATA);
+    // Initialize multiplayer (H-29: constructor is (game, arcade) — must match startQuickMatch)
+    game = new RiutizGame({ mode: 'online-pvp', cardData: CARD_DATA });
+    multiplayer = new RiutizMultiplayer(game, window.arcade);
     await multiplayer.initialize();
 
     // Create a lobby and send the invite response
@@ -2346,12 +2348,14 @@ async function selectStarterDeck(deckId) {
   const deck = collection.getStarterDecks().find(d => d.id === deckId);
 
   if (deckBuilder && deck) {
-    // Save the starter deck as their first deck
-    await deckBuilder.saveDeck({
-      name: deck.name,
-      cards: deckList,
-      primary_color: deck.color
-    });
+    // M4: saveDeck(name) persists deckBuilder.currentDeck — it does NOT accept a
+    // deck object (passing one made deckName an object and validation failed on an
+    // empty deck, so new students got no starter deck). Load the starter cards into
+    // the builder first, then save by name.
+    deckBuilder.currentDeck = Array.isArray(deckList) ? [...deckList] : [];
+    deckBuilder.deckName = deck.name;
+    deckBuilder.deckId = null;
+    await deckBuilder.saveDeck(deck.name);
   }
 
   status.textContent = 'Ready to play!';
@@ -2404,6 +2408,12 @@ function getRandomAIDeck() {
 }
 
 function startQuickGame() {
+  // M1/M3: this is an AI match. Clear any stale multiplayer/ranked state left
+  // over from a previous online session so beating the AI is never recorded as
+  // a ranked win.
+  multiplayer = null;
+  selectedGameMode = 'casual';
+
   // Get random AI deck
   const aiDeck = getRandomAIDeck();
 
@@ -2470,11 +2480,11 @@ function startQuickGame() {
     // Human player is seat 1 in AI matches; multiplayer seat mapping is
     // handled by RiutizMultiplayer when it ships results directly.
     if (window.arcade && typeof window.arcade.recordGameResult === 'function') {
-      const isMultiplayer = !!(typeof multiplayer !== 'undefined' && multiplayer);
       const won = e.detail.winner === 1;
+      // This is the vs-AI code path — an AI match is never ranked.
       window.arcade.recordGameResult('riutiz', {
         won,
-        ranked: isMultiplayer && selectedGameMode === 'ranked'
+        ranked: false
       }).catch(err => console.warn('Riutiz RTC award failed (non-blocking):', err));
     }
   });
@@ -2833,6 +2843,35 @@ function startMultiplayerGame(match) {
   // Set opponent name
   const opponent = multiplayer.sync.getOpponent();
   document.getElementById('opponent-name').textContent = opponent?.display_name || 'Opponent';
+
+  // M3: wire game end -> result recording. Previously no gameOver listener was
+  // attached here, so MultiplayerSync.endMatch (the only place a multiplayer /
+  // ranked result is recorded) never had a caller and legitimate MP wins were
+  // never counted. endMatch marks the Firebase match 'completed' and records
+  // THIS client's win/loss via arcade.recordGameResult with the real match mode.
+  // The _resultRecorded guard makes it fire at most once per match.
+  //
+  // NOTE (still open): this reliably records the result for whichever client's
+  // own engine fires gameOver. Guaranteeing the opponent's client also records
+  // its result (host-authoritative completion + recording off the
+  // onMatchStatusChange('completed') path) needs deeper work on the sync layer
+  // and is left as a follow-up.
+  game.addEventListener('gameOver', (e) => {
+    ui.showVictoryScreen(
+      e.detail.winner,
+      game.state.players[1].points,
+      game.state.players[2].points
+    );
+
+    if (multiplayer && multiplayer.sync && !multiplayer._resultRecorded) {
+      multiplayer._resultRecorded = true;
+      const finalState = typeof game.getSerializableState === 'function'
+        ? game.getSerializableState()
+        : null;
+      multiplayer.sync.endMatch(e.detail.winner, finalState)
+        .catch(err => console.warn('Riutiz MP result record failed (non-blocking):', err));
+    }
+  });
 
   // Show game
   ui.showGameScreen();

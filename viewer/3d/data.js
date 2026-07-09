@@ -34,10 +34,27 @@ const DOMAIN_META = {
 
 // Resolve the merged JSON relative to this module so the viewer works
 // regardless of how it's iframed.
-const url = new URL('../../data/compiled/math_merged.json', import.meta.url);
-const res = await fetch(url);
-if (!res.ok) throw new Error(`Failed to load merged graph: ${res.status} ${res.statusText}`);
-const merged = await res.json();
+let merged;
+try {
+  const url = new URL('../../data/compiled/math_merged.json', import.meta.url);
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  merged = await res.json();
+} catch (e) {
+  // Without this, any fetch/parse failure blanks the viewer silently. Surface
+  // a visible message so the failure is diagnosable, then halt (the module
+  // cannot build DOMAINS without the graph).
+  const msg = `Failed to load curriculum graph: ${(e && e.message) || e}`;
+  console.error('[3D viewer]', msg);
+  if (typeof document !== 'undefined') {
+    const el = document.createElement('div');
+    el.style.cssText = 'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:24px;background:#020208;color:#e6e6f0;font:16px system-ui,sans-serif;text-align:center;z-index:99999;';
+    el.textContent = msg;
+    if (document.body) document.body.appendChild(el);
+    else document.addEventListener('DOMContentLoaded', () => document.body.appendChild(el));
+  }
+  throw e;
+}
 
 // Index edges by `to` so we can build per-skill prereqs in one pass.
 const prereqsByTo = new Map();
