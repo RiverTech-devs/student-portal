@@ -1,10 +1,89 @@
 # Audit & Hardening Notes
 
 Living status doc for the multi-session audit pass on the Student Portal in
-preparation for school deployment. Updated 2026-04-15.
+preparation for school deployment. Updated 2026-07-13.
 
 For per-session commit-by-commit detail, see `git log`. This file is the
-"where do we stand" summary.
+"where do we stand" summary. The full 2026-07-09 audit report (findings with
+`file:line` + failure scenarios, feature breakdown, and market comparison)
+lives in `AUDIT_2026-07-09.md`.
+
+---
+
+## 2026-07-09 full audit + 2026-07-13 remediation
+
+An 8-pass parallel audit (frontend, portal core, Riven/RTC, Supabase backend,
+games, enrollment/tools/viewers, plus feature inventory and market research)
+found **4 critical + ~30 high + ~40 medium** findings. Fixes landed in commit
+`4dbb04d` (2026-07-13). **Frontend fixes are live via GitHub Pages; the backend
+migrations and edge-function change were applied to Supabase on 2026-07-13.**
+
+**Applied / fixed:**
+- **RTC economy hole closed** — `earn_skill` was uncapped and the mastery
+  trigger minted on free-text `skill_progress` rows → unbounded RTC. Now
+  rate-limited (200 RTC/24h) and gated on a real `curriculum_nodes` match;
+  new `award_skill_gauntlet_rtc` RPC is the legit gauntlet award path.
+  (Migration `zzzzzz_security_hardening_2026_07_09.sql`.)
+- **XSS family** — one quote-safe `escapeHtml` (+ `jsAttr`/`sanitizeLink`)
+  applied across messages, notifications, grading modals, discussion replies,
+  student names, enrollment-review UI, testing-center, and cosmetics.
+- **Notifications INSERT RLS tightened** (students self-only, staff broadcast)
+  — closes cross-user notification/`onclick` injection.
+- **Open email/phishing relay closed** — `send-notification-email` raw-recipient
+  branch now gated to staff/service-role.
+- **PIN exposure** — `admin_bank_list_students` masks PINs to admins only.
+- **Account activation loop** — `reactivate_student` now also sets
+  `can_login`/`account_status` (SECURITY DEFINER, bypasses the protect trigger).
+- **Enrollment** — sibling applications now submit (sequential inserts →
+  distinct app numbers); emergency medical info + waivers + phone now carried
+  into the student record on approval; client validation + duplicate-submit
+  guard added.
+- **Riven** — explicit command verbs beat the "…too" relay; question phrasings
+  no longer mutate balances; single award/transfer are confirmation-gated;
+  attendance dates computed in local time. RTC double-award guard added;
+  recurring facility bookings now conflict-check every occurrence.
+- **Broken redirects** — `/student-portal/...` paths corrected to root-relative
+  (auth confirm / teacher invite were 404ing on the live domain).
+- **Attendance** — delete-then-insert guarded; uniform daily-upsert payload.
+- **Pagination** — quarter/grade/attendance/notes/recipient/broadcast fetches
+  now page past the 1000-row cap.
+- **Games** — no more writing `locked` / demoting teacher-set mastery;
+  mastery-inflation gates; Riutiz MP constructor + ranked flags; Mathspire
+  PEMDAS/shield.
+- **Curriculum pipeline** — `master_tree.csv` dead-zone removed so a re-run no
+  longer drops the 22 English nodes (extractor reaches 262/680).
+- **Skill viewers** — dynamic canvas bounds (Technology nodes were off-screen),
+  duplicate-name disambiguation, `leads_to` no longer gates unlocks,
+  subject-scoped progress storage, NetworkGraph stable pagination.
+- **Hygiene** — untracked OS/editor/temp junk; cache-bust versions bumped.
+
+**⚠️ Still open — action required:**
+- **Rotate the exposed Gemini API key** (`AIzaSyBF9kLa911sOy1G1xT13lI2RSdSLY0wUII`).
+  It was removed from `games/teacher-challenge.html` source but is still in git
+  history and was live on a public repo — revoke/regenerate in Google Cloud.
+  The game now reads the key from `window.GEMINI_API_KEY`/localStorage and
+  degrades gracefully; long-term it should move to an edge-function proxy.
+
+**Deferred (need live-gradebook testing before it's safe to change):**
+- **M1** — admin grade report averages raw `points_earned` across differing
+  `max_points` and labels it `%`; needs the weighting model to compute a proper
+  weighted %.
+- **M6** — 8 scattered JS due-date-vs-`quarters.end_date` comparisons are
+  UTC/date-only (SQL twin already fixed); mirror the SQL fix once testable.
+
+**Verification owed:**
+- Run the Riven regression suite `../debug-tools/nlp-stress.js` (~240 checks) on
+  a machine that has it — the H-21/H-22 matcher changes passed `node --check`
+  here but that suite lives outside the repo.
+
+**Low-priority hygiene not yet done:**
+- ~2.4 MB unreferenced QA screenshots (`Trees/3D Skill Tree/qa_*.png`) and the
+  self-labeled `Trees/3D Skill Tree (Depricated)/` prototype dir are still
+  tracked/served — bulk-delete when convenient.
+- **H-12 note:** the `assignment_submissions` auth-uid-vs-profile-id split was
+  fixed on the *read* side (teacher/test-center now match either id). The write
+  path was intentionally left keyed as-is because that table's write RLS isn't
+  in the tracked migrations — revisit if a submission still shows the wrong id.
 
 ---
 
@@ -16,21 +95,27 @@ For per-session commit-by-commit detail, see `git log`. This file is the
 | Math Dojo lesson content (202 lessons) | ✅ Audited | 2 math errors fixed, 25 template-literal bugs fixed, 327 dead `practice` blocks stripped |
 | Math Dojo question generators (204) | ✅ Audited | 4 "answer-not-in-options" bugs fixed |
 | Sub-skill gating across 64 multi-sub-skill generators | ✅ Fixed | New `getUnlockedSubSkillTypes` helper enforces "test only what's been taught" |
-| Supabase RLS audit | ✅ Done | 2 RLS-less notification tables fixed (FERPA leak), split-id pattern fixed for skill_progress / skill_practice_sessions / notifications |
-| RTC economy | ✅ Verified | Existing `zz_harden_rtc_transaction_forge_vectors.sql` is comprehensive (sign checks, rate limit, role checks, dup prevention) |
+| Supabase RLS audit | ✅ Done | Notification tables RLS fixed (FERPA); split-id pattern fixed; **notifications INSERT tightened (self-only / staff-broadcast) 2026-07-13** |
+| RTC economy | ✅ Hardened | `zz_harden_...` covered earn_arcade; **2026-07-13 closed the earn_skill unbounded-mint hole** (rate limit + curriculum-node gate + `award_skill_gauntlet_rtc` RPC) |
+| XSS / output escaping | ✅ Fixed 2026-07-13 | Single quote-safe `escapeHtml`+`jsAttr`+`sanitizeLink` across portal, testing-center, enrollment review, cosmetics |
+| Riven NLP terminal | ✅ Hardened 2026-07-13 | Relay-verb precedence, question-phrasing write guard, confirmation-gated award/transfer, local-time dates. **Run `nlp-stress.js` to confirm** |
 | Grade calculation | ✅ Fixed | `calculate_quarter_grades` no longer treats no-academic-data as 0 (fixed D- bug) |
 | Gamification consolidation | ✅ Done | Riutiz wired to ArcadeManager; Math Dojo / Mathletics / Mathspire / Wasteland keep their existing progress paths |
 | Other 9 games content | ✅ Audited | 1 bug in Mathletics fixed (lifetime accuracy stuck at 100%) |
 | Compiled curriculum graph | ✅ Clean | 756 prerequisite edges, 0 cycles, 0 redundant, 0 orphans |
-| **Enrollment form validation** | ❌ Pending | `enrollment/index.html` (62k lines) not yet audited — tier-1 risk for admissions pipeline |
+| Enrollment form + review | ✅ Audited & fixed 2026-07-13 | Sibling-submit fixed, XSS in admin review escaped, client validation + dup guard, medical/waivers carried to profile on approval |
 
 ---
 
 ## Pending work
 
 ### High priority
-- **Enrollment form validation** — bad validation lets garbage into the
-  admissions pipeline. 62k-line standalone app, biggest unaudited surface.
+- **Rotate the exposed Gemini API key** (see the 2026-07-13 remediation section
+  above) — still live in git history on a public repo.
+
+### Deferred (need live-gradebook testing)
+- **M1** weighted-% grade report math; **M6** 8 UTC due-date/quarter-end JS
+  comparisons. See the 2026-07-13 section for detail.
 
 ### Repo-integrity gaps (production works but fresh deploys would fail)
 - `is_admin()` function used by 8+ policies but never `CREATE`d in any
