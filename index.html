@@ -806,6 +806,15 @@
                                         <span class="tag">All Levels</span>
                                     </div>
                                 </div>
+                                <div class="game-card" data-game="terminal-quest" style="border: 2px solid #5ac8e0;">
+                                    <div class="game-icon">⌨️</div>
+                                    <h3>GRIDFALL</h3>
+                                    <p>A terminal RPG — restore the Grid with real commands, real code &amp; real skills. Progress saves.</p>
+                                    <div class="game-tags">
+                                        <span class="tag">Training Center</span>
+                                        <span class="tag">All Levels</span>
+                                    </div>
+                                </div>
                                 <div class="game-card" data-game="life-skills" style="border: 2px solid #009688;">
                                     <div class="game-icon">🧭</div>
                                     <h3>Life Compass</h3>
@@ -4079,6 +4088,10 @@
                         url: 'games/training-log.html',
                         title: '🏃 Training Log'
                     },
+                    'terminal-quest': {
+                        url: 'games/terminal-quest.html',
+                        title: '⌨️ GRIDFALL'
+                    },
                     'mathletics': {
                         url: 'games/mathletics.html',
                         title: '🎯 Mathletics'
@@ -4771,6 +4784,16 @@
                         this.handlePELogEntry(event.source, event.data);
                         break;
 
+                    case 'TQ_LOAD':
+                        // GRIDFALL requesting the student's saved game
+                        this.sendTechQuestSave(event.source);
+                        break;
+
+                    case 'TQ_SAVE':
+                        // GRIDFALL persisting the save blob (identity from session)
+                        this.handleTechQuestSave(event.source, event.data);
+                        break;
+
                     default:
                         console.log('Unknown message from skill tree/game:', event.data.type);
                 }
@@ -5036,6 +5059,54 @@
                     if (error) console.error('Failed to save PE log entry:', error);
                 } catch (e) {
                     console.error('Error saving PE log entry:', e);
+                }
+            }
+
+            async sendTechQuestSave(source) {
+                // GRIDFALL startup: send the student's saved game (or null for a fresh start)
+                if (!this.portal.auth.isAuthenticated() || !source) return;
+                try {
+                    const profile = this.portal.auth.getUserInfo().profile;
+                    const { data, error } = await this.portal.auth.supabase
+                        .from('tech_quest_saves')
+                        .select('save')
+                        .eq('user_id', profile.id)
+                        .maybeSingle();
+                    if (error) console.error('Failed to load quest save:', error);
+                    // also send teacher-verified project rubric evidence so the game can
+                    // sync project-node mastery onto the skill tree (student owns those rows)
+                    const { data: projects, error: pErr } = await this.portal.auth.supabase
+                        .from('tech_project_log')
+                        .select('node_id, entry_type, detail, verified, recorded_at')
+                        .eq('user_id', profile.id)
+                        .order('recorded_at', { ascending: false })
+                        .limit(500);
+                    if (pErr) console.error('Failed to load project log:', pErr);
+                    source.postMessage({ type: 'TQ_SAVE_DATA', save: (data && data.save) || null, projects: projects || [] }, '*');
+                } catch (e) {
+                    console.error('Error sending quest save:', e);
+                }
+            }
+
+            async handleTechQuestSave(source, data) {
+                // Persist the GRIDFALL save blob. Identity from the session, never the message.
+                if (!this.portal.auth.isAuthenticated()) return;
+                try {
+                    const profile = this.portal.auth.getUserInfo().profile;
+                    if (!data.save || typeof data.save !== 'object') return;
+                    const blob = JSON.stringify(data.save);
+                    if (blob.length > 400000) {   // sanity cap ~400KB
+                        if (source) source.postMessage({ type: 'TQ_SAVED', ok: false, error: 'save too large' }, '*');
+                        return;
+                    }
+                    const { error } = await this.portal.auth.supabase
+                        .from('tech_quest_saves')
+                        .upsert({ user_id: profile.id, save: data.save, updated_at: new Date().toISOString() },
+                                { onConflict: 'user_id' });
+                    if (source) source.postMessage({ type: 'TQ_SAVED', ok: !error, error: error ? error.message : null }, '*');
+                    if (error) console.error('Failed to save quest:', error);
+                } catch (e) {
+                    console.error('Error saving quest:', e);
                 }
             }
 
