@@ -797,6 +797,15 @@
                                         <span class="tag">All Levels</span>
                                     </div>
                                 </div>
+                                <div class="game-card" data-game="training-log" style="border: 2px solid #ff6347;">
+                                    <div class="game-icon">🏃</div>
+                                    <h3>Training Log</h3>
+                                    <p>Your physical record — fitness tests, sport skills, activity streaks &amp; health knowledge</p>
+                                    <div class="game-tags">
+                                        <span class="tag">Training Center</span>
+                                        <span class="tag">All Levels</span>
+                                    </div>
+                                </div>
                                 <div class="game-card" data-game="life-skills" style="border: 2px solid #009688;">
                                     <div class="game-icon">🧭</div>
                                     <h3>Life Compass</h3>
@@ -4066,6 +4075,10 @@
                         url: 'games/bible-study.html',
                         title: '📖 Berean Hall'
                     },
+                    'training-log': {
+                        url: 'games/training-log.html',
+                        title: '🏃 Training Log'
+                    },
                     'mathletics': {
                         url: 'games/mathletics.html',
                         title: '🎯 Mathletics'
@@ -4748,6 +4761,16 @@
                         this.handleGauntletComplete(event.data);
                         break;
 
+                    case 'PE_REQUEST_LOG':
+                        // Training Log requesting the student's pe_training_log history
+                        this.sendPELogData(event.source);
+                        break;
+
+                    case 'PE_LOG_ENTRY':
+                        // Training Log student self-log (always unverified; identity from session)
+                        this.handlePELogEntry(event.source, event.data);
+                        break;
+
                     default:
                         console.log('Unknown message from skill tree/game:', event.data.type);
                 }
@@ -4949,6 +4972,70 @@
                     if (error) console.error('Failed to save skill progress:', error);
                 } catch (e) {
                     console.error('Error saving skill to Supabase:', e);
+                }
+            }
+
+            async sendPELogData(source) {
+                // Training Log startup: send pe_training_log history + grade level for benchmarks
+                if (!this.portal.auth.isAuthenticated() || !source) return;
+                try {
+                    const profile = this.portal.auth.getUserInfo().profile;
+                    const { data: entries, error } = await this.portal.auth.supabase
+                        .from('pe_training_log')
+                        .select('id, node_id, entry_type, value, unit, detail, notes, verified, recorded_at')
+                        .eq('user_id', profile.id)
+                        .order('recorded_at', { ascending: false })
+                        .limit(2000);
+                    if (error) console.error('Failed to load PE log:', error);
+                    source.postMessage({
+                        type: 'PE_LOG_DATA',
+                        entries: entries || [],
+                        gradeLevel: profile.grade_level || null
+                    }, '*');
+                } catch (e) {
+                    console.error('Error sending PE log data:', e);
+                }
+            }
+
+            async handlePELogEntry(source, data) {
+                // Student self-log from the Training Log. Identity comes from the session,
+                // never from the message; RLS additionally forces verified=false for students.
+                if (!this.portal.auth.isAuthenticated()) return;
+                try {
+                    const profile = this.portal.auth.getUserInfo().profile;
+                    const ALLOWED = ['measurement', 'checklist', 'rubric', 'activity', 'plan_review'];
+                    if (!data.node_id || !ALLOWED.includes(data.entry_type)) {
+                        if (source) source.postMessage({ type: 'PE_LOG_SAVED', ok: false, clientId: data.clientId, error: 'bad entry' }, '*');
+                        return;
+                    }
+                    const row = {
+                        user_id: profile.id,
+                        node_id: String(data.node_id),
+                        entry_type: data.entry_type,
+                        value: (typeof data.value === 'number' && isFinite(data.value)) ? data.value : null,
+                        unit: data.unit || null,
+                        detail: (data.detail && typeof data.detail === 'object') ? data.detail : {},
+                        notes: data.notes ? String(data.notes).slice(0, 500) : null,
+                        verified: false,
+                        recorded_by: profile.id
+                    };
+                    const { data: inserted, error } = await this.portal.auth.supabase
+                        .from('pe_training_log')
+                        .insert(row)
+                        .select('id, node_id, entry_type, value, unit, detail, notes, verified, recorded_at')
+                        .single();
+                    if (source) {
+                        source.postMessage({
+                            type: 'PE_LOG_SAVED',
+                            ok: !error,
+                            clientId: data.clientId,
+                            entry: inserted || null,
+                            error: error ? error.message : null
+                        }, '*');
+                    }
+                    if (error) console.error('Failed to save PE log entry:', error);
+                } catch (e) {
+                    console.error('Error saving PE log entry:', e);
                 }
             }
 
