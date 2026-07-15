@@ -13,6 +13,10 @@ calibration, and whether the challenge matches how YOU teach it. Review prioriti
 4. **Difficulty spot-checks**: play one quest per module at the grade band you know best.
 5. **The 80 project rubrics** in portal/tech-assessment.html (criteria authored per node) —
    same review as the PE rubrics: do the 4 criteria match how you actually assess builds?
+6. **The Codex lessons** (108, via the `learn` command in-game) — spot-read a few per strand:
+   the coding lessons (variables → switch → loops → OOP), the Mac/Windows platform lessons
+   (T-304 "Two Doors, One House" + the OS/shell lessons' platform mappings — confirm they
+   match the machines your students actually use), and the robotics math worked examples.
 
 Fix wording in games/terminal-quest.html (quest content is plainly readable JS near the
 bottom); structural changes should go through the autoplay harness before shipping.

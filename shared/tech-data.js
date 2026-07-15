@@ -1761,6 +1761,27 @@ window.TECH_DATA = {
    },
    "legacy_subject": "Programming"
   },
+  "T-304": {
+   "id": "T-304",
+   "title": "Mac & Windows Essentials",
+   "cluster": "Tech: Fluency",
+   "stage": "Fluency",
+   "stage_id": 2,
+   "grade_band": "3-5",
+   "game_skill": "Mac & Windows Essentials",
+   "mastery_criteria": "Student identifies equivalent features across macOS and Windows — Finder vs File Explorer, Cmd vs Ctrl shortcuts, Terminal vs PowerShell, .app vs .exe, Activity Monitor vs Task Manager — and picks the right action on either platform.",
+   "hard_prereqs": [
+    "T2"
+   ],
+   "soft_deps": [
+    "T1"
+   ],
+   "assess": {
+    "type": "quest",
+    "module": "concept"
+   },
+   "legacy_subject": "Programming"
+  },
   "T-RB001": {
    "id": "T-RB001",
    "title": "Mechanics Basics",
@@ -4109,6 +4130,7 @@ window.TECH_DATA = {
   "Command Line Basics": "T-301",
   "Regular Expressions": "T-302",
   "How the Internet Works": "T-303",
+  "Mac & Windows Essentials": "T-304",
   "Mechanics Basics": "T-RB001",
   "Circuits Basics": "T-RB002",
   "Coding Basics": "T-RB003",

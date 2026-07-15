@@ -29,10 +29,38 @@ T-302 Regular Expressions, T-303 How the Internet Works):
 | quest:web | 9 | written HTML/CSS | DOM assertions on a sandboxed preview (no scripts run) |
 | quest:sql | 3 | written SELECT queries | in-page mini-SQL engine, row comparison |
 | quest:robot | 20 | code driving a simulated robot (led/motor/sensors/wait) | simulation outcomes (timing, goal cells, stream tracking, output) |
-| quest:concept | 42 | TYPED answers — diagnose-from-output, calculate (Ohm's law, gear ratios, binary), trace code, fill-the-command | accept-lists / regex / numeric-with-tolerance |
+| quest:concept | 43 | TYPED answers — diagnose-from-output, calculate (Ohm's law, gear ratios, binary), trace code, fill-the-command | accept-lists / regex / numeric-with-tolerance |
 | project | 80 | physical builds, breadboarding, soldering, CAD, prototypes, presentations | teacher rubric (4 criteria × 1–4) in portal/tech-assessment.html |
 
+(Now 188 nodes / 108 quests — T-304 Mac & Windows Essentials added after the initial build.)
+
 **No multiple choice anywhere.**
+
+## The teaching layer — the Codex (`learn`)
+
+Every quest node has a paged in-terminal lesson (108 lessons, ~238KB): `learn` opens the
+active quest's lesson, `learn list` browses all topics by zone, `next`/`back` page through.
+Quests point to it on start; `hint` reminds the student it exists. Coverage is enforced by
+a validator (every quest node must have a lesson; page/line limits keep it terminal-readable).
+
+- **Coding concepts, comprehensively**: variables (let/const), all data types, operators,
+  statements/blocks/comments, if/else, **switch** (taught in the T10 lesson AND tested — a
+  switch step was added to The Pulse Sorter), for/while/for...of + loop pitfalls, functions/
+  parameters/return, scope, arrays, objects, string methods, debugging (error messages,
+  off-by-one, missing return), events/callbacks, classes & OOP (constructor/methods/extends),
+  the robot tick model, state machines, SQL clause by clause, and honest later-stage teaching
+  (routing, game loops, statistics, kNN/gradient descent).
+- **Mac AND Windows, everywhere it matters**: new node **T-304 "Mac & Windows Essentials"**
+  (Tech: Fluency, grade 3-5, own quest "Two Doors, One House" + flagship 6-page lesson)
+  systematically compares Finder/File Explorer, Cmd/Ctrl shortcuts, Spotlight/Start search,
+  Activity Monitor/Task Manager, Trash/Recycle Bin, .app/.dmg vs .exe/.msi, Terminal(zsh)/
+  PowerShell. All five OS lessons teach both platforms; every shell lesson includes a
+  "same job, other machines" mapping (PowerShell aliases vs dir/type, /Users vs C:\Users
+  path styles, cron/launchd vs Task Scheduler); web lessons give view-source/DevTools
+  chords for both.
+- Robotics-engineering lessons carry fully worked calculations (Ohm's law rearrangements,
+  series/parallel, mAh runtime, gear trains, wheel circumference) using different numbers
+  than their quests' answers.
 
 ## Persistence & progress
 
