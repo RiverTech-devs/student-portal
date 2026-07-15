@@ -32,7 +32,8 @@ T-302 Regular Expressions, T-303 How the Internet Works):
 | quest:concept | 43 | TYPED answers — diagnose-from-output, calculate (Ohm's law, gear ratios, binary), trace code, fill-the-command | accept-lists / regex / numeric-with-tolerance |
 | project | 80 | physical builds, breadboarding, soldering, CAD, prototypes, presentations | teacher rubric (4 criteria × 1–4) in portal/tech-assessment.html |
 
-(Now 188 nodes / 108 quests — T-304 Mac & Windows Essentials added after the initial build.)
+(Now 189 nodes / 109 quests — T-304 Mac & Windows Essentials and T-305 Linux Essentials
+added after the initial build; concept quests now 44, shell steps appear in T-305 too.)
 
 **No multiple choice anywhere.**
 
@@ -50,14 +51,16 @@ a validator (every quest node must have a lesson; page/line limits keep it termi
   off-by-one, missing return), events/callbacks, classes & OOP (constructor/methods/extends),
   the robot tick model, state machines, SQL clause by clause, and honest later-stage teaching
   (routing, game loops, statistics, kNN/gradient descent).
-- **Mac AND Windows, everywhere it matters**: new node **T-304 "Mac & Windows Essentials"**
-  (Tech: Fluency, grade 3-5, own quest "Two Doors, One House" + flagship 6-page lesson)
-  systematically compares Finder/File Explorer, Cmd/Ctrl shortcuts, Spotlight/Start search,
-  Activity Monitor/Task Manager, Trash/Recycle Bin, .app/.dmg vs .exe/.msi, Terminal(zsh)/
-  PowerShell. All five OS lessons teach both platforms; every shell lesson includes a
-  "same job, other machines" mapping (PowerShell aliases vs dir/type, /Users vs C:\Users
-  path styles, cron/launchd vs Task Scheduler); web lessons give view-source/DevTools
-  chords for both.
+- **Mac, Windows AND Linux, everywhere it matters**: platform chain T2 → **T-304 "Mac &
+  Windows Essentials"** (grade 3-5, quest "Two Doors, One House" + flagship 6-page lesson:
+  Finder/File Explorer, Cmd/Ctrl shortcuts, Spotlight/Start search, Activity Monitor/Task
+  Manager, Trash/Recycle Bin, .app/.dmg vs .exe/.msi, Terminal(zsh)/PowerShell) → **T-305
+  "Linux Essentials"** (grade 6-8, quest "The Third Door": cat /etc/os-release on a mock
+  Linux disk, /home, sudo/root, distros, open source, Android; flagship 6-page lesson:
+  kernel/distros, filesystem layout, bash — explicitly framing the Grid shell as native
+  Linux, apt/dnf + sudo, where Linux runs). OS lessons teach all three platforms
+  (System Monitor/htop/kill alongside the Mac/Windows tools); shell lessons map commands
+  across PowerShell/zsh/bash; path-style pages show /home/you vs /Users/you vs C:\Users\you.
 - Robotics-engineering lessons carry fully worked calculations (Ohm's law rearrangements,
   series/parallel, mAh runtime, gear trains, wheel circumference) using different numbers
   than their quests' answers.

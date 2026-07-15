@@ -1782,6 +1782,27 @@ window.TECH_DATA = {
    },
    "legacy_subject": "Programming"
   },
+  "T-305": {
+   "id": "T-305",
+   "title": "Linux Essentials",
+   "cluster": "Tech: Fluency",
+   "stage": "Fluency",
+   "stage_id": 2,
+   "grade_band": "6-8",
+   "game_skill": "Linux Essentials",
+   "mastery_criteria": "Student explains what Linux is (a free, open-source OS family), names where it runs (servers, Android, Raspberry Pi, Chromebooks), navigates its filesystem layout (/home, /etc, /usr), and uses the sudo, package-manager, and distro concepts — recognizing the Grid shell as Linux-style bash.",
+   "hard_prereqs": [
+    "T-304"
+   ],
+   "soft_deps": [
+    "T-301"
+   ],
+   "assess": {
+    "type": "quest",
+    "module": "concept"
+   },
+   "legacy_subject": "Programming"
+  },
   "T-RB001": {
    "id": "T-RB001",
    "title": "Mechanics Basics",
@@ -4131,6 +4152,7 @@ window.TECH_DATA = {
   "Regular Expressions": "T-302",
   "How the Internet Works": "T-303",
   "Mac & Windows Essentials": "T-304",
+  "Linux Essentials": "T-305",
   "Mechanics Basics": "T-RB001",
   "Circuits Basics": "T-RB002",
   "Coding Basics": "T-RB003",
