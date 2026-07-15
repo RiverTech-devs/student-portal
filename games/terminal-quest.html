@@ -547,7 +547,7 @@ greg('answer', 'answer <text> — answer the current question step', a => {
 greg('code', 'code — open the editor for the current coding step', () => {
   if (!activeQuest) return { err: 'No active quest.' };
   const step = QUESTS[activeQuest].steps[QState[activeQuest].step];
-  if (!['js','web','sql','robot'].includes(step.type)) return { err: 'The current step is not a coding step.' };
+  if (!['js','web','sql','robot','py'].includes(step.type)) return { err: 'The current step is not a coding step.' };
   openEditor(step);
   return { out: '' };
 });
@@ -637,7 +637,7 @@ function questInfo(){
   if (!activeQuest) return { err: 'No active quest. "quest" shows the log.' };
   const q = QUESTS[activeQuest], st = QState[activeQuest];
   const step = q.steps[st.step];
-  return { out: `ACTIVE: ${q.title}  (step ${st.step + 1}/${q.steps.length})\n\n${step.prompt}${step.type === 'concept' ? '\n\n(answer with: answer <text>)' : ''}${['js','web','sql','robot'].includes(step.type) ? '\n\n(open the editor with: code)' : ''}` };
+  return { out: `ACTIVE: ${q.title}  (step ${st.step + 1}/${q.steps.length})\n\n${step.prompt}${step.type === 'concept' ? '\n\n(answer with: answer <text>)' : ''}${['js','web','sql','robot','py'].includes(step.type) ? '\n\n(open the editor with: code)' : ''}` };
 }
 function startQuestByIndex(n){
   const index = TQ._questIndex;
@@ -674,7 +674,7 @@ function enterStep(){
   print(`▸ step ${st.step + 1}/${q.steps.length}`, 'title');
   print(step.prompt, 'info');
   if (step.type === 'concept') print('  (answer with: answer <your answer>)', 'sys');
-  if (['js','web','sql','robot'].includes(step.type)) print('  (open the editor with: code)', 'sys');
+  if (['js','web','sql','robot','py'].includes(step.type)) print('  (open the editor with: code)', 'sys');
   print('');
 }
 function stepPassed(){
@@ -753,7 +753,7 @@ let editorStep = null;
 function openEditor(step){
   editorStep = step;
   const st = QState[activeQuest];
-  $('editor-title').textContent = { js:'script.js', web:'index.html', sql:'query.sql', robot:'robot.js' }[step.type] || 'editor';
+  $('editor-title').textContent = { js:'script.js', web:'index.html', sql:'query.sql', robot:'robot.js', py:'main.py' }[step.type] || 'editor';
   $('editor-task').textContent = step.prompt.split('\n')[0];
   $('editor').value = st.solutions[st.step] != null ? st.solutions[st.step] : (step.starter || '');
   $('editor-out').textContent = '';
@@ -774,6 +774,7 @@ function editorRun(){
     eout(r.err ? 'SQL error: ' + r.err : 'rows:\n' + r.rows.map(r2 => JSON.stringify(r2)).join('\n'));
     return;
   }
+  if (editorStep.type === 'py'){ gradePy(code, editorStep, true); return; }
   gradeInWorker(code, editorStep, true);
 }
 function editorSubmit(){
@@ -782,6 +783,7 @@ function editorSubmit(){
   if (activeQuest){ QState[activeQuest].solutions[QState[activeQuest].step] = code; markDirty(); }
   if (editorStep.type === 'web') return gradeWeb(code, editorStep);
   if (editorStep.type === 'sql') return gradeSQL(code, editorStep);
+  if (editorStep.type === 'py') return gradePy(code, editorStep, false);
   gradeInWorker(code, editorStep, false);
 }
 function eout(t){ $('editor-out').textContent = t; }
@@ -1004,6 +1006,462 @@ function gradeSQL(code, step){
   else eout('✗ Not the right rows yet.\nYours (' + r.rows.length + '): ' + JSON.stringify(r.rows.slice(0, 5)) + '\nHint: expected ' + want.length + ' row(s).');
 }
 
+// ============ PyMini — first-party educational Python interpreter ============
+// Runs the beginner Python subset the Grid's Python quests are authored in:
+// assignment (= += -= *=), print, if/elif/else, while (+break/continue),
+// for..in range()/list/string, def/return (incl. recursion, closures),
+// ints/floats/strings/f-strings/booleans/None/lists/dicts, full operator set
+// with Python semantics (/, //, %, **, and/or/not, in, comparisons),
+// core builtins (print len range str int float abs min max sum sorted round list)
+// and common str/list/dict methods. Friendly errors; 300k-op runaway guard.
+const PyMini = (() => {
+const KW = new Set(['if','elif','else','while','for','in','def','return','break','continue','pass','and','or','not','True','False','None']);
+function tokenize(src){
+  const lines = src.replace(/\r\n?/g, '\n').replace(/\t/g, '    ').split('\n');
+  const toks = []; const indents = [0];
+  for (let ln = 0; ln < lines.length; ln++){
+    let line = lines[ln];
+    // strip comments outside strings
+    let inS = null, cut = -1;
+    for (let i = 0; i < line.length; i++){
+      const c = line[i];
+      if (inS){ if (c === inS && line[i-1] !== '\\') inS = null; }
+      else if (c === '"' || c === "'") inS = c;
+      else if (c === '#'){ cut = i; break; }
+    }
+    if (cut >= 0) line = line.slice(0, cut);
+    if (!line.trim()) continue;
+    const ind = line.match(/^ */)[0].length;
+    if (ind > indents[indents.length - 1]){ indents.push(ind); toks.push({ t: 'INDENT', ln }); }
+    while (ind < indents[indents.length - 1]){ indents.pop(); toks.push({ t: 'DEDENT', ln }); }
+    if (ind !== indents[indents.length - 1]) throw pyErr('IndentationError: unindent does not match any outer level', ln);
+    let i = ind;
+    while (i < line.length){
+      const c = line[i];
+      if (c === ' '){ i++; continue; }
+      const rest = line.slice(i);
+      let m;
+      if ((m = rest.match(/^(f?)(['"])((?:\\.|(?!\2).)*)\2/))){
+        toks.push({ t: m[1] === 'f' ? 'FSTR' : 'STR', v: m[3].replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\(['"\\])/g, '$1'), ln });
+        i += m[0].length; continue;
+      }
+      if ((m = rest.match(/^\d+\.\d+|^\d+/))){ toks.push({ t: 'NUM', v: parseFloat(m[0]), ln }); i += m[0].length; continue; }
+      if ((m = rest.match(/^[A-Za-z_]\w*/))){ toks.push({ t: KW.has(m[0]) ? m[0] : 'NAME', v: m[0], ln }); i += m[0].length; continue; }
+      if ((m = rest.match(/^(\*\*|\/\/|==|!=|<=|>=|\+=|-=|\*=|\/=)/))){ toks.push({ t: m[0], ln }); i += m[0].length; continue; }
+      if ('+-*/%<>=()[]{},:.'.includes(c)){ toks.push({ t: c, ln }); i++; continue; }
+      throw pyErr('SyntaxError: unexpected character "' + c + '"', ln);
+    }
+    toks.push({ t: 'NL', ln });
+  }
+  while (indents.length > 1){ indents.pop(); toks.push({ t: 'DEDENT', ln: lines.length }); }
+  toks.push({ t: 'EOF', ln: lines.length });
+  return toks;
+}
+function pyErr(msg, ln){ const e = new Error(msg + (ln != null ? ' (line ' + (ln + 1) + ')' : '')); e.py = true; return e; }
+
+function parse(toks){
+  let p = 0;
+  const peek = () => toks[p], at = t => toks[p].t === t;
+  const eat = t => { if (toks[p].t !== t) throw pyErr('SyntaxError: expected ' + t + ' but found ' + toks[p].t, toks[p].ln); return toks[p++]; };
+  function block(){
+    eat('NL'); eat('INDENT');
+    const body = [];
+    while (!at('DEDENT')) body.push(stmt());
+    eat('DEDENT');
+    return body;
+  }
+  function stmt(){
+    const tk = peek();
+    if (tk.t === 'if'){
+      eat('if'); const cond = expr(); eat(':');
+      const body = block(); const clauses = [{ cond, body }];
+      while (at('elif')){ eat('elif'); const c2 = expr(); eat(':'); clauses.push({ cond: c2, body: block() }); }
+      let orelse = null;
+      if (at('else')){ eat('else'); eat(':'); orelse = block(); }
+      return { k: 'if', clauses, orelse, ln: tk.ln };
+    }
+    if (tk.t === 'while'){ eat('while'); const cond = expr(); eat(':'); return { k: 'while', cond, body: block(), ln: tk.ln }; }
+    if (tk.t === 'for'){
+      eat('for'); const name = eat('NAME').v; eat('in'); const iter = expr(); eat(':');
+      return { k: 'for', name, iter, body: block(), ln: tk.ln };
+    }
+    if (tk.t === 'def'){
+      eat('def'); const name = eat('NAME').v; eat('(');
+      const params = [];
+      while (!at(')')){ params.push(eat('NAME').v); if (at(',')) eat(','); }
+      eat(')'); eat(':');
+      return { k: 'def', name, params, body: block(), ln: tk.ln };
+    }
+    if (tk.t === 'return'){ eat('return'); const v = at('NL') ? null : expr(); eat('NL'); return { k: 'return', v, ln: tk.ln }; }
+    if (tk.t === 'break'){ eat('break'); eat('NL'); return { k: 'break', ln: tk.ln }; }
+    if (tk.t === 'continue'){ eat('continue'); eat('NL'); return { k: 'continue', ln: tk.ln }; }
+    if (tk.t === 'pass'){ eat('pass'); eat('NL'); return { k: 'pass', ln: tk.ln }; }
+    // expression / assignment
+    const e = expr();
+    if (at('=') || at('+=') || at('-=') || at('*=') || at('/=')){
+      const op = eat(peek().t).t;
+      const val = expr(); eat('NL');
+      if (e.k !== 'name' && e.k !== 'index' && e.k !== 'attr') throw pyErr('SyntaxError: cannot assign to that', tk.ln);
+      return { k: 'assign', target: e, op, val, ln: tk.ln };
+    }
+    eat('NL');
+    return { k: 'expr', e, ln: tk.ln };
+  }
+  function expr(){ return orE(); }
+  function orE(){ let l = andE(); while (at('or')){ eat('or'); const r = andE(); l = { k: 'or', l, r }; } return l; }
+  function andE(){ let l = notE(); while (at('and')){ eat('and'); const r = notE(); l = { k: 'and', l, r }; } return l; }
+  function notE(){ if (at('not')){ eat('not'); return { k: 'not', v: notE() }; } return cmpE(); }
+  function cmpE(){
+    let l = addE();
+    while (['==','!=','<','>','<=','>=','in','not'].includes(peek().t)){
+      let op = peek().t;
+      if (op === 'not'){ eat('not'); eat('in'); op = 'not in'; }
+      else eat(op);
+      const r = addE();
+      l = { k: 'cmp', op, l, r };
+    }
+    return l;
+  }
+  function addE(){ let l = mulE(); while (at('+') || at('-')){ const op = eat(peek().t).t; l = { k: 'bin', op, l, r: mulE() }; } return l; }
+  function mulE(){ let l = unE(); while (at('*') || at('/') || at('//') || at('%')){ const op = eat(peek().t).t; l = { k: 'bin', op, l, r: unE() }; } return l; }
+  function unE(){ if (at('-')){ eat('-'); return { k: 'neg', v: unE() }; } return powE(); }
+  function powE(){ const l = postE(); if (at('**')){ eat('**'); return { k: 'bin', op: '**', l, r: unE() }; } return l; }
+  function postE(){
+    let e = atom();
+    for (;;){
+      if (at('(')){
+        eat('(');
+        const args = [];
+        while (!at(')')){ args.push(expr()); if (at(',')) eat(','); }
+        eat(')');
+        e = { k: 'call', fn: e, args };
+      } else if (at('[')){
+        eat('['); const ix = expr();
+        if (at(':')){ eat(':'); const hi = at(']') ? null : expr(); eat(']'); e = { k: 'slice', v: e, lo: ix, hi }; }
+        else { eat(']'); e = { k: 'index', v: e, ix }; }
+      } else if (at('.')){
+        eat('.'); const name = eat('NAME').v;
+        e = { k: 'attr', v: e, name };
+      } else break;
+    }
+    return e;
+  }
+  function atom(){
+    const tk = peek();
+    if (tk.t === 'NUM'){ eat('NUM'); return { k: 'num', v: tk.v }; }
+    if (tk.t === 'STR'){ eat('STR'); return { k: 'str', v: tk.v }; }
+    if (tk.t === 'FSTR'){ eat('FSTR'); return { k: 'fstr', v: tk.v, ln: tk.ln }; }
+    if (tk.t === 'True'){ eat('True'); return { k: 'bool', v: true }; }
+    if (tk.t === 'False'){ eat('False'); return { k: 'bool', v: false }; }
+    if (tk.t === 'None'){ eat('None'); return { k: 'none' }; }
+    if (tk.t === 'NAME'){ eat('NAME'); return { k: 'name', v: tk.v, ln: tk.ln }; }
+    if (tk.t === '('){ eat('('); const e = expr(); eat(')'); return e; }
+    if (tk.t === '['){
+      eat('[');
+      const items = [];
+      while (!at(']')){ items.push(expr()); if (at(',')) eat(','); }
+      eat(']');
+      return { k: 'list', items };
+    }
+    if (tk.t === '{'){
+      eat('{');
+      const keys = [], vals = [];
+      while (!at('}')){ keys.push(expr()); eat(':'); vals.push(expr()); if (at(',')) eat(','); }
+      eat('}');
+      return { k: 'dict', keys, vals };
+    }
+    throw pyErr('SyntaxError: unexpected ' + tk.t, tk.ln);
+  }
+  const prog = [];
+  while (!at('EOF')) prog.push(stmt());
+  return prog;
+}
+
+const BRK = { brk: true }, CONT = { cont: true };
+function RetVal(v){ this.v = v; }
+function truthy(v){
+  if (v === null || v === false || v === 0) return false;
+  if (v === '' ) return false;
+  if (Array.isArray(v)) return v.length > 0;
+  if (v && v.__dict) return Object.keys(v.map).length > 0;
+  return v !== undefined && v !== false;
+}
+function isInt(n){ return typeof n === 'number' && Number.isInteger(n); }
+function pyStr(v){
+  if (v === null || v === undefined) return 'None';
+  if (v === true) return 'True'; if (v === false) return 'False';
+  if (typeof v === 'number') return Number.isInteger(v) ? String(v) : String(Math.round(v * 1e10) / 1e10);
+  if (typeof v === 'string') return v;
+  if (Array.isArray(v)) return '[' + v.map(pyRepr).join(', ') + ']';
+  if (v && v.__dict) return '{' + Object.keys(v.map).map(k => pyRepr(v.keyv[k]) + ': ' + pyRepr(v.map[k])).join(', ') + '}';
+  if (v && v.__fn) return '<function ' + v.name + '>';
+  return String(v);
+}
+function pyRepr(v){ return typeof v === 'string' ? "'" + v + "'" : pyStr(v); }
+function dictKey(k){ return typeof k + ':' + String(k); }
+function newDict(){ return { __dict: true, map: {}, keyv: {} }; }
+
+function run(src, opCap){
+  const logs = [];
+  let ops = 0;
+  const CAP = opCap || 300000;
+  const tick = ln => { if (++ops > CAP) throw pyErr('RuntimeError: program ran too long — check your loop conditions', ln); };
+  const G = { vars: Object.create(null), parent: null };
+  function lookup(env, name, ln){
+    for (let e = env; e; e = e.parent) if (name in e.vars) return e.vars[name];
+    if (name in BUILTINS) return BUILTINS[name];
+    throw pyErr("NameError: name '" + name + "' is not defined", ln);
+  }
+  const BUILTINS = {
+    print: { __builtin: (...a) => { logs.push(a.map(pyStr).join(' ')); return null; } },
+    len: { __builtin: v => { if (typeof v === 'string' || Array.isArray(v)) return v.length; if (v && v.__dict) return Object.keys(v.map).length; throw pyErr('TypeError: len() takes a string, list or dict'); } },
+    range: { __builtin: (a, b, c) => { const out = []; let lo = b === undefined ? 0 : a, hi = b === undefined ? a : b, st = c === undefined ? 1 : c; if (st === 0) throw pyErr('ValueError: range() step cannot be 0'); if (st > 0) for (let i = lo; i < hi; i += st){ out.push(i); if (out.length > 100000) throw pyErr('RuntimeError: range too large'); } else for (let i = lo; i > hi; i += st){ out.push(i); if (out.length > 100000) throw pyErr('RuntimeError: range too large'); } return out; } },
+    str: { __builtin: v => pyStr(v === undefined ? '' : v) },
+    int: { __builtin: v => { const n = typeof v === 'string' ? parseInt(v.trim(), 10) : Math.trunc(v); if (isNaN(n)) throw pyErr("ValueError: invalid literal for int(): '" + v + "'"); return n; } },
+    float: { __builtin: v => { const n = typeof v === 'string' ? parseFloat(v.trim()) : v * 1; if (isNaN(n)) throw pyErr("ValueError: could not convert to float: '" + v + "'"); return n; } },
+    abs: { __builtin: v => Math.abs(v) },
+    min: { __builtin: (...a) => { const arr = a.length === 1 && Array.isArray(a[0]) ? a[0] : a; return arr.reduce((x, y) => y < x ? y : x); } },
+    max: { __builtin: (...a) => { const arr = a.length === 1 && Array.isArray(a[0]) ? a[0] : a; return arr.reduce((x, y) => y > x ? y : x); } },
+    sum: { __builtin: v => v.reduce((x, y) => x + y, 0) },
+    sorted: { __builtin: v => v.slice().sort((x, y) => x < y ? -1 : x > y ? 1 : 0) },
+    round: { __builtin: (v, d) => { const m = Math.pow(10, d || 0); const r = Math.round(v * m) / m; return d === undefined ? r : r; } },
+    list: { __builtin: v => v === undefined ? [] : (typeof v === 'string' ? v.split('') : v.slice()) },
+  };
+  function callMethod(obj, name, args, ln){
+    if (typeof obj === 'string'){
+      switch (name){
+        case 'upper': return obj.toUpperCase();
+        case 'lower': return obj.toLowerCase();
+        case 'strip': return obj.trim();
+        case 'split': return args.length ? obj.split(args[0]) : obj.trim().split(/\s+/).filter(Boolean);
+        case 'replace': return obj.split(args[0]).join(args[1]);
+        case 'find': return obj.indexOf(args[0]);
+        case 'count': return obj.split(args[0]).length - 1;
+        case 'startswith': return obj.startsWith(args[0]);
+        case 'endswith': return obj.endsWith(args[0]);
+        case 'join': return args[0].map(pyStr).join(obj);
+        case 'isdigit': return obj.length > 0 && /^[0-9]+$/.test(obj);
+        case 'title': return obj.replace(/\b\w/g, c => c.toUpperCase());
+      }
+    } else if (Array.isArray(obj)){
+      switch (name){
+        case 'append': obj.push(args[0]); return null;
+        case 'pop': { if (obj.length === 0) throw pyErr('IndexError: pop from empty list', ln); return args.length ? obj.splice(args[0], 1)[0] : obj.pop(); }
+        case 'insert': obj.splice(args[0], 0, args[1]); return null;
+        case 'remove': { const i = obj.findIndex(x => x === args[0]); if (i < 0) throw pyErr('ValueError: list.remove(x): x not in list', ln); obj.splice(i, 1); return null; }
+        case 'index': { const i = obj.findIndex(x => x === args[0]); if (i < 0) throw pyErr('ValueError: not in list', ln); return i; }
+        case 'count': return obj.filter(x => x === args[0]).length;
+        case 'sort': obj.sort((x, y) => x < y ? -1 : x > y ? 1 : 0); return null;
+        case 'reverse': obj.reverse(); return null;
+      }
+    } else if (obj && obj.__dict){
+      switch (name){
+        case 'get': { const k = dictKey(args[0]); return k in obj.map ? obj.map[k] : (args.length > 1 ? args[1] : null); }
+        case 'keys': return Object.keys(obj.keyv).map(k => obj.keyv[k]);
+        case 'values': return Object.keys(obj.map).map(k => obj.map[k]);
+      }
+    }
+    throw pyErr("AttributeError: no method '" + name + "' for that value", ln);
+  }
+  function binop(op, a, b, ln){
+    switch (op){
+      case '+':
+        if (typeof a === 'number' && typeof b === 'number') return a + b;
+        if (typeof a === 'string' && typeof b === 'string') return a + b;
+        if (Array.isArray(a) && Array.isArray(b)) return a.concat(b);
+        throw pyErr('TypeError: cannot add ' + pyType(a) + ' and ' + pyType(b) + (typeof a === 'string' || typeof b === 'string' ? ' — try str(...) around the number' : ''), ln);
+      case '-': needNum(a, b, op, ln); return a - b;
+      case '*':
+        if (typeof a === 'number' && typeof b === 'number') return a * b;
+        if (typeof a === 'string' && isInt(b)) return a.repeat(Math.max(0, b));
+        if (isInt(a) && typeof b === 'string') return b.repeat(Math.max(0, a));
+        if (Array.isArray(a) && isInt(b)){ const o = []; for (let i = 0; i < b; i++) o.push(...a); return o; }
+        throw pyErr('TypeError: cannot multiply ' + pyType(a) + ' and ' + pyType(b), ln);
+      case '/': needNum(a, b, op, ln); if (b === 0) throw pyErr('ZeroDivisionError: division by zero', ln); return a / b;
+      case '//': needNum(a, b, op, ln); if (b === 0) throw pyErr('ZeroDivisionError: division by zero', ln); return Math.floor(a / b);
+      case '%': needNum(a, b, op, ln); if (b === 0) throw pyErr('ZeroDivisionError: modulo by zero', ln); return ((a % b) + b) % b;
+      case '**': needNum(a, b, op, ln); return Math.pow(a, b);
+    }
+  }
+  function pyType(v){ if (v === null) return 'None'; if (typeof v === 'boolean') return 'bool'; if (typeof v === 'number') return Number.isInteger(v) ? 'int' : 'float'; if (typeof v === 'string') return 'str'; if (Array.isArray(v)) return 'list'; if (v && v.__dict) return 'dict'; return 'value'; }
+  function needNum(a, b, op, ln){ if (typeof a !== 'number' || typeof b !== 'number') throw pyErr('TypeError: ' + op + ' needs numbers, got ' + pyType(a) + ' and ' + pyType(b), ln); }
+  function ev(n, env){
+    tick(n.ln);
+    switch (n.k){
+      case 'num': case 'str': return n.v;
+      case 'bool': return n.v;
+      case 'none': return null;
+      case 'name': return lookup(env, n.v, n.ln);
+      case 'list': return n.items.map(x => ev(x, env));
+      case 'dict': { const d = newDict(); n.keys.forEach((kx, i) => { const k = ev(kx, env); const dk = dictKey(k); d.map[dk] = ev(n.vals[i], env); d.keyv[dk] = k; }); return d; }
+      case 'fstr': {
+        // evaluate {expr} chunks with a fresh mini-parse
+        let out = '', buf = '', depth = 0, exprBuf = '';
+        for (const c of n.v){
+          if (depth === 0){
+            if (c === '{') { depth = 1; exprBuf = ''; }
+            else if (c === '}') throw pyErr("SyntaxError: single '}' in f-string", n.ln);
+            else buf += c;
+          } else {
+            if (c === '{') depth++;
+            if (c === '}'){ depth--; if (depth === 0){ out += buf; buf = ''; const sub = parse(tokenize(exprBuf + '\n')); if (sub.length !== 1 || sub[0].k !== 'expr') throw pyErr('SyntaxError: bad f-string expression', n.ln); out += pyStr(ev(sub[0].e, env)); continue; } }
+            if (depth > 0) exprBuf += c;
+          }
+        }
+        if (depth !== 0) throw pyErr("SyntaxError: unclosed '{' in f-string", n.ln);
+        return out + buf;
+      }
+      case 'neg': { const v = ev(n.v, env); if (typeof v !== 'number') throw pyErr('TypeError: bad operand for unary -', n.ln); return -v; }
+      case 'not': return !truthy(ev(n.v, env));
+      case 'and': { const l = ev(n.l, env); return truthy(l) ? ev(n.r, env) : l; }
+      case 'or': { const l = ev(n.l, env); return truthy(l) ? l : ev(n.r, env); }
+      case 'cmp': {
+        const a = ev(n.l, env), b = ev(n.r, env);
+        switch (n.op){
+          case '==': return pyEq(a, b); case '!=': return !pyEq(a, b);
+          case '<': return a < b; case '>': return a > b; case '<=': return a <= b; case '>=': return a >= b;
+          case 'in': return pyIn(a, b, n.ln); case 'not in': return !pyIn(a, b, n.ln);
+        }
+      }
+      case 'bin': return binop(n.op, ev(n.l, env), ev(n.r, env), n.ln);
+      case 'index': {
+        const v = ev(n.v, env); let ix = ev(n.ix, env);
+        if (Array.isArray(v) || typeof v === 'string'){
+          if (!isInt(ix)) throw pyErr('TypeError: indices must be integers', n.ln);
+          if (ix < 0) ix += v.length;
+          if (ix < 0 || ix >= v.length) throw pyErr('IndexError: index out of range', n.ln);
+          return v[ix];
+        }
+        if (v && v.__dict){ const k = dictKey(ix); if (!(k in v.map)) throw pyErr('KeyError: ' + pyRepr(ix), n.ln); return v.map[k]; }
+        throw pyErr('TypeError: that value cannot be indexed', n.ln);
+      }
+      case 'slice': {
+        const v = ev(n.v, env);
+        if (!Array.isArray(v) && typeof v !== 'string') throw pyErr('TypeError: cannot slice that', n.ln);
+        let lo = ev(n.lo, env); let hi = n.hi ? ev(n.hi, env) : v.length;
+        if (lo < 0) lo += v.length; if (hi < 0) hi += v.length;
+        return v.slice(lo, hi);
+      }
+      case 'attr': return { __method: true, obj: ev(n.v, env), name: n.name, ln: n.ln };
+      case 'call': {
+        const fnv = ev(n.fn, env);
+        const args = n.args.map(a => ev(a, env));
+        if (fnv && fnv.__method) return callMethod(fnv.obj, fnv.name, args, fnv.ln);
+        if (fnv && fnv.__builtin) return fnv.__builtin(...args);
+        if (fnv && fnv.__fn){
+          if (args.length !== fnv.params.length) throw pyErr('TypeError: ' + fnv.name + '() takes ' + fnv.params.length + ' arguments but ' + args.length + ' were given', n.ln);
+          const local = { vars: Object.create(null), parent: fnv.env };
+          fnv.params.forEach((pn, i) => local.vars[pn] = args[i]);
+          try { exec(fnv.body, local); } catch (e){ if (e instanceof RetVal) return e.v; throw e; }
+          return null;
+        }
+        throw pyErr('TypeError: that is not callable', n.ln);
+      }
+    }
+    throw pyErr('SyntaxError: unsupported expression', n.ln);
+  }
+  function pyEq(a, b){
+    if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((x, i) => pyEq(x, b[i]));
+    return a === b;
+  }
+  function pyIn(a, b, ln){
+    if (typeof b === 'string'){ if (typeof a !== 'string') throw pyErr('TypeError: "in <string>" needs a string on the left', ln); return b.includes(a); }
+    if (Array.isArray(b)) return b.some(x => pyEq(x, a));
+    if (b && b.__dict) return dictKey(a) in b.map;
+    throw pyErr('TypeError: "in" needs a string, list or dict on the right', ln);
+  }
+  function assign(target, v, env, ln){
+    if (target.k === 'name'){
+      for (let e = env; e; e = e.parent) if (target.v in e.vars){ e.vars[target.v] = v; return; }
+      env.vars[target.v] = v; return;
+    }
+    if (target.k === 'index'){
+      const obj = ev(target.v, env); let ix = ev(target.ix, env);
+      if (Array.isArray(obj)){ if (ix < 0) ix += obj.length; if (ix < 0 || ix >= obj.length) throw pyErr('IndexError: assignment index out of range', ln); obj[ix] = v; return; }
+      if (obj && obj.__dict){ const k = dictKey(ix); obj.map[k] = v; obj.keyv[k] = ix; return; }
+      throw pyErr('TypeError: cannot assign into that', ln);
+    }
+    throw pyErr('SyntaxError: bad assignment target', ln);
+  }
+  function exec(body, env){
+    for (const s of body){
+      tick(s.ln);
+      switch (s.k){
+        case 'expr': ev(s.e, env); break;
+        case 'assign': {
+          let v = ev(s.val, env);
+          if (s.op !== '='){
+            const cur = ev(s.target, env);
+            v = binop(s.op[0], cur, v, s.ln);
+          }
+          assign(s.target, v, env, s.ln);
+          break;
+        }
+        case 'if': {
+          let done = false;
+          for (const cl of s.clauses) if (truthy(ev(cl.cond, env))){ exec(cl.body, env); done = true; break; }
+          if (!done && s.orelse) exec(s.orelse, env);
+          break;
+        }
+        case 'while':
+          for (;;){
+            tick(s.ln);
+            if (!truthy(ev(s.cond, env))) break;
+            try { exec(s.body, env); } catch (e){ if (e === BRK) break; if (e === CONT) continue; throw e; }
+          }
+          break;
+        case 'for': {
+          let it = ev(s.iter, env);
+          if (typeof it === 'string') it = it.split('');
+          if (it && it.__dict) it = Object.keys(it.keyv).map(k => it.keyv[k]);
+          if (!Array.isArray(it)) throw pyErr('TypeError: for needs a list, string, range or dict', s.ln);
+          for (const item of it.slice()){
+            tick(s.ln);
+            env.vars[s.name] = item;
+            try { exec(s.body, env); } catch (e){ if (e === BRK) break; if (e === CONT) continue; throw e; }
+          }
+          break;
+        }
+        case 'def': env.vars[s.name] = { __fn: true, name: s.name, params: s.params, body: s.body, env }; break;
+        case 'return': throw new RetVal(s.v ? ev(s.v, env) : null);
+        case 'break': throw BRK;
+        case 'continue': throw CONT;
+        case 'pass': break;
+      }
+    }
+  }
+  try {
+    const prog = parse(tokenize(src));
+    exec(prog, G);
+    return { ok: true, logs, env: G,
+      evalIn: exprSrc => { const sub = parse(tokenize(exprSrc + '\n')); if (sub.length !== 1 || sub[0].k !== 'expr') throw pyErr('bad test expression'); return ev(sub[0].e, G); } };
+  } catch (e){
+    if (e instanceof RetVal) return { ok: false, logs, error: "SyntaxError: 'return' outside a function" };
+    if (e === BRK || e === CONT) return { ok: false, logs, error: "SyntaxError: 'break'/'continue' outside a loop" };
+    return { ok: false, logs, error: e.py ? e.message : 'Error: ' + e.message };
+  }
+}
+return { run, pyStr };
+})();
+
+function gradePy(code, step, runOnly){
+  const r = PyMini.run(code);
+  if (!r.ok){ eout('✗ ' + r.error + (r.logs.length ? '\n--- output so far ---\n' + r.logs.join('\n') : '')); return; }
+  const results = [];
+  for (const t of (step.tests || [])){
+    if (t.expr !== undefined){
+      try { const v = r.evalIn(t.expr); const got = PyMini.pyStr(v); results.push({ pass: got === String(t.want), why: t.expr + ' gave ' + got, t }); }
+      catch (e){ results.push({ pass: false, why: t.expr + ' → ' + e.message, t }); }
+    } else if (t.outputContains !== undefined) results.push({ pass: r.logs.join('\n').includes(t.outputContains), why: 'output was: ' + r.logs.join(' | ').slice(0, 120), t });
+    else if (t.outputLines !== undefined) results.push({ pass: JSON.stringify(r.logs) === JSON.stringify(t.outputLines), why: 'output was: ' + JSON.stringify(r.logs).slice(0, 160), t });
+  }
+  if (runOnly){ eout((r.logs.length ? '--- output ---\n' + r.logs.join('\n') + '\n' : 'ran (no output).\n') + results.map((x, i) => (x.pass ? '✔' : '✗') + ' check ' + (i + 1) + (x.pass ? '' : ' — ' + x.why)).join('\n')); return; }
+  const fails = results.filter(x => !x.pass);
+  if (!results.length){ eout('No checks defined — submitting.'); finishEditorStep(); return; }
+  if (!fails.length){ eout('✔ All ' + results.length + ' checks pass!'); finishEditorStep(); }
+  else eout(results.map((x, i) => (x.pass ? '✔' : '✗') + ' check ' + (i + 1) + (x.pass ? '' : ' — ' + (x.t.msg ? x.t.msg + ' · ' : '') + x.why)).join('\n'));
+}
+
 // ============ save / host bridge ============
 const embedded = window.parent !== window;
 function postToHost(m){ if (embedded) window.parent.postMessage(m, '*'); }
@@ -1143,6 +1601,7 @@ return { boot, editorRun, editorSubmit, editorClose,
   _grade: (code, step, cb) => { editorStep = step; const old = finishEditorStep; gradeInWorker(code, step, false); },
   _runSQL: runSQL, _conceptMatch: conceptMatch, _questAvailable: questAvailable,
   _gradeRobot: gradeRobot, _editorPass: () => stepPassed(), _LESSONS: () => LESSONS,
+  _pyRun: PyMini.run, _pyStr: PyMini.pyStr,
   _answer: t => { const g = GAME['answer'].fn(t.split(' ')); if (g && g.err) print(g.err, 'err'); },
   _nodeAt: nodeAt, _serialize: serialize, _restore: restore, _questList: questList, _questIndex: null, _booted: false };
 })();
@@ -5221,6 +5680,202 @@ QUESTS['T-305'] = {
           'PORTKEEPER bows: "Mac, Windows, Linux — and the Grid taught you Linux first all along."'],
   badge: 'Penguin Keeper',
   solution: [['cat etc/os-release'], 'home', 'root', 'distro', 'open source', 'android']
+};
+
+
+// ── Language expansion: T-306..T-309 ──
+// GRIDFALL LANGUAGES expansion — T-306 / T-307 / T-308 / T-309
+// py + concept quests for the logic-forge language wing.
+
+// ---------- T-306 · Python Basics (stage 2, py) ----------
+QUESTS['T-306'] = {
+  zone: 'logic-forge', title: 'The Serpent Wakes', xp: 115,
+  npc: { name: 'PYTHIA', lines: ['A new wing of the forge boots in Python. Braces are banished here — indentation is law.'] },
+  intro: ['Deep in the logic forge, a sealed wing hums awake speaking a language the Cascade never touched: Python.',
+          'PYTHIA, its keeper daemon, needs an operative fluent enough to bring the wing\'s systems online.'],
+  steps: [
+    { type: 'py',
+      prompt: 'First, variables and f-strings. A worked example: core = "AURORA" then print(f"CORE {core} ONLINE") prints CORE AURORA ONLINE — the {curly braces} splice values into the text. Now you: make a variable zone holding the string "forge" and a variable heat holding the number 60, then use ONE f-string print to output exactly: ZONE forge HEAT 60',
+      hint: 'Assign with = first, then put {zone} and {heat} inside the f"..." text.',
+      starter: '# set zone and heat, then print one f-string\n',
+      tests: [
+        { expr: 'zone', want: 'forge', msg: 'zone holds "forge"' },
+        { expr: 'heat', want: 60, msg: 'heat holds 60' },
+        { outputLines: ['ZONE forge HEAT 60'] }
+      ] },
+    { type: 'py',
+      prompt: 'Coolant math. The wing holds 3 racks of 16 coolant cells, but 5 cells cracked in the Cascade. Set a variable cells to 3 * 16 - 5 (let Python do the arithmetic — no calculator). Then three prints on three lines: print cells, print cells // 4 (whole cells each of the 4 conduits gets), and print cells % 4 (cells left over).',
+      hint: '// keeps only the whole-number part of a division; % keeps only the remainder.',
+      starter: 'cells = \n',
+      tests: [
+        { expr: 'cells', want: 43, msg: 'cells computed from the expression' },
+        { outputLines: ['43', '10', '3'] }
+      ] },
+    { type: 'py',
+      prompt: 'The vent sequence needs a countdown. Use a for loop with range to print 5, 4, 3, 2, 1 — one number per line — then print VENT once, after the loop. range takes (start, stop, step), and step can be negative.',
+      hint: 'A negative step makes range count DOWN — and the stop value itself is never included.',
+      starter: '# countdown, then VENT\n',
+      tests: [
+        { outputLines: ['5', '4', '3', '2', '1', 'VENT'] }
+      ] },
+    { type: 'py',
+      prompt: 'Three heat readings arrive: 91, 55, 8. The starter loop hands them to you one at a time as reading. Inside the loop, write if/elif/else: 80 or above prints OVERHEAT, 40 up to 79 prints STABLE, anything below 40 prints COLD. Expected output: OVERHEAT, then STABLE, then COLD.',
+      hint: 'Test the biggest threshold first: if catches the hottest, elif the middle band, else the rest.',
+      starter: 'for reading in [91, 55, 8]:\n    # your if/elif/else here\n    ',
+      tests: [
+        { outputLines: ['OVERHEAT', 'STABLE', 'COLD'] }
+      ] },
+    { type: 'py',
+      prompt: 'Final test — no worked example this time. A capacitor charges by doubling: start a variable charge at 1, and while charge is less than 100, print charge and then double it. When the loop ends, print CHARGED. (The output begins 1, 2, 4, ...)',
+      hint: 'A while loop runs as long as its condition holds. Print BEFORE you double, or the 1 never shows.',
+      starter: '# charge the capacitor\n',
+      tests: [
+        { outputLines: ['1', '2', '4', '8', '16', '32', '64', 'CHARGED'] },
+        { expr: 'charge', want: 128, msg: 'charge ends at 128, the first value not under 100' }
+      ] }
+  ],
+  outro: ['The Python wing thrums to life, indentation-perfect. PYTHIA bows: "Fluent enough."',
+          '"Return when you are ready to forge your own functions, operative. The toolbelt awaits."'],
+  solution: [
+    'zone = "forge"\nheat = 60\nprint(f"ZONE {zone} HEAT {heat}")',
+    'cells = 3 * 16 - 5\nprint(cells)\nprint(cells // 4)\nprint(cells % 4)',
+    'for n in range(5, 0, -1):\n    print(n)\nprint("VENT")',
+    'for reading in [91, 55, 8]:\n    if reading >= 80:\n        print("OVERHEAT")\n    elif reading >= 40:\n        print("STABLE")\n    else:\n        print("COLD")',
+    'charge = 1\nwhile charge < 100:\n    print(charge)\n    charge = charge * 2\nprint("CHARGED")'
+  ]
+};
+
+// ---------- T-307 · Python Functions & Lists (stage 3, py) ----------
+QUESTS['T-307'] = {
+  zone: 'logic-forge', title: 'Coils and Crates', xp: 150,
+  npc: { name: 'PYTHIA', lines: ['Loose code is scrap metal. Fold it into functions and it becomes a tool you can hand to anyone.'] },
+  intro: ['The Python wing\'s cargo bay is jammed: crates everywhere, no manifest, no sorting routines.',
+          'PYTHIA needs four reusable tools — real functions — to put the bay back under control.'],
+  steps: [
+    { type: 'py',
+      prompt: 'PYTHIA slides you a pattern: def double(x): with return x * 2 indented below it — def names the function, the parameter x rides in the parentheses, and return sends the result back to whoever called it. Now forge calibrate(sig): it returns sig * 3 - 1, the wing\'s standard signal correction.',
+      hint: 'One indented line inside the function: return the corrected expression.',
+      starter: 'def calibrate(sig):\n    ',
+      tests: [
+        { expr: 'calibrate(4)', want: 11, msg: 'calibrate(4) is 11' },
+        { expr: 'calibrate(0)', want: -1, msg: 'calibrate(0) is -1' },
+        { expr: 'calibrate(-2)', want: -7, msg: 'negative signals correct too' }
+      ] },
+    { type: 'py',
+      prompt: 'The loading ramp needs graded weights. Write build_ramp(n) returning a list of the first n multiples of 10, starting at 10 — build_ramp(3) returns [10, 20, 30], and build_ramp(0) returns an empty list. Start from an empty list, append inside a loop, return the finished list.',
+      hint: 'Three moves: make [], loop n times appending the next multiple, return the list at the end.',
+      starter: 'def build_ramp(n):\n    ',
+      tests: [
+        { expr: 'build_ramp(3)', want: '[10, 20, 30]', msg: 'three steps of the ramp' },
+        { expr: 'build_ramp(1)', want: '[10]' },
+        { expr: 'build_ramp(0)', want: '[]', msg: 'zero steps is an empty list' }
+      ] },
+    { type: 'py',
+      prompt: 'Manifest time. Write cargo_report(crates) — crates is a list of weights — that RETURNS the string "<count> crates, <total> kg" built with len, sum, and an f-string. Example: cargo_report([12, 30]) returns "2 crates, 42 kg".',
+      hint: 'len counts the list, sum adds it up. Return an f-string that uses both — return, not print.',
+      starter: 'def cargo_report(crates):\n    ',
+      tests: [
+        { expr: 'cargo_report([12, 30])', want: '2 crates, 42 kg' },
+        { expr: 'cargo_report([7, 1, 2])', want: '3 crates, 10 kg' },
+        { expr: 'cargo_report([])', want: '0 crates, 0 kg', msg: 'an empty bay still gets a report' }
+      ] },
+    { type: 'py',
+      prompt: 'Capstone — no pattern this time. Raw sensor dumps are full of spikes. Write filter_stable(readings, limit): return a NEW list holding only the readings that are less than or equal to limit, kept in their original order.',
+      hint: 'Loop the readings; append the keepers to a fresh list; return it after the loop ends.',
+      starter: 'def filter_stable(readings, limit):\n    ',
+      tests: [
+        { expr: 'filter_stable([12, 90, 40, 200], 50)', want: '[12, 40]', msg: 'spikes removed, order kept' },
+        { expr: 'filter_stable([99, 300], 10)', want: '[]', msg: 'nothing stable, empty list back' },
+        { expr: 'filter_stable([5, 5], 5)', want: '[5, 5]', msg: 'equal to the limit counts as stable' }
+      ] }
+  ],
+  outro: ['The cargo bay sorts itself with your four tools. PYTHIA archives them under your operative ID.',
+          '"You write Python now. Next door, six FOREIGN dialects wait in the vault — when you are ready."'],
+  solution: [
+    'def calibrate(sig):\n    return sig * 3 - 1',
+    'def build_ramp(n):\n    ramp = []\n    for i in range(1, n + 1):\n        ramp.append(i * 10)\n    return ramp',
+    'def cargo_report(crates):\n    return f"{len(crates)} crates, {sum(crates)} kg"',
+    'def filter_stable(readings, limit):\n    stable = []\n    for r in readings:\n        if r <= limit:\n            stable.append(r)\n    return stable'
+  ]
+};
+
+// ---------- T-308 · The Polyglot Tour (stage 4, concept) ----------
+QUESTS['T-308'] = {
+  zone: 'logic-forge', title: 'Six Tongues of the Grid', xp: 180,
+  npc: { name: 'BABEL', lines: ['Before the Cascade I translated every dialect on the Grid. My tables are gone — YOUR eyes will have to do.'] },
+  intro: ['A vault behind the forge holds programs salvaged from six foreign grids — Java, C++, C#, Swift, Kotlin, Go.',
+          'BABEL, the translation daemon, lost its language tables. To restore them, an operative must READ the raw code.'],
+  steps: [
+    { type: 'concept',
+      prompt: 'BABEL projects the first tablet and labels it: Java. Note the ritual — every statement ends with a semicolon, blocks live inside { braces }, and each variable declares a TYPE (int total means "total holds integers"). Read it carefully. What number does it print?\n\npublic class Probe {\n    public static void main(String[] args) {\n        int total = 0;\n        for (int i = 1; i <= 4; i++) {\n            total = total + i;\n        }\n        System.out.println(total);\n    }\n}',
+      hint: 'The loop runs with i = 1, 2, 3, 4 — and total collects every one of them.',
+      answer: { numeric: { value: 10, tol: 0 } } },
+    { type: 'concept',
+      prompt: 'Second tablet, labeled C#:\n\nusing System;\n\nclass Relay {\n    static void Main() {\n        string id = "R-7";\n        int load = 9;\n        Console.WriteLine(id + " load " + load);\n    }\n}\n\nPython writes id = "R-7" with no ceremony at the end of the line. C#, Java, and C++ all demand one extra CHARACTER at the end of nearly every statement — a character Python never needs. Which character?',
+      hint: 'Look at how every line inside Main() finishes — the same tiny mark, every time.',
+      answer: { accept: [';', 'semicolon', 'semi-colon', 'semi colon', 'a semicolon', 'the semicolon', 'semicolons'] } },
+    { type: 'concept',
+      prompt: 'This tablet arrived UNLABELED. BABEL whirs: "Its print ritual names its homeland." Name the language:\n\npackage main\n\nimport "fmt"\n\nfunc main() {\n    zone := "forge"\n    heat := 60\n    heat = heat + 15\n    fmt.Println(zone, heat)\n}',
+      hint: 'fmt.Println and := declarations. Google built it; its mascot is a gopher; its name is a verb of motion.',
+      answer: { accept: ['go', 'golang', 'go lang', 'the go language'] } },
+    { type: 'concept',
+      prompt: 'Two near-twin tablets, A and B — one is Swift, the other Kotlin.\n\nA:\nlet zone = "forge"\nvar heat = 60\nheat += 15\nprint("\\(zone) at \\(heat)")\n\nB:\nfun main() {\n    val zone = "forge"\n    var heat = 60\n    heat += 15\n    println("$zone at $heat")\n}\n\nWhich letter marks the SWIFT snippet?',
+      hint: 'Compare the interpolation styles — one camp is Android-flavored with $, the other is Apple-flavored. The codex has the table.',
+      answer: { accept: ['a', 'snippet a', 'a.', 'first', 'the first', 'the first one', 'first one'] } },
+    { type: 'concept',
+      prompt: 'Last artifact — no label, no coaching. Trace it and answer with the number it prints:\n\n#include <iostream>\n\nint main() {\n    int power = 2;\n    for (int i = 0; i < 3; i++) {\n        power = power * 2;\n    }\n    std::cout << power << std::endl;\n    return 0;\n}',
+      hint: 'The loop body runs exactly three times, and power doubles on every pass.',
+      answer: { numeric: { value: 16, tol: 0 } } }
+  ],
+  outro: ['BABEL\'s tables re-knit themselves around your readings: six dialects, one operative, zero mistranslations.',
+          '"Reading them is half the craft," BABEL hums. "CHOOSING one is the other half. The quartermaster is expecting you."'],
+  solution: [
+    '10',
+    'semicolon',
+    'go',
+    'a',
+    '16'
+  ]
+};
+
+// ---------- T-309 · Which Language for the Job? (stage 4, concept) ----------
+QUESTS['T-309'] = {
+  zone: 'logic-forge', title: 'The Quartermaster\'s Rack', xp: 195,
+  npc: { name: 'QUARTERMASTER-9', lines: ['Every rebuild crew wants a tool. Hand them the WRONG language and the job takes twice as long. Banks run Java, every database answers to SQL, every page stands on HTML — know the map.'] },
+  intro: ['With the vault translated, rebuild crews queue at the forge\'s requisition rack for tools.',
+          'QUARTERMASTER-9 lost its recommendation engine in the Cascade. You will match each JOB to its language.'],
+  steps: [
+    { type: 'concept',
+      prompt: 'QUARTERMASTER-9 pins the rule to the rack: match the job to the language the industry actually reaches for. Worked example — "make this web page interactive in the browser" gets JavaScript, the only language every browser runs natively. First requisition: a crew must sift millions of sensor readings, train a machine-learning model on them, and chart the results. Which language leads data science and ML?',
+      hint: 'The serpent that runs the forge\'s new wing also rules the laboratory — pandas, NumPy, PyTorch.',
+      answer: { accept: ['python', 'python3', 'python 3'] } },
+    { type: 'concept',
+      prompt: 'Requisition two: a crew is building a NATIVE iPhone and iPad app, shipping on Apple\'s App Store and using Apple\'s own frameworks. Which language does Apple back for this job?',
+      hint: 'Apple unveiled it in 2014 to replace Objective-C — the name promises speed.',
+      answer: { accept: ['swift', 'apple swift'] } },
+    { type: 'concept',
+      prompt: 'Requisition three: another crew builds the NATIVE Android version. Google\'s official docs now write every Android example in its preferred modern language first. Which one?',
+      hint: 'Not Java — its younger JVM cousin, crowned Android-first by Google in 2019.',
+      answer: { accept: ['kotlin'] } },
+    { type: 'concept',
+      prompt: 'Requisition four: the arcade crew is prototyping a game in the UNITY engine, and every script file Unity creates starts life in one language. Which?',
+      hint: 'Microsoft\'s answer to Java — on the polyglot tour, its tell was Console.WriteLine.',
+      answer: { accept: ['c#', 'csharp', 'c sharp', 'c-sharp'] } },
+    { type: 'concept',
+      prompt: 'Final slip, no coaching: a crew is modifying the UNREAL ENGINE\'s own source code — squeezing every microsecond out of the hardware, down where AAA game engines and operating systems live. Which language?',
+      hint: 'The systems language that bolted classes onto C — std::cout was its tell in the vault.',
+      answer: { accept: ['c++', 'cpp', 'c plus plus', 'cplusplus', 'c ++', 'c-plus-plus'] } }
+  ],
+  outro: ['The rack lights up green: five crews, five right tools. QUARTERMASTER-9 stamps your badge itself.',
+          '"One secret more, operative: real crews MIX languages — Swift app, Python brain, SQL vault. Your second language always comes faster than your first."'],
+  badge: 'Grid Polyglot',
+  solution: [
+    'python',
+    'swift',
+    'kotlin',
+    'c#',
+    'c++'
+  ]
 };
 
 // ===== TECH QUEST CONTENT END =====
@@ -9876,6 +10531,221 @@ LESSONS['T-305'] = { topic: 'Linux: The Third Door', pages: [
            'world\'s top 500 supercomputers — all Linux.',
            'Free, invisible, everywhere. Now you hold its keys too.'] }
 ] };
+
+
+// ── Language expansion lessons ──
+// GRIDFALL LANGUAGES codex — lessons for T-306 / T-307 / T-308 / T-309
+
+LESSONS['T-306'] = {
+  topic: 'Python: Indentation Is Law',
+  pages: [
+    { title: 'Meet Python',
+      body: ['Python is the second language of your Grid training — and the most',
+             'popular teaching language on Earth. You already know JavaScript; compare:',
+             'JavaScript wraps blocks in { braces } and ends statements with semicolons.',
+             'Python does both jobs with INDENTATION: a colon, then four spaces in.',
+             'No braces, no semicolons — the visual shape of the code IS the structure.',
+             'And where JavaScript says console.log, Python simply says print.',
+             'Note: the Grid runs a beginner subset of Python (no imports or classes yet).'],
+      example: ['# JavaScript:  if (hp > 0) { console.log("alive"); }',
+                '# Python:',
+                'if hp > 0:',
+                '    print("alive")'] },
+    { title: 'Variables and f-strings',
+      body: ['Variables need no let or const — just assign: power = 12.',
+             'Reassign the same way. Names use lower_snake_case by habit.',
+             'To splice values into text, put an f before the opening quote and',
+             'wrap any expression in curly braces: f"heat is {heat}".',
+             'JavaScript does this with template literals and ${ };',
+             'Python calls them f-strings, and you will use them constantly.'],
+      example: ['zone = "forge"',
+                'heat = 58 + 2',
+                'print(f"ZONE {zone} HEAT {heat}")   # ZONE forge HEAT 60'] },
+    { title: 'Math, Python-style',
+      body: ['+ - * work as expected. Division / ALWAYS gives a decimal answer.',
+             '// is floor division: it keeps only the whole part (7 // 2 is 3).',
+             '% is the remainder: 7 % 2 is 1. ** is power: 2 ** 10 is 1024.',
+             'One Python quirk: % follows the sign of the divisor, so -7 % 3 is 2.'],
+      example: ['print(7 / 2)    # 3.5',
+                'print(7 // 2)   # 3',
+                'print(7 % 2)    # 1',
+                'print(2 ** 8)   # 256'] },
+    { title: 'Deciding: if / elif / else',
+      body: ['A decision starts with if, a condition, and a colon.',
+             'The lines that belong to it sit indented four spaces below.',
+             'JavaScript writes else if; Python squeezes it to elif.',
+             'A chain checks top to bottom and runs ONLY the first true branch,',
+             'so test your biggest threshold first.'],
+      example: ['if heat >= 80:',
+                '    print("OVERHEAT")',
+                'elif heat >= 40:',
+                '    print("STABLE")',
+                'else:',
+                '    print("COLD")'] },
+    { title: 'Repeating: for, range, while',
+      body: ['for i in range(5): runs with i = 0, 1, 2, 3, 4 — the stop value',
+             'is never included. range(2, 10, 3) counts 2, 5, 8.',
+             'A negative step counts DOWN: range(5, 0, -1) walks 5 to 1.',
+             'for also strolls lists and strings directly: for c in "grid":',
+             'while repeats as long as its condition holds — make sure something',
+             'inside the loop changes, or it never ends.'],
+      example: ['for n in range(3, 0, -1):',
+                '    print(n)            # 3 then 2 then 1',
+                'count = 1',
+                'while count < 5:',
+                '    count = count * 2'] },
+    { title: 'Why Python is everywhere',
+      body: ['Python leads data science, machine learning, and scientific computing —',
+             'pandas, NumPy, and PyTorch are all Python-first tools.',
+             'It is also the #1 first language in schools and universities,',
+             'because the code reads almost like English.',
+             'JavaScript owns the browser; Python owns the lab. Operatives learn both.'] }
+  ]
+};
+
+LESSONS['T-307'] = {
+  topic: 'Functions & Lists in Python',
+  pages: [
+    { title: 'def, return, parameters',
+      body: ['def forges a reusable tool: def calibrate(sig): — the parameter sig',
+             'rides inside the parentheses, and the body indents underneath.',
+             'return sends a value BACK to whoever called the function,',
+             'and the function stops the instant a return line runs.',
+             'Calling calibrate(4) plugs 4 in as sig and hands back the result.'],
+      example: ['def calibrate(sig):',
+                '    return sig * 3 - 1',
+                'print(calibrate(4))   # 11'] },
+    { title: 'return is not print',
+      body: ['print shows a value on the screen and keeps nothing.',
+             'return hands the value to the caller so code can keep working with it.',
+             'The Grid grades what your function RETURNS —',
+             'a function that only prints actually returns None.'],
+      example: ['def double(x):',
+                '    return x * 2',
+                'result = double(5)   # result is 10',
+                'print(result)        # NOW it shows'] },
+    { title: 'Lists: the cargo container',
+      body: ['A list keeps values in order: crates = [12, 30, 7].',
+             'Index from zero: crates[0] is 12. Negatives count from the end:',
+             'crates[-1] is 7. Slices copy a piece: crates[1:] is [30, 7].',
+             'len(crates) counts the items; sum(crates) adds them up.'],
+      example: ['crates = [12, 30, 7]',
+                'print(crates[0], crates[-1])    # 12 7',
+                'print(len(crates), sum(crates)) # 3 49'] },
+    { title: 'List methods',
+      body: ['crates.append(9) adds to the end — the classic way to BUILD a list.',
+             'crates.pop() removes and returns the last item.',
+             'crates.sort() orders the list in place; crates.reverse() flips it.',
+             'crates.index(30) finds a position; crates.count(7) tallies copies.'],
+      example: ['bay = []',
+                'bay.append(10)',
+                'bay.append(20)',
+                'print(bay)   # [10, 20]'] },
+    { title: 'Loop-and-accumulate',
+      body: ['The most useful pattern in programming: start an accumulator,',
+             'loop over the items, fold each one in, return the result.',
+             'Totals, counts, maximums, and filtered lists are ALL this pattern.',
+             'For a filter: start with [], append only the keepers, return the',
+             'new list when the loop is done.'],
+      example: ['def total(xs):',
+                '    t = 0',
+                '    for x in xs:',
+                '        t += x',
+                '    return t'] }
+  ]
+};
+
+LESSONS['T-308'] = {
+  topic: 'A Family Tree of Languages',
+  pages: [
+    { title: 'Two big families',
+      body: ['Most mainstream languages descend from C, and it shows:',
+             'blocks in { braces }, semicolons after statements, declared types.',
+             'Java, C++, and C# are core C-family; Go, Swift, and Kotlin are',
+             'younger members that dropped some of the ceremony.',
+             'Python heads the indentation family: colons and whitespace, no braces.',
+             'JavaScript wears C-family clothes with loose rules: braces, no types.'] },
+    { title: 'Hello, world — six ways',
+      body: ['The fastest tell is the print ritual. Each language signs its name:',
+             'System.out.println is Java; std::cout << is C++; Console.WriteLine is C#.',
+             'A bare print("...") is Swift; println with $vars is Kotlin;',
+             'fmt.Println is Go. Learn these six and you can label most code on sight.'],
+      example: ['Java    System.out.println("hello");',
+                'C++     std::cout << "hello";',
+                'C#      Console.WriteLine("hello");',
+                'Swift   print("hello")',
+                'Kotlin  println("hello")',
+                'Go      fmt.Println("hello")'] },
+    { title: 'More tells: declarations',
+      body: ['Java, C++, and C# put the TYPE first: int power = 2;',
+             'Go declares with := and skips semicolons: power := 2',
+             'Swift uses let (constant) and var (changeable): let zone = "forge"',
+             'Kotlin mirrors that with val and var — plus fun to declare functions.',
+             'The twins split on interpolation: Swift writes \\(x), Kotlin writes $x.'],
+      example: ['int power = 2;      // Java, C++, C#',
+                'power := 2          // Go',
+                'let power = 2       // Swift',
+                'val power = 2       // Kotlin'] },
+    { title: 'Semicolons, braces, types',
+      body: ['Versus Python: all six use { braces } for blocks, and Java, C++,',
+             'and C# require a semicolon after nearly every statement.',
+             'Versus JavaScript: most of the six declare types (int, string) so',
+             'the compiler catches type mistakes before the program ever runs.',
+             'Swift, Kotlin, and Go often INFER the type — you may omit the label,',
+             'but the variable is still strictly typed underneath.'] },
+    { title: 'Compiled vs interpreted',
+      body: ['C++, Go, and Swift COMPILE: a compiler translates the whole program',
+             'into machine code before it runs — fast programs, errors caught early.',
+             'Python and JavaScript are INTERPRETED: an engine reads and executes',
+             'on the fly — instant feedback, slower at a full sprint.',
+             'Java, C#, and Kotlin sit between: compiled to bytecode that runs',
+             'on a virtual machine (the JVM or .NET runtime).'] },
+    { title: 'Reading before writing',
+      body: ['Polyglot skill #1 is READING: trace each variable line by line,',
+             'watch the loop bounds, and let the print ritual tell you where you are.',
+             'Once you can read one member of a family, learning to WRITE another',
+             'takes weeks, not years — the ideas transfer; only the spelling changes.'] }
+  ]
+};
+
+LESSONS['T-309'] = {
+  topic: 'Which Language for the Job?',
+  pages: [
+    { title: 'Languages are tools',
+      body: ['No language is "the best" — each dominates the territory it was',
+             'built for, and platform owners decide a lot of the map:',
+             'Apple backs Swift, Google backs Kotlin, Unity chose C#.',
+             'Pros pick the language the JOB calls for, not their favorite.',
+             'Learn the map below and you can read any job posting on Earth.'] },
+    { title: 'The map: web & data',
+      body: ['Interactive web pages: JavaScript — the only language every browser',
+             'runs natively (TypeScript, its typed big sibling, compiles to it).',
+             'Page structure and style: HTML and CSS — languages, not programming ones.',
+             'Data science & machine learning: Python, with pandas, NumPy, PyTorch.',
+             'Querying databases: SQL — in every stack, beside every language.'] },
+    { title: 'The map: mobile',
+      body: ['Native iPhone and iPad apps: Swift — Apple\'s language since 2014.',
+             'Native Android apps: Kotlin — Google\'s preferred choice since 2019',
+             '(older Android code still runs on Java).',
+             'Cross-platform teams also use React Native or Flutter, but the',
+             'native answers are Swift for iOS and Kotlin for Android.'] },
+    { title: 'The map: games & systems',
+      body: ['Unity engine games: C#. Unreal Engine and its internals: C++.',
+             'High-performance systems — operating systems, browsers, engines:',
+             'C++ (with Rust rising fast as the modern challenger).',
+             'Embedded chips and tiny devices: C and C++, closest to the metal.'] },
+    { title: 'The map: enterprise & cloud',
+      body: ['Big-company back ends, banks, and AP Computer Science A: Java.',
+             'C# fills the same enterprise role in Microsoft shops.',
+             'Go powers cloud infrastructure — Docker and Kubernetes are built in it.',
+             'Python moonlights as everyone\'s automation and scripting duct tape.'] },
+    { title: 'Real teams mix',
+      body: ['A real product is a STACK of languages: a Swift app talking to',
+             'Python ML services, storing rows in SQL, with a JavaScript dashboard.',
+             'So do not marry language #1 — learn it deeply, then grab #2 for',
+             'the next job. The second language always comes faster than the first.'] }
+  ]
+};
 
 // ===== TECH LESSON CONTENT END =====
 

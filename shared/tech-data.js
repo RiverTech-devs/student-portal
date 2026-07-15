@@ -1803,6 +1803,91 @@ window.TECH_DATA = {
    },
    "legacy_subject": "Programming"
   },
+  "T-309": {
+   "id": "T-309",
+   "title": "Which Language for the Job?",
+   "cluster": "Software: Intermediate Development",
+   "stage": "Integration",
+   "stage_id": 4,
+   "grade_band": "9-10",
+   "game_skill": "Which Language for the Job?",
+   "mastery_criteria": "Student matches technical domains to their leading languages: web (JavaScript/TypeScript), data & ML (Python), iOS (Swift), Android (Kotlin), Unity games (C#), Unreal/systems (C++), enterprise (Java), embedded (C/C++), plus SQL and HTML/CSS as universal companions.",
+   "hard_prereqs": [
+    "T-308"
+   ],
+   "soft_deps": [
+    "T-303"
+   ],
+   "assess": {
+    "type": "quest",
+    "module": "concept"
+   },
+   "legacy_subject": "Programming"
+  },
+  "T-308": {
+   "id": "T-308",
+   "title": "The Polyglot Tour",
+   "cluster": "Software: Intermediate Development",
+   "stage": "Integration",
+   "stage_id": 4,
+   "grade_band": "9-10",
+   "game_skill": "The Polyglot Tour",
+   "mastery_criteria": "Student reads short programs in Java, C++, C#, Swift, Kotlin, and Go: traces output, spots syntax differences (types, semicolons, braces), and identifies which language a snippet belongs to.",
+   "hard_prereqs": [
+    "T-SD005"
+   ],
+   "soft_deps": [
+    "T-306",
+    "T-SD009"
+   ],
+   "assess": {
+    "type": "quest",
+    "module": "concept"
+   },
+   "legacy_subject": "Programming"
+  },
+  "T-307": {
+   "id": "T-307",
+   "title": "Python Functions & Lists",
+   "cluster": "Software: Intermediate Programming",
+   "stage": "Application",
+   "stage_id": 3,
+   "grade_band": "6-8",
+   "game_skill": "Python Functions & Lists",
+   "mastery_criteria": "Student writes Python functions with parameters and return values, and builds and processes lists (append, index, loops, len, sum).",
+   "hard_prereqs": [
+    "T-306"
+   ],
+   "soft_deps": [
+    "T-SD013"
+   ],
+   "assess": {
+    "type": "quest",
+    "module": "py"
+   },
+   "legacy_subject": "Programming"
+  },
+  "T-306": {
+   "id": "T-306",
+   "title": "Python Basics",
+   "cluster": "Software: Basic Programming",
+   "stage": "Fluency",
+   "stage_id": 2,
+   "grade_band": "6-8",
+   "game_skill": "Python Basics",
+   "mastery_criteria": "Student writes and runs real Python: variables, print with f-strings, arithmetic, if/elif/else, and for/while loops with range.",
+   "hard_prereqs": [
+    "T-SD005"
+   ],
+   "soft_deps": [
+    "T10"
+   ],
+   "assess": {
+    "type": "quest",
+    "module": "py"
+   },
+   "legacy_subject": "Programming"
+  },
   "T-RB001": {
    "id": "T-RB001",
    "title": "Mechanics Basics",
@@ -4153,6 +4238,10 @@ window.TECH_DATA = {
   "How the Internet Works": "T-303",
   "Mac & Windows Essentials": "T-304",
   "Linux Essentials": "T-305",
+  "Which Language for the Job?": "T-309",
+  "The Polyglot Tour": "T-308",
+  "Python Functions & Lists": "T-307",
+  "Python Basics": "T-306",
   "Mechanics Basics": "T-RB001",
   "Circuits Basics": "T-RB002",
   "Coding Basics": "T-RB003",

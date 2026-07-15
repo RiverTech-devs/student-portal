@@ -32,8 +32,37 @@ T-302 Regular Expressions, T-303 How the Internet Works):
 | quest:concept | 43 | TYPED answers — diagnose-from-output, calculate (Ohm's law, gear ratios, binary), trace code, fill-the-command | accept-lists / regex / numeric-with-tolerance |
 | project | 80 | physical builds, breadboarding, soldering, CAD, prototypes, presentations | teacher rubric (4 criteria × 1–4) in portal/tech-assessment.html |
 
-(Now 189 nodes / 109 quests — T-304 Mac & Windows Essentials and T-305 Linux Essentials
-added after the initial build; concept quests now 44, shell steps appear in T-305 too.)
+| quest:py | 2 | REAL Python executed by **PyMini**, the engine's built-in first-party interpreter | expr tests evaluated in the student's module + output checks |
+
+(Now 193 nodes / 113 quests — added after the initial build: T-304 Mac & Windows Essentials,
+T-305 Linux Essentials, T-306 Python Basics, T-307 Python Functions & Lists, T-308 The
+Polyglot Tour, T-309 Which Language for the Job?.)
+
+## Languages
+
+| language | depth | where |
+|---|---|---|
+| JavaScript | **executable** (Worker sandbox) | 19 js quests + 20 robot-sim quests |
+| Python | **executable** (PyMini, first-party interpreter — see below) | T-306, T-307 |
+| HTML/CSS | **executable** (rendered + DOM-asserted) | 9 web quests |
+| SQL | **executable** (mini engine) | 3 sql quests |
+| bash/shell + regex | **executable** (the game world itself) | 14 shell quests |
+| Java, C++, C#, Swift, Kotlin, Go | reading fluency (trace output, identify, compare syntax) | T-308 The Polyglot Tour |
+| Assembly | reading/tracing | T-SD016 |
+| genre→language map | judgment | T-309: web→JS/TS, data & ML→Python, iOS→Swift, Android→Kotlin, Unity→C#, Unreal/systems→C++, enterprise→Java (+SQL/HTML as universal companions) |
+
+**PyMini** — an auditable ~500-line educational Python interpreter built INTO the engine
+(no third-party code shipped to students; a CDN-vendored interpreter was deliberately
+rejected). Supports the full beginner subset: variables, int/float/str/bool/None/lists/
+dicts, f-strings, full operator set with Python semantics (//, %, **), if/elif/else,
+while/break/continue, for over range/list/string/dict, def/return/recursion/closures,
+core builtins and str/list/dict methods; friendly Python-style errors (NameError,
+IndexError, "try str(...)") and a 300k-op runaway guard. Not supported (documented, and
+content is authored strictly inside the subset): classes, imports, try/except,
+comprehensions, tuples, lambdas; integer-valued floats display without .0. Swapping in
+full CPython-in-browser (Skulpt/Pyodide) later only changes the runner — the `py` step
+type and content format stay identical. Verified by a 45-check interpreter battery
+(test_pymini.js) plus autoplay executing every Python solution.
 
 **No multiple choice anywhere.**
 

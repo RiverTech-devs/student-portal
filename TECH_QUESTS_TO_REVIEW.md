@@ -13,7 +13,11 @@ calibration, and whether the challenge matches how YOU teach it. Review prioriti
 4. **Difficulty spot-checks**: play one quest per module at the grade band you know best.
 5. **The 80 project rubrics** in portal/tech-assessment.html (criteria authored per node) —
    same review as the PE rubrics: do the 4 criteria match how you actually assess builds?
-6. **The Codex lessons** (109, via the `learn` command in-game) — spot-read a few per strand:
+6. **The language expansion** — T-306/T-307 run real Python on the built-in PyMini
+   interpreter (beginner subset; full spec in TECH_TERMINAL_QUEST_DESIGN.md §Languages);
+   T-308 has real Java/C++/C#/Swift/Kotlin/Go snippets to trace (verify they read
+   naturally to you); T-309 is the genre→language judgment quest.
+7. **The Codex lessons** (113, via the `learn` command in-game) — spot-read a few per strand:
    the coding lessons (variables → switch → loops → OOP), the platform lessons
    (T-304 "Two Doors, One House" for Mac/Windows, T-305 "The Third Door" for Linux, plus
    the OS/shell lessons' three-platform mappings — confirm they match the machines your
