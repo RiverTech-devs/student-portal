@@ -4146,6 +4146,255 @@ window.TECH_DATA = {
     ]
    },
    "legacy_subject": "Robotics"
+  },
+  "T-310": {
+   "id": "T-310",
+   "title": "Stacks & Queues",
+   "cluster": "Software: Intermediate Programming",
+   "stage": "Application",
+   "stage_id": 3,
+   "grade_band": "9-10",
+   "game_skill": "Stacks & Queues",
+   "mastery_criteria": "Student implements stack (push/pop/peek) and queue (enqueue/dequeue) behavior with arrays and uses each to solve a matching problem (undo history, service line).",
+   "hard_prereqs": [
+    "T-SD013"
+   ],
+   "soft_deps": [
+    "T-SD009"
+   ],
+   "assess": {
+    "type": "quest",
+    "module": "js"
+   },
+   "legacy_subject": "Programming"
+  },
+  "T-311": {
+   "id": "T-311",
+   "title": "Searching & Sorting",
+   "cluster": "Software: Intermediate Programming",
+   "stage": "Application",
+   "stage_id": 3,
+   "grade_band": "9-10",
+   "game_skill": "Searching & Sorting",
+   "mastery_criteria": "Student implements linear search, binary search on a sorted list, and one elementary sort, and explains when each wins.",
+   "hard_prereqs": [
+    "T-SD013"
+   ],
+   "soft_deps": [
+    "T-310"
+   ],
+   "assess": {
+    "type": "quest",
+    "module": "js"
+   },
+   "legacy_subject": "Programming"
+  },
+  "T-312": {
+   "id": "T-312",
+   "title": "Big-O Thinking",
+   "cluster": "Software: Intermediate Programming",
+   "stage": "Integration",
+   "stage_id": 4,
+   "grade_band": "9-10",
+   "game_skill": "Big-O Thinking",
+   "mastery_criteria": "Student classifies code by growth rate (constant, linear, quadratic, logarithmic), counts loop work, and picks the better of two approaches for large inputs.",
+   "hard_prereqs": [
+    "T-311"
+   ],
+   "soft_deps": [],
+   "assess": {
+    "type": "quest",
+    "module": "concept"
+   },
+   "legacy_subject": "Programming"
+  },
+  "T-313": {
+   "id": "T-313",
+   "title": "Recursion Deep Dive",
+   "cluster": "Software: Intermediate Programming",
+   "stage": "Integration",
+   "stage_id": 4,
+   "grade_band": "9-10",
+   "game_skill": "Recursion Deep Dive",
+   "mastery_criteria": "Student writes recursive Python functions with correct base cases (countdown, factorial, sum of a list) and traces the call stack.",
+   "hard_prereqs": [
+    "T-307"
+   ],
+   "soft_deps": [
+    "T-311"
+   ],
+   "assess": {
+    "type": "quest",
+    "module": "py"
+   },
+   "legacy_subject": "Programming"
+  },
+  "T-314": {
+   "id": "T-314",
+   "title": "Git Basics",
+   "cluster": "Software: Intermediate Development",
+   "stage": "Application",
+   "stage_id": 3,
+   "grade_band": "6-8",
+   "game_skill": "Git Basics",
+   "mastery_criteria": "Student uses real version control: init a repo, stage and commit with messages, read the log, branch, and check out an older commit to recover work.",
+   "hard_prereqs": [
+    "T5"
+   ],
+   "soft_deps": [
+    "T14"
+   ],
+   "assess": {
+    "type": "quest",
+    "module": "shell"
+   },
+   "legacy_subject": "Programming"
+  },
+  "T-315": {
+   "id": "T-315",
+   "title": "Networking Tools",
+   "cluster": "Tech: Application",
+   "stage": "Application",
+   "stage_id": 3,
+   "grade_band": "6-8",
+   "game_skill": "Networking Tools",
+   "mastery_criteria": "Student diagnoses a simulated network with real tools: ping for reachability, nslookup for DNS, traceroute to find the dead hop, and webget for HTTP.",
+   "hard_prereqs": [
+    "T-303"
+   ],
+   "soft_deps": [
+    "T-301"
+   ],
+   "assess": {
+    "type": "quest",
+    "module": "shell"
+   },
+   "legacy_subject": "Programming"
+  },
+  "T-316": {
+   "id": "T-316",
+   "title": "HTTP & APIs",
+   "cluster": "Software: Web Development",
+   "stage": "Integration",
+   "stage_id": 4,
+   "grade_band": "9-10",
+   "game_skill": "HTTP & APIs",
+   "mastery_criteria": "Student explains request/response and status codes, and writes JavaScript that pulls JSON from an API (getData) and transforms it.",
+   "hard_prereqs": [
+    "T-SD020",
+    "T-303"
+   ],
+   "soft_deps": [
+    "T-315"
+   ],
+   "assess": {
+    "type": "quest",
+    "module": "js"
+   },
+   "legacy_subject": "Programming"
+  },
+  "T-317": {
+   "id": "T-317",
+   "title": "JSON & Data Shapes",
+   "cluster": "Software: Web Development",
+   "stage": "Application",
+   "stage_id": 3,
+   "grade_band": "9-10",
+   "game_skill": "JSON & Data Shapes",
+   "mastery_criteria": "Student reads and builds nested JSON-shaped data (objects in arrays in objects) and extracts, filters and reshapes it in code.",
+   "hard_prereqs": [
+    "T-SD013"
+   ],
+   "soft_deps": [
+    "T-316"
+   ],
+   "assess": {
+    "type": "quest",
+    "module": "js"
+   },
+   "legacy_subject": "Programming"
+  },
+  "T-318": {
+   "id": "T-318",
+   "title": "Ciphers & Codes",
+   "cluster": "Software: Systems Programming",
+   "stage": "Application",
+   "stage_id": 3,
+   "grade_band": "6-8",
+   "game_skill": "Ciphers & Codes",
+   "mastery_criteria": "Student encrypts and decrypts with Caesar and substitution ciphers, and explains why a key matters and why simple ciphers fall to frequency analysis.",
+   "hard_prereqs": [
+    "T-SD006"
+   ],
+   "soft_deps": [
+    "T-SD029"
+   ],
+   "assess": {
+    "type": "quest",
+    "module": "concept"
+   },
+   "legacy_subject": "Programming"
+  },
+  "T-319": {
+   "id": "T-319",
+   "title": "Passwords & Hashes",
+   "cluster": "Software: Systems Programming",
+   "stage": "Integration",
+   "stage_id": 4,
+   "grade_band": "9-10",
+   "game_skill": "Passwords & Hashes",
+   "mastery_criteria": "Student evaluates password strength quantitatively (search-space reasoning), explains one-way hashing and salting, and why sites store hashes, not passwords.",
+   "hard_prereqs": [
+    "T-318"
+   ],
+   "soft_deps": [
+    "T-SD029"
+   ],
+   "assess": {
+    "type": "quest",
+    "module": "concept"
+   },
+   "legacy_subject": "Programming"
+  },
+  "T-320": {
+   "id": "T-320",
+   "title": "SQL Joins & Groups",
+   "cluster": "Software: Advanced Development",
+   "stage": "Integration",
+   "stage_id": 4,
+   "grade_band": "9-10",
+   "game_skill": "SQL Joins & Groups",
+   "mastery_criteria": "Student writes queries joining two tables with ON, and summarizes data with GROUP BY and COUNT/SUM/AVG.",
+   "hard_prereqs": [
+    "T-SD017"
+   ],
+   "soft_deps": [
+    "T31"
+   ],
+   "assess": {
+    "type": "quest",
+    "module": "sql"
+   },
+   "legacy_subject": "Programming"
+  },
+  "T-321": {
+   "id": "T-321",
+   "title": "Touch Typing Sprints",
+   "cluster": "Tech: Fluency",
+   "stage": "Fluency",
+   "stage_id": 2,
+   "grade_band": "3-5",
+   "game_skill": "Touch Typing Sprints",
+   "mastery_criteria": "Student types measured sprints with 96 percent accuracy at a grade-appropriate words-per-minute pace, hands on home row.",
+   "hard_prereqs": [
+    "T3"
+   ],
+   "soft_deps": [],
+   "assess": {
+    "type": "quest",
+    "module": "type"
+   },
+   "legacy_subject": "Programming"
   }
  },
  "skillToId": {
@@ -4341,6 +4590,18 @@ window.TECH_DATA = {
   "Reliability Test": "T-RB097",
   "Impact Project": "T-RB098",
   "Public Present": "T-RB099",
-  "Scale Plan": "T-RB100"
+  "Scale Plan": "T-RB100",
+  "Stacks & Queues": "T-310",
+  "Searching & Sorting": "T-311",
+  "Big-O Thinking": "T-312",
+  "Recursion Deep Dive": "T-313",
+  "Git Basics": "T-314",
+  "Networking Tools": "T-315",
+  "HTTP & APIs": "T-316",
+  "JSON & Data Shapes": "T-317",
+  "Ciphers & Codes": "T-318",
+  "Passwords & Hashes": "T-319",
+  "SQL Joins & Groups": "T-320",
+  "Touch Typing Sprints": "T-321"
  }
 };

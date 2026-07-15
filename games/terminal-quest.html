@@ -85,6 +85,12 @@ const QUESTS = {};   // nodeId -> quest spec
 // ---------- codex lesson registry (lesson blocks spliced below) ----------
 // LESSONS[nodeId] = { topic:'Loops', pages:[{title, body:[lines], example:[code lines]}] }
 const LESSONS = {};
+// ---------- drill registry (infinite practice generators, spliced below) ----------
+// DRILLS[topic] = { name, nodes:[nodeIds it exercises], gen(){ return {prompt, answer:{...conceptMatch spec}, reveal} } }
+const DRILLS = {};
+// ---------- zone boss registry (timed compound challenges, spliced below) ----------
+// BOSSES[zone] = { title, intro:[], timeLimitMs, steps:[...], outro:[], badge, xp, solution:[] }
+const BOSSES = {};
 
 const TQ = (() => {
 
@@ -194,11 +200,14 @@ reg('help', 'help — list commands', () => ({ out:
 `GRID SHELL — commands
   files:  ls  cd  pwd  cat  mkdir  touch  rm  cp  mv  echo
   text:   grep  find  head  tail  wc  sort  uniq   (pipes | and > >> work)
+  vcs:    git init|status|add|commit|log|branch|checkout
+  net:    ping  nslookup  traceroute  webget
   game:   look  map  go <zone>  talk <name>  quest  quest start <n>  hint
           answer <text>  code  done  stats  badges  save  skills
+  train:  drill [topic]   patrol   assess   boss   lab <js|py|web>   quit
   codex:  learn (study the current quest topic)  learn list  next  back
   other:  man <cmd>  history  clear  whoami  date
-Type "quest" to see available missions. "man <cmd>" explains any command.` }));
+Type "quest" to see missions · "drill" to practice · "assess" to test out of what you know.` }));
 reg('man', 'man <cmd> — manual', a => {
   const b = BIN[a[0]];
   return b ? { out: b.man } : { err: 'man: no entry for ' + (a[0]||'(nothing)') };
@@ -533,13 +542,17 @@ greg('done', 'done — re-check the current step', () => {
   checkStep(true);
   return { out: '' };
 });
-greg('answer', 'answer <text> — answer the current question step', a => {
+greg('answer', 'answer <text> — answer the current question (quest, drill, patrol or assessment)', a => {
+  const given = a.join(' ').trim();
+  if (!given) return { err: 'answer: say something! answer <your answer>' };
+  if (Drill){ drillAnswer(given); return { out: '' }; }
+  if (Patrol){ patrolAnswer(given); return { out: '' }; }
+  if (Assess){ assessAnswer(given); return { out: '' }; }
   if (!activeQuest) return { err: 'No active quest.' };
   const q = QUESTS[activeQuest], st = QState[activeQuest];
   const step = q.steps[st.step];
   if (step.type !== 'concept') return { err: 'The current step is not a question — check the prompt.' };
-  const given = a.join(' ').trim();
-  if (!given) return { err: 'answer: say something! answer <your answer>' };
+  if (!bossCheckClock()) return { out: '' };
   if (conceptMatch(step.answer, given)){ stepPassed(); }
   else print('✗ Not it. Think again (or ask for a "hint").', 'err');
   return { out: '' };
@@ -633,6 +646,356 @@ greg('talk', 'talk <name> — speak to a daemon', a => {
   return { out: 'A distant daemon hums, but does not answer. (Daemons appear during quests.)' };
 });
 
+// ============ mini-git (real version control on the VFS) ============
+// Repo state lives beside the working dir: GITS[dirPath] = {commits:[{id,msg,snap,parent,branch}], branches:{name:commitId}, head:{branch}, staged:{path:contents}}
+const GITS = {};
+function gitRepoFor(){ // nearest repo at or above CWD
+  let p = CWD;
+  for (;;){ if (GITS[p]) return { repo: GITS[p], root: p }; if (p === '/') return null; p = p.slice(0, p.lastIndexOf('/')) || '/'; }
+}
+function gitSnapshot(root){
+  const snap = {};
+  (function walk(p, n){ if (n.type === 'file'){ snap[p] = n.contents; return; } for (const k of Object.keys(n.children)) walk(p + '/' + k, n.children[k]); })(root === '/' ? '' : root, nodeAt(root));
+  return snap;
+}
+function gitRestore(root, snap){
+  const dir2 = nodeAt(root); if (!dir2) return;
+  dir2.children = {};
+  for (const [p, c] of Object.entries(snap)){ mkdirp(p.slice(0, p.lastIndexOf('/')) || '/'); writeFileAt(p, c); }
+}
+let gitSeq = 0;
+const gitHash = () => (++gitSeq).toString(36).padStart(2, '0') + Math.abs((JSON.stringify(Object.keys(GITS)).length * 2654435761) % 46656).toString(36).padStart(3, '0');
+reg('git', 'git <init|status|add|commit|log|branch|checkout> — the Grid\'s version control (a faithful mini-git)', a => {
+  const sub = a[0];
+  if (sub === 'init'){
+    if (GITS[CWD]) return { err: 'git: repository already exists here' };
+    GITS[CWD] = { commits: [], branches: { main: null }, head: 'main', staged: {} };
+    return { out: 'Initialized empty Grid repository in ' + CWD + ' (branch main)' };
+  }
+  const found = gitRepoFor();
+  if (!found) return { err: 'git: not a repository (run "git init" first)' };
+  const { repo, root } = found;
+  const lastCommit = () => repo.commits.find(c => c.id === repo.branches[repo.head]) || null;
+  if (sub === 'status'){
+    const snap = gitSnapshot(root); const last = lastCommit();
+    const base = last ? last.snap : {};
+    const changed = [], added = [];
+    for (const p of Object.keys(snap)) (p in base ? (snap[p] !== base[p] && changed.push(p)) : added.push(p));
+    const deleted = Object.keys(base).filter(p => !(p in snap));
+    const stagedN = Object.keys(repo.staged).length;
+    return { out: `On branch ${repo.head}\n` +
+      (stagedN ? `Staged for commit: ${stagedN} file(s)\n` : '') +
+      (added.length ? 'Untracked/new: ' + added.join(', ') + '\n' : '') +
+      (changed.length ? 'Modified: ' + changed.join(', ') + '\n' : '') +
+      (deleted.length ? 'Deleted: ' + deleted.join(', ') + '\n' : '') +
+      (!added.length && !changed.length && !deleted.length && !stagedN ? 'Working tree clean.' : '') };
+  }
+  if (sub === 'add'){
+    if (!a[1]) return { err: 'git add <file|.>' };
+    const snap = gitSnapshot(root);
+    if (a[1] === '.'){ repo.staged = snap; return { out: 'Staged ' + Object.keys(snap).length + ' file(s).' }; }
+    const p = normPath(a[1]);
+    if (!(p in snap)) return { err: 'git add: no such file: ' + a[1] };
+    repo.staged[p] = snap[p];
+    return { out: 'Staged ' + a[1] };
+  }
+  if (sub === 'commit'){
+    let msg = null;
+    const mi = a.indexOf('-m');
+    if (mi >= 0) msg = a.slice(mi + 1).join(' ');
+    if (!msg) return { err: 'git commit -m "your message" — every commit needs a message' };
+    if (!Object.keys(repo.staged).length) return { err: 'git: nothing staged (use "git add <file>" or "git add .")' };
+    const last = lastCommit();
+    const snap = Object.assign({}, last ? last.snap : {}, repo.staged);
+    const id = gitHash();
+    repo.commits.unshift({ id, msg, snap, parent: repo.branches[repo.head], branch: repo.head, n: repo.commits.length + 1 });
+    repo.branches[repo.head] = id;
+    repo.staged = {};
+    return { out: `[${repo.head} ${id}] ${msg}` };
+  }
+  if (sub === 'log'){
+    if (!repo.commits.length) return { out: '(no commits yet)' };
+    const chain = [];
+    for (let c = lastCommit(); c; c = repo.commits.find(x => x.id === c.parent)) chain.push(c);
+    return { out: chain.map(c => `commit ${c.id}  (${c.branch})\n    ${c.msg}`).join('\n') };
+  }
+  if (sub === 'branch'){
+    if (!a[1]) return { out: Object.keys(repo.branches).map(b => (b === repo.head ? '* ' : '  ') + b).join('\n') };
+    if (repo.branches[a[1]] !== undefined) return { err: 'git: branch already exists: ' + a[1] };
+    repo.branches[a[1]] = repo.branches[repo.head];
+    return { out: 'Created branch ' + a[1] };
+  }
+  if (sub === 'checkout'){
+    const t = a[1];
+    if (!t) return { err: 'git checkout <branch|commit-id>' };
+    if (repo.branches[t] !== undefined){
+      repo.head = t;
+      const c = lastCommit();
+      if (c) gitRestore(root, c.snap);
+      return { out: 'Switched to branch ' + t };
+    }
+    const c = repo.commits.find(x => x.id === t || x.id.startsWith(t));
+    if (!c) return { err: 'git checkout: no branch or commit named ' + t };
+    gitRestore(root, c.snap);
+    return { out: 'Restored working tree to commit ' + c.id + ' — "' + c.msg + '"' };
+  }
+  return { err: 'git: unknown subcommand "' + (sub || '') + '" (init status add commit log branch checkout)' };
+});
+
+// ============ network simulator (data-driven; quests set NETWORK via step.setup.network) ============
+let NETWORK = {
+  hosts: {
+    'gate.grid':   { ip: '10.0.0.1',  hops: ['10.0.0.1'], up: true },
+    'archive.grid':{ ip: '10.0.2.14', hops: ['10.0.0.1', '10.0.2.1', '10.0.2.14'], up: true },
+    'signal.grid': { ip: '10.0.7.7',  hops: ['10.0.0.1', '10.0.7.7'], up: true,
+      pages: { '/': 'SIGNAL TOWER — status: humming\nsee /status for details', '/status': '{"tower":"online","packets_lost":0}' } }
+  }
+};
+function netResolve(name){
+  if (NETWORK.hosts[name]) return { name, h: NETWORK.hosts[name] };
+  const byIp = Object.entries(NETWORK.hosts).find(([, h]) => h.ip === name);
+  if (byIp) return { name: byIp[0], h: byIp[1] };
+  return null;
+}
+reg('ping', 'ping <host> — is a machine reachable?', a => {
+  if (!a[0]) return { err: 'ping <host or ip>' };
+  const r = netResolve(a[0]);
+  if (!r) return { out: `ping: unknown host ${a[0]}` };
+  if (!r.h.up) return { out: `PING ${r.name} (${r.h.ip}): request timeout\nrequest timeout\n--- ${r.name}: 100% packet loss ---` };
+  const ms = 4 + (r.h.hops.length * 7);
+  return { out: `PING ${r.name} (${r.h.ip}): 3 packets\n64 bytes from ${r.h.ip}: time=${ms}ms\n64 bytes from ${r.h.ip}: time=${ms + 1}ms\n64 bytes from ${r.h.ip}: time=${ms}ms\n--- ${r.name}: 0% packet loss ---` };
+});
+reg('nslookup', 'nslookup <name> — ask DNS for the IP behind a name', a => {
+  if (!a[0]) return { err: 'nslookup <hostname>' };
+  const r = NETWORK.hosts[a[0]];
+  return r ? { out: `Name:    ${a[0]}\nAddress: ${r.ip}` } : { out: `** server can't find ${a[0]}: NXDOMAIN` };
+});
+reg('traceroute', 'traceroute <host> — the path packets take', a => {
+  if (!a[0]) return { err: 'traceroute <host or ip>' };
+  const r = netResolve(a[0]);
+  if (!r) return { out: `traceroute: unknown host ${a[0]}` };
+  const lines = r.h.hops.map((hop, i) => ` ${i + 1}  ${hop}  ${4 + i * 7}ms`);
+  if (!r.h.up) lines.push(` ${r.h.hops.length + 1}  * * *  (no reply — host or link down)`);
+  return { out: `traceroute to ${r.name} (${r.h.ip}):\n` + lines.join('\n') };
+});
+reg('webget', 'webget <host> [path] — fetch a web page over the sim network (HTTP GET)', a => {
+  if (!a[0]) return { err: 'webget <host> [path]' };
+  const r = netResolve(a[0]);
+  if (!r) return { out: 'webget: could not resolve ' + a[0] };
+  if (!r.h.up) return { out: 'webget: connection timed out' };
+  const path2 = a[1] || '/';
+  if (!r.h.pages || !(path2 in r.h.pages)) return { out: `HTTP/1.1 404 Not Found\n(no page at ${path2})` };
+  return { out: `HTTP/1.1 200 OK\n\n` + r.h.pages[path2] };
+});
+
+// ============ drills — infinite generated practice (registry declared top-level) ============
+let Drill = null;   // { topic, item, n, right, total }
+const drillStats = {};  // topic -> {n, right}  (persisted)
+function drillAsk(){
+  const d = DRILLS[Drill.topic];
+  Drill.item = d.gen();
+  print('');
+  print(`⚡ drill ${Drill.n + 1}/${Drill.total} — ${d.name}`, 'title');
+  print(Drill.item.prompt, 'info');
+  print('  (reply with: answer <your answer> — or "quit" to stop)', 'sys');
+}
+function drillAnswer(given){
+  const right = conceptMatch(Drill.item.answer, given);
+  const st = drillStats[Drill.topic] = drillStats[Drill.topic] || { n: 0, right: 0 };
+  st.n++; if (right) st.right++;
+  Drill.n++; if (right) Drill.right++;
+  if (right) print('✔ correct', 'ok');
+  else print('✗ ' + (Drill.item.reveal ? 'answer: ' + Drill.item.reveal : 'not quite'), 'err');
+  if (Drill.n >= Drill.total){
+    const xp = Drill.right * 4;
+    printBlock([`Drill complete: ${Drill.right}/${Drill.total}.`]);
+    if (xp) grantXP(xp);
+    Drill = null; markDirty();
+  } else drillAsk();
+}
+greg('drill', 'drill [topic] — quick generated practice, new questions every time. drill alone lists topics.', a => {
+  if (Drill) return { err: 'Finish the current drill first (or "quit").' };
+  const topics = Object.keys(DRILLS);
+  if (!topics.length) return { err: 'No drills installed yet.' };
+  if (!a[0]){
+    return { out: 'DRILL TOPICS — drill <topic>\n' + topics.map(t => {
+      const st = drillStats[t];
+      return `  ${t.padEnd(14)} ${DRILLS[t].name}${st ? `  (${st.right}/${st.n} lifetime)` : ''}`;
+    }).join('\n') };
+  }
+  const topic = topics.find(t => t === a[0].toLowerCase()) || topics.find(t => t.startsWith(a[0].toLowerCase()));
+  if (!topic) return { err: 'No drill topic "' + a[0] + '". "drill" lists them.' };
+  Drill = { topic, item: null, n: 0, right: 0, total: 5 };
+  drillAsk();
+  return { out: '' };
+});
+greg('quit', 'quit — stop the current drill/patrol/assessment', () => {
+  if (Drill){ Drill = null; return { out: 'Drill abandoned.' }; }
+  if (Patrol){ Patrol = null; return { out: 'Patrol abandoned.' }; }
+  if (Assess){ Assess = null; return { out: 'Assessment abandoned. (No changes made.)' }; }
+  if (Boss){ Boss = null; activeQuest = null; return { out: 'You back away from the boss chamber.' }; }
+  return { err: 'Nothing to quit.' };
+});
+
+// ============ patrol — spaced retention (mastery must be defended) ============
+let Patrol = null;   // { items:[{topic,item,nodeIds}], n, right, missedNodes:Set }
+greg('patrol', 'patrol — defend your mastered skills: 5 quick checks on things you learned a while ago', () => {
+  if (Patrol || Drill || Assess) return { err: 'Finish what you\'re doing first.' };
+  const mastered = new Set(Object.keys(QState).filter(id => QState[id] && QState[id].done));
+  const pool = Object.entries(DRILLS).filter(([, d]) => (d.nodes || []).some(nid => mastered.has(nid)));
+  if (!pool.length) return { err: 'Nothing to patrol yet — master some skills first (drills cover them).' };
+  Patrol = { items: [], n: 0, right: 0, missed: {} };
+  for (let i = 0; i < 5; i++){
+    const [topic, d] = pool[Math.floor(Math.random() * pool.length)];
+    Patrol.items.push({ topic, d, item: d.gen(), nodeIds: (d.nodes || []).filter(nid => mastered.has(nid)) });
+  }
+  printBlock(['🛡 PATROL — the Grid tests what it taught you. 5 checks, no stakes but honor... and rust.']);
+  patrolAsk();
+  return { out: '' };
+});
+function patrolAsk(){
+  const it = Patrol.items[Patrol.n];
+  print('');
+  print(`🛡 patrol ${Patrol.n + 1}/5 — ${it.d.name}`, 'title');
+  print(it.item.prompt, 'info');
+  print('  (answer <your answer>)', 'sys');
+}
+function patrolAnswer(given){
+  const it = Patrol.items[Patrol.n];
+  const right = conceptMatch(it.item.answer, given);
+  if (right){ Patrol.right++; print('✔ still sharp', 'ok'); }
+  else { print('✗ rust detected' + (it.item.reveal ? ' — answer: ' + it.item.reveal : ''), 'err'); it.nodeIds.forEach(nid => Patrol.missed[nid] = true); }
+  Patrol.n++;
+  if (Patrol.n >= 5){
+    const missedIds = Object.keys(Patrol.missed);
+    printBlock([`Patrol complete: ${Patrol.right}/5.`]);
+    grantXP(Patrol.right * 5);
+    if (Patrol.right <= 3 && missedIds.length){
+      for (const nid of missedIds.slice(0, 2)){
+        const node = TD.nodes[nid];
+        if (!node) continue;
+        print(`⚠ ${node.title} slips to REVIEW — replay its quest or drill it back to full strength.`, 'warn');
+        postToHost({ type: 'DOGO_SKILL_PROGRESS', subject: node.legacy_subject || 'Programming',
+          skill: node.game_skill || node.title, domain: node.cluster, skillState: 'in_progress',
+          masteryScore: 55, correct: 0, total: 0, timestamp: new Date().toISOString() });
+        if (QState[nid]) QState[nid].done = false;   // must re-earn
+      }
+    }
+    Patrol = null; markDirty(); pushSave(false);
+  } else patrolAsk();
+}
+
+// ============ rank assessment — adaptive placement over the stages ============
+let Assess = null;  // { stage, n, right, passedStages, items }
+greg('assess', 'assess — Rank Assessment: prove what you already know and get certified past it', () => {
+  if (Assess || Drill || Patrol) return { err: 'Finish what you\'re doing first.' };
+  const topics = Object.entries(DRILLS);
+  if (topics.length < 3) return { err: 'The assessment chamber is not stocked yet.' };
+  Assess = { stage: 1, n: 0, right: 0, passedStages: 0 };
+  printBlock(['🎖 RANK ASSESSMENT',
+    'Five stages, five questions each, drawn fresh from the whole curriculum.',
+    'Pass a stage with 4/5 and the next begins; stumble and we stop there.',
+    'Every quest at or below your proven stages gets FIELD-CERTIFIED (marked complete).',
+    'You can always replay anything. "quit" exits with no changes.']);
+  assessAsk();
+  return { out: '' };
+});
+function assessPool(stage){
+  return Object.entries(DRILLS).filter(([, d]) => {
+    const stages = (d.nodes || []).map(nid => TD.nodes[nid] ? TD.nodes[nid].stage_id : 3);
+    return stages.length && Math.min(...stages) <= stage && stage <= Math.max(...stages) + 1;
+  });
+}
+function assessAsk(){
+  let pool = assessPool(Assess.stage);
+  if (!pool.length) pool = Object.entries(DRILLS);
+  const [topic, d] = pool[Math.floor(Math.random() * pool.length)];
+  Assess.item = d.gen();
+  print('');
+  print(`🎖 stage ${Assess.stage} · question ${Assess.n + 1}/5 — ${d.name}`, 'title');
+  print(Assess.item.prompt, 'info');
+  print('  (answer <your answer>)', 'sys');
+}
+function assessAnswer(given){
+  const right = conceptMatch(Assess.item.answer, given);
+  if (right){ Assess.right++; print('✔', 'ok'); } else print('✗', 'err');
+  Assess.n++;
+  if (Assess.n >= 5){
+    if (Assess.right >= 4 && Assess.stage < 5){
+      Assess.passedStages = Assess.stage;
+      print(`Stage ${Assess.stage} PASSED (${Assess.right}/5). The chamber deepens...`, 'ok');
+      Assess.stage++; Assess.n = 0; Assess.right = 0;
+      assessAsk();
+      return;
+    }
+    if (Assess.right >= 4) Assess.passedStages = Assess.stage;
+    finishAssess();
+  } else assessAsk();
+}
+function finishAssess(){
+  const ps = Assess.passedStages;
+  printBlock([`ASSESSMENT COMPLETE — stages proven: ${ps || 'none'}.`]);
+  if (ps > 0){
+    let certified = 0;
+    for (const id of Object.keys(QUESTS)){
+      if (id.startsWith('__')) continue;
+      const node = TD.nodes[id];
+      if (!node || node.stage_id > ps) continue;
+      if (QState[id] && QState[id].done) continue;
+      QState[id] = { done: true, step: (QUESTS[id].steps || []).length, hints: 0, solutions: {}, certified: true };
+      certified++;
+      postToHost({ type: 'DOGO_SKILL_PROGRESS', subject: node.legacy_subject || 'Programming',
+        skill: node.game_skill || node.title, domain: node.cluster, skillState: 'mastered',
+        masteryScore: 85, correct: 0, total: 0, timestamp: new Date().toISOString() });
+    }
+    print(`🎖 FIELD-CERTIFIED: ${certified} quest(s) at stage ${ps} and below marked complete.`, 'ok');
+    grantXP(40 * ps);
+    updateStatus(); pushSave(false);
+  } else print('No stages certified — the early quests will teach you fast. Type "quest".', 'sys');
+  Assess = null; markDirty();
+}
+
+// ============ zone bosses — timed compound challenges (registry declared top-level) ============
+let Boss = null;   // { zone, deadline }
+greg('boss', 'boss — challenge the zone\'s boss (unlocks when every quest in the zone is complete)', () => {
+  if (activeQuest) return { err: 'Finish or abandon your active quest first.' };
+  const spec = BOSSES[currentZone];
+  if (!spec) return { err: 'No boss haunts this zone.' };
+  const zoneQs = Object.keys(QUESTS).filter(id => !id.startsWith('__') && zoneOf(id) === currentZone);
+  const missing = zoneQs.filter(id => !(QState[id] && QState[id].done));
+  if (missing.length) return { err: `The boss chamber stays sealed — ${missing.length} quest(s) in this zone remain. ("quest" lists them.)` };
+  if (Player.badges.includes(spec.badge)) print('(You have beaten this boss before. Honor round!)', 'sys');
+  const bossId = '__boss_' + currentZone + '__';
+  QUESTS[bossId] = { zone: currentZone, title: spec.title, xp: spec.xp || 250, intro: spec.intro,
+    steps: spec.steps, outro: spec.outro, badge: spec.badge, solution: spec.solution, isBoss: true };
+  activeQuest = bossId;
+  QState[bossId] = { done: false, step: 0, hints: 0, solutions: {} };
+  Boss = { zone: currentZone, deadline: Date.now() + spec.timeLimitMs };
+  printBlock(['☠ BOSS: ' + spec.title, `⏱ TIME LIMIT: ${Math.round(spec.timeLimitMs / 60000)} minutes. The clock is already running.`]);
+  printLines(spec.intro, 'npc');
+  enterStep();
+  return { out: '' };
+});
+function bossTimeUp(){
+  printBlock(['⏱ TIME EXPIRED — the boss shrugs you off. Rest, drill, and return.']);
+  const bossId = activeQuest;
+  activeQuest = null; QState[bossId] = null; Boss = null;
+}
+function bossCheckClock(){
+  if (!Boss) return true;
+  if (Date.now() > Boss.deadline){ bossTimeUp(); return false; }
+  return true;
+}
+
+// ============ lab — the free sandbox ============
+greg('lab', 'lab <js|py|web> — open a free editor: build anything, no grading. Files save under ~/lab.', a => {
+  const kind = (a[0] || '').toLowerCase();
+  if (!['js', 'py', 'web'].includes(kind)) return { err: 'lab js · lab py · lab web — pick a bench.' };
+  mkdirp('/home/operative/lab');
+  openEditor({ type: kind, lab: true, prompt: 'LAB BENCH — free build. Run as often as you like; Submit saves to ~/lab.', starter: kind === 'web' ? '<h1>my page</h1>' : (kind === 'py' ? 'print("hello lab")' : 'print("hello lab");') });
+  return { out: 'Lab bench open. (Run = try it · Submit = save to ~/lab)' };
+});
+
 function questInfo(){
   if (!activeQuest) return { err: 'No active quest. "quest" shows the log.' };
   const q = QUESTS[activeQuest], st = QState[activeQuest];
@@ -670,14 +1033,54 @@ function enterStep(){
     if (step.setup.dirs) for (const d of step.setup.dirs) mkdirp(d);
     if (step.setup.cwd){ mkdirp(step.setup.cwd); CWD = normPath(step.setup.cwd); updatePrompt(); }
   }
+  if (step.setup && step.setup.network) NETWORK = step.setup.network;
   print('');
   print(`▸ step ${st.step + 1}/${q.steps.length}`, 'title');
   print(step.prompt, 'info');
   if (step.type === 'concept') print('  (answer with: answer <your answer>)', 'sys');
   if (['js','web','sql','robot','py'].includes(step.type)) print('  (open the editor with: code)', 'sys');
+  if (step.type === 'type'){
+    TypeState = { ix: 0, startedAt: Date.now(), retries: 0 };
+    print('  ⌨ TYPE the line below exactly, then press Enter. The clock is running!', 'sys');
+    print('');
+    print('    ' + step.lines[0], 'warn');
+  }
   print('');
 }
+// ---------- type steps (measured typing: accuracy + words-per-minute) ----------
+let TypeState = null;
+function handleTypeLine(line){
+  const q = QUESTS[activeQuest], st = QState[activeQuest];
+  const step = q.steps[st.step];
+  const target = step.lines[TypeState.ix];
+  let mism = Math.abs(line.length - target.length);
+  for (let i = 0; i < Math.min(line.length, target.length); i++) if (line[i] !== target[i]) mism++;
+  const acc = 1 - mism / Math.max(1, target.length);
+  if (acc < (step.minAcc != null ? step.minAcc : 0.96)){
+    TypeState.retries++;
+    print('✗ ' + Math.round(acc * 100) + '% accurate — look close and type that line again:', 'err');
+    print('    ' + target, 'warn');
+    return;
+  }
+  print('✔ line ' + (TypeState.ix + 1) + '/' + step.lines.length, 'ok');
+  TypeState.ix++;
+  if (TypeState.ix < step.lines.length){ print('    ' + step.lines[TypeState.ix], 'warn'); return; }
+  const chars = step.lines.reduce((a, l) => a + l.length, 0);
+  const minutes = Math.max((Date.now() - TypeState.startedAt) / 60000, 1e-6);
+  const wpm = Math.round((chars / 5) / minutes);
+  const need = step.minWpm || 10;
+  if (wpm < need){
+    print(`⏱ ${wpm} WPM — the Grid asks for ${need}. Shake out your hands; the set restarts.`, 'warn');
+    TypeState = { ix: 0, startedAt: Date.now(), retries: 0 };
+    print('    ' + step.lines[0], 'warn');
+    return;
+  }
+  print(`⌨ ${wpm} WPM at ${step.lines.length} line(s) — certified.`, 'ok');
+  TypeState = null;
+  stepPassed();
+}
 function stepPassed(){
+  if (Boss && !bossCheckClock()) return;
   const q = QUESTS[activeQuest], st = QState[activeQuest];
   print('✔ step complete', 'ok');
   st.step++;
@@ -688,6 +1091,15 @@ function stepPassed(){
 function questComplete(){
   const id = activeQuest, q = QUESTS[id], st = QState[id];
   st.done = true;
+  if (q.isBoss){
+    printBlock(['☠✦ BOSS DEFEATED ✦☠', ...(q.outro || [])]);
+    grantXP(q.xp || 250);
+    if (q.badge && !Player.badges.includes(q.badge)){ Player.badges.push(q.badge); print('🏅 badge earned: ' + q.badge, 'ok'); }
+    Boss = null; activeQuest = null;
+    delete QState[id]; delete QUESTS[id];
+    pushSave(false);
+    return;
+  }
   printBlock(['✦ SYSTEM RESTORED ✦', ...(q.outro || [])]);
   grantXP(q.xp || 100);
   if (q.badge && !Player.badges.includes(q.badge)){ Player.badges.push(q.badge); print('🏅 badge earned: ' + q.badge, 'ok'); }
@@ -752,17 +1164,17 @@ function conceptMatch(spec, given){
 let editorStep = null;
 function openEditor(step){
   editorStep = step;
-  const st = QState[activeQuest];
-  $('editor-title').textContent = { js:'script.js', web:'index.html', sql:'query.sql', robot:'robot.js', py:'main.py' }[step.type] || 'editor';
+  const st = (!step.lab && activeQuest) ? QState[activeQuest] : null;
+  $('editor-title').textContent = (step.lab ? 'lab · ' : '') + ({ js:'script.js', web:'index.html', sql:'query.sql', robot:'robot.js', py:'main.py' }[step.type] || 'editor');
   $('editor-task').textContent = step.prompt.split('\n')[0];
-  $('editor').value = st.solutions[st.step] != null ? st.solutions[st.step] : (step.starter || '');
+  $('editor').value = (st && st.solutions[st.step] != null) ? st.solutions[st.step] : (step.starter || '');
   $('editor-out').textContent = '';
   $('preview-pane').classList.toggle('open', step.type === 'web');
   $('editor-bg').classList.add('open');
   $('editor').focus();
 }
 function editorClose(){
-  if (editorStep && activeQuest){ QState[activeQuest].solutions[QState[activeQuest].step] = $('editor').value; markDirty(); }
+  if (editorStep && !editorStep.lab && activeQuest){ QState[activeQuest].solutions[QState[activeQuest].step] = $('editor').value; markDirty(); }
   $('editor-bg').classList.remove('open'); editorStep = null;
 }
 function editorRun(){
@@ -780,7 +1192,17 @@ function editorRun(){
 function editorSubmit(){
   const code = $('editor').value;
   if (!editorStep) return;
+  if (editorStep.lab){
+    mkdirp('/home/operative/lab');
+    const ext = { js: 'js', py: 'py', web: 'html' }[editorStep.type] || 'txt';
+    let n = 1; while (nodeAt('/home/operative/lab/build' + n + '.' + ext)) n++;
+    writeFileAt('/home/operative/lab/build' + n + '.' + ext, code);
+    eout('✔ saved to ~/lab/build' + n + '.' + ext + ' — cat it any time, or keep building.');
+    markDirty();
+    return;
+  }
   if (activeQuest){ QState[activeQuest].solutions[QState[activeQuest].step] = code; markDirty(); }
+  if (Boss && !bossCheckClock()){ editorClose(); return; }
   if (editorStep.type === 'web') return gradeWeb(code, editorStep);
   if (editorStep.type === 'sql') return gradeSQL(code, editorStep);
   if (editorStep.type === 'py') return gradePy(code, editorStep, false);
@@ -843,10 +1265,12 @@ self.onmessage = function(ev){
       self.postMessage({ ok: true, logs, sim: { t: sim.t, led: sim.led, ledEvents: sim.ledEvents, pos: sim.pos ? [sim.pos.x, sim.pos.y] : null, samples: sim.samples } });
       return;
     }
-    // js mode: evaluate, then run tests
+    // js mode: evaluate, then run tests. getData(url) serves the step's canned API data.
     const exports = {};
-    const fn = new Function('print', 'console', 'exports', '"use strict";' + code + '\\n;return { ' + (tests || []).filter(t => t.call).map(t => t.call).filter((v, i, a) => a.indexOf(v) === i).map(n => n + ': (typeof ' + n + ' !== "undefined" ? ' + n + ' : undefined)').join(', ') + ' };');
-    const fns = fn(print, console2, exports) || {};
+    const apiData = ev.data.apiData || {};
+    const getData = url => { if (!(url in apiData)) throw new Error('getData: nothing lives at "' + url + '" (check the address in the prompt)'); return JSON.parse(JSON.stringify(apiData[url])); };
+    const fn = new Function('print', 'console', 'exports', 'getData', '"use strict";' + code + '\\n;return { ' + (tests || []).filter(t => t.call).map(t => t.call).filter((v, i, a) => a.indexOf(v) === i).map(n => n + ': (typeof ' + n + ' !== "undefined" ? ' + n + ' : undefined)').join(', ') + ' };');
+    const fns = fn(print, console2, exports, getData) || {};
     const results = [];
     const deep = (a, b) => JSON.stringify(a) === JSON.stringify(b);
     for (const t of (tests || [])){
@@ -890,7 +1314,7 @@ function gradeInWorker(code, step, runOnly){
     if (!fails.length){ eout('✔ All ' + d.results.length + ' tests pass!'); finishEditorStep(); }
     else eout(d.results.map((r, i) => (r.pass ? '✔' : '✗') + ' test ' + (i+1) + (r.pass ? '' : ' — ' + (r.t && r.t.msg ? r.t.msg + ' · ' : '') + r.why)).join('\n'));
   };
-  w.postMessage({ code, mode: step.type === 'robot' ? 'robot' : 'js', tests: step.tests, scenario: step.scenario });
+  w.postMessage({ code, mode: step.type === 'robot' ? 'robot' : 'js', tests: step.tests, scenario: step.scenario, apiData: step.data });
 }
 function summarizeSim(sim, step){
   const bits = ['led toggles: ' + sim.ledEvents.length];
@@ -959,27 +1383,46 @@ function gradeWeb(code, step){
 
 // ---- mini SQL ----
 function runSQL(q, tables){
+  // Educational SQL: SELECT items FROM t1 [JOIN t2 ON a.x = b.y] [WHERE ...]
+  //                  [GROUP BY col] [ORDER BY col [DESC]] [LIMIT n]
+  // items: * | col | t.col | COUNT(*)|SUM/AVG/MIN/MAX(col) [AS alias]
   try {
     q = q.trim().replace(/;$/, '');
-    const m = q.match(/^select\s+(.+?)\s+from\s+(\w+)(?:\s+where\s+(.+?))?(?:\s+order\s+by\s+(\w+)(\s+desc)?)?(?:\s+limit\s+(\d+))?$/i);
-    if (!m) return { err: 'only SELECT ... FROM ... [WHERE ...] [ORDER BY ...] [LIMIT n] is supported here' };
-    const [, colsRaw, tname, whereRaw, orderCol, orderDesc, limitRaw] = m;
-    const table = tables[tname];
-    if (!table) return { err: 'no table named ' + tname + ' (tables: ' + Object.keys(tables).join(', ') + ')' };
-    const cols = table.cols;
-    let rows = table.rows.map(r => Object.fromEntries(cols.map((c, i) => [c, r[i]])));
+    const m = q.match(/^select\s+(.+?)\s+from\s+(\w+)(?:\s+join\s+(\w+)\s+on\s+([\w.]+)\s*=\s*([\w.]+))?(?:\s+where\s+(.+?))?(?:\s+group\s+by\s+([\w.]+))?(?:\s+order\s+by\s+([\w.]+)(\s+desc)?)?(?:\s+limit\s+(\d+))?\s*$/i);
+    if (!m) return { err: 'supported here: SELECT ... FROM t [JOIN t2 ON a.x = b.y] [WHERE ...] [GROUP BY col] [ORDER BY col [DESC]] [LIMIT n]' };
+    const [, itemsRaw, t1, t2, jL, jR, whereRaw, groupCol, orderCol, orderDesc, limitRaw] = m;
+    const getTable = name => { const t = tables[name]; if (!t) throw new Error('no table named ' + name + ' (tables: ' + Object.keys(tables).join(', ') + ')'); return t; };
+    const A = getTable(t1);
+    // build row objects keyed by plain AND qualified names; joined plain keys only when unambiguous
+    const mkRows = (tab, tn) => tab.rows.map(r => { const o = {}; tab.cols.forEach((c, i) => { o[tn + '.' + c] = r[i]; o[c] = r[i]; }); return o; });
+    let rows;
+    if (t2){
+      const B = getTable(t2);
+      const shared = A.cols.filter(c => B.cols.includes(c));
+      rows = [];
+      for (const ra of A.rows) for (const rb of B.rows){
+        const o = {};
+        A.cols.forEach((c, i) => { o[t1 + '.' + c] = ra[i]; if (!shared.includes(c)) o[c] = ra[i]; });
+        B.cols.forEach((c, i) => { o[t2 + '.' + c] = rb[i]; if (!shared.includes(c)) o[c] = rb[i]; });
+        rows.push(o);
+      }
+      const val = (o, ref) => { if (ref in o) return o[ref]; throw new Error('unknown column in ON: ' + ref + (ref.includes('.') ? '' : ' (qualify shared columns like ' + t1 + '.' + ref + ')')); };
+      rows = rows.filter(o => String(val(o, jL)) === String(val(o, jR)));
+    } else rows = mkRows(A, t1);
+    const colVal = (o, ref) => {
+      if (ref in o) return o[ref];
+      throw new Error('no column named ' + ref + (t2 && !ref.includes('.') ? ' — with a JOIN, shared columns need a table prefix (' + t1 + '.' + ref + ')' : ''));
+    };
     if (whereRaw){
       const conds = whereRaw.split(/\s+and\s+/i).map(c => {
-        const cm = c.match(/^(\w+)\s*(=|!=|>=|<=|>|<|like)\s*(.+)$/i);
-        if (!cm) return null;
+        const cm = c.match(/^([\w.]+)\s*(=|!=|>=|<=|>|<|like)\s*(.+)$/i);
+        if (!cm) throw new Error('could not read the WHERE clause near "' + c.trim() + '"');
         let v = cm[3].trim().replace(/^['"]|['"]$/g, '');
         if (!isNaN(parseFloat(v)) && /^[\d.]+$/.test(v)) v = parseFloat(v);
         return { col: cm[1], op: cm[2].toLowerCase(), val: v };
       });
-      if (conds.some(c => !c)) return { err: 'could not read the WHERE clause' };
       rows = rows.filter(r => conds.every(c => {
-        const a = r[c.col];
-        if (a === undefined) return false;
+        const a = colVal(r, c.col);
         switch (c.op){
           case '=': return String(a) == String(c.val);
           case '!=': return String(a) != String(c.val);
@@ -989,12 +1432,54 @@ function runSQL(q, tables){
         }
       }));
     }
-    if (orderCol) rows.sort((x, y) => (x[orderCol] > y[orderCol] ? 1 : x[orderCol] < y[orderCol] ? -1 : 0) * (orderDesc ? -1 : 1));
-    if (limitRaw) rows = rows.slice(0, parseInt(limitRaw, 10));
-    const wantCols = colsRaw.trim() === '*' ? cols : colsRaw.split(',').map(s => s.trim());
-    if (/^count\(\*\)$/i.test(colsRaw.trim())) return { rows: [[rows.length]], cols: ['count'] };
-    for (const c of wantCols) if (!cols.includes(c)) return { err: 'no column named ' + c };
-    return { rows: rows.map(r => wantCols.map(c => r[c])), cols: wantCols };
+    // parse select items
+    const items = [];
+    if (itemsRaw.trim() === '*'){
+      const base = t2 ? [...A.cols.map(c => t1 + '.' + c), ...getTable(t2).cols.map(c => t2 + '.' + c)] : A.cols;
+      for (const c of base) items.push({ kind: 'col', ref: c, name: c });
+    } else {
+      for (const part of itemsRaw.split(',').map(s => s.trim())){
+        let im = part.match(/^(count|sum|avg|min|max)\(\s*(\*|[\w.]+)\s*\)(?:\s+as\s+(\w+))?$/i);
+        if (im){ items.push({ kind: 'agg', fn: im[1].toLowerCase(), ref: im[2], name: im[3] || (im[1].toLowerCase() + '_' + im[2].replace(/[.*]/g, '')) }); continue; }
+        im = part.match(/^([\w.]+)(?:\s+as\s+(\w+))?$/i);
+        if (im){ items.push({ kind: 'col', ref: im[1], name: im[2] || im[1] }); continue; }
+        throw new Error('could not read the select list near "' + part + '"');
+      }
+    }
+    const hasAgg = items.some(i => i.kind === 'agg');
+    const agg = (fn, ref, group) => {
+      if (fn === 'count' && ref === '*') return group.length;
+      const vals = group.map(r => colVal(r, ref));
+      switch (fn){
+        case 'count': return vals.length;
+        case 'sum': return vals.reduce((a, v) => a + v, 0);
+        case 'avg': return vals.length ? Math.round(vals.reduce((a, v) => a + v, 0) / vals.length * 100) / 100 : 0;
+        case 'min': return vals.reduce((a, v) => v < a ? v : a, vals[0]);
+        case 'max': return vals.reduce((a, v) => v > a ? v : a, vals[0]);
+      }
+    };
+    let outRows;
+    const names = items.map(i => i.name);
+    if (groupCol || hasAgg){
+      let groups;
+      if (groupCol){
+        const gmap = new Map();
+        for (const r of rows){ const k = String(colVal(r, groupCol)); if (!gmap.has(k)) gmap.set(k, []); gmap.get(k).push(r); }
+        for (const it of items) if (it.kind === 'col' && it.ref !== groupCol && it.ref.split('.').pop() !== groupCol.split('.').pop())
+          throw new Error('column ' + it.ref + ' must be aggregated (or be the GROUP BY column)');
+        groups = [...gmap.values()];
+      } else groups = [rows];
+      outRows = groups.map(g => items.map(it => it.kind === 'agg' ? agg(it.fn, it.ref, g) : colVal(g[0], it.ref)));
+    } else {
+      if (orderCol && !names.includes(orderCol)) rows.sort((x, y) => (colVal(x, orderCol) > colVal(y, orderCol) ? 1 : colVal(x, orderCol) < colVal(y, orderCol) ? -1 : 0) * (orderDesc ? -1 : 1));
+      outRows = rows.map(r => items.map(it => colVal(r, it.ref)));
+    }
+    if (orderCol && names.includes(orderCol)){
+      const oi = names.indexOf(orderCol);
+      outRows.sort((x, y) => (x[oi] > y[oi] ? 1 : x[oi] < y[oi] ? -1 : 0) * (orderDesc ? -1 : 1));
+    } else if (orderCol && (groupCol || hasAgg)) throw new Error('ORDER BY with GROUP BY must use a selected column name/alias');
+    if (limitRaw) outRows = outRows.slice(0, parseInt(limitRaw, 10));
+    return { rows: outRows, cols: names };
   } catch (e){ return { err: e.message }; }
 }
 function gradeSQL(code, step){
@@ -1466,15 +1951,23 @@ function gradePy(code, step, runOnly){
 const embedded = window.parent !== window;
 function postToHost(m){ if (embedded) window.parent.postMessage(m, '*'); }
 function serialize(){
-  return { v: 1, player: { xp: Player.xp, level: Player.level, badges: Player.badges, hints: Player.hints },
-    zone: currentZone, syncedProjects,
-    quests: Object.fromEntries(Object.entries(QState).filter(([,v])=>v).map(([k, v]) => [k, { done: v.done, step: v.step, hints: v.hints, solutions: v.solutions }])) };
+  const s = { v: 2, player: { xp: Player.xp, level: Player.level, badges: Player.badges, hints: Player.hints },
+    zone: currentZone, syncedProjects, drills: drillStats,
+    quests: Object.fromEntries(Object.entries(QState).filter(([k, v]) => v && !k.startsWith('__boss_')).map(([k, v]) => [k, { done: v.done, step: v.step, hints: v.hints, solutions: v.solutions, certified: v.certified }])) };
+  // persist the student's home directory (the lab!) if it fits
+  try {
+    const home = gitSnapshot('/home/operative');
+    if (JSON.stringify(home).length <= 60000) s.home = home;
+  } catch (e) {}
+  return s;
 }
 function restore(s){
   if (!s || typeof s !== 'object') return;
   if (s.player){ Player.xp = s.player.xp || 0; Player.level = levelFor(Player.xp); Player.badges = s.player.badges || []; Player.hints = s.player.hints || 0; }
   if (s.zone) currentZone = s.zone;
-  if (s.quests) for (const [k, v] of Object.entries(s.quests)) QState[k] = { done: !!v.done, step: v.step || 0, hints: v.hints || 0, solutions: v.solutions || {} };
+  if (s.quests) for (const [k, v] of Object.entries(s.quests)) QState[k] = { done: !!v.done, step: v.step || 0, hints: v.hints || 0, solutions: v.solutions || {}, certified: !!v.certified };
+  if (s.drills) for (const [k, v] of Object.entries(s.drills)) drillStats[k] = v;
+  if (s.home) for (const [p, c] of Object.entries(s.home)){ mkdirp(p.slice(0, p.lastIndexOf('/')) || '/'); writeFileAt(p, c); }
   updateStatus();
 }
 let saveTimer = null;
@@ -1535,6 +2028,15 @@ cmdIn.addEventListener('keydown', e => {
     if (!line.trim()) return;
     print($('prompt').textContent + ' ' + line, 'echo');
     history.push(line); histIx = history.length;
+    // typing steps consume raw lines (a few commands stay reachable)
+    const curStep = activeQuest && QState[activeQuest] && QUESTS[activeQuest].steps[QState[activeQuest].step];
+    const first = line.trim().split(/\s+/)[0];
+    if (curStep && curStep.type === 'type' && TypeState && !['hint','help','quest','learn','save','quit'].includes(first)){
+      if (!bossCheckClock()) return;
+      handleTypeLine(line);
+      return;
+    }
+    if (Boss && !bossCheckClock()) return;
     try { execLine(line.trim()); } catch (err){ print('shell error: ' + err.message, 'err'); }
     checkStep(false);     // shell steps auto-check after every command
   } else if (e.key === 'ArrowUp'){ if (histIx > 0){ histIx--; cmdIn.value = history[histIx] || ''; } e.preventDefault(); }
@@ -1597,11 +2099,13 @@ window.addEventListener('message', e => { if (e.data && e.data.type === 'TQ_SAVE
 return { boot, editorRun, editorSubmit, editorClose,
   // exposed for the headless harness:
   _exec: l => { execLine(l); checkStep(false); },
-  _print: print, _startQuest: startQuest, _state: () => ({ Player, QState, activeQuest, CWD, currentZone }),
+  _print: print, _startQuest: startQuest, _state: () => ({ Player, QState, activeQuest, CWD, currentZone, Drill, Patrol, Assess, Boss }),
   _grade: (code, step, cb) => { editorStep = step; const old = finishEditorStep; gradeInWorker(code, step, false); },
   _runSQL: runSQL, _conceptMatch: conceptMatch, _questAvailable: questAvailable,
   _gradeRobot: gradeRobot, _editorPass: () => stepPassed(), _LESSONS: () => LESSONS,
   _pyRun: PyMini.run, _pyStr: PyMini.pyStr,
+  _typeLine: l => handleTypeLine(l), _DRILLS: () => DRILLS, _BOSSES: () => BOSSES,
+  _drillAnswer: g => drillAnswer(g), _bossClockOff: () => { if (Boss) Boss.deadline = Date.now() + 3600000; },
   _answer: t => { const g = GAME['answer'].fn(t.split(' ')); if (g && g.err) print(g.err, 'err'); },
   _nodeAt: nodeAt, _serialize: serialize, _restore: restore, _questList: questList, _questIndex: null, _booted: false };
 })();
