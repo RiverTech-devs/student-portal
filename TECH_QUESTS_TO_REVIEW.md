@@ -17,7 +17,11 @@ calibration, and whether the challenge matches how YOU teach it. Review prioriti
    interpreter (beginner subset; full spec in TECH_TERMINAL_QUEST_DESIGN.md §Languages);
    T-308 has real Java/C++/C#/Swift/Kotlin/Go snippets to trace (verify they read
    naturally to you); T-309 is the genre→language judgment quest.
-7. **The Codex lessons** (113, via the `learn` command in-game) — spot-read a few per strand:
+7. **GRIDFALL 2.0 systems** — take the Rank Assessment yourself (does 4/5-per-stage feel
+   right for YOUR students?); run a few drills (are the generated numbers grade-fair?);
+   check the patrol demotion feel (fail one on purpose); fight one boss (are 5-10 minute
+   limits humane on school hardware?); confirm typing WPM floors (8/12/14) fit grades 3-5.
+8. **The Codex lessons** (125, via the `learn` command in-game) — spot-read a few per strand:
    the coding lessons (variables → switch → loops → OOP), the platform lessons
    (T-304 "Two Doors, One House" for Mac/Windows, T-305 "The Third Door" for Linux, plus
    the OS/shell lessons' three-platform mappings — confirm they match the machines your

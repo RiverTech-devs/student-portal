@@ -66,6 +66,34 @@ type and content format stay identical. Verified by a 45-check interpreter batte
 
 **No multiple choice anywhere.**
 
+## GRIDFALL 2.0 — the learning-center layer
+
+The system now *knows the student* and demands *fluency, not just completion*:
+
+- **`assess` — Rank Assessment (placement)**: five stages × five questions, drawn fresh
+  from the drill generators across the whole curriculum. Pass a stage at 4/5 to advance;
+  every quest at or below the proven stages is FIELD-CERTIFIED (marked complete, mastery 85)
+  — a student who already knows the material places past it instead of grinding.
+- **`drill` — infinite practice**: 16 generator topics (~1,500 variants: binary, command
+  fluency, JS/Python tracing, loops, regex, git, SQL, Ohm's law, gears, JSON paths, Big-O,
+  language-ID, platforms, networking, functions) with lifetime stats. New numbers every time.
+- **`patrol` — spaced retention**: five quick checks drawn from skills the student has
+  mastered. Fail the patrol and the rustiest skills DEMOTE to review (skill_progress
+  in_progress @55) and must be re-earned — mastery decays here like it does in Math Dojo.
+- **`boss` — zone exams**: each of the 8 zones has a timed (5-10 min) compound boss mixing
+  the zone's step types (the Query Sphinx demands a JOIN and a GROUP BY; the Rootkit King is
+  a grep-hunt, quarantine, and Caesar decode under the clock). Unlocks at zone completion.
+- **`lab` — the sandbox**: free JS/Python/HTML benches, no grading, saves to ~/lab; the
+  student's whole home directory persists in the save (60KB cap) — a creative space that
+  survives reloads.
+- **Deep-dive track** (12 nodes, 205 total): stacks & queues, searching & sorting, Big-O,
+  recursion (Python), **real git** (a working mini-git lives in the shell: init/status/add/
+  commit/log/branch/checkout with true snapshot restore), **networking tools** (playable
+  ping/nslookup/traceroute/webget over per-quest network maps with dead hosts to diagnose),
+  HTTP & APIs (getData JSON in the JS sandbox), JSON shapes, ciphers, passwords & hashes
+  (search-space math), SQL joins & groups (engine upgraded: JOIN..ON, GROUP BY,
+  COUNT/SUM/AVG/MIN/MAX, aliases), and measured touch-typing (accuracy gate + real WPM).
+
 ## The teaching layer — the Codex (`learn`)
 
 Every quest node has a paged in-terminal lesson (108 lessons, ~238KB): `learn` opens the
