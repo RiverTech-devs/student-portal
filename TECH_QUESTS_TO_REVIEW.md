@@ -1,6 +1,6 @@
 # Technology — GRIDFALL Quest Review Checklist (2026-07-15)
 
-All 107 quests are machine-verified (every quest completes via its own solution in the real
+All 136 quests are machine-verified (every quest completes via its own solution in the real
 engine; every graded step is deterministic). What machines can't judge: tone, difficulty
 calibration, and whether the challenge matches how YOU teach it. Review priorities:
 
@@ -35,21 +35,25 @@ bottom); structural changes should go through the autoplay harness before shippi
 2. Supabase SQL editor → run supabase/migrations/zzzzzz_tech_quest_tables.sql
 3. Browser smoke test per TECH_TERMINAL_QUEST_DESIGN.md §Remaining.
 
-## Full quest inventory (107 quests · 406 graded steps · 8 zones)
+## Full quest inventory (136 quests · 540 graded steps · 8 zones · 8 bosses · 19 drill topics)
 
-### boot-sector (7 quests)
+### boot-sector (11 quests · boss: The Cold Boot Colossus 🏅)
 
 | Quest | Skill node | Module | Grade | Steps |
 |---|---|---|---|---|
 | The Gatehouse Speaks | Command Line Basics (T-301) | shell | 3-5 | 5 |
+| Two Doors, One House 🏅 | Mac & Windows Essentials (T-304) | concept | 3-5 | 5 |
+| The Home-Row Relay | Touch Typing Sprints (T-321) | type | 3-5 | 3 |
 | Console Wake-Up Call | Basic Computer Operations (T-SD002) | shell | 6-8 | 5 |
 | Sparks in the Dark | Programming/Basic Theory (T-SD005) | js | 6-8 | 4 |
 | The Console That Mumbles | Console UI Fundamentals (T-SD014) | js | 6-8 | 3 |
+| The Third Door 🏅 | Linux Essentials (T-305) | concept | 6-8 | 6 |
+| The Atlas of Nine-to-Fives 🏅 | Tech Careers Atlas (T-331) | concept | 9-10 | 5 |
 | The Lost Teddy of the Playroom | Digital Navigation (T2) | shell | K-2 | 5 |
 | First Light | Device Basics (T1) | concept | K-2 | 5 |
 | Wake the Keys | Keyboarding & Input (T3) | concept | K-2 | 3 |
 
-### data-vaults (8 quests)
+### data-vaults (11 quests · boss: The Query Sphinx 🏅)
 
 | Quest | Skill node | Module | Grade | Steps |
 |---|---|---|---|---|
@@ -61,8 +65,11 @@ bottom); structural changes should go through the autoplay harness before shippi
 | The Quartermaster's Ledger | Data & Spreadsheets (T31) | sql | 6-8 | 4 |
 | Manifest of the Lost Crates | Basic Concepts (T-SD013) | js | 9-10 | 3 |
 | Clearance: Deep Vault 🏅 | SQL (T-SD017) | sql | 9-10 | 4 |
+| The Nested Manifest | JSON & Data Shapes (T-317) | js | 9-10 | 3 |
+| The Marriage of Tables 🏅 | SQL Joins & Groups (T-320) | sql | 9-10 | 4 |
+| The Ledger That Split Itself | Schema Design: Keys & Tables (T-326) | sql | 9-10 | 5 |
 
-### kernel-depths (10 quests)
+### kernel-depths (15 quests · boss: The Rootkit King 🏅)
 
 | Quest | Skill node | Module | Grade | Steps |
 |---|---|---|---|---|
@@ -74,10 +81,15 @@ bottom); structural changes should go through the autoplay harness before shippi
 | Intrusion at Gate Seven | Cybersecurity Pathways (T-SD029) | concept | 11-12 | 5 |
 | Hardening the Gates 🏅 | Application Security (T-SD037) | concept | 11-12 | 5 |
 | Heart of the Machine | Introduction to Operating Systems (T-SD001) | concept | 6-8 | 5 |
+| The Wheel of Caesar | Ciphers & Codes (T-318) | concept | 6-8 | 5 |
+| The Gatekeeper's Riddles | Logic Gates & Truth Tables (T-322) | concept | 6-8 | 5 |
+| The Warden of Three Letters | Locks & Permissions (T-332) | shell | 6-8 | 5 |
 | Ghosts in the Kernel | Advanced Debugging Techniques (T-SD015) | js | 9-10 | 4 |
 | Register Ghosts | Assembly Language Programming (T-SD016) | concept | 9-10 | 4 |
+| The Search-Space Gate | Passwords & Hashes (T-319) | concept | 9-10 | 5 |
+| The Lockbox Courier | Public Keys & HTTPS (T-327) | concept | 9-10 | 5 |
 
-### logic-forge (16 quests)
+### logic-forge (26 quests · boss: The Unsorted One 🏅)
 
 | Quest | Skill node | Module | Grade | Steps |
 |---|---|---|---|---|
@@ -85,20 +97,30 @@ bottom); structural changes should go through the autoplay harness before shippi
 | The Post-Mortem Files | Software Engineering (T-SD033) | concept | 11-12 | 4 |
 | The Master Blueprint 🏅 | Software Architecture (T-SD036) | concept | 11-12 | 5 |
 | The Apprentice Toolbench | Basic Software Tools (T-SD004) | shell | 6-8 | 5 |
-| The Pulse Sorter | Programming Logic (T10) | js | 6-8 | 3 |
+| The Pulse Sorter | Programming Logic (T10) | js | 6-8 | 4 |
 | Scoreboard of the Old Arcade | Programming Projects (T11) | js | 6-8 | 3 |
 | Cabinet of Glitch Duel | Game Logic (T20) | js | 6-8 | 3 |
 | Gates of the Old Logic | Computer Science Algebra (T-SD010) | js | 6-8 | 4 |
 | The Recipe Engine | Algorithmic Thinking (T9) | concept | 6-8 | 4 |
 | The Number Smelter | Basic Arithmetic (T-SD003) | concept | 6-8 | 5 |
+| The Serpent Wakes | Python Basics (T-306) | py | 6-8 | 5 |
+| Coils and Crates | Python Functions & Lists (T-307) | py | 6-8 | 4 |
+| The Pixel Forge Awakens | Pixel Forge: Creative Coding (T-329) | js | 6-8 | 4 |
 | Ghost in the Assembly Line | Automation Basics (T32) | shell | 9-10 | 5 |
 | The Saboteur's Fingerprints | Debugging & Testing (T13) | js | 9-10 | 3 |
 | The Golem Foundry | Object Oriented Programming (T-SD009) | js | 9-10 | 3 |
 | One Tick at a Time | Intro to Game Programming (T-SD045) | js | 9-10 | 3 |
 | Blueprints for JUKEBOX-9 | Software Design (T12) | concept | 9-10 | 5 |
 | The Counting Depths | Intro Computer Science (T-SD012) | concept | 9-10 | 5 |
+| Six Tongues of the Grid | The Polyglot Tour (T-308) | concept | 9-10 | 5 |
+| The Quartermaster's Rack 🏅 | Which Language for the Job? (T-309) | concept | 9-10 | 5 |
+| The Plates of Push and Pop | Stacks & Queues (T-310) | js | 9-10 | 4 |
+| Needle in the Sorted Stack | Searching & Sorting (T-311) | js | 9-10 | 4 |
+| The Growth Oracle | Big-O Thinking (T-312) | concept | 9-10 | 5 |
+| The Hall of Mirrors 🏅 | Recursion Deep Dive (T-313) | py | 9-10 | 4 |
+| The Trial of Two Sorters | Writing Tests (T-324) | js | 9-10 | 3 |
 
-### mech-bay (39 quests)
+### mech-bay (39 quests · boss: The Scrapheap Titan 🏅)
 
 | Quest | Skill node | Module | Grade | Steps |
 |---|---|---|---|---|
@@ -142,7 +164,7 @@ bottom); structural changes should go through the autoplay harness before shippi
 | The Reversed Pack | Regulators & Polarity (T-RB035) | concept | 9-10 | 4 |
 | Split the Load 🏅 | Multi-Load Power (T-RB038) | concept | 9-10 | 5 |
 
-### signal-tower (10 quests)
+### signal-tower (13 quests · boss: The Static Phantom 🏅)
 
 | Quest | Skill node | Module | Grade | Steps |
 |---|---|---|---|---|
@@ -153,21 +175,27 @@ bottom); structural changes should go through the autoplay harness before shippi
 | The Broken Treaty | Service Oriented Architecture (T-SD046) | concept | 11-12 | 4 |
 | The Courier's Code | Digital Communication (T8) | concept | 3-5 | 4 |
 | The Lost Packet Road | How the Internet Works (T-303) | concept | 6-8 | 5 |
+| The Silent Beacon | Networking Tools (T-315) | shell | 6-8 | 5 |
+| The Oracle That Sometimes Lies | Working With AI (T-328) | concept | 6-8 | 5 |
 | The Relay Assembly Line | Systems Integration (T15) | shell | 9-10 | 4 |
 | The Button That Remembered | Event Driven Programming (T-SD021) | js | 9-10 | 3 |
+| The Beacon Registry API | HTTP & APIs (T-316) | js | 9-10 | 4 |
 | The Whisper Gate | Digital Citizenship (T4) | concept | K-2 | 4 |
 
-### the-archives (5 quests)
+### the-archives (8 quests · boss: The Shelf-Eater 🏅)
 
 | Quest | Skill node | Module | Grade | Steps |
 |---|---|---|---|---|
 | The Scattered Shelves | File Management (T5) | shell | 3-5 | 5 |
 | The Truth Sifter | Internet Research (T7) | concept | 3-5 | 3 |
 | The Scriptorium Sift | Text Manipulation (T-SD006) | shell | 6-8 | 5 |
+| The Time-Turned Logbook | Git Basics (T-314) | shell | 6-8 | 5 |
+| The Cipher of Sixty-Five | Text, Bytes & Encodings (T-323) | concept | 6-8 | 5 |
+| The Overflowing Vault of Images | Digital Media & Compression (T-330) | concept | 6-8 | 5 |
 | The Cipher Room 🏅 | Regular Expressions (T-302) | shell | 9-10 | 5 |
 | The Vault of Versions 🏅 | Versioning & Iteration (T14) | shell | 9-10 | 5 |
 
-### web-harbor (12 quests)
+### web-harbor (13 quests · boss: The Tagless Leviathan 🏅)
 
 | Quest | Skill node | Module | Grade | Steps |
 |---|---|---|---|---|
@@ -183,3 +211,4 @@ bottom); structural changes should go through the autoplay harness before shippi
 | Bones of the Dock Office | Basic HTML Design (T-SD023) | web | 9-10 | 4 |
 | Before the First Paint | HTML to Web Fundamentals (T-SD024) | web | 9-10 | 3 |
 | One Page, Every Deck | Building Responsive Websites (T-SD025) | web | 9-10 | 5 |
+| The Harbor Every Ship Can Enter | Accessible Web (T-325) | web | 9-10 | 5 |
