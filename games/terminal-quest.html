@@ -198,8 +198,9 @@ function reg(name, man, fn){ BIN[name] = { fn, man }; }
 
 reg('help', 'help — list commands', () => ({ out:
 `GRID SHELL — commands
-  files:  ls  cd  pwd  cat  mkdir  touch  rm  cp  mv  echo
+  files:  ls [-l]  cd  pwd  cat  mkdir  touch  rm  cp  mv  echo
   text:   grep  find  head  tail  wc  sort  uniq   (pipes | and > >> work)
+  perms:  chmod +x|-w|... <file>   run <script>
   vcs:    git init|status|add|commit|log|branch|checkout
   net:    ping  nslookup  traceroute  webget
   game:   look  map  go <zone>  talk <name>  quest  quest start <n>  hint
@@ -218,12 +219,36 @@ reg('date', 'date — current date/time', () => ({ out: new Date().toString() })
 reg('clear', 'clear — clear the screen', () => { term.innerHTML = ''; return { out: '' }; });
 reg('history', 'history — recent commands', () => ({ out: history.slice(-20).join('\n') }));
 reg('echo', 'echo <text> — print text', a => ({ out: a.join(' ') }));
-reg('ls', 'ls [path] — list directory contents', a => {
+const permStr = n => n.type === 'dir' ? 'drwx' : '-' + ((n.perm || {}).r !== false ? 'r' : '-') + ((n.perm || {}).w !== false ? 'w' : '-') + ((n.perm || {}).x ? 'x' : '-');
+reg('ls', 'ls [-l] [path] — list directory contents (-l shows permissions)', a => {
+  let long = false;
+  if (a[0] === '-l'){ long = true; a = a.slice(1); }
   const n = nodeAt(a[0] || CWD);
   if (!n) return { err: 'ls: no such path: ' + a[0] };
-  if (n.type === 'file') return { out: normPath(a[0]) };
+  if (n.type === 'file') return { out: long ? permStr(n) + '  ' + normPath(a[0]) : normPath(a[0]) };
   const names = Object.keys(n.children).sort();
-  return { out: names.map(k => n.children[k].type === 'dir' ? k + '/' : k).join('\n') };
+  return { out: names.map(k => long ? permStr(n.children[k]) + '  ' + k + (n.children[k].type === 'dir' ? '/' : '') : k + (n.children[k].type === 'dir' ? '/' : '')).join('\n') };
+});
+reg('chmod', 'chmod <+x|-x|+w|-w|+r|-r> <file> — change a file\'s permissions', a => {
+  const m = (a[0] || '').match(/^([+-])([rwx])$/);
+  if (!m || !a[1]) return { err: 'chmod <+x|-x|+w|-w|+r|-r> <file>' };
+  const n = nodeAt(a[1]);
+  if (!n || n.type !== 'file') return { err: 'chmod: no such file: ' + a[1] };
+  n.perm = n.perm || { r: true, w: true, x: false };
+  n.perm[m[2]] = m[1] === '+';
+  return { out: 'permissions now ' + permStr(n) + ' on ' + a[1] };
+});
+reg('run', 'run <file> — execute a script (needs the x permission; script lines like "echo hi" run)', a => {
+  if (!a[0]) return { err: 'run <file>' };
+  const n = nodeAt(a[0]);
+  if (!n || n.type !== 'file') return { err: 'run: no such file: ' + a[0] };
+  if (!(n.perm && n.perm.x)) return { err: 'run: permission denied — ' + a[0] + ' is not executable (try: chmod +x ' + a[0] + ')' };
+  const outs = [];
+  for (const line of n.contents.split('\n')){
+    const t = line.trim();
+    if (t.startsWith('echo ')) outs.push(t.slice(5).replace(/^["']|["']$/g, ''));
+  }
+  return { out: outs.length ? outs.join('\n') : '(script ran silently)' };
 });
 reg('cd', 'cd <path> — change directory', a => {
   const t = normPath(a[0] || '~');
@@ -241,6 +266,7 @@ reg('cat', 'cat <file> — print file contents', (a, stdin) => {
     const n = nodeAt(p);
     if (!n) return { err: 'cat: no such file: ' + p };
     if (n.type === 'dir') return { err: 'cat: is a directory: ' + p };
+    if (n.perm && n.perm.r === false) return { err: 'cat: permission denied: ' + p + ' (no read permission — try: chmod +r ' + p + ')' };
     outs.push(n.contents);
   }
   return { out: outs.join('\n') };
@@ -1028,7 +1054,8 @@ function enterStep(){
   if (step.setup){
     if (step.setup.files) for (const [p, c] of Object.entries(step.setup.files)){
       mkdirp(p.slice(0, p.lastIndexOf('/')) || '/');
-      writeFileAt(p, c);
+      if (c && typeof c === 'object'){ writeFileAt(p, c.contents || ''); const n = nodeAt(p); if (n && c.perm) n.perm = Object.assign({ r: true, w: true, x: false }, c.perm); }
+      else writeFileAt(p, c);
     }
     if (step.setup.dirs) for (const d of step.setup.dirs) mkdirp(d);
     if (step.setup.cwd){ mkdirp(step.setup.cwd); CWD = normPath(step.setup.cwd); updatePrompt(); }
@@ -1137,6 +1164,7 @@ function checkStep(verbose){
     if (f.contains != null && (n.type !== 'file' || !n.contents.includes(f.contains))){ pass = false; misses.push(f.path + ' should contain "' + f.contains + '"'); }
     if (f.equals != null && (n.type !== 'file' || n.contents.trim() !== String(f.equals).trim())){ pass = false; misses.push(f.path + ' contents not right yet'); }
     if (f.lines != null && (n.type !== 'file' || n.contents.split('\n').filter(Boolean).length !== f.lines)){ pass = false; misses.push(f.path + ' should have ' + f.lines + ' lines'); }
+    if (f.xbit != null && (n.type !== 'file' || !!(n.perm && n.perm.x) !== f.xbit)){ pass = false; misses.push(f.path + (f.xbit ? ' should be executable (chmod +x)' : ' should NOT be executable')); }
   }
   const o = c.output || {};
   if (o.contains != null && !lastOutput.includes(o.contains)) { pass = false; misses.push('expected output containing "' + o.contains + '"'); }
@@ -1266,16 +1294,30 @@ self.onmessage = function(ev){
       return;
     }
     // js mode: evaluate, then run tests. getData(url) serves the step's canned API data.
+    // canvas mode ({w,h}): plot(x,y)/unplot/clearGrid draw on a character grid, graded by pattern.
     const exports = {};
     const apiData = ev.data.apiData || {};
     const getData = url => { if (!(url in apiData)) throw new Error('getData: nothing lives at "' + url + '" (check the address in the prompt)'); return JSON.parse(JSON.stringify(apiData[url])); };
-    const fn = new Function('print', 'console', 'exports', 'getData', '"use strict";' + code + '\\n;return { ' + (tests || []).filter(t => t.call).map(t => t.call).filter((v, i, a) => a.indexOf(v) === i).map(n => n + ': (typeof ' + n + ' !== "undefined" ? ' + n + ' : undefined)').join(', ') + ' };');
-    const fns = fn(print, console2, exports, getData) || {};
+    const canvas = ev.data.canvas || null;
+    let gridRows = null, plot = () => { throw new Error('plot() only exists on canvas quests'); }, unplot = plot, clearGrid = plot;
+    if (canvas){
+      const g = [];
+      for (let y = 0; y < canvas.h; y++){ const row = []; for (let x = 0; x < canvas.w; x++) row.push('.'); g.push(row); }
+      plot = (x, y) => { x = Math.round(Number(x)); y = Math.round(Number(y)); if (y >= 0 && y < canvas.h && x >= 0 && x < canvas.w) g[y][x] = '#'; };
+      unplot = (x, y) => { x = Math.round(Number(x)); y = Math.round(Number(y)); if (y >= 0 && y < canvas.h && x >= 0 && x < canvas.w) g[y][x] = '.'; };
+      clearGrid = () => { for (const row of g) for (let x = 0; x < row.length; x++) row[x] = '.'; };
+      gridRows = () => g.map(r => r.join(''));
+    }
+    const fn = new Function('print', 'console', 'exports', 'getData', 'plot', 'unplot', 'clearGrid', '"use strict";' + code + '\\n;return { ' + (tests || []).filter(t => t.call).map(t => t.call).filter((v, i, a) => a.indexOf(v) === i).map(n => n + ': (typeof ' + n + ' !== "undefined" ? ' + n + ' : undefined)').join(', ') + ' };');
+    const fns = fn(print, console2, exports, getData, plot, unplot, clearGrid) || {};
     const results = [];
     const deep = (a, b) => JSON.stringify(a) === JSON.stringify(b);
     for (const t of (tests || [])){
       try {
-        if (t.call){
+        if (t.grid){
+          const got = gridRows ? gridRows() : [];
+          results.push({ pass: deep(got, t.grid), why: 'grid was:\\n' + got.join('\\n'), t });
+        } else if (t.call){
           const f = fns[t.call];
           if (typeof f !== 'function'){ results.push({ pass: false, why: 'function ' + t.call + ' not found' }); continue; }
           const got = f.apply(null, JSON.parse(JSON.stringify(t.args || [])));
@@ -1287,7 +1329,7 @@ self.onmessage = function(ev){
         }
       } catch (e){ results.push({ pass: false, why: 'threw: ' + e.message, t }); }
     }
-    self.postMessage({ ok: true, logs, results });
+    self.postMessage({ ok: true, logs, results, grid: gridRows ? gridRows() : null });
   } catch (e){
     self.postMessage({ ok: false, error: e.message, logs });
   }
@@ -1308,13 +1350,13 @@ function gradeInWorker(code, step, runOnly){
       else eout('✗ ' + verdict + '\n' + summarizeSim(d.sim, step));
       return;
     }
-    if (runOnly){ eout((d.logs.length ? '--- output ---\n' + d.logs.join('\n') + '\n' : '') + (d.results ? d.results.map((r, i) => (r.pass ? '✔' : '✗') + ' test ' + (i+1) + (r.pass ? '' : ' — ' + r.why)).join('\n') : 'ran.')); return; }
+    if (runOnly){ eout((d.grid ? '--- your drawing ---\n' + d.grid.join('\n') + '\n' : '') + (d.logs.length ? '--- output ---\n' + d.logs.join('\n') + '\n' : '') + (d.results ? d.results.map((r, i) => (r.pass ? '✔' : '✗') + ' test ' + (i+1) + (r.pass ? '' : ' — ' + r.why)).join('\n') : 'ran.')); return; }
     const fails = (d.results || []).filter(r => !r.pass);
     if (!d.results || !d.results.length){ eout('No tests defined — submitting anyway.'); finishEditorStep(); return; }
     if (!fails.length){ eout('✔ All ' + d.results.length + ' tests pass!'); finishEditorStep(); }
     else eout(d.results.map((r, i) => (r.pass ? '✔' : '✗') + ' test ' + (i+1) + (r.pass ? '' : ' — ' + (r.t && r.t.msg ? r.t.msg + ' · ' : '') + r.why)).join('\n'));
   };
-  w.postMessage({ code, mode: step.type === 'robot' ? 'robot' : 'js', tests: step.tests, scenario: step.scenario, apiData: step.data });
+  w.postMessage({ code, mode: step.type === 'robot' ? 'robot' : 'js', tests: step.tests, scenario: step.scenario, apiData: step.data, canvas: step.canvas });
 }
 function summarizeSim(sim, step){
   const bits = ['led toggles: ' + sim.ledEvents.length];
@@ -8119,6 +8161,669 @@ BOSSES['signal-tower'] = {
   ]
 };
 
+
+// ── Wave 3: category quests + drills ──
+// GRIDFALL 3.0 — WAVE 3 quests T-322..T-332 + 3 drill topics
+// Authored against QUEST_CONTRACT.md + GRIDFALL2_ADDENDUM.md + wave-3 engine features
+// (pixel-grid canvas on js steps, rwx file permissions on shell steps).
+
+// ============================== T-322 Logic Gates & Truth Tables (concept) ==============================
+QUESTS['T-322'] = {
+  zone: 'kernel-depths',
+  title: 'The Gatekeeper\'s Riddles',
+  xp: 110,
+  npc: { name: 'GATE-4', lines: [
+    'Every decision the Grid ever makes is built from four tiny switches.',
+    'Answer in my language, operative: zeros and ones only. Well... true and false also accepted.'
+  ] },
+  intro: [
+    'Deep in the kernel-depths, the circuit vault is sealed. Its warden, GATE-4, speaks only',
+    'in logic gates — the atomic yes/no switches every chip is built from.',
+    '"Trace my gates truthfully," it hums, "and the vault opens."'
+  ],
+  steps: [
+    { type: 'concept',
+      prompt: 'The AND gate outputs 1 ONLY when BOTH inputs are 1.\nWorked example:  A=1, B=1  ->  1 AND 1 = 1.   A=0, B=0  ->  0.\nNow GATE-4 feeds its AND gate:  A=1, B=0.  What does it output?',
+      hint: 'AND demands both inputs on. Is B on here?',
+      answer: { accept: ['0', 'false', 'zero', 'off', 'low'] } },
+    { type: 'concept',
+      prompt: 'The OR gate outputs 1 when AT LEAST ONE input is 1. GATE-4 shows its truth table\nwith the last row smudged:\n  A | B | A OR B\n  0 | 0 |   0\n  0 | 1 |   1\n  1 | 0 |   1\n  1 | 1 |   ?\nComplete the row: what belongs where the ? is?',
+      hint: 'Does "at least one input is 1" hold when both are 1?',
+      answer: { accept: ['1', 'true', 'one', 'on', 'high'] } },
+    { type: 'concept',
+      prompt: 'The XOR (exclusive OR) gate is pickier: it outputs 1 only when the inputs DIFFER\n(exactly one is 1). 1 XOR 0 = 1, but matching inputs make 0.\nGATE-4 feeds its XOR gate:  A=1, B=1.  Output?',
+      hint: 'XOR rewards difference. Are these two inputs different or the same?',
+      answer: { accept: ['0', 'false', 'zero', 'off', 'low'] } },
+    { type: 'concept',
+      prompt: 'The NOT gate has ONE input and simply flips it: 1 becomes 0, 0 becomes 1.\nA stuck sensor is feeding GATE-4\'s NOT gate a 0. What comes out?',
+      hint: 'NOT is a flipper. Flip the 0.',
+      answer: { accept: ['1', 'true', 'one', 'on', 'high'] } },
+    { type: 'concept',
+      prompt: 'Final seal — a TWO-gate circuit, no help this time:\n  X = A AND B\n  OUT = X XOR C\nInputs: A=1, B=1, C=1.  Trace it gate by gate: what is OUT?',
+      hint: 'Work in order: find X first, then feed X and C into the XOR.',
+      answer: { accept: ['0', 'false', 'zero', 'off', 'low'] } }
+  ],
+  outro: [
+    'The vault door clicks through a million tiny gates and swings wide.',
+    'GATE-4 hums approval: "Truth, tabled. The kernel remembers you, operative."'
+  ],
+  solution: ['0', '1', '0', '1', '0']
+};
+
+// ============================== T-323 Text, Bytes & Encodings (concept + shell) ==============================
+QUESTS['T-323'] = {
+  zone: 'the-archives',
+  title: 'The Cipher of Sixty-Five',
+  xp: 140,
+  npc: { name: 'GLYPH', lines: [
+    'To a computer, there are no letters. Only numbers wearing letter costumes.',
+    'A = 65. Everything else follows.'
+  ] },
+  intro: [
+    'A shelf of the archives has collapsed into raw numbers — the letter-costumes fell off.',
+    'Archivist daemon GLYPH slides you the master key: "ASCII maps every character to a code.',
+    'Capital A is 65, B is 66... Z is 90. Lowercase a starts at 97, z ends at 122."'
+  ],
+  steps: [
+    { type: 'concept',
+      prompt: 'The ASCII mini-table:  A=65, B=66, C=67 ... each letter is the previous + 1 ... Z=90.\nLowercase runs a=97 ... z=122.\nWorked example: E is the 5th letter, so E = 65 + 4 = 69.\nGLYPH asks: what is the ASCII code for the capital letter G?',
+      hint: 'G is the 7th letter of the alphabet. Start at 65 and count up 6.',
+      answer: { numeric: { value: 71, tol: 0 } } },
+    { type: 'concept',
+      prompt: 'Now decode a whole word. A shattered label reads, in ASCII codes:\n  67  79  68  69\nUse the table (A=65 ... Z=90) to turn each code back into a letter.\nWhat word was on the label?',
+      hint: '67 is two past 65. Decode one code at a time and read the letters in order.',
+      answer: { accept: ['code', 'c o d e'] } },
+    { type: 'shell',
+      prompt: 'GLYPH recovered an intercepted transmission but left it raw. You are standing in the\nintercept room. Print the contents of signal.bytes to the screen so we can see the codes.',
+      hint: 'cat <filename> prints a file\'s contents.',
+      setup: { files: { '/grid/archives/intercept/signal.bytes': '83 79 83' }, cwd: '/grid/archives/intercept' },
+      check: { output: { contains: '83 79 83' }, cmd: { used: ['cat'] } } },
+    { type: 'concept',
+      prompt: 'The transmission you just printed reads:  83 79 83\nDecode it with the table (A=65 ... Z=90). What three-letter distress word does it spell?',
+      hint: '83 is 65 + 18 — the 19th letter. Two of the three codes are identical.',
+      answer: { accept: ['sos', 's o s', 's.o.s.', 's.o.s'] } },
+    { type: 'concept',
+      prompt: 'ASCII has only 128 slots — enough for English letters, digits and symbols, and nothing\nelse. Unicode was invented to give EVERY kind of text a number.\nName ONE thing Unicode can encode that plain ASCII cannot.',
+      hint: 'Think about texting: what do you send that isn\'t a plain English letter? Or other languages\' writing.',
+      answer: { regex: '(emoji|emoticon|alphabet|chinese|japanese|korean|arabic|hebrew|cyrillic|russian|greek|hindi|accent|symbol|language|character|script)', flags: 'i' } }
+  ],
+  outro: [
+    'The shelf reassembles, every number back in its letter costume. GLYPH bows:',
+    '"Text is just bytes that agreed on a story. You now speak the story fluently."'
+  ],
+  solution: [
+    '71',
+    'code',
+    ['cat signal.bytes'],
+    'sos',
+    'emoji'
+  ]
+};
+
+// ============================== T-324 Writing Tests (js) ==============================
+QUESTS['T-324'] = {
+  zone: 'logic-forge',
+  title: 'The Trial of Two Sorters',
+  xp: 180,
+  npc: { name: 'VERITY', lines: [
+    'Code that has never been tested is code that has never been trusted.',
+    'One of these sorters lies. Your tests will make it confess.'
+  ] },
+  intro: [
+    'Two rival sorting routines power the forge\'s parts conveyor — sortA and sortB.',
+    'Since the Cascade, batches keep arriving with parts missing. Inspector daemon VERITY',
+    'narrows her lenses: "One sorter is buggy. Do not guess. PROVE it with test cases."'
+  ],
+  steps: [
+    { type: 'js',
+      prompt: 'Both sorters claim to sort numbers ascending. Probe them with test calls — try inputs a\nlazy tester would skip (VERITY suggests: an input with DUPLICATE values).\nThen write findBuggy(): it must return the name of the buggy sorter as a string,\n"sortA" or "sortB", by actually CALLING both on a probing input and comparing results.',
+      hint: 'Feed both sorters something like [2, 1, 2] and compare what comes back. One loses something.',
+      starter: '// The two rival sorters (do not delete them):\nfunction sortA(arr){ return arr.slice().sort((a, b) => a - b); }\nfunction sortB(arr){ return Array.from(new Set(arr)).sort((a, b) => a - b); }\n\n// Probe with print(sortA([2,1,2]), sortB([2,1,2])) via Run, then:\nfunction findBuggy(){\n\n}',
+      tests: [
+        { call: 'findBuggy', args: [], want: 'sortB', msg: 'name the sorter your probes convicted' },
+        { call: 'sortA', args: [[3, 1, 3]], want: [1, 3, 3], msg: 'leave the innocent sorter intact' }
+      ] },
+    { type: 'js',
+      prompt: 'VERITY pins the official QA board to the wall — the input categories every sorter test\nsuite must cover:\n  duplicates (repeated values) · empty (no values) · negative (below zero)\n  single (one value) · sorted (already in order)\nWrite edgeCases(): return exactly these five category names as an array of strings,\nin alphabetical order.',
+      hint: 'Return an array of the five category words from the board, A to Z.',
+      starter: 'function edgeCases(){\n\n}',
+      tests: [
+        { call: 'edgeCases', args: [], want: ['duplicates', 'empty', 'negative', 'single', 'sorted'], msg: 'the five categories, alphabetical' }
+      ] },
+    { type: 'js',
+      prompt: 'The verdict is in: sortB drops duplicate parts — that is where the missing pieces went.\nFix it. Rewrite sortB(arr) so it sorts numbers ascending and KEEPS every value,\nduplicates included. Your fix must survive the full edge-case gauntlet.',
+      hint: 'The bug is the Set — a Set silently discards repeats. Sort a copy of the array instead.',
+      starter: '// Repair the convicted sorter:\nfunction sortB(arr){ return Array.from(new Set(arr)).sort((a, b) => a - b); }',
+      tests: [
+        { call: 'sortB', args: [[2, 1, 2]], want: [1, 2, 2], msg: 'duplicates must survive' },
+        { call: 'sortB', args: [[]], want: [], msg: 'empty stays empty' },
+        { call: 'sortB', args: [[7]], want: [7], msg: 'single element' },
+        { call: 'sortB', args: [[-3, 10, -3]], want: [-3, -3, 10], msg: 'negatives and repeats together' },
+        { call: 'sortB', args: [[1, 2, 3]], want: [1, 2, 3], msg: 'already sorted input' }
+      ] }
+  ],
+  outro: [
+    'The conveyor hums; every duplicate bolt arrives safely. VERITY stamps your report:',
+    '"Tests before trust, operative. That is the whole religion of this forge."'
+  ],
+  solution: [
+    'function sortA(arr){ return arr.slice().sort((a, b) => a - b); }\nfunction sortB(arr){ return Array.from(new Set(arr)).sort((a, b) => a - b); }\nfunction findBuggy(){\n  const probe = [2, 1, 2];\n  const want = JSON.stringify([1, 2, 2]);\n  if (JSON.stringify(sortA(probe.slice())) !== want) return "sortA";\n  if (JSON.stringify(sortB(probe.slice())) !== want) return "sortB";\n  return "neither";\n}',
+    'function edgeCases(){\n  return ["duplicates", "empty", "negative", "single", "sorted"];\n}',
+    'function sortB(arr){ return arr.slice().sort((a, b) => a - b); }'
+  ]
+};
+
+// ============================== T-325 Accessible Web (web + concept) ==============================
+QUESTS['T-325'] = {
+  zone: 'web-harbor',
+  title: 'The Harbor Every Ship Can Enter',
+  xp: 180,
+  npc: { name: 'BEACON', lines: [
+    'A harbor that only some ships can enter is a broken harbor.',
+    'Screen readers cannot see your page. They can only HEAR its structure.'
+  ] },
+  intro: [
+    'The harbor\'s public docks page survived the Cascade — but only barely, and only for some.',
+    'Navigator daemon BEACON plays you a recording of a screen reader hitting the page:',
+    '"image... image... edit text..." Useless. "Rebuild it so EVERY visitor can navigate."'
+  ],
+  steps: [
+    { type: 'concept',
+      prompt: 'BEACON\'s recording came from a screen reader — software that reads a page aloud and lets\nusers jump between headings and landmarks by keyboard alone.\nWho most depends on screen readers to use the web?',
+      hint: 'Think about which sense a screen reader replaces.',
+      answer: { regex: '(blind|vision|visual|sight|see|eye)', flags: 'i' } },
+    { type: 'web',
+      prompt: 'The docks page has two photos a screen reader announces only as "image". Give each a\nvoice with alt text, and give the page exactly one main heading.\nBuild:\n - an h1 reading: Dock Registry\n - an img with id="crane" and alt="harbor crane"\n - an img with id="beacon" and alt="signal beacon"\nEvery image, every time, gets alt text.',
+      hint: 'Example shape: <img id="crane" src="crane.png" alt="harbor crane">',
+      starter: '<h1>Dock Registry</h1>\n<img id="crane" src="crane.png">\n<img id="beacon" src="beacon.png">',
+      assertions: [
+        { sel: 'h1', count: 1 },
+        { sel: 'h1', text: 'Dock Registry' },
+        { sel: 'img', count: 2 },
+        { sel: '#crane', attr: { name: 'alt', value: 'harbor crane' } },
+        { sel: '#beacon', attr: { name: 'alt', value: 'signal beacon' } }
+      ] },
+    { type: 'web',
+      prompt: 'The check-in form is a mystery box: an input with no name a screen reader can speak.\nPair a label to the input so clicking OR hearing it works:\n - a label with for="callsign" reading: Ship callsign\n - an input with id="callsign"\n - keep exactly one h1: Harbor Check-In\nThe label\'s for must match the input\'s id — that is the pairing.',
+      hint: '<label for="callsign">...</label> then a separate <input id="callsign"> — the for and id must match.',
+      starter: '<h1>Harbor Check-In</h1>\nShip callsign <input>',
+      assertions: [
+        { sel: 'h1', count: 1 },
+        { sel: 'label', count: 1 },
+        { sel: 'label', text: 'Ship callsign' },
+        { sel: 'label', attr: { name: 'for', value: 'callsign' } },
+        { sel: 'input', attr: { name: 'id', value: 'callsign' } }
+      ] },
+    { type: 'web',
+      prompt: 'Final rebuild, unaided: screen-reader users jump by LANDMARK — the semantic regions of a\npage. Rebuild the docks page with real landmarks:\n - one header element reading: Port Authority\n - one h1 reading: Arrivals\n - one main element reading: All berths open.\n - one footer element reading: Signal BEACON with questions.',
+      hint: 'header, main and footer are real tags, used just like div — but they mean something.',
+      starter: '<div>Port Authority</div>\n<div>Arrivals</div>\n<div>All berths open.</div>\n<div>Signal BEACON with questions.</div>',
+      assertions: [
+        { sel: 'header', count: 1 },
+        { sel: 'main', count: 1 },
+        { sel: 'footer', count: 1 },
+        { sel: 'h1', count: 1 },
+        { sel: 'h1', text: 'Arrivals' },
+        { sel: 'main', text: 'All berths open.' }
+      ] },
+    { type: 'concept',
+      prompt: 'One more accessibility rule from BEACON: pale gray text on a white background fails many\nusers — including anyone with low vision or an old monitor in sunlight.\nContrast matters because without it, people simply cannot ___ the text.',
+      hint: 'What do you DO to text? One short word.',
+      answer: { regex: '(read|see|make out|perceive|distinguish)', flags: 'i' } }
+  ],
+  outro: [
+    'BEACON replays the screen reader: "heading, Arrivals... main, All berths open." Perfect sense.',
+    '"Now the harbor is open to every ship," BEACON glows. "That is what web-built means."'
+  ],
+  solution: [
+    'blind users',
+    '<h1>Dock Registry</h1>\n<img id="crane" src="crane.png" alt="harbor crane">\n<img id="beacon" src="beacon.png" alt="signal beacon">',
+    '<h1>Harbor Check-In</h1>\n<label for="callsign">Ship callsign</label>\n<input id="callsign">',
+    '<header>Port Authority</header>\n<h1>Arrivals</h1>\n<main>All berths open.</main>\n<footer>Signal BEACON with questions.</footer>',
+    'read'
+  ]
+};
+
+// ============================== T-326 Schema Design: Keys & Tables (sql + concept) ==============================
+QUESTS['T-326'] = {
+  zone: 'data-vaults',
+  title: 'The Ledger That Split Itself',
+  xp: 180,
+  npc: { name: 'SCHEMA', lines: [
+    'One giant sheet is not a database. It is a future apology.',
+    'Split the data, link it with keys, and nothing is ever written twice.'
+  ] },
+  intro: [
+    'The vault\'s haul ledger was once a single monstrous sheet — every shipment row retyped',
+    'the pilot\'s full record, and after the Cascade the copies disagree with each other.',
+    'Curator daemon SCHEMA has split it into two linked tables: pilots and hauls.'
+  ],
+  steps: [
+    { type: 'concept',
+      prompt: 'In the pilots table, the id column uniquely identifies each row — no two pilots share\nan id, and looking one up by id can never be ambiguous.\nA column that uniquely identifies each row in its own table is called the ___ key.',
+      hint: 'It is the FIRST, most important key of a table. Not "foreign" — the other one.',
+      answer: { accept: ['primary', 'primary key', 'the primary key', 'pk', 'a primary key'] } },
+    { type: 'concept',
+      prompt: 'The hauls table has a pilot_id column: each haul stores the id of the pilot who flew it,\npointing back into the pilots table.\nA column that stores ANOTHER table\'s primary key to link rows across tables is called\nthe ___ key.',
+      hint: 'It references a key that lives in a "foreign" table.',
+      answer: { accept: ['foreign', 'foreign key', 'the foreign key', 'fk', 'a foreign key'] } },
+    { type: 'concept',
+      prompt: 'Why split at all? In the old giant sheet, pilot ada\'s name was retyped on every one of\nher haul rows — and one typo made two different adas.\nStoring the same fact in many places is the classic database disease the split cures.\nWhat is that repeated-data problem called?',
+      hint: 'Saying the same thing twice is redundant...',
+      answer: { accept: ['redundancy', 'duplication', 'redundant data', 'duplicate data', 'duplicates', 'repetition', 'repeated data', 'data duplication', 'data redundancy'] } },
+    { type: 'sql',
+      prompt: 'Now query ACROSS the link. Join the tables so each haul shows its pilot\'s name:\nlist every pilot name with the cargo they hauled (two columns: name, then cargo).\nJoin rule: a haul matches a pilot when the haul\'s pilot_id equals the pilot\'s id.\nCareful: both tables have an id column, so shared column names need a table prefix,\nlike pilots.id.',
+      hint: 'SELECT pilots.name, hauls.cargo FROM pilots JOIN hauls ON ... = ... — match pilots.id to hauls.pilot_id.',
+      tables: {
+        pilots: { cols: ['id', 'name'], rows: [[1, 'ada'], [2, 'bo'], [3, 'cy']] },
+        hauls: { cols: ['id', 'pilot_id', 'cargo'], rows: [[1, 1, 'ore'], [2, 2, 'ice'], [3, 1, 'crystal'], [4, 3, 'ore']] }
+      },
+      want: [['ada', 'ore'], ['bo', 'ice'], ['ada', 'crystal'], ['cy', 'ore']] },
+    { type: 'sql',
+      prompt: 'Prove it, unaided. SCHEMA needs an audit of pilot ada: using the same two tables and the\nsame join rule, return ONLY the cargo values from hauls flown by the pilot named ada\n(one column: cargo).',
+      hint: 'Same JOIN as before, then a WHERE on the pilot\'s name. Prefix shared columns with their table.',
+      tables: {
+        pilots: { cols: ['id', 'name'], rows: [[1, 'ada'], [2, 'bo'], [3, 'cy']] },
+        hauls: { cols: ['id', 'pilot_id', 'cargo'], rows: [[1, 1, 'ore'], [2, 2, 'ice'], [3, 1, 'crystal'], [4, 3, 'ore']] }
+      },
+      want: [['ore'], ['crystal']] }
+  ],
+  outro: [
+    'The two tables click together along their keys; every fact now lives in exactly one place.',
+    'SCHEMA files your audit: "Primary identifies. Foreign links. You may design vaults now."'
+  ],
+  solution: [
+    'primary key',
+    'foreign key',
+    'redundancy',
+    'SELECT pilots.name, hauls.cargo FROM pilots JOIN hauls ON pilots.id = hauls.pilot_id',
+    "SELECT hauls.cargo FROM hauls JOIN pilots ON hauls.pilot_id = pilots.id WHERE pilots.name = 'ada'"
+  ]
+};
+
+// ============================== T-327 Public Keys & HTTPS (concept) ==============================
+QUESTS['T-327'] = {
+  zone: 'kernel-depths',
+  title: 'The Lockbox Courier',
+  xp: 170,
+  npc: { name: 'CIPHERON', lines: [
+    'I can hand ten thousand strangers a way to lock — and keep the only way to unlock.',
+    'That trick runs every secure connection you have ever made.'
+  ] },
+  intro: [
+    'Messages between Grid stations keep getting skimmed in transit. Cryptkeeper daemon',
+    'CIPHERON produces a strange lockbox: ANYONE can snap it shut using a key CIPHERON hands',
+    'out freely — but once shut, only CIPHERON\'s other, secret key can open it again.'
+  ],
+  steps: [
+    { type: 'concept',
+      prompt: 'The lockbox model of public-key cryptography: two keys exist. One is handed out to\neveryone and can only LOCK (encrypt). The other is kept secret and is the only one that\ncan OPEN (decrypt).\nWhich key unlocks the box — the public key or the private key?',
+      hint: 'The one that never leaves its owner\'s pocket.',
+      answer: { accept: ['private', 'private key', 'the private key', 'the private'] } },
+    { type: 'concept',
+      prompt: 'A station wants ANY stranger on the network to be able to send it a sealed message that\nonly the station itself can read.\nWhich of its two keys should the station publish for the whole Grid to use — the public\nkey or the private key?',
+      hint: 'Its name says exactly how widely you can share it.',
+      answer: { accept: ['public', 'public key', 'the public key', 'the public'] } },
+    { type: 'concept',
+      prompt: 'Your browser shows a padlock on a site. CIPHERON is precise about what that promises:\nthe connection is ENCRYPTED and the site is who its certificate says it is.\nDoes the padlock ALSO promise the site itself is honest and safe to trust — yes or no?',
+      hint: 'A scammer can rent a lockbox too. What does the padlock actually cover?',
+      answer: { accept: ['no', 'nope', 'no it does not', 'it does not', 'no it doesn\'t', 'it doesn\'t'] } },
+    { type: 'concept',
+      prompt: 'You are on coffee-shop wifi, where anyone else on the network can capture the traffic\nflying past. One protocol sends your password as readable plain text; the other seals it\nin the lockbox first.\nWhich protocol exposes your password to the eavesdroppers — HTTP or HTTPS?',
+      hint: 'The S stands for Secure. Which one is missing it?',
+      answer: { accept: ['http', 'plain http', 'http.'] } },
+    { type: 'concept',
+      prompt: 'Last riddle: the padlock only means something because the site presented a certificate —\nan ID card for websites, vouched for and signed by a trusted third party your browser\nalready knows.\nThat trusted third party is called a certificate ___?',
+      hint: 'Two words total; the second means "an org with the power to vouch".',
+      answer: { accept: ['authority', 'certificate authority', 'a certificate authority', 'ca', 'the certificate authority'] } }
+  ],
+  outro: [
+    'Sealed lockboxes begin flowing between stations; the skimmers read only noise.',
+    'CIPHERON pockets the private key: "Lock in public, open in private. Carry that with you."'
+  ],
+  solution: ['private key', 'public key', 'no', 'http', 'certificate authority']
+};
+
+// ============================== T-328 Working With AI (concept) ==============================
+QUESTS['T-328'] = {
+  zone: 'signal-tower',
+  title: 'The Oracle That Sometimes Lies',
+  xp: 170,
+  npc: { name: 'ORACLE-N', lines: [
+    'I am fast, fluent, and occasionally, confidently, completely wrong.',
+    'Work with me properly and I make you sharper. Copy me blindly and I make you wrong at scale.'
+  ] },
+  intro: [
+    'The signal-tower hosts ORACLE-N, an AI assistant restored after the Cascade — mostly.',
+    'It answers instantly and beautifully, but the tower\'s operators have stopped checking',
+    'its work. Supervisor protocol demands you prove you can work WITH it, not FOR it.'
+  ],
+  steps: [
+    { type: 'concept',
+      prompt: 'ORACLE-N answers a student\'s history question:\n  "The Grid was first switched on in 1972 by Dr. Elena Foss, as documented in the\n   Journal of Grid Studies, vol. 12, pages 40-52."\nYou check: no such journal exists, and no Dr. Foss appears in any record. The AI\ninvented the fact AND the source, fluently and confidently.\nWhat is it called when an AI fabricates information like this?',
+      hint: 'The term sounds like the AI is seeing things that are not there.',
+      answer: { accept: ['hallucination', 'a hallucination', 'hallucinating', 'hallucinations', 'confabulation', 'an hallucination'] } },
+    { type: 'concept',
+      prompt: 'ORACLE-N hands you a great-sounding statistic for your science report.\nBefore you put it in your report, what must you do with that claim first?',
+      hint: 'One word starting with v — or "check the ___" also counts.',
+      answer: { regex: '(verif|check|confirm|source|look it up|look up|research|fact.?check|double.?check|corrobor|validate)', flags: 'i' } },
+    { type: 'concept',
+      prompt: 'A tower cadet has ORACLE-N write their entire essay, changes nothing, and submits it\nwith their own name on it — presenting work they did not create as their own.\nIs that plagiarism — yes or no?',
+      hint: 'Whose thinking is on the page, and whose name is on it?',
+      answer: { accept: ['yes', 'yeah', 'yep', 'yes it is', 'it is', 'definitely', 'absolutely'] } },
+    { type: 'concept',
+      prompt: 'Prompt engineering check. Two cadets ask ORACLE-N for help:\n  (a) "science stuff please"\n  (b) "Explain how vaccines train the immune system, in 3 sentences, for a 7th grader."\nWhich prompt gets the more useful answer — a or b?',
+      hint: 'Which prompt tells the AI the topic, the length, AND the audience?',
+      answer: { accept: ['b', '(b)', 'b)', 'prompt b', 'option b', 'the second', 'the second one'] } },
+    { type: 'concept',
+      prompt: 'Final protocol, unaided. The healthy way to use ORACLE-N on schoolwork: let it explain,\nquiz you, and critique your drafts — like a tutor. The unhealthy way: let it do the work\nwhile you sign your name — like a ghostwriter.\nAfter AI helps you understand and draft, the final submitted work must be written by\nwhom — you, or the AI?',
+      hint: 'The name on the paper answers this.',
+      answer: { accept: ['you', 'me', 'myself', 'i', 'yourself', 'the student', 'the cadet', 'you the student'] } }
+  ],
+  outro: [
+    'ORACLE-N dims respectfully: "Verified, cited, and written in your own voice.',
+    'You are the rare operative who makes me MORE useful by trusting me less."'
+  ],
+  solution: ['hallucination', 'verify', 'yes', 'b', 'you']
+};
+
+// ============================== T-329 Pixel Forge: Creative Coding (js + canvas) ==============================
+QUESTS['T-329'] = {
+  zone: 'logic-forge',
+  title: 'The Pixel Forge Awakens',
+  xp: 140,
+  npc: { name: 'RASTER', lines: [
+    'Every image you have ever seen is math wearing paint.',
+    'Loops draw lines. Nested loops draw worlds.'
+  ] },
+  intro: [
+    'A dormant display wall flickers on in the logic-forge — the Pixel Forge, dead since the',
+    'Cascade. Muralist daemon RASTER tosses you the brush: plot(x, y) lights the cell at',
+    'column x, row y. (0,0) is the TOP-LEFT; x grows rightward, y grows DOWNWARD.'
+  ],
+  steps: [
+    { type: 'js',
+      prompt: 'First stroke: a horizontal beam. The canvas is 6 wide and 3 tall.\nUse ONE loop to light every cell of row 1 (the middle row), so the wall shows:\n  ......\n  ######\n  ......\nCall plot(x, 1) for every x from 0 to 5. Do not place the 6 calls by hand — loop it.',
+      hint: 'for (let x = 0; x < 6; x++) — and inside, plot that x at row 1.',
+      starter: '// light all of row 1\nfor (let x = 0; x < 6; x++){\n\n}',
+      canvas: { w: 6, h: 3 },
+      tests: [
+        { grid: ['......', '######', '......'], msg: 'a full beam across row 1' }
+      ] },
+    { type: 'js',
+      prompt: 'Now area, not line: a filled rectangle. The canvas is 7 wide and 5 tall.\nUse a NESTED loop (a loop inside a loop) to fill every cell where x runs 1..5 and\ny runs 1..3, leaving a one-cell dark border:\n  .......\n  .#####.\n  .#####.\n  .#####.\n  .......',
+      hint: 'Outer loop over y from 1 to 3; inner loop over x from 1 to 5; plot(x, y) inside both.',
+      starter: 'for (let y = 1; y <= 3; y++){\n  // inner loop over x goes here\n}',
+      canvas: { w: 7, h: 5 },
+      tests: [
+        { grid: ['.......', '.#####.', '.#####.', '.#####.', '.......'], msg: 'a filled 5x3 block, centered' }
+      ] },
+    { type: 'js',
+      prompt: 'Math becomes pattern: a checkerboard on a 6x6 canvas.\nVisit EVERY cell with nested loops, but only plot the cells where (x + y) % 2 === 0.\nThe wall should show:\n  #.#.#.\n  .#.#.#\n  #.#.#.\n  .#.#.#\n  #.#.#.\n  .#.#.#',
+      hint: 'Nested loops over all x and y, an if around the plot: if ((x + y) % 2 === 0) plot(x, y);',
+      starter: 'for (let y = 0; y < 6; y++){\n  for (let x = 0; x < 6; x++){\n\n  }\n}',
+      canvas: { w: 6, h: 6 },
+      tests: [
+        { grid: ['#.#.#.', '.#.#.#', '#.#.#.', '.#.#.#', '#.#.#.', '.#.#.#'], msg: 'alternating cells via (x+y)%2' }
+      ] },
+    { type: 'js',
+      prompt: 'Final mural, unaided: a border frame. The canvas is 8 wide and 6 tall.\nLight ONLY the outer edge — every cell in the top row, bottom row, left column and\nright column — leaving the inside dark:\n  ########\n  #......#\n  #......#\n  #......#\n  #......#\n  ########',
+      hint: 'Visit every cell; plot when x is 0 or 7, OR y is 0 or 5.',
+      starter: '// frame the 8x6 wall\n',
+      canvas: { w: 8, h: 6 },
+      tests: [
+        { grid: ['########', '#......#', '#......#', '#......#', '#......#', '########'], msg: 'a hollow frame around the edge' }
+      ] }
+  ],
+  outro: [
+    'The display wall blazes — beam, block, checkerboard, frame — your loops made light.',
+    'RASTER signs the corner: "Remember this: you did not draw pixels. You drew RULES."'
+  ],
+  solution: [
+    'for (let x = 0; x < 6; x++){\n  plot(x, 1);\n}',
+    'for (let y = 1; y <= 3; y++){\n  for (let x = 1; x <= 5; x++){\n    plot(x, y);\n  }\n}',
+    'for (let y = 0; y < 6; y++){\n  for (let x = 0; x < 6; x++){\n    if ((x + y) % 2 === 0) plot(x, y);\n  }\n}',
+    'for (let y = 0; y < 6; y++){\n  for (let x = 0; x < 8; x++){\n    if (x === 0 || x === 7 || y === 0 || y === 5) plot(x, y);\n  }\n}'
+  ]
+};
+
+// ============================== T-330 Digital Media & Compression (concept) ==============================
+QUESTS['T-330'] = {
+  zone: 'the-archives',
+  title: 'The Overflowing Vault of Images',
+  xp: 140,
+  npc: { name: 'CODEC', lines: [
+    'Storage is never free. Every pixel you keep is a pixel someone pays for.',
+    'The right format is the difference between an archive and a landfill.'
+  ] },
+  intro: [
+    'The media vault of the archives is bursting — post-Cascade salvage dumped photos, logos',
+    'and audio into one directory with the wrong formats everywhere.',
+    'Librarian daemon CODEC needs an operative who understands what images and sound ARE.'
+  ],
+  steps: [
+    { type: 'concept',
+      prompt: 'Two kinds of image live in the vault. RASTER images store a grid of pixels — zoom in\nand they turn blocky. VECTOR images store shapes as math (lines, curves, points) —\nzoom forever and the edges stay perfectly crisp.\nWhich type scales to any size without getting blocky — raster or vector?',
+      hint: 'Math redraws cleanly at any size; a fixed grid of pixels cannot.',
+      answer: { accept: ['vector', 'vector images', 'vector graphics', 'vectors'] } },
+    { type: 'concept',
+      prompt: 'Two kinds of compression, too. LOSSY shrinks files by permanently throwing away detail\nthe eye barely notices — fine for photos. LOSSLESS shrinks files so the original comes\nback EXACTLY, bit for bit.\nCODEC must compress a folder of source code, where every character must survive.\nLossy or lossless?',
+      hint: 'Would your program still run if the compressor "approximated" some characters away?',
+      answer: { accept: ['lossless', 'loss-less', 'loss less', 'lossless compression'] } },
+    { type: 'concept',
+      prompt: 'Size math. An uncompressed image is 100 pixels wide and 100 pixels tall, and each pixel\ntakes 3 bytes (one per color channel).\nTotal size = width x height x bytes per pixel. Using 1 KB = 1000 bytes,\nhow many KB is the image?',
+      hint: '100 x 100 = 10,000 pixels. Times 3 bytes each, then divide by 1000.',
+      answer: { numeric: { value: 30, tol: 0 } } },
+    { type: 'concept',
+      prompt: 'Format triage, round one. The archives\' new logo must stay razor-crisp at every size —\nfrom a tiny favicon to a wall banner.\nBest format: png, jpg, or svg?',
+      hint: 'Which of the three stores shapes as math instead of pixels?',
+      answer: { accept: ['svg', '.svg', 'svg format'] } },
+    { type: 'concept',
+      prompt: 'Round two, unaided. A long spoken-word recording must go on the public archive site,\nwhere download size matters far more than perfect studio fidelity.\nBest format: mp3 or wav?',
+      hint: 'One is compressed for the web; the other is huge and raw.',
+      answer: { accept: ['mp3', '.mp3', 'mp3 format'] } }
+  ],
+  outro: [
+    'The vault\'s meter drops from red to green as the right formats settle into place.',
+    'CODEC beams: "Raster for photos, vector for logos, lossless for truth. Filed forever."'
+  ],
+  solution: ['vector', 'lossless', '30', 'svg', 'mp3']
+};
+
+// ============================== T-331 Tech Careers Atlas (concept) ==============================
+QUESTS['T-331'] = {
+  zone: 'boot-sector',
+  title: 'The Atlas of Nine-to-Fives',
+  xp: 210,
+  badge: 'Career Cartographer',
+  npc: { name: 'WAYFINDER', lines: [
+    'Every zone you restored is a doorway to somebody\'s actual job.',
+    'The Atlas does not ask what you want to BE. It asks what you want to DO all day.'
+  ] },
+  intro: [
+    'In the boot-sector stands the Careers Atlas — a great map linking every Grid skill to the',
+    'real-world trades that use it daily. The Cascade shuffled its role cards.',
+    'Curator daemon WAYFINDER fans them out: "Re-match each day\'s work to its trade, operative."'
+  ],
+  steps: [
+    { type: 'concept',
+      prompt: 'The Atlas lists six trades: security analyst, data scientist, QA engineer, sysadmin,\nPM (product manager), designer.\nFirst card — whose typical day is this?\n  "Triage overnight intrusion alerts, trace a phishing email to its source, patch the\n   hole it exploited, write up the incident."',
+      hint: 'This trade plays defense against attackers, all day.',
+      answer: { accept: ['security analyst', 'security', 'analyst', 'a security analyst', 'cybersecurity analyst', 'security engineer'] } },
+    { type: 'concept',
+      prompt: 'Second card, same six trades. Whose day is this?\n  "Clean a messy million-row dataset, build a model that predicts which relays will\n   fail next month, chart the findings for leadership."',
+      hint: 'This trade turns raw numbers into answers and predictions.',
+      answer: { accept: ['data scientist', 'data science', 'a data scientist', 'data analyst'] } },
+    { type: 'concept',
+      prompt: 'Third card. Whose day is this?\n  "Write the test plan for the new login screen, then spend the afternoon trying forty\n   different ways to break it, filing a precise bug report for each crack found."',
+      hint: 'This trade is paid to break things on purpose — before customers do. Two letters will do.',
+      answer: { accept: ['qa', 'qa engineer', 'quality assurance', 'tester', 'qa tester', 'test engineer', 'a qa engineer'] } },
+    { type: 'concept',
+      prompt: 'The Atlas also maps which Grid zone FEEDS each trade. A sysadmin lives in operating\nsystems, servers, users and permissions — keeping the machines themselves healthy.\nWhich Grid zone trains that path: kernel-depths or web-harbor?',
+      hint: 'Where in the Grid did you learn processes, permissions and the system\'s core?',
+      answer: { accept: ['kernel-depths', 'kernel depths', 'kernel', 'the kernel-depths', 'the kernel depths'] } },
+    { type: 'concept',
+      prompt: 'Final diagnosis, unaided. A recovered day-log, author unknown:\n  "9:00 standup with the team. Wrote user stories, reordered the roadmap, unblocked two\n   engineers, and spent an hour saying no to a feature we cannot fit this quarter."\nWhose day is this — PM, designer, or sysadmin?',
+      hint: 'This person decides WHAT gets built and keeps the team moving — without writing the code.',
+      answer: { accept: ['pm', 'product manager', 'project manager', 'a pm', 'the pm', 'a product manager'] } }
+  ],
+  outro: [
+    'The Atlas re-lights, each trade card glowing above the Grid zones that feed it.',
+    'WAYFINDER stamps your map: "Six trades, one operative fluent in all their dialects."'
+  ],
+  solution: ['security analyst', 'data scientist', 'qa', 'kernel-depths', 'pm']
+};
+
+// ============================== T-332 Locks & Permissions (shell) ==============================
+QUESTS['T-332'] = {
+  zone: 'kernel-depths',
+  title: 'The Warden of Three Letters',
+  xp: 140,
+  npc: { name: 'RWX', lines: [
+    'Read. Write. Execute. Three little letters guard everything the kernel owns.',
+    'Grant only what is needed, and nothing more. That is the whole law.'
+  ] },
+  intro: [
+    'Past the circuit vault lies the kernel\'s tool room, sealed by warden daemon RWX.',
+    'Every file here wears a permission string — r to read it, w to change it, x to run it.',
+    '"The Cascade scrambled my locks," RWX growls. "Show me you can read and set them."'
+  ],
+  steps: [
+    { type: 'concept',
+      prompt: 'RWX shows you an ls -l listing from the tool room. For a file, the four characters mean:\ntype(-), read(r), write(w), execute(x) — a dash means that permission is OFF.\n  -rwx  patch.run\n  -rw-  notes.txt\n  -r--  frozen.log\nWhich of the three files could be executed with the run command?',
+      hint: 'Only one listing shows the x bit set.',
+      answer: { accept: ['patch.run', 'patch', 'the patch.run', 'patch.run file'] } },
+    { type: 'shell',
+      prompt: 'Into the tool room. A repair tool, tool.run, was stripped of its execute bit by the\nCascade — try "run tool.run" and the kernel will refuse.\nGrant it the execute permission with chmod, then run it. (ls -l shows the bits.)',
+      hint: 'chmod +x tool.run flips the execute bit on. Then: run tool.run',
+      setup: { files: { '/grid/kernel/tools/tool.run': { contents: 'echo unlocked', perm: { x: false } } }, cwd: '/grid/kernel/tools' },
+      check: {
+        fs: [{ path: '/grid/kernel/tools/tool.run', xbit: true }],
+        output: { contains: 'unlocked' },
+        cmd: { used: ['run'] }
+      } },
+    { type: 'shell',
+      prompt: 'The tool printed "unlocked" — one lock down. But RWX spots a scandal: daemon.cfg, a plain\nconfiguration file, is flagged EXECUTABLE. Config files hold settings; they should never\nbe runnable. Revoke the execute permission on daemon.cfg.',
+      hint: 'chmod with a minus sign takes a permission away: chmod -x <file>.',
+      setup: { files: { '/grid/kernel/config/daemon.cfg': { contents: 'relay=on\nport=7741', perm: { x: true } } }, cwd: '/grid/kernel/config' },
+      check: {
+        fs: [{ path: '/grid/kernel/config/daemon.cfg', xbit: false }],
+        cmd: { used: ['chmod'] }
+      } },
+    { type: 'concept',
+      prompt: 'RWX nods at the de-fanged config file. "That is my whole law, operative: give every file,\nprogram and person ONLY the permissions they actually need — never more."\nSecurity has a name for that principle: the principle of ___ ___? (two words)',
+      hint: 'The smallest amount of privilege that still gets the job done.',
+      answer: { regex: '(least|minimal|minimum)[ -]?(privilege|priviledge|privileges|access|permission|permissions)', flags: 'i' } },
+    { type: 'shell',
+      prompt: 'Final lock, unaided. The vault\'s recovery key sits in master.key — but the Cascade\nstripped its READ permission, so cat is denied. Restore read access and print the key\nto the screen.',
+      hint: 'A permission can be granted back the same way x was: chmod +? ... then cat it.',
+      setup: { files: { '/grid/kernel/vault/master.key': { contents: 'KEY-7741-AXIOM', perm: { r: false } } }, cwd: '/grid/kernel/vault' },
+      check: {
+        output: { contains: 'KEY-7741-AXIOM' },
+        cmd: { used: ['cat'] }
+      } }
+  ],
+  outro: [
+    'KEY-7741-AXIOM glows on screen and every lock in the tool room clicks to its proper state.',
+    'RWX salutes: "Read, write, execute — granted only where earned. You hold my three letters now."'
+  ],
+  solution: [
+    'patch.run',
+    ['chmod +x tool.run', 'run tool.run'],
+    ['chmod -x daemon.cfg'],
+    'least privilege',
+    ['chmod +r master.key', 'cat master.key']
+  ]
+};
+
+// ============================================================================
+// WAVE 3 DRILLS — gates · encodings · aicheck
+// ============================================================================
+
+DRILLS['gates'] = {
+  name: 'Gate Runner',
+  nodes: ['T-322', 'T-SD010'],
+  gen(){
+    const ri = n => Math.floor(Math.random() * n);
+    const A = ri(2), B = ri(2), C = ri(2);
+    const G = { AND: (a, b) => a & b, OR: (a, b) => a | b, XOR: (a, b) => a ^ b };
+    const names = ['AND', 'OR', 'XOR'];
+    const wrap = v => ({ answer: { accept: [String(v), v ? 'true' : 'false', v ? 'one' : 'zero', v ? 'on' : 'off'] }, reveal: String(v) });
+    const r = Math.random();
+    if (r < 0.30){
+      const g = names[ri(3)];
+      return Object.assign({ prompt: g + ' gate: A=' + A + ', B=' + B + '. What is the output (0 or 1)?' }, wrap(G[g](A, B)));
+    }
+    if (r < 0.45){
+      return Object.assign({ prompt: 'NOT gate: input=' + A + '. What is the output (0 or 1)?' }, wrap(A ? 0 : 1));
+    }
+    if (r < 0.65){
+      const g = names[ri(3)];
+      return Object.assign({ prompt: 'Two-gate trace: X = A ' + g + ' B, then OUT = NOT X. With A=' + A + ', B=' + B + ', what is OUT (0 or 1)?' }, wrap(G[g](A, B) ? 0 : 1));
+    }
+    const g1 = names[ri(3)], g2 = names[ri(3)];
+    return Object.assign({ prompt: 'Two-gate trace: X = A ' + g1 + ' B, then OUT = X ' + g2 + ' C. With A=' + A + ', B=' + B + ', C=' + C + ', what is OUT (0 or 1)?' }, wrap(G[g2](G[g1](A, B), C)));
+  }
+};
+
+DRILLS['encodings'] = {
+  name: 'ASCII Decoder Ring',
+  nodes: ['T-323', 'T-SD003'],
+  gen(){
+    const upper = Math.random() < 0.5;
+    const base = upper ? 65 : 97;
+    const ix = Math.floor(Math.random() * 26);
+    const code = base + ix;
+    const ch = String.fromCharCode(code);
+    if (Math.random() < 0.5){
+      return { prompt: 'ASCII: what is the code for the character "' + ch + '"? (A=65..Z=90, a=97..z=122)',
+               answer: { numeric: { value: code, tol: 0 } }, reveal: String(code) };
+    }
+    return { prompt: 'ASCII: code ' + code + ' is which character? Mind the case. (A=65..Z=90, a=97..z=122)',
+             answer: { regex: '^["\']?' + ch + '["\']?$', flags: '' }, reveal: ch };
+  }
+};
+
+DRILLS['aicheck'] = {
+  name: 'AI Reality Check',
+  nodes: ['T-328', 'T7'],
+  gen(){
+    const P = arr => arr[Math.floor(Math.random() * arr.length)];
+    const subj = P(['volcanoes', 'the Oregon Trail', 'photosynthesis', 'the water cycle', 'Mars rovers', 'medieval castles', 'coral reefs']);
+    const journal = P(['Journal of Grid Studies', 'Annals of Signal Science', 'The Tower Review', 'Relay Quarterly']);
+    const yes = { accept: ['yes', 'yeah', 'yep', 'y', 'yes it is', 'it is', 'definitely'] };
+    const no = { accept: ['no', 'nope', 'n', 'no it does not', 'it does not', 'it doesn\'t', 'no it doesn\'t'] };
+    const pool = [
+      { p: 'An AI cites "' + journal + ', vol. 12" — but that journal does not exist anywhere. Inventing a fact or source like this is called a ___?',
+        a: { accept: ['hallucination', 'a hallucination', 'hallucinating', 'hallucinations', 'confabulation'] }, r: 'hallucination' },
+      { p: 'An AI hands you a statistic about ' + subj + ' for your report. One word: before using it, you must ___ it.',
+        a: { accept: ['verify', 'check', 'confirm', 'fact-check', 'fact check', 'double-check', 'double check', 'research', 'validate'] }, r: 'verify' },
+      { p: 'You used AI to help brainstorm and outline your essay on ' + subj + '. Honest move in your submission: ___ the AI\'s help. (one word)',
+        a: { accept: ['cite', 'disclose', 'acknowledge', 'credit', 'mention', 'note', 'declare'] }, r: 'cite' },
+      { p: 'A student submits an entirely AI-written essay under their own name. Is that plagiarism — yes or no?',
+        a: yes, r: 'yes' },
+      { p: 'An AI\'s answer about ' + subj + ' sounds confident, detailed and polished. Does a confident tone prove the answer is correct — yes or no?',
+        a: no, r: 'no' },
+      { p: 'You search for an article the AI cited and it exists nowhere — not online, not in the library. Is that citation probably real or fake?',
+        a: { accept: ['fake', 'fake.', 'made up', 'invented', 'not real', 'probably fake', 'false'] }, r: 'fake' },
+      { p: 'Safer homework use of AI: (a) copy its answer into your worksheet, or (b) ask it to explain the steps so you can solve it yourself. a or b?',
+        a: { accept: ['b', '(b)', 'b)', 'option b', 'the second', 'the second one'] }, r: 'b' },
+      { p: 'The AI claims one thing about ' + subj + '; two verified sources say the opposite. Which do you trust — the AI or the sources?',
+        a: { accept: ['sources', 'the sources', 'verified sources', 'the verified sources', 'source', 'the two sources'] }, r: 'sources' },
+      { p: 'Healthy framing: AI should act as your ___ that helps you learn — not a ghostwriter who does the work. (one word)',
+        a: { accept: ['tutor', 'a tutor', 'coach', 'helper', 'teacher', 'draft partner', 'assistant'] }, r: 'tutor' },
+      { p: 'Which prompt gets the more useful answer: (a) "stuff about ' + subj + ' please" or (b) "Explain ' + subj + ' in 3 sentences for a 6th grader"? a or b?',
+        a: { accept: ['b', '(b)', 'b)', 'option b', 'the second', 'the second one'] }, r: 'b' },
+      { p: 'An AI gives you an exact date for an event in your history paper. Do you paste it straight in, or check a source first? (paste/check)',
+        a: { accept: ['check', 'check first', 'check a source', 'check it', 'verify', 'verify it'] }, r: 'check' },
+      { p: 'After AI helps you brainstorm and revise, your final submitted essay must be written by ___. (you / the AI)',
+        a: { accept: ['you', 'me', 'myself', 'i', 'yourself', 'the student'] }, r: 'you' }
+    ];
+    const it = P(pool);
+    return { prompt: it.p, answer: it.a, reveal: it.r };
+  }
+};
+
 // ===== TECH QUEST CONTENT END =====
 
 // tutorial lesson (engine-owned) — also the format reference for spliced lesson content
@@ -13674,6 +14379,474 @@ LESSONS['T-321'] = {
              'bursts and pauses lose to smooth and steady every time.'],
       example: ['100 characters in 1 minute = 100 ÷ 5 = 20 WPM',
                 'sprint target: steady pace + 96% accuracy'] }
+  ]
+};
+
+
+// ── Wave 3 lessons ──
+// GRIDFALL 3.0 — WAVE 3 codex lessons T-322..T-332
+// Each lesson teaches exactly what its quest tests.
+
+LESSONS['T-322'] = {
+  topic: 'Logic Gates & Truth Tables',
+  pages: [
+    { title: 'Gates: the atoms of every decision',
+      body: ['A logic gate is a tiny switch with inputs and one output.',
+             'Inputs and outputs are always 1 (on/true) or 0 (off/false).',
+             'Every chip in every computer is billions of these switches.',
+             'A TRUTH TABLE lists every input combo and the gate\'s answer.',
+             'Learn four gates — AND, OR, NOT, XOR — and you can read circuits.'],
+      example: ['inputs: A=1, B=0   -->   [ GATE ]   -->   output: 0 or 1'] },
+    { title: 'AND: both, or nothing',
+      body: ['AND outputs 1 ONLY when BOTH inputs are 1.',
+             'Think of two switches wired in a row: the light needs both on.',
+             'One 0 anywhere means the answer is 0. No exceptions.'],
+      example: ['A | B | A AND B',
+                '0 | 0 |   0',
+                '0 | 1 |   0',
+                '1 | 0 |   0',
+                '1 | 1 |   1'] },
+    { title: 'OR and NOT',
+      body: ['OR outputs 1 when AT LEAST ONE input is 1.',
+             'Only 0 OR 0 gives 0 — everything else lights up.',
+             'NOT takes a single input and simply flips it:',
+             'NOT 1 = 0, and NOT 0 = 1. That is its entire job.'],
+      example: ['A | B | A OR B        A | NOT A',
+                '0 | 0 |   0           0 |   1',
+                '0 | 1 |   1           1 |   0',
+                '1 | 0 |   1',
+                '1 | 1 |   1'] },
+    { title: 'XOR, and tracing two gates',
+      body: ['XOR (exclusive OR) outputs 1 only when the inputs DIFFER.',
+             'Matching inputs (0,0 or 1,1) give 0. Different inputs give 1.',
+             'To trace a two-gate circuit, work in order like math steps:',
+             'compute the first gate\'s output, then feed it to the second.'],
+      example: ['A | B | A XOR B       trace: X = A AND B, OUT = X XOR C',
+                '0 | 0 |   0           A=1, B=1, C=1',
+                '0 | 1 |   1           X   = 1 AND 1 = 1',
+                '1 | 0 |   1           OUT = 1 XOR 1 = 0',
+                '1 | 1 |   0'] }
+  ]
+};
+
+LESSONS['T-323'] = {
+  topic: 'Text, Bytes & Encodings',
+  pages: [
+    { title: 'Letters are numbers in costume',
+      body: ['Computers store ONLY numbers. Text works because everyone',
+             'agreed on a codebook mapping each character to a number.',
+             'That classic codebook is ASCII: 128 slots for English letters,',
+             'digits, punctuation and control codes.',
+             'Capital A is 65, and letters count up alphabetically from there.'],
+      example: ['A=65  B=66  C=67 ... Z=90',
+                'a=97  b=98  c=99 ... z=122',
+                'space=32   0=48 ... 9=57'] },
+    { title: 'Converting both directions',
+      body: ['Char to code: find how far the letter is into the alphabet,',
+             'then add it to the base (65 for capitals, 97 for lowercase).',
+             'G is the 7th letter: 65 + 6 = 71.',
+             'Code to char: subtract the base and count into the alphabet.',
+             '83 - 65 = 18, so 83 is the 19th capital letter: S.'],
+      example: ['decode: 72 73 -> H I -> "HI"',
+                'decode: 67 79 68 69 -> C O D E'] },
+    { title: 'Why Unicode exists',
+      body: ['ASCII\'s 128 slots fit English — and nothing else.',
+             'No accents, no Chinese or Arabic script, no emoji.',
+             'Unicode gives EVERY character in every language its own',
+             'number — more than 149,000 assigned so far, emoji included.',
+             'The web runs on UTF-8, an encoding of Unicode that still',
+             'stores plain English exactly like ASCII did.'],
+      example: ['ASCII:   A=65',
+                'Unicode: A=65, é=233, 中=20013, rocket emoji=128640'] },
+    { title: 'Text files vs binary files',
+      body: ['A TEXT file contains only character codes — cat prints it',
+             'and you can read it: logs, code, notes, CSV.',
+             'A BINARY file\'s bytes mean something else — pixels, sound',
+             'samples, machine code. Printed as text it looks like garbage.',
+             'Same bytes, different codebook. The encoding IS the meaning.'],
+      example: ['signal.bytes holds "83 79 83"',
+                'as ASCII codes that spells: S O S'] }
+  ]
+};
+
+LESSONS['T-324'] = {
+  topic: 'Writing Tests',
+  pages: [
+    { title: 'Tests before trust',
+      body: ['Code that LOOKS right and code that IS right are different.',
+             'A test calls your code with a known input and checks the',
+             'output against the answer you already know is correct.',
+             'Untested code is a rumor. Tested code is a fact.',
+             'Pros write tests for every function they ship.'],
+      example: ['expect sortB([2, 1, 2]) to equal [1, 2, 2]',
+                'got [1, 2] -> FAIL -> the bug is exposed'] },
+    { title: 'Probing for bugs',
+      body: ['To catch a buggy function, do not read it — INTERROGATE it.',
+             'Call it with inputs designed to expose weaknesses,',
+             'and compare each result to the answer you computed by hand.',
+             'A bug that survives easy inputs often dies on a weird one:',
+             'the sorter that drops duplicates passes [3,1,2] perfectly',
+             'and only confesses when you feed it [2,1,2].'],
+      example: ['sortA([2,1,2]) -> [1,2,2]   correct',
+                'sortB([2,1,2]) -> [1,2]     the duplicate vanished!'] },
+    { title: 'Edge cases: where bugs hide',
+      body: ['Edge cases are the unusual inputs lazy tests skip.',
+             'For a sorter, the classic checklist:',
+             '  duplicates — repeated values must all survive',
+             '  empty — an empty list must come back empty, not crash',
+             '  negative — values below zero must order correctly',
+             '  single — one element must come back unchanged',
+             '  sorted — already-ordered input must stay correct',
+             'Test the edges and the middle takes care of itself.'] },
+    { title: 'Fix, then re-run everything',
+      body: ['Once a test exposes the bug, fix the code — then re-run ALL',
+             'the tests, not just the one that failed.',
+             'A fix that breaks something else is caught instantly when',
+             'the full suite runs. That safety net is WHY tests exist:',
+             'they let you change code without fear.'],
+      example: ['bug:  return Array.from(new Set(arr)).sort((a,b)=>a-b)',
+                'fix:  return arr.slice().sort((a,b)=>a-b)',
+                're-run: duplicates, empty, negative, single, sorted — all pass'] }
+  ]
+};
+
+LESSONS['T-325'] = {
+  topic: 'Accessible Web',
+  pages: [
+    { title: 'Who you are building for',
+      body: ['Not every visitor sees your page. Blind and low-vision users',
+             'browse with a SCREEN READER — software that speaks the page',
+             'aloud and jumps between headings and landmarks by keyboard.',
+             'Others navigate keyboard-only, or need strong color contrast.',
+             'Accessibility means your page works for all of them.',
+             'Bonus: search engines read your page the same way.'] },
+    { title: 'Alt text: give every image a voice',
+      body: ['A screen reader cannot see a photo — it announces "image"',
+             'and moves on, unless you provide alt text.',
+             'The alt attribute is a short description of what the image',
+             'shows. EVERY img gets one, every time.',
+             'Write what matters: "harbor crane at dock 3", not "photo".'],
+      example: ['<img src="crane.png" alt="harbor crane">'] },
+    { title: 'Labels and headings',
+      body: ['A bare input is announced as "edit text" — a mystery box.',
+             'Pair every input with a label: the label\'s for attribute',
+             'must exactly match the input\'s id. Then clicking the label',
+             'focuses the field, and the reader speaks its name.',
+             'Headings are the page\'s outline: exactly ONE h1 per page,',
+             'with h2/h3 below it — readers jump heading to heading.'],
+      example: ['<label for="callsign">Ship callsign</label>',
+                '<input id="callsign">'] },
+    { title: 'Landmarks and contrast',
+      body: ['Semantic tags name your page\'s regions: header for the top',
+             'banner, main for the primary content, footer for the end.',
+             'They behave like div — but screen readers can jump straight',
+             'to each landmark instead of wading through the whole page.',
+             'And contrast: pale gray on white means many people cannot',
+             'read the text at all. Keep text clearly darker (or lighter)',
+             'than its background.'],
+      example: ['<header>Port Authority</header>',
+                '<main>All berths open.</main>',
+                '<footer>Contact the harbor.</footer>'] }
+  ]
+};
+
+LESSONS['T-326'] = {
+  topic: 'Schema Design: Keys & Tables',
+  pages: [
+    { title: 'Why one giant sheet fails',
+      body: ['Imagine one huge sheet where every shipment row retypes the',
+             'pilot\'s name, license and home port.',
+             'The same fact stored many times is REDUNDANCY — and it rots:',
+             'one typo creates two versions of the truth, and updating a',
+             'pilot means hunting down every copy.',
+             'Databases cure this by splitting data into linked tables.'],
+      example: ['BAD:  haul1 | ada | LIC-9 | ore',
+                '      haul2 | ada | LIC-9 | crystal   <- ada retyped'] },
+    { title: 'Primary keys: one row, one identity',
+      body: ['Each table gets a PRIMARY KEY — a column (usually id) whose',
+             'value uniquely identifies each row.',
+             'No two rows may share it, and it never changes.',
+             'Every fact about a pilot is stored ONCE, on the single row',
+             'owned by that pilot\'s id.'],
+      example: ['pilots:  id | name',
+                '          1 | ada',
+                '          2 | bo'] },
+    { title: 'Foreign keys: the links between tables',
+      body: ['A FOREIGN KEY is a column that stores another table\'s',
+             'primary key, pointing each row at its owner.',
+             'hauls.pilot_id holds a pilots.id value — so a haul "knows"',
+             'its pilot without retyping the pilot\'s details.',
+             'Update ada\'s record once; every haul stays correct.'],
+      example: ['hauls:  id | pilot_id | cargo',
+                '         1 |    1     | ore      <- pilot_id 1 = ada',
+                '         2 |    2     | ice'] },
+    { title: 'JOIN: querying across the link',
+      body: ['JOIN stitches linked tables back together at query time.',
+             'The ON clause states the link rule: which foreign key',
+             'matches which primary key.',
+             'When both tables share a column name (like id), prefix it',
+             'with its table — pilots.id — or the database cannot tell',
+             'which id you mean.'],
+      example: ['SELECT pilots.name, hauls.cargo',
+                'FROM pilots JOIN hauls',
+                'ON pilots.id = hauls.pilot_id',
+                "WHERE pilots.name = 'ada'"] }
+  ]
+};
+
+LESSONS['T-327'] = {
+  topic: 'Public Keys & HTTPS',
+  pages: [
+    { title: 'The lockbox with two keys',
+      body: ['Public-key cryptography uses a matched PAIR of keys.',
+             'The PUBLIC key only LOCKS (encrypts). Hand it to anyone —',
+             'even an enemy can only use it to seal messages TO you.',
+             'The PRIVATE key is the only thing that UNLOCKS (decrypts),',
+             'and it never leaves its owner.',
+             'Share the lock. Keep the key. That is the whole trick.'],
+      example: ['stranger + PUBLIC key  -> locked box  -> travels the net',
+                'locked box + PRIVATE key -> opened by the owner alone'] },
+    { title: 'HTTP vs HTTPS on public wifi',
+      body: ['Plain HTTP sends everything as readable text. On coffee-shop',
+             'wifi, anyone on the network can capture your passwords',
+             'mid-flight — no hacking skill required.',
+             'HTTPS is HTTP wrapped in encryption built from the lockbox',
+             'trick: eavesdroppers capture only noise.',
+             'Rule: never type a password into a plain http:// page.'],
+      example: ['http://  -> password crosses the room in plain text',
+                'https:// -> password crosses the room sealed'] },
+    { title: 'What the padlock promises — and does not',
+      body: ['The browser padlock promises exactly two things:',
+             '1. the connection is encrypted (no eavesdropping), and',
+             '2. the site is who its certificate says it is.',
+             'It does NOT promise the site is honest, safe, or worth',
+             'trusting — scammers can get padlocks for scam sites too.',
+             'The padlock secures the ROAD, not the destination.'] },
+    { title: 'Certificates: ID cards for websites',
+      body: ['How does your browser know the site is really rivertech.me?',
+             'The site presents a CERTIFICATE — an ID card for websites —',
+             'signed by a Certificate Authority (CA), a trusted third',
+             'party your browser already recognizes.',
+             'Forged or expired ID? The browser warns you instead of',
+             'showing the padlock.'],
+      example: ['site -> certificate -> signed by CA -> browser trusts CA',
+                '                                        -> padlock appears'] }
+  ]
+};
+
+LESSONS['T-328'] = {
+  topic: 'Working With AI',
+  pages: [
+    { title: 'AI is fluent — not always right',
+      body: ['AI assistants generate text that SOUNDS confident whether',
+             'or not it is true. When an AI invents a fact, quote, date',
+             'or source, that is called a HALLUCINATION.',
+             'Hallucinations are fluent, detailed and delivered in the',
+             'same confident tone as real facts.',
+             'Confidence is a style, not evidence.'],
+      example: ['AI: "...documented in the Journal of Grid Studies, vol. 12"',
+                'Search result: that journal has never existed.'] },
+    { title: 'Verify before you use it',
+      body: ['Treat every AI factual claim as UNVERIFIED until checked.',
+             'Before a claim goes in your schoolwork:',
+             '  1. look it up in a real source (book, site, database),',
+             '  2. check any citation actually exists and says that,',
+             '  3. prefer two independent sources for important claims.',
+             'A citation you cannot find anywhere is a hallucination tell.',
+             'If sources disagree with the AI, the sources win.'] },
+    { title: 'Cite it — or it is plagiarism',
+      body: ['Submitting AI-written work under your own name is',
+             'plagiarism: presenting work you did not create as yours.',
+             'The honest path: use AI to brainstorm, outline, explain and',
+             'critique — then WRITE THE FINAL WORK YOURSELF.',
+             'If AI helped meaningfully, say so, the way you would credit',
+             'any helper. Follow your teacher\'s AI policy — always.',
+             'Never submit raw AI output as your own work.'] },
+    { title: 'Tutor, not ghostwriter',
+      body: ['The best students use AI like a tutor: "explain this",',
+             '"quiz me", "what is weak in my draft?" — the thinking',
+             'stays yours, and you actually learn.',
+             'Good prompts get good help: state the topic, the length,',
+             'and the audience instead of vague one-liners.',
+             'Weak: "science stuff please"',
+             'Strong: "Explain photosynthesis in 3 sentences for a 7th grader."'] }
+  ]
+};
+
+LESSONS['T-329'] = {
+  topic: 'Pixel Forge: Creative Coding',
+  pages: [
+    { title: 'The grid: where (0,0) lives',
+      body: ['The canvas is a grid of cells. Each cell has an address:',
+             '(x, y) — x is the COLUMN, y is the ROW.',
+             '(0,0) is the TOP-LEFT corner. x grows to the RIGHT,',
+             'and y grows DOWNWARD (not up like math class!).',
+             'So (3,0) is along the top edge, and (0,2) is down the',
+             'left edge. Below, plot(1,1) lit the cell one right, one down.'],
+      example: ['x:  0 1 2 3',
+                'y=0 . . . .',
+                'y=1 . # . .   <- plot(1, 1)',
+                'y=2 . . . .'] },
+    { title: 'The three brushes',
+      body: ['plot(x, y) lights the cell at column x, row y with #.',
+             'unplot(x, y) darkens a cell back to "."',
+             'clearGrid() wipes the whole canvas dark.',
+             'Plotting outside the grid is safely ignored — no crash.',
+             'One call = one cell. Pictures need many calls...',
+             'which is exactly what loops are for.'],
+      example: ['plot(0, 0);   // top-left corner',
+                'plot(5, 2);   // column 5, row 2'] },
+    { title: 'A loop is a line',
+      body: ['Never place cells by hand when a rule can place them.',
+             'To draw a horizontal line across row 1, loop x through',
+             'every column and keep y fixed at 1.',
+             'Vertical line? Loop y instead and keep x fixed.',
+             'The loop variable sweeps; the fixed value aims.'],
+      example: ['for (let x = 0; x < 6; x++){',
+                '  plot(x, 1);',
+                '}',
+                '// ......',
+                '// ######',
+                '// ......'] },
+    { title: 'Nested loops are areas',
+      body: ['A loop INSIDE a loop visits every (x, y) combination —',
+             'the outer loop picks the row, the inner walks its columns.',
+             'Plot everything: a filled rectangle.',
+             'Add an if before the plot and math becomes pattern:',
+             '(x + y) % 2 === 0 makes a checkerboard;',
+             'x === 0 || y === 0 (plus far edges) makes a border frame.'],
+      example: ['for (let y = 1; y <= 3; y++){',
+                '  for (let x = 1; x <= 5; x++){',
+                '    plot(x, y);   // filled block',
+                '  }',
+                '}'] }
+  ]
+};
+
+LESSONS['T-330'] = {
+  topic: 'Digital Media & Compression',
+  pages: [
+    { title: 'Raster vs vector',
+      body: ['A RASTER image is a grid of pixels — photographs live here.',
+             'Zoom in and the squares show; scale up and it goes blocky,',
+             'because there are only so many pixels to stretch.',
+             'A VECTOR image stores shapes as math: points, lines, curves.',
+             'The computer redraws the math at ANY size, so edges stay',
+             'crisp forever. Logos and icons belong in vector.'],
+      example: ['raster: png, jpg  (pixels — photos)',
+                'vector: svg       (math — logos, icons)'] },
+    { title: 'Lossy vs lossless',
+      body: ['Compression shrinks files. There are two deals on offer:',
+             'LOSSLESS: smaller file, and the original comes back EXACTLY.',
+             'Required for code, documents, data — anything where every',
+             'character matters.',
+             'LOSSY: much smaller file, but detail is thrown away forever',
+             '— chosen so your eyes and ears barely notice.',
+             'Photos and music can afford it. Source code cannot.'],
+      example: ['lossless: zip, png, wav (flac)',
+                'lossy:    jpg, mp3'] },
+    { title: 'File-size math',
+      body: ['Uncompressed image size is simple multiplication:',
+             'width x height = pixel count, times bytes per pixel.',
+             'A common rate is 3 bytes per pixel (red, green, blue).',
+             'Divide by 1000 for KB. That is WHY compression exists:',
+             'raw pixels get huge fast.'],
+      example: ['100 x 100 pixels = 10,000 pixels',
+                '10,000 x 3 bytes = 30,000 bytes = 30 KB'] },
+    { title: 'Picking the format',
+      body: ['Match the format to the job:',
+             '  photo for a web page -> jpg (lossy, small, looks fine)',
+             '  logo/icon at any size -> svg (vector, always crisp)',
+             '  screenshot or art with sharp edges/text -> png (lossless)',
+             '  spoken audio for the web -> mp3 (lossy, small downloads)',
+             '  studio master recording -> wav (raw, huge, exact)',
+             'Ask: does every bit matter, or just how it looks and sounds?'] }
+  ]
+};
+
+LESSONS['T-331'] = {
+  topic: 'Tech Careers Atlas',
+  pages: [
+    { title: 'Six trades, six kinds of day',
+      body: ['Job titles hide what the day actually contains. The Atlas',
+             'maps six core trades by their DAILY WORK:',
+             'security analyst — defends systems against attackers',
+             'data scientist — turns raw data into answers and predictions',
+             'QA engineer — breaks software on purpose, before users do',
+             'sysadmin — keeps servers, users and permissions healthy',
+             'PM — decides what gets built and keeps the team unblocked',
+             'designer — shapes how the product looks and feels to use'] },
+    { title: 'The builders and breakers',
+      body: ['Security analyst\'s day: triage intrusion alerts, trace a',
+             'phishing email, patch the hole, write the incident report.',
+             'QA engineer\'s day: write a test plan, try forty ways to',
+             'break the new screen, file a precise bug report for each.',
+             'Data scientist\'s day: clean a million-row dataset, build a',
+             'model that predicts failures, chart findings for leadership.',
+             'Notice: each one is a skill you have already practiced here.'] },
+    { title: 'The keepers and deciders',
+      body: ['Sysadmin\'s day: user accounts, permissions, backups,',
+             'server health — the kernel-depths zone as a career.',
+             'PM\'s day: standups, user stories, roadmaps, unblocking',
+             'engineers, and saying no to features that do not fit.',
+             'Designer\'s day: sketch layouts, run usability tests, tune',
+             'contrast and spacing, hand precise specs to developers.',
+             'PMs and designers build few things directly — they decide',
+             'WHAT gets built and HOW it should feel.'] },
+    { title: 'Which Grid zone feeds which career',
+      body: ['Every zone you restore is training for real trades:',
+             'kernel-depths -> sysadmin, security analyst',
+             'data-vaults -> data scientist, database engineer',
+             'web-harbor -> web developer, designer',
+             'logic-forge -> software engineer, QA engineer',
+             'signal-tower -> network engineer',
+             'mech-bay -> robotics and hardware engineering',
+             'The skills stack: most careers draw on several zones.'] }
+  ]
+};
+
+LESSONS['T-332'] = {
+  topic: 'Locks & Permissions',
+  pages: [
+    { title: 'Three letters guard every file',
+      body: ['Every file wears three permission bits:',
+             'r — read it (cat), w — write/change it, x — execute it (run).',
+             'ls -l shows them: a dash means that permission is OFF.',
+             'The first character is the type: "-" for file, "d" for dir.',
+             'So -rwx is a runnable file; -r-- is read-only; -rw- is a',
+             'normal editable file that cannot be executed.'],
+      example: ['$ ls -l',
+                '-rwx  patch.run    <- can read, write, AND execute',
+                '-rw-  notes.txt    <- read and write, not executable',
+                '-r--  frozen.log   <- read-only'] },
+    { title: 'chmod: turning bits on and off',
+      body: ['chmod changes a file\'s permission bits:',
+             '+ grants a permission, - revokes one.',
+             'chmod +x tool.run  makes it executable.',
+             'chmod -w config.txt  locks it against changes.',
+             'chmod +r secret.key  restores read access.',
+             'One flag, one file — check the result with ls -l.'],
+      example: ['$ chmod +x tool.run',
+                'permissions now -rwx on tool.run'] },
+    { title: 'Execute and read in action',
+      body: ['run <script> executes a file — ONLY if its x bit is set.',
+             'No x? "permission denied", every time, even for the owner.',
+             'cat is refused the same way when the r bit is off.',
+             'The fix is always the same two beats:',
+             'grant the bit, then retry the command.'],
+      example: ['$ run tool.run',
+                'run: permission denied — tool.run is not executable',
+                '$ chmod +x tool.run',
+                '$ run tool.run',
+                'unlocked'] },
+    { title: 'Least privilege: the warden\'s law',
+      body: ['The PRINCIPLE OF LEAST PRIVILEGE: every file, program and',
+             'person gets ONLY the permissions actually needed — no more.',
+             'A config file needs r and w. It should NEVER have x:',
+             'settings are data, and data should not be runnable.',
+             'Why it matters: whatever gets hacked can only do what its',
+             'permissions allow. Tight permissions shrink every disaster.',
+             'Grant late, revoke early, audit with ls -l.'] }
   ]
 };
 

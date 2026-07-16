@@ -94,6 +94,22 @@ The system now *knows the student* and demands *fluency, not just completion*:
   (search-space math), SQL joins & groups (engine upgraded: JOIN..ON, GROUP BY,
   COUNT/SUM/AVG/MIN/MAX, aliases), and measured touch-typing (accuracy gate + real WPM).
 
+## Wave 3 — full category coverage (216 nodes / 136 quests)
+
+The gap-audit wave: eleven categories the gamut was still missing, each with quest,
+lesson, and (where drillable) generators:
+**logic gates & truth tables** (the CS bedrock) · **text/bytes/encodings** (ASCII↔char,
+Unicode) · **writing tests** (probe two implementations, convict the buggy one, fix it) ·
+**accessible web** (alt/labels/landmarks graded by assertion) · **schema design** (primary/
+foreign keys, FK joins) · **public keys & HTTPS** (lockbox model, padlock limits) ·
+**working with AI** (hallucination-spotting, verify-before-trust, attribution ethics —
+2026 reality) · **creative coding** (new pixel-grid canvas: plot(x,y) in the JS sandbox,
+loops become drawings, graded against expected patterns) · **digital media & compression**
+(raster/vector, lossy/lossless, size math) · **tech careers atlas** (role→daily-work→which
+zone feeds it) · **locks & permissions** (new shell feature: ls -l, chmod +x/-w, a run
+command that refuses without execute — least-privilege thinking, hands on).
+Drills grew to 19 topics (gates, encodings, aicheck added).
+
 ## The teaching layer — the Codex (`learn`)
 
 Every quest node has a paged in-terminal lesson (108 lessons, ~238KB): `learn` opens the

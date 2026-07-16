@@ -4395,6 +4395,235 @@ window.TECH_DATA = {
     "module": "type"
    },
    "legacy_subject": "Programming"
+  },
+  "T-322": {
+   "id": "T-322",
+   "title": "Logic Gates & Truth Tables",
+   "cluster": "Software: Core Foundations",
+   "stage": "Fluency",
+   "stage_id": 2,
+   "grade_band": "6-8",
+   "game_skill": "Logic Gates & Truth Tables",
+   "mastery_criteria": "Student evaluates AND, OR, NOT and XOR gates, completes truth tables, and predicts the output of a two-gate circuit.",
+   "hard_prereqs": [
+    "T-SD003"
+   ],
+   "soft_deps": [
+    "T-SD010"
+   ],
+   "assess": {
+    "type": "quest",
+    "module": "concept"
+   },
+   "legacy_subject": "Programming"
+  },
+  "T-323": {
+   "id": "T-323",
+   "title": "Text, Bytes & Encodings",
+   "cluster": "Software: Core Foundations",
+   "stage": "Application",
+   "stage_id": 3,
+   "grade_band": "6-8",
+   "game_skill": "Text, Bytes & Encodings",
+   "mastery_criteria": "Student converts characters to ASCII codes and back, explains what Unicode adds, and distinguishes text from binary files.",
+   "hard_prereqs": [
+    "T-SD003"
+   ],
+   "soft_deps": [
+    "T-318"
+   ],
+   "assess": {
+    "type": "quest",
+    "module": "concept"
+   },
+   "legacy_subject": "Programming"
+  },
+  "T-324": {
+   "id": "T-324",
+   "title": "Writing Tests",
+   "cluster": "Software: Software Engineering",
+   "stage": "Integration",
+   "stage_id": 4,
+   "grade_band": "9-10",
+   "game_skill": "Writing Tests",
+   "mastery_criteria": "Student writes probing test cases that expose a planted bug, names the edge cases worth testing, and explains why tests come before trust.",
+   "hard_prereqs": [
+    "T13"
+   ],
+   "soft_deps": [
+    "T-SD033"
+   ],
+   "assess": {
+    "type": "quest",
+    "module": "js"
+   },
+   "legacy_subject": "Programming"
+  },
+  "T-325": {
+   "id": "T-325",
+   "title": "Accessible Web",
+   "cluster": "Software: Web Development",
+   "stage": "Integration",
+   "stage_id": 4,
+   "grade_band": "9-10",
+   "game_skill": "Accessible Web",
+   "mastery_criteria": "Student builds pages a screen reader can navigate: alt text on every image, labeled form fields, one h1, semantic landmarks — and explains who this serves.",
+   "hard_prereqs": [
+    "T-SD019"
+   ],
+   "soft_deps": [
+    "T-SD022"
+   ],
+   "assess": {
+    "type": "quest",
+    "module": "web"
+   },
+   "legacy_subject": "Programming"
+  },
+  "T-326": {
+   "id": "T-326",
+   "title": "Schema Design: Keys & Tables",
+   "cluster": "Software: Advanced Development",
+   "stage": "Integration",
+   "stage_id": 4,
+   "grade_band": "9-10",
+   "game_skill": "Schema Design: Keys & Tables",
+   "mastery_criteria": "Student identifies primary and foreign keys, explains why data splits into linked tables instead of one giant sheet, and queries across an FK link.",
+   "hard_prereqs": [
+    "T-320"
+   ],
+   "soft_deps": [],
+   "assess": {
+    "type": "quest",
+    "module": "sql"
+   },
+   "legacy_subject": "Programming"
+  },
+  "T-327": {
+   "id": "T-327",
+   "title": "Public Keys & HTTPS",
+   "cluster": "Software: Systems Programming",
+   "stage": "Integration",
+   "stage_id": 4,
+   "grade_band": "9-10",
+   "game_skill": "Public Keys & HTTPS",
+   "mastery_criteria": "Student explains public/private key roles with the lockbox model, what the browser padlock promises (and does not), and why HTTPS beats HTTP.",
+   "hard_prereqs": [
+    "T-319"
+   ],
+   "soft_deps": [
+    "T-303"
+   ],
+   "assess": {
+    "type": "quest",
+    "module": "concept"
+   },
+   "legacy_subject": "Programming"
+  },
+  "T-328": {
+   "id": "T-328",
+   "title": "Working With AI",
+   "cluster": "Tech: Integration",
+   "stage": "Integration",
+   "stage_id": 4,
+   "grade_band": "6-8",
+   "game_skill": "Working With AI",
+   "mastery_criteria": "Student verifies AI output against sources, spots hallucinations, uses AI as a draft-partner without plagiarizing, and writes prompts that get useful answers.",
+   "hard_prereqs": [
+    "T7"
+   ],
+   "soft_deps": [
+    "T4"
+   ],
+   "assess": {
+    "type": "quest",
+    "module": "concept"
+   },
+   "legacy_subject": "Programming"
+  },
+  "T-329": {
+   "id": "T-329",
+   "title": "Pixel Forge: Creative Coding",
+   "cluster": "Software: Basic Programming",
+   "stage": "Application",
+   "stage_id": 3,
+   "grade_band": "6-8",
+   "game_skill": "Pixel Forge: Creative Coding",
+   "mastery_criteria": "Student draws on a coordinate grid with code: loops become lines, nested loops become rectangles and checkerboards, and math becomes pictures.",
+   "hard_prereqs": [
+    "T10"
+   ],
+   "soft_deps": [
+    "T-306"
+   ],
+   "assess": {
+    "type": "quest",
+    "module": "js"
+   },
+   "legacy_subject": "Programming"
+  },
+  "T-330": {
+   "id": "T-330",
+   "title": "Digital Media & Compression",
+   "cluster": "Tech: Application",
+   "stage": "Application",
+   "stage_id": 3,
+   "grade_band": "6-8",
+   "game_skill": "Digital Media & Compression",
+   "mastery_criteria": "Student distinguishes raster from vector, lossy from lossless, computes simple file-size estimates, and picks the right format for the job.",
+   "hard_prereqs": [
+    "T28"
+   ],
+   "soft_deps": [
+    "T29"
+   ],
+   "assess": {
+    "type": "quest",
+    "module": "concept"
+   },
+   "legacy_subject": "Programming"
+  },
+  "T-331": {
+   "id": "T-331",
+   "title": "Tech Careers Atlas",
+   "cluster": "Tech: Mastery",
+   "stage": "Mastery",
+   "stage_id": 5,
+   "grade_band": "9-10",
+   "game_skill": "Tech Careers Atlas",
+   "mastery_criteria": "Student maps real tech roles (developer, data scientist, sysadmin, security analyst, designer, QA, PM) to what they actually do all day and which Grid skills feed each.",
+   "hard_prereqs": [
+    "T-309"
+   ],
+   "soft_deps": [
+    "T17"
+   ],
+   "assess": {
+    "type": "quest",
+    "module": "concept"
+   },
+   "legacy_subject": "Programming"
+  },
+  "T-332": {
+   "id": "T-332",
+   "title": "Locks & Permissions",
+   "cluster": "Software: Systems Programming",
+   "stage": "Application",
+   "stage_id": 3,
+   "grade_band": "6-8",
+   "game_skill": "Locks & Permissions",
+   "mastery_criteria": "Student reads rwx permission strings, uses chmod to grant and revoke read/write/execute, and explains least-privilege thinking.",
+   "hard_prereqs": [
+    "T-301"
+   ],
+   "soft_deps": [
+    "T-SD028"
+   ],
+   "assess": {
+    "type": "quest",
+    "module": "shell"
+   },
+   "legacy_subject": "Programming"
   }
  },
  "skillToId": {
@@ -4602,6 +4831,17 @@ window.TECH_DATA = {
   "Ciphers & Codes": "T-318",
   "Passwords & Hashes": "T-319",
   "SQL Joins & Groups": "T-320",
-  "Touch Typing Sprints": "T-321"
+  "Touch Typing Sprints": "T-321",
+  "Logic Gates & Truth Tables": "T-322",
+  "Text, Bytes & Encodings": "T-323",
+  "Writing Tests": "T-324",
+  "Accessible Web": "T-325",
+  "Schema Design: Keys & Tables": "T-326",
+  "Public Keys & HTTPS": "T-327",
+  "Working With AI": "T-328",
+  "Pixel Forge: Creative Coding": "T-329",
+  "Digital Media & Compression": "T-330",
+  "Tech Careers Atlas": "T-331",
+  "Locks & Permissions": "T-332"
  }
 };
