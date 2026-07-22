@@ -4838,7 +4838,9 @@
       showSection(sectionName) {
         // Update current section
         this.currentSection = sectionName;
-        
+        // Leaving Riven: drop the fullscreen takeover + restore page scroll.
+        if (sectionName !== 'teacher-terminal') this._exitRivenFullscreen();
+
         // Update unified navigation
         this.setupUnifiedNavigation();
         
@@ -41399,6 +41401,45 @@
 
     // ==================== TEACHER TERMINAL ====================
 
+    _enterRivenFullscreen() {
+      document.body.classList.add('riven-fs');
+      const shell = document.getElementById('riven-shell');
+      if (!shell) return;
+      const fit = () => {
+        const vv = window.visualViewport;
+        if (vv) {
+          // Pin the shell to the *visible* viewport so the input footer always
+          // sits at the top of the keyboard, and nothing scrolls beneath it.
+          shell.style.height = vv.height + 'px';
+          shell.style.transform = 'translateY(' + vv.offsetTop + 'px)';
+        } else {
+          shell.style.height = window.innerHeight + 'px';
+          shell.style.transform = '';
+        }
+      };
+      this._rivenFit = fit;
+      if (window.visualViewport) {
+        window.visualViewport.addEventListener('resize', fit);
+        window.visualViewport.addEventListener('scroll', fit);
+      }
+      window.addEventListener('resize', fit);
+      fit();
+    }
+
+    _exitRivenFullscreen() {
+      document.body.classList.remove('riven-fs');
+      const shell = document.getElementById('riven-shell');
+      if (shell) { shell.style.height = ''; shell.style.transform = ''; }
+      if (this._rivenFit) {
+        if (window.visualViewport) {
+          window.visualViewport.removeEventListener('resize', this._rivenFit);
+          window.visualViewport.removeEventListener('scroll', this._rivenFit);
+        }
+        window.removeEventListener('resize', this._rivenFit);
+        this._rivenFit = null;
+      }
+    }
+
     async renderTeacherTerminal() {
       const section = document.getElementById('teacher-terminal-section');
       if (!section) { console.error('Terminal section not found'); return; }
@@ -41420,10 +41461,11 @@
       ]);
       this._initPhi3State();
 
+      const RIVEN_BUILD = '2026-07-21·c';
       section.innerHTML = `
-        <div style="max-width: 1200px; margin: 0 auto; padding: 20px;">
+        <div id="riven-shell" style="max-width: 1200px; margin: 0 auto; padding: 20px;">
           <!-- Header -->
-          <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;">
+          <div id="riven-topbar" style="display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;">
             <div style="display: flex; align-items: center; gap: 12px;">
               <button class="btn btn-secondary" onclick="app.showSection('home')" style="padding: 6px 12px;">← Back</button>
               <div style="display: flex; align-items: center; gap: 10px;">
@@ -41431,12 +41473,18 @@
                   <img src="../shared/riven-avatar.jpg" alt="Riven" style="width: 100%; height: 100%; object-fit: cover; object-position: 53% 17%; transform: scale(1.8); transform-origin: 53% 17%;">
                 </div>
                 <div>
-                  <h2 style="margin: 0; font-size: 20px; color: #e8a33c;">Riven</h2>
+                  <h2 style="margin: 0; font-size: 20px; color: #e8a33c;">Riven <span style="font-size: 11px; font-weight: 600; color: var(--muted); background: rgba(255,255,255,0.06); padding: 2px 6px; border-radius: 6px; vertical-align: middle;">build ${RIVEN_BUILD}</span></h2>
                   <div style="font-size: 11px; color: var(--muted);">Your AI Teaching Assistant</div>
                 </div>
               </div>
             </div>
             <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+              <button onclick="app.terminalQuickAction('list')" class="btn btn-secondary" style="padding: 8px 16px; font-size: 13px;" title="List all students">
+                👥 Students
+              </button>
+              <button onclick="app.terminalQuickAction('briefing')" class="btn btn-secondary" style="padding: 8px 16px; font-size: 13px;" title="What needs attention">
+                📋 Briefing
+              </button>
               <button onclick="app.clearTerminalChat()" class="btn btn-secondary" style="padding: 8px 16px; font-size: 13px;" title="Clear the conversation and start fresh">
                 🧹 Clear chat
               </button>
@@ -41475,7 +41523,7 @@
           </div>
 
           <!-- Suggested Actions -->
-          <details open style="margin-bottom: 16px;">
+          <details id="terminal-quick-actions" open style="margin-bottom: 16px;">
             <summary style="cursor: pointer; padding: 12px; background: var(--surface-bg); border-radius: 8px; font-weight: 600; color: var(--text); user-select: none;">💡 Quick Actions</summary>
             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-top: 12px; padding: 0 4px;">
               <button onclick="app.terminalQuickAction('list')" class="card" style="padding: 14px; text-align: left; cursor: pointer; border: 1px solid var(--border); transition: all 0.2s; background: var(--card);" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
@@ -41503,14 +41551,27 @@
 
           <!-- Chat Interface -->
           <style>
-            @media (max-width: 640px) {
-              /* Mobile: one clean scroll — the chat log itself — instead of a
-                 fixed 600px box nested inside the scrolling page. Input stays
-                 pinned above the keyboard with safe-area padding. */
-              #riven-chat-card { display: flex !important; flex-direction: column; height: calc(100dvh - 150px); max-height: calc(100dvh - 150px); margin-bottom: 12px !important; }
-              #terminal-output { flex: 1 1 auto !important; min-height: 0 !important; max-height: none !important; }
-              #riven-input-area { flex: 0 0 auto; padding-bottom: calc(16px + env(safe-area-inset-bottom)) !important; }
+            /* Fullscreen Riven: the whole page becomes the chat app — header
+               pinned at top, message log the only scroller, input locked to the
+               top of the keyboard, nothing scrolling underneath. Toggled by the
+               body.riven-fs class (added in showSection / renderTeacherTerminal). */
+            body.riven-fs { overflow: hidden !important; }
+            body.riven-fs #riven-shell {
+              position: fixed; inset: 0; z-index: 4000;
+              max-width: none !important; margin: 0 !important;
+              padding: 8px 10px !important;
+              display: flex; flex-direction: column; gap: 10px;
+              background: var(--bg); height: 100dvh;
             }
+            body.riven-fs #riven-topbar { flex: 0 0 auto; margin-bottom: 0 !important; }
+            body.riven-fs #terminal-quick-actions,
+            body.riven-fs #terminal-recent-bar { display: none !important; }
+            body.riven-fs #riven-chat-card {
+              flex: 1 1 auto !important; min-height: 0 !important;
+              display: flex; flex-direction: column; margin: 0 !important;
+            }
+            body.riven-fs #terminal-output { flex: 1 1 auto !important; min-height: 0 !important; max-height: none !important; }
+            body.riven-fs #riven-input-area { flex: 0 0 auto; padding-bottom: calc(16px + env(safe-area-inset-bottom)) !important; }
           </style>
           <div id="riven-chat-card" class="card" style="padding: 0; margin-bottom: 16px; background: #2b2118; border: 1px solid #6b5236; position: relative; border-radius: 12px; overflow: hidden;">
             <div id="terminal-output" style="padding: 20px; min-height: 400px; max-height: 600px; overflow-y: auto; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;">
@@ -41575,6 +41636,7 @@
 
       // Initialize UI
       setTimeout(() => {
+        this._enterRivenFullscreen();
         const input = document.getElementById('terminal-input');
         if (input) {
           input.focus();
