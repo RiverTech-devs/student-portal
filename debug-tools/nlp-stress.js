@@ -40,7 +40,8 @@ function extract(name) {
 
 const methods = ['_normalizeInput','_resolvePronouns','_isFollowUpCommand',
   '_extractEntities','_parseTimeframe','_fuzzyFindStudent','_calculateSimilarity',
-  '_levenshteinDistance','_matchIntent','_matchSmalltalk','_isAggregateQuery','_rivenMatchClass','_rivenCanManageClass','_preferOwnedClasses','_isoDaysAgo'];
+  '_levenshteinDistance','_matchIntent','_matchSmalltalk','_isAggregateQuery','_rivenMatchClass','_rivenCanManageClass','_preferOwnedClasses','_isoDaysAgo',
+  '_hasCommandVerb','_hasCommandSignal','_isCommonWordTypo','_commonWords','_segmentClauses','_classifyClauseShape'];
 const app = { _nlpContext: {} };
 for (const name of methods) app[name] = extract(name).bind ? extract(name) : extract(name);
 // rebind so `this` works
@@ -1171,3 +1172,49 @@ const sm7 = run('reach out to Noah');
 t30(`"reach out to Noah" -> SEND_MESSAGE (got ${sm7.intent})`, sm7.intent === 'SEND_MESSAGE');
 
 console.log(`round 30: ${p30} pass, ${f30} fail`);
+
+// Round 31: shape-aware layer — a greeting/common-word typo no longer resolves
+// to a student, but the SAME typo inside a real command still does. General
+// fix (whole bug class), not a one-off patch of "hey ther".
+let p31 = 0, f31 = 0;
+const t31 = (label, ok) => { ok ? p31++ : f31++; if (!ok) console.log('  FAIL', label); };
+console.log('\n== round 31: shape-aware typo/greeting gating ==');
+app._nlpContext = {};
+const _savedRoster = app._terminalAllStudents;
+app._terminalAllStudents = [
+  { full_name: 'Theo Martin', first_name: 'Theo', last_name: 'Martin', rtc_balance: 50, status: 'active', id: 'theo1' },
+];
+
+// greeting typo must NOT be mined for a name
+const s_hey = app._matchSmalltalk('hey ther');
+t31(`"hey ther" -> greeting (got ${JSON.stringify(s_hey)})`, !!(s_hey && s_hey.key === 'greeting' && !s_hey.remainder));
+const ff_hey = app._fuzzyFindStudent('ther', 'hey ther');
+t31(`"hey ther": no student (got ${ff_hey && ff_hey.student ? ff_hey.student.full_name : 'null'})`, !(ff_hey && ff_hey.student));
+
+// the SAME typo inside a real command still resolves the student
+const ff_cmd = app._fuzzyFindStudent(app._normalizeInput("check ther's gold"), "check ther's gold");
+t31(`"check ther's gold" -> Theo (got ${ff_cmd && ff_cmd.student ? ff_cmd.student.full_name : 'null'})`, !!(ff_cmd && ff_cmd.student && ff_cmd.student.full_name === 'Theo Martin'));
+
+// a greeting that DOES carry a command is still forwarded, not swallowed
+const s_cmd = app._matchSmalltalk('hi, give theo 5 rtc');
+t31(`"hi, give theo 5 rtc" -> forwarded (got ${JSON.stringify(s_cmd)})`, !!(s_cmd && s_cmd.remainder));
+
+// exact name with no command context still works
+const ff_exact = app._fuzzyFindStudent('theo', 'theo');
+t31(`"theo" -> Theo (got ${ff_exact && ff_exact.student ? ff_exact.student.full_name : 'null'})`, !!(ff_exact && ff_exact.student && ff_exact.student.full_name === 'Theo Martin'));
+
+// shape classifier
+t31('shape "hey ther" == greeting', app._classifyClauseShape('hey ther').shape === 'greeting');
+t31('shape "give theo 5 rtc" == command', app._classifyClauseShape('give theo 5 rtc').shape === 'command');
+t31('shape "the kids were wonderful" == observation', app._classifyClauseShape('the kids were wonderful').shape === 'observation');
+
+// common-word typo detector
+t31('_isCommonWordTypo("ther") == true', app._isCommonWordTypo('ther') === true);
+t31('_isCommonWordTypo("daenerys") == false', app._isCommonWordTypo('daenerys') === false);
+
+// segmentation splits a compound message into pieces
+const segs = app._segmentClauses('hi there! how are you? give theo 5 rtc and also mark him late');
+t31(`segments >= 3 (got ${segs.length})`, segs.length >= 3);
+
+app._terminalAllStudents = _savedRoster;
+console.log(`round 31: ${p31} pass, ${f31} fail`);
