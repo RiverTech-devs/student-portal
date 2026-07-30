@@ -27,8 +27,8 @@ CREATE TABLE IF NOT EXISTS curriculum_nodes (
   legacy_name TEXT,                             -- Original skill name from SkillTreeViewer (bridge field)
   legacy_subject TEXT,                          -- Original subject name: Art, Math, Reading, etc.
   csv_id TEXT,                                  -- Original CSV ID if mapped from master_tree.csv
-  source TEXT DEFAULT 'csv'                     -- 'existing' or 'csv' — where the node came from
-    CHECK (source IN ('existing', 'csv')),
+  source TEXT DEFAULT 'csv'                     -- provenance: 'existing', 'csv', 'new', 'seeded_prototype', or 'split_from:<id>'
+    CHECK (source IN ('existing', 'csv', 'new', 'seeded_prototype') OR source LIKE 'split_from:%'),
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
