@@ -4838,7 +4838,9 @@
       showSection(sectionName) {
         // Update current section
         this.currentSection = sectionName;
-        
+        // Leaving Riven: drop the fullscreen takeover + restore page scroll.
+        if (sectionName !== 'teacher-terminal') this._exitRivenFullscreen();
+
         // Update unified navigation
         this.setupUnifiedNavigation();
         
@@ -41420,6 +41422,45 @@
 
     // ==================== TEACHER TERMINAL ====================
 
+    _enterRivenFullscreen() {
+      document.body.classList.add('riven-fs');
+      const shell = document.getElementById('riven-shell');
+      if (!shell) return;
+      const fit = () => {
+        const vv = window.visualViewport;
+        if (vv) {
+          // Pin the shell to the *visible* viewport so the input footer always
+          // sits at the top of the keyboard, and nothing scrolls beneath it.
+          shell.style.height = vv.height + 'px';
+          shell.style.transform = 'translateY(' + vv.offsetTop + 'px)';
+        } else {
+          shell.style.height = window.innerHeight + 'px';
+          shell.style.transform = '';
+        }
+      };
+      this._rivenFit = fit;
+      if (window.visualViewport) {
+        window.visualViewport.addEventListener('resize', fit);
+        window.visualViewport.addEventListener('scroll', fit);
+      }
+      window.addEventListener('resize', fit);
+      fit();
+    }
+
+    _exitRivenFullscreen() {
+      document.body.classList.remove('riven-fs');
+      const shell = document.getElementById('riven-shell');
+      if (shell) { shell.style.height = ''; shell.style.transform = ''; }
+      if (this._rivenFit) {
+        if (window.visualViewport) {
+          window.visualViewport.removeEventListener('resize', this._rivenFit);
+          window.visualViewport.removeEventListener('scroll', this._rivenFit);
+        }
+        window.removeEventListener('resize', this._rivenFit);
+        this._rivenFit = null;
+      }
+    }
+
     async renderTeacherTerminal() {
       const section = document.getElementById('teacher-terminal-section');
       if (!section) { console.error('Terminal section not found'); return; }
@@ -41441,10 +41482,11 @@
       ]);
       this._initPhi3State();
 
+      const RIVEN_BUILD = '2026-07-21·d';
       section.innerHTML = `
-        <div style="max-width: 1200px; margin: 0 auto; padding: 20px;">
+        <div id="riven-shell" style="max-width: 1200px; margin: 0 auto; padding: 20px;">
           <!-- Header -->
-          <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;">
+          <div id="riven-topbar" style="display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;">
             <div style="display: flex; align-items: center; gap: 12px;">
               <button class="btn btn-secondary" onclick="app.showSection('home')" style="padding: 6px 12px;">← Back</button>
               <div style="display: flex; align-items: center; gap: 10px;">
@@ -41452,12 +41494,18 @@
                   <img src="../shared/riven-avatar.jpg" alt="Riven" style="width: 100%; height: 100%; object-fit: cover; object-position: 53% 17%; transform: scale(1.8); transform-origin: 53% 17%;">
                 </div>
                 <div>
-                  <h2 style="margin: 0; font-size: 20px; color: #e8a33c;">Riven</h2>
+                  <h2 style="margin: 0; font-size: 20px; color: #e8a33c;">Riven <span style="font-size: 11px; font-weight: 600; color: var(--muted); background: rgba(255,255,255,0.06); padding: 2px 6px; border-radius: 6px; vertical-align: middle;">build ${RIVEN_BUILD}</span></h2>
                   <div style="font-size: 11px; color: var(--muted);">Your AI Teaching Assistant</div>
                 </div>
               </div>
             </div>
             <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+              <button onclick="app.terminalQuickAction('list')" class="btn btn-secondary" style="padding: 8px 16px; font-size: 13px;" title="List all students">
+                👥 Students
+              </button>
+              <button onclick="app.terminalQuickAction('briefing')" class="btn btn-secondary" style="padding: 8px 16px; font-size: 13px;" title="What needs attention">
+                📋 Briefing
+              </button>
               <button onclick="app.clearTerminalChat()" class="btn btn-secondary" style="padding: 8px 16px; font-size: 13px;" title="Clear the conversation and start fresh">
                 🧹 Clear chat
               </button>
@@ -41496,7 +41544,7 @@
           </div>
 
           <!-- Suggested Actions -->
-          <details open style="margin-bottom: 16px;">
+          <details id="terminal-quick-actions" open style="margin-bottom: 16px;">
             <summary style="cursor: pointer; padding: 12px; background: var(--surface-bg); border-radius: 8px; font-weight: 600; color: var(--text); user-select: none;">💡 Quick Actions</summary>
             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-top: 12px; padding: 0 4px;">
               <button onclick="app.terminalQuickAction('list')" class="card" style="padding: 14px; text-align: left; cursor: pointer; border: 1px solid var(--border); transition: all 0.2s; background: var(--card);" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
@@ -41523,7 +41571,32 @@
           </details>
 
           <!-- Chat Interface -->
-          <div class="card" style="padding: 0; margin-bottom: 16px; background: #2b2118; border: 1px solid #6b5236; position: relative; border-radius: 12px; overflow: hidden;">
+          <style>
+            /* Fullscreen Riven: the whole page becomes the chat app — header
+               pinned at top, message log the only scroller, input locked to the
+               top of the keyboard, nothing scrolling underneath. Toggled by the
+               body.riven-fs class (added in showSection / renderTeacherTerminal). */
+            body.riven-fs { overflow: hidden !important; }
+            body.riven-fs #riven-shell {
+              /* Above page content/nav, but BELOW modals (base ~1010) and the
+                 command palette (10000) so Riven's dialogs still surface. */
+              position: fixed; inset: 0; z-index: 900;
+              max-width: none !important; margin: 0 !important;
+              padding: 8px 10px !important;
+              display: flex; flex-direction: column; gap: 10px;
+              background: var(--bg); height: 100dvh;
+            }
+            body.riven-fs #riven-topbar { flex: 0 0 auto; margin-bottom: 0 !important; }
+            body.riven-fs #terminal-quick-actions,
+            body.riven-fs #terminal-recent-bar { display: none !important; }
+            body.riven-fs #riven-chat-card {
+              flex: 1 1 auto !important; min-height: 0 !important;
+              display: flex; flex-direction: column; margin: 0 !important;
+            }
+            body.riven-fs #terminal-output { flex: 1 1 auto !important; min-height: 0 !important; max-height: none !important; }
+            body.riven-fs #riven-input-area { flex: 0 0 auto; padding-bottom: calc(16px + env(safe-area-inset-bottom)) !important; }
+          </style>
+          <div id="riven-chat-card" class="card" style="padding: 0; margin-bottom: 16px; background: #2b2118; border: 1px solid #6b5236; position: relative; border-radius: 12px; overflow: hidden;">
             <div id="terminal-output" style="padding: 20px; min-height: 400px; max-height: 600px; overflow-y: auto; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;">
               <!-- Riven Intro Message -->
               <div style="display: flex; gap: 12px; margin-bottom: 16px;">
@@ -41555,7 +41628,7 @@
             <div id="terminal-autocomplete" style="display: none; position: absolute; bottom: 70px; left: 20px; right: 20px; background: var(--card); border: 1px solid var(--accent); border-radius: 8px; max-height: 200px; overflow-y: auto; z-index: 100; box-shadow: 0 -4px 12px rgba(0,0,0,0.3);"></div>
 
             <!-- Input Area -->
-            <div style="padding: 16px; border-top: 1px solid #6b5236; background: #241b12;">
+            <div id="riven-input-area" style="padding: 16px; border-top: 1px solid #6b5236; background: #241b12;">
               <div style="display: flex; align-items: end; gap: 10px; position: relative;">
                 <input
                   type="text"
@@ -41586,8 +41659,15 @@
 
       // Initialize UI
       setTimeout(() => {
+        this._enterRivenFullscreen();
         const input = document.getElementById('terminal-input');
-        if (input) input.focus();
+        if (input) {
+          input.focus();
+          // Keep the input visible above the mobile keyboard when it opens.
+          input.addEventListener('focus', () => {
+            setTimeout(() => { try { input.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (_) {} }, 250);
+          });
+        }
         this._updateRecentStudentsBar();
       }, 100);
 
@@ -43013,6 +43093,95 @@
       return /\b(give|add|award|show|view|check|mark|note|notes|log|record|take|dock|deduct|remove|unenroll|enroll|buy|grant|revoke|navigate|open|start|list|send|find|compare|transfer|fine|penaliz|subtract|absent|late|present|missing|balance|rtc|gold|attend|undo|yes|no|tell|pull|lookup|look up|get|fetch|display|set|change|update|assign|edit)\b/.test(normalized);
     }
 
+    // ── Shape-aware NLP layer (general upgrade, not a one-off) ───────────────
+    // Understands the SHAPE of an input so conversational text is never mined
+    // for student names. Kills the whole "greeting / common-word typo resolves
+    // to a student" bug class (e.g. "hey ther" -> Theo) by gating name-matching
+    // on real command context instead of the token alone. See
+    // debug-tools/nlp-stress.js round 31 for coverage.
+
+    // Very common English / filler / greeting words. Used ONLY to decide
+    // whether a TYPO that happens to resolve to a name should be trusted with
+    // no surrounding command context. Deliberately excludes command verbs and
+    // any real roster names.
+    _commonWords() {
+      return this.__commonWords || (this.__commonWords = new Set([
+        'there','their','theyre','they','them','then','than','the','this','that','these','those',
+        'here','where','were','weve','well','your','youre','yours','our','ours','you','yall',
+        'what','whats','when','whens','wheres','which','while','with','have','having','about',
+        'hey','hi','hello','hiya','yo','howdy','heya','sup','yeah','yep','nope','nah',
+        'okay','okey','cool','nice','great','good','sure','please','thanks','thank','sorry',
+        'today','tomorrow','tonight','now','just','like','some','and','but','for',
+        'from','out','not','are','was','been','doing','going','things','stuff','over','off'
+      ]));
+    }
+
+    // True when `token` is an exact common word or within one edit of one.
+    _isCommonWordTypo(token) {
+      if (!token) return false;
+      token = String(token).toLowerCase();
+      const words = this._commonWords();
+      if (words.has(token)) return true;
+      for (const w of words) {
+        if (Math.abs(w.length - token.length) > 1) continue;
+        if (this._levenshteinDistance(token, w) <= 1) return true;
+      }
+      return false;
+    }
+
+    // Broader than _hasCommandVerb: does this text carry a real signal that it
+    // is a data/command request (a verb, a number, a data noun, or an EXACT
+    // roster name) rather than pure conversation?
+    _hasCommandSignal(text) {
+      if (!text) return false;
+      const t = ' ' + String(text).toLowerCase().replace(/[^a-z0-9']/g, ' ').replace(/\s+/g, ' ').trim() + ' ';
+      if (/[0-9]/.test(t)) return true;
+      if (this._hasCommandVerb(t.trim())) return true;
+      if (/\b(rtc|gold|coin|coins|point|points|balance|grade|grades|attendance|absent|present|tardy|late|note|notes|homework|test|quiz|enroll|unenroll|roster|class|classes|store|shop|privilege|cosmetic)\b/.test(t)) return true;
+      // Exact whole-word roster name (NOT fuzzy — using fuzzy here would
+      // re-open the very bug this guards against).
+      if (this._terminalAllStudents) {
+        for (const s of this._terminalAllStudents) {
+          const f = (s.first_name || '').toLowerCase(), l = (s.last_name || '').toLowerCase();
+          if (f.length > 2 && t.includes(' ' + f + ' ')) return true;
+          if (l.length > 2 && t.includes(' ' + l + ' ')) return true;
+        }
+      }
+      return false;
+    }
+
+    // Split an input into clauses on sentence enders and coordinating
+    // conjunctions, so each piece can be understood on its own. Foundation for
+    // full multi-request handling (staged) and covered by nlp-stress round 31.
+    _segmentClauses(input) {
+      if (!input) return [];
+      return String(input)
+        .split(/[.!?;\n]+|,?\s+(?:and(?:\s+also)?|also|then|plus)\s+/i)
+        .map(s => s.trim())
+        .filter(Boolean);
+    }
+
+    // Classify a single clause by FUNCTION using cheap, typo-robust features.
+    // Returns { shape, greeting, question, command }; shape is one of
+    // greeting | question | command | observation | empty.
+    _classifyClauseShape(text) {
+      const raw = (text || '').trim();
+      if (!raw) return { shape: 'empty', greeting: false, question: false, command: false };
+      const lower = raw.toLowerCase();
+      const words = lower.replace(/[^a-z0-9']/g, ' ').split(/\s+/).filter(Boolean);
+      const GREET = ['hey', 'hi', 'hello', 'hiya', 'yo', 'howdy', 'heya', 'sup', 'helo', 'hullo', 'ello'];
+      const first = words[0] || '';
+      const firstIsGreet = GREET.includes(first) ||
+        GREET.some(g => Math.abs(g.length - first.length) <= 1 && this._levenshteinDistance(first, g) <= 1);
+      const command = this._hasCommandSignal(raw);
+      const question = /\?/.test(raw) ||
+        /^(who|what|whats|when|where|which|why|how|is|are|was|were|do|does|did|can|could|would|should|will|has|have)\b/.test(lower);
+      if (command) return { shape: 'command', greeting: firstIsGreet, question, command: true };
+      if (firstIsGreet) return { shape: 'greeting', greeting: true, question, command: false };
+      if (question) return { shape: 'question', greeting: false, question: true, command: false };
+      return { shape: 'observation', greeting: false, question: false, command: false };
+    }
+
     _fuzzyFindStudent(normalized, original) {
       // Phase 2+: Enhanced with word-level matching
       if (!this._terminalAllStudents || this._terminalAllStudents.length === 0) {
@@ -43040,6 +43209,12 @@
       // disambiguates ("Eli K" -> Elijah Killackey, "Elijah d" -> Douglas).
       // 'a'/'i' are excluded — they're usually words, not initials.
       const initials = tokens.filter(w => /^[a-z]$/.test(w) && w !== 'a' && w !== 'i');
+
+      // Context gate: a fuzzy (typo) match to a name is only trusted when the
+      // clause actually reads like a command. Stops greeting / common-word
+      // typos ("hey ther", "over there") from resolving to a student, while
+      // "check ther's gold" still matches because "check"/"gold" signal intent.
+      const _cmdSignal = this._hasCommandSignal(original || normalized);
 
       // Score all students
       for (const student of this._terminalAllStudents) {
@@ -43074,6 +43249,9 @@
         let firstHit = false, lastHit = false;
         for (const word of words) {
           if (word.length < 3) continue;
+          // Block ONLY the fuzzy/typo passes below for common-word typos that
+          // lack command context (exact & prefix matches are unaffected).
+          const _fuzzyBlocked = !_cmdSignal && this._isCommonWordTypo(word);
 
           // Exact word match to first or last name
           if (word === firstName || word === lastName) {
@@ -43136,7 +43314,7 @@
           // Fuzzy match word to first/last name — require >= 4 chars to avoid
           // 3-letter English words ("day", "hey", "big") fuzzy-matching 3-letter
           // names ("fay", "ray") via a single-char Levenshtein substitution
-          if (word.length >= 4 && firstName.length > 2) {
+          if (word.length >= 4 && firstName.length > 2 && !_fuzzyBlocked) {
             const firstSim = this._calculateSimilarity(word, firstName);
             if (firstSim > 0.7) {
               score = Math.max(score, firstSim * 0.9);
@@ -43145,7 +43323,7 @@
           }
 
           // Fuzzy match word to last name
-          if (word.length >= 4 && lastName.length > 2) {
+          if (word.length >= 4 && lastName.length > 2 && !_fuzzyBlocked) {
             const lastSim = this._calculateSimilarity(word, lastName);
             if (lastSim > 0.7) {
               score = Math.max(score, lastSim * 0.9);
@@ -43154,7 +43332,7 @@
           }
 
           // Fuzzy match word to full name
-          if (word.length >= 4) {
+          if (word.length >= 4 && !_fuzzyBlocked) {
             const fullSim = this._calculateSimilarity(word, fullName);
             if (fullSim > 0.6) {
               score = Math.max(score, fullSim * 0.8);
@@ -45394,7 +45572,14 @@
         const rem = raw.slice(g[0].length).trim();
         // "hey riven" — the assistant's name is not a command
         if (/^riven[!.?]*$/i.test(rem)) { /* fall through to greeting */ }
-        else return { remainder: rem };
+        // Only forward the remainder as a command if it actually reads like
+        // one. "hey ther", "hi friend" — the leftover is filler, so just greet
+        // instead of mining it for a student name (fixes "hey ther" -> Theo).
+        // Forward when it reads like a command, OR when it's more than one
+        // word (a real "hows it going" / question still re-runs and matches
+        // smalltalk). A lone filler word ("ther", "friend") just greets.
+        else if (this._hasCommandSignal(rem) || rem.split(/\s+/).length >= 2) return { remainder: rem };
+        else return { key: 'greeting' };
       }
       const lower = raw.toLowerCase().replace(/[!?.,!]+/g, ' ').replace(/\s+/g, ' ').trim();
       if (!lower) return null;
