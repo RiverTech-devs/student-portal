@@ -1,23 +1,29 @@
 -- Re-key Math skill_progress rows onto the curriculum title.
 --
--- Why: the Dojo posted progress under its own facing name, resolved through a
+-- WHY. The Dojo posted progress under its own facing name, resolved through a
 -- 56-entry map that got 0 of these 29 skills right. The view
 -- skill_progress_with_graph joins curriculum_nodes.legacy_name =
 -- skill_progress.skill_name, and legacy_name is the node title, so those rows
 -- never linked to a curriculum node at all.
 --
--- Why it is not a plain UPDATE: a student can already hold rows under BOTH
--- names, because the portal and skill tree always wrote the title. And the map
--- contains a chain ('Trig Functions' -> 'Trigonometry' -> 'Trigonometric
--- Ratios'), so order matters. Pairs are applied one at a time, in an order that
--- renames a target before anything renames into it.
+-- WHY IT IS ONE BIG DO BLOCK, not a list of UPDATEs:
+--   * a student can hold rows under BOTH names, so a plain rename hits the
+--     unique key on (user_id, subject, skill_name) — the pair must be merged;
+--   * the map contains a chain ('Trig Functions' -> 'Trigonometry' ->
+--     'Trigonometric Ratios'), so the order pairs are applied in matters;
+--   * a TEMP TABLE would not survive, because the Supabase SQL editor commits
+--     statement by statement and ON COMMIT DROP removes it before the loop runs.
+-- Everything therefore lives inside a single self-contained statement.
 --
--- Safe to re-run. Transactional. Reports what it did via NOTICE.
+-- Run the whole file. Safe to re-run: the run is recorded in
+-- rivertech_migration_log and a second attempt reports "already applied" and
+-- stops. That guard is REQUIRED, not decorative — see the chain note above.
 --
--- DRY RUN — see what would happen without changing anything:
+-- DRY RUN — paste this on its own first to see the blast radius, changes nothing:
+--
 --   SELECT r.old_name, r.new_name,
---          count(o.id) AS rows_found,
---          count(n.id) AS would_collide
+--          count(o.id)                       AS rows_to_move,
+--          count(n.id)                       AS would_collide
 --   FROM (VALUES
 --     ('Addition', 'Basic Addition'),
 --     ('Algebraic Expressions', 'Basic Algebraic Expressions'),
@@ -53,62 +59,82 @@
 --     ON o.subject = 'Math' AND o.skill_name = r.old_name
 --   LEFT JOIN skill_progress n
 --     ON n.subject = 'Math' AND n.skill_name = r.new_name AND n.user_id = o.user_id
---   GROUP BY 1, 2 HAVING count(o.id) > 0 ORDER BY 1;
+--   GROUP BY 1, 2
+--   HAVING count(o.id) > 0
+--   ORDER BY 1;
 
-BEGIN;
-
-CREATE TEMP TABLE _rekey(seq int PRIMARY KEY, old_name text NOT NULL, new_name text NOT NULL)
-  ON COMMIT DROP;
-INSERT INTO _rekey (seq, old_name, new_name) VALUES
- (1, 'Addition', 'Basic Addition'),
- (2, 'Algebraic Expressions', 'Basic Algebraic Expressions'),
- (3, 'Applications', 'Applications of Derivatives'),
- (4, 'Counting', 'Counting and Number Recognition'),
- (5, 'Discrete Math', 'Discrete Mathematics'),
- (6, 'Equations', 'Solving Simple Equations'),
- (7, 'Factoring', 'Factoring Trinomials'),
- (8, 'Fractions (Concepts)', 'Basic Fractions'),
- (9, 'Functions (Intro)', 'Basic Functions'),
- (10, 'Investments & Growth', 'Investments and Growth'),
- (11, 'Logarithms', 'Exponential and Logarithmic Functions'),
- (12, 'Measurement', 'Basic Measurement'),
- (13, 'Money', 'Money and Coins'),
- (14, 'Number Comparison', 'Comparing Numbers'),
- (15, 'Patterns', 'Patterns and Sequences'),
- (16, 'Percents', 'Percentages'),
- (17, 'Place Value', 'Place Value Understanding'),
- (18, 'Probability', 'Probability and Statistics'),
- (19, 'Pythagorean', 'Triangles and Pythagorean Theorem'),
- (20, 'Quadratics', 'Quadratic Equations'),
- (21, 'Ratios', 'Ratio and Proportion'),
- (22, 'Rounding', 'Rounding and Estimation'),
- (23, 'Sequences', 'Sequence and Series'),
- (24, 'Shapes', 'Basic Geometry Concepts'),
- (25, 'Subtraction', 'Basic Subtraction'),
- (26, 'Time', 'Time Telling'),
- (27, 'Triangles', 'Classifying Triangles'),
- (28, 'Trigonometry', 'Trigonometric Ratios'),
- (29, 'Trig Functions', 'Trigonometry');
+CREATE TABLE IF NOT EXISTS rivertech_migration_log (
+  name       text PRIMARY KEY,
+  applied_at timestamptz NOT NULL DEFAULT now()
+);
 
 DO $rekey$
 DECLARE
-  r          RECORD;
-  n_merged   int;
-  n_renamed  int;
-  tot_merged int := 0;
+  -- Ordered so a target is renamed before anything renames into it.
+  pairs text[][] := ARRAY[
+    ['Addition', 'Basic Addition'],
+    ['Algebraic Expressions', 'Basic Algebraic Expressions'],
+    ['Applications', 'Applications of Derivatives'],
+    ['Counting', 'Counting and Number Recognition'],
+    ['Discrete Math', 'Discrete Mathematics'],
+    ['Equations', 'Solving Simple Equations'],
+    ['Factoring', 'Factoring Trinomials'],
+    ['Fractions (Concepts)', 'Basic Fractions'],
+    ['Functions (Intro)', 'Basic Functions'],
+    ['Investments & Growth', 'Investments and Growth'],
+    ['Logarithms', 'Exponential and Logarithmic Functions'],
+    ['Measurement', 'Basic Measurement'],
+    ['Money', 'Money and Coins'],
+    ['Number Comparison', 'Comparing Numbers'],
+    ['Patterns', 'Patterns and Sequences'],
+    ['Percents', 'Percentages'],
+    ['Place Value', 'Place Value Understanding'],
+    ['Probability', 'Probability and Statistics'],
+    ['Pythagorean', 'Triangles and Pythagorean Theorem'],
+    ['Quadratics', 'Quadratic Equations'],
+    ['Ratios', 'Ratio and Proportion'],
+    ['Rounding', 'Rounding and Estimation'],
+    ['Sequences', 'Sequence and Series'],
+    ['Shapes', 'Basic Geometry Concepts'],
+    ['Subtraction', 'Basic Subtraction'],
+    ['Time', 'Time Telling'],
+    ['Triangles', 'Classifying Triangles'],
+    ['Trigonometry', 'Trigonometric Ratios'],
+    ['Trig Functions', 'Trigonometry']
+  ];
+  old_name    text;
+  new_name    text;
+  n_merged    int;
+  n_renamed   int;
+  tot_merged  int := 0;
   tot_renamed int := 0;
 BEGIN
-  FOR r IN SELECT old_name, new_name FROM _rekey ORDER BY seq LOOP
+  -- One-shot. The map contains a chain ('Trig Functions' -> 'Trigonometry' ->
+  -- 'Trigonometric Ratios'), so after a successful run the name 'Trigonometry'
+  -- is both a CORRECT final name and still an old_name. Re-running would move it
+  -- again and merge two different skills. Content alone cannot tell the two
+  -- apart, so the run is recorded instead.
+  IF EXISTS (SELECT 1 FROM rivertech_migration_log
+             WHERE name = 'rekey_math_skill_progress_names') THEN
+    RAISE NOTICE 'already applied on % — nothing to do',
+      (SELECT applied_at FROM rivertech_migration_log
+       WHERE name = 'rekey_math_skill_progress_names');
+    RETURN;
+  END IF;
 
-    -- Fold any row under the old name into that student's existing row under the
-    -- new name, then drop the old one. Nothing is lost and the rename below
-    -- can no longer collide.
+  FOR i IN 1 .. array_length(pairs, 1) LOOP
+    old_name := pairs[i][1];
+    new_name := pairs[i][2];
+
+    -- Fold any row under the old name into that student's existing row under
+    -- the new name, then drop the old one. Nothing is lost, and the rename
+    -- below can no longer collide.
     WITH d AS (
       SELECT o.id AS old_id, n.id AS keep_id
       FROM skill_progress o
       JOIN skill_progress n
-        ON n.user_id = o.user_id AND n.subject = 'Math' AND n.skill_name = r.new_name
-      WHERE o.subject = 'Math' AND o.skill_name = r.old_name
+        ON n.user_id = o.user_id AND n.subject = 'Math' AND n.skill_name = new_name
+      WHERE o.subject = 'Math' AND o.skill_name = old_name
     ), folded AS (
       UPDATE skill_progress k SET
         state = CASE WHEN array_position(ARRAY['locked','available','in_progress','activated','mastered'], o.state)
@@ -129,22 +155,22 @@ BEGIN
     GET DIAGNOSTICS n_merged = ROW_COUNT;
 
     UPDATE skill_progress
-    SET skill_name = r.new_name, updated_at = now()
-    WHERE subject = 'Math' AND skill_name = r.old_name;
+    SET skill_name = new_name, updated_at = now()
+    WHERE subject = 'Math' AND skill_name = old_name;
     GET DIAGNOSTICS n_renamed = ROW_COUNT;
 
-    tot_merged  := tot_merged + n_merged;
+    tot_merged  := tot_merged  + n_merged;
     tot_renamed := tot_renamed + n_renamed;
     IF n_merged > 0 OR n_renamed > 0 THEN
-      RAISE NOTICE '% -> %  (% merged, % renamed)', r.old_name, r.new_name, n_merged, n_renamed;
+      RAISE NOTICE '% -> %  (% merged, % renamed)', old_name, new_name, n_merged, n_renamed;
     END IF;
   END LOOP;
 
-  RAISE NOTICE 'done: % rows merged into an existing row, % rows renamed', tot_merged, tot_renamed;
+  INSERT INTO rivertech_migration_log (name) VALUES ('rekey_math_skill_progress_names');
+  RAISE NOTICE 'done: % rows merged into an existing row, % rows renamed',
+               tot_merged, tot_renamed;
 END
 $rekey$;
-
-COMMIT;
 
 -- VERIFY — should return no rows once this has run:
 --   SELECT skill_name, count(*) FROM skill_progress
