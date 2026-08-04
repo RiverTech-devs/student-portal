@@ -112,6 +112,9 @@ sandbox.pick = (a) => a[sandbox.rand(0, a.length - 1)];
 // Page-level helpers the literal generators close over (games/math-dojo.html).
 // Leaving one out shows up as a bogus "generator threw" for every skill using it.
 sandbox.cap = (s) => String(s).length === 0 ? s : String(s).charAt(0).toUpperCase() + String(s).slice(1);
+sandbox.answerValue = (...a) => answerValue(...a);
+sandbox.backfillOptions = (...a) => backfillOptions(...a);
+sandbox.uniqOpts = (...a) => uniqOpts(...a);
 sandbox.simplifyFrac = (n, d) => { const g = sandbox.gcd(Math.abs(n), Math.abs(d)); return [n / g, d / g]; };
 sandbox.getUnlockedSubSkillTypes = (lessonKey, map, ordered) => {
   const first = map[ordered[0]];
@@ -253,6 +256,24 @@ function backfillOptions(answer, opts, seen, want = 4) {
   }
   return opts;
 }
+function uniqOpts(cands) {
+  const arr = Array.isArray(cands) ? cands.slice() : [cands];
+  if (!arr.length) return arr;
+  const answer = arr[0];
+  const target = answerValue(answer);
+  const seen = new Set([optKey(answer)]);
+  const out = [answer];
+  for (const c of arr.slice(1)) {
+    if (out.length >= 4) break;
+    const k = optKey(c);
+    if (k === '' || seen.has(k)) continue;
+    const cv = answerValue(c);
+    if (!isNaN(target) && !isNaN(cv) && Math.abs(cv - target) < 1e-9) continue;
+    seen.add(k); out.push(c);
+  }
+  if (out.length < 4) backfillOptions(answer, out, seen, 4);
+  return out;
+}
 function optionPipeline(q) {
   const seen = new Set(), opts = [];
   for (const o of (q.options || [])) {
@@ -271,7 +292,10 @@ const sample = (key, q) => {
   if (!samples.has(key)) samples.set(key, JSON.stringify({
     question: q.question, answer: q.answer, options: q.options }));
 };
-const ITER = 40;
+// Sampling has to be wide: several collisions only fire for one parameter
+// combination (a sphere's zero vertices, x === y in a coordinate pair), and a
+// narrow seed sweep walks straight past them.
+const ITER = 150;
 let ran = 0;
 for (const { tier, name } of placements) {
   const fn = ctx.generators[tier] && ctx.generators[tier][name];
@@ -279,7 +303,7 @@ for (const { tier, name } of placements) {
   ran++;
   const seen = new Set();
   for (let i = 0; i < ITER; i++) {
-    seed = (tier * 10007 + i * 37 + name.length * 13) | 0;
+    seed = (tier * 7919 + i * 104729 + name.length * 6151) | 0;
     let q;
     try {
       q = fn();

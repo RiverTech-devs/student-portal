@@ -75,6 +75,64 @@ function shuffle(arr) {
 }
 function pick(arr) { return arr[rand(0, arr.length - 1)]; }
 function gcd(a, b) { while (b) { [a, b] = [b, a % b]; } return a; }
+// Page-level helpers the generators close over (games/math-dojo.html). A
+// missing one shows up as a bogus "generator threw" for every skill using it.
+function cap(s) { return String(s).length === 0 ? s : String(s).charAt(0).toUpperCase() + String(s).slice(1); }
+function answerValue(str) {
+  const t = String(str).trim();
+  const f = t.match(/^(-?\d+(?:\.\d+)?)\s*\/\s*(-?\d+(?:\.\d+)?)$/);
+  if (f) return parseFloat(f[1]) / parseFloat(f[2]);
+  return /^-?\d+(?:\.\d+)?$/.test(t) ? parseFloat(t) : NaN;
+}
+function backfillOptions(answer, opts, seen, want = 4) {
+  const key = v => String(v).trim().toLowerCase();
+  const target = answerValue(answer);
+  const tryPush = cand => {
+    if (opts.length >= want) return;
+    const k = key(cand);
+    if (k === '' || seen.has(k)) return;
+    const cv = answerValue(cand);
+    if (!isNaN(target) && !isNaN(cv) && Math.abs(cv - target) < 1e-9) return;
+    seen.add(k); opts.push(cand);
+  };
+  if (typeof answer === 'number' && isFinite(answer)) {
+    const st = Math.max(1, Math.round(Math.abs(answer) * 0.1));
+    for (let m = 1; opts.length < want && m <= 12; m++) {
+      tryPush(parseFloat((answer + m * st).toFixed(4)));
+      tryPush(parseFloat((answer - m * st).toFixed(4)));
+    }
+    return opts;
+  }
+  const s = String(answer), nums = [...s.matchAll(/-?\d+(?:\.\d+)?/g)];
+  for (const d of [1, -1, 2, -2, 3, -3, 5, -5]) {
+    for (let i = 0; i < nums.length && opts.length < want; i++) {
+      const m = nums[i], v = parseFloat(m[0]), nv = parseFloat((v + d).toFixed(4));
+      if (nv === v) continue;
+      tryPush(s.slice(0, m.index) + nv + s.slice(m.index + m[0].length));
+    }
+    if (opts.length >= want) break;
+  }
+  return opts;
+}
+function uniqOpts(cands) {
+  const arr = Array.isArray(cands) ? cands.slice() : [cands];
+  if (!arr.length) return arr;
+  const answer = arr[0];
+  const key = v => String(v).trim().toLowerCase();
+  const target = answerValue(answer);
+  const seen = new Set([key(answer)]);
+  const out = [answer];
+  for (const c of arr.slice(1)) {
+    if (out.length >= 4) break;
+    const k = key(c);
+    if (k === '' || seen.has(k)) continue;
+    const cv = answerValue(c);
+    if (!isNaN(target) && !isNaN(cv) && Math.abs(cv - target) < 1e-9) continue;
+    seen.add(k); out.push(c);
+  }
+  if (out.length < 4) backfillOptions(answer, out, seen, 4);
+  return out;
+}
 function simplifyFrac(n, d) { const g = gcd(Math.abs(n), Math.abs(d)); return [n / g, d / g]; }
 // Mirror of the helper defined near the top of games/math-dojo.html.
 function getUnlockedSubSkillTypes(lessonKey, map, orderedSubSkillIds) {
@@ -109,7 +167,7 @@ const state = {
 
 let generators;
 try {
-  generators = new Function('rand', 'shuffle', 'pick', 'state', 'gcd', 'simplifyFrac', 'getUnlockedSubSkillTypes', 'return ' + literal)(rand, shuffle, pick, state, gcd, simplifyFrac, getUnlockedSubSkillTypes);
+  generators = new Function('rand', 'shuffle', 'pick', 'state', 'gcd', 'simplifyFrac', 'getUnlockedSubSkillTypes', 'cap', 'uniqOpts', 'backfillOptions', 'answerValue', 'return ' + literal)(rand, shuffle, pick, state, gcd, simplifyFrac, getUnlockedSubSkillTypes, cap, uniqOpts, backfillOptions, answerValue);
 } catch (e) {
   console.error('FAILED to eval generators:', e.message);
   process.exit(1);
@@ -197,7 +255,10 @@ for (const tierKey of Object.keys(generators)) {
         break;
       }
       checkGenerated(tierKey, skill, obj);
-      if (obj && obj.question) samples.add(obj.question);
+      // Key on the whole item. Diagram skills ("What time does this clock
+      // show?") reuse one prompt and vary the `visual` and the answer; keying
+      // on the prompt alone reports those as frozen when they are not.
+      if (obj && obj.question) samples.add([obj.question, obj.visual, obj.answer].join(' '));
     }
     if (samples.size === 1) {
       add('warn', tierKey, skill, `always produces the same question (${ITER} samples)`);

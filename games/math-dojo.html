@@ -4998,6 +4998,35 @@ function backfillOptions(answer, opts, seen, want = 4) {
     return opts;
 }
 
+// Wrap a hand-written option list whose distractor formulas can coincide with
+// the answer for particular values — a + b equals the rounded estimate when the
+// rounding cancels, the swapped coordinate pair equals the answer when x === y,
+// (x+prod)(x+1) equals (x+a)(x+b) when prod === a and b === 1. The first element
+// is always the answer in these lists. Later candidates are dropped when they
+// are the same answer as far as checkAnswer is concerned (it lowercases, trims,
+// and treats equivalent fractions as equal), and the list is topped back up by
+// perturbing the numbers inside the answer.
+function uniqOpts(cands) {
+    const arr = Array.isArray(cands) ? cands.slice() : [cands];
+    if (!arr.length) return arr;
+    const answer = arr[0];
+    const key = v => String(v).trim().toLowerCase();
+    const target = answerValue(answer);
+    const seen = new Set([key(answer)]);
+    const out = [answer];
+    for (const c of arr.slice(1)) {
+        if (out.length >= 4) break;
+        const k = key(c);
+        if (k === '' || seen.has(k)) continue;
+        const cv = answerValue(c);
+        if (!isNaN(target) && !isNaN(cv) && Math.abs(cv - target) < 1e-9) continue;
+        seen.add(k);
+        out.push(c);
+    }
+    if (out.length < 4) backfillOptions(answer, out, seen, 4);
+    return out;
+}
+
 function formatNumber(n) {
     if (Number.isInteger(n)) return n.toString();
     return parseFloat(n.toFixed(3)).toString();
@@ -6386,7 +6415,9 @@ const generators = {
                 const teen = rand(11, 19);
                 const ones = teen - 10;
                 return { subType: type, question: `The number ${teen} has 1 ten and how many ones?`, answer: ones, type: "conceptual",
-                    options: [ones, ones + 1, teen, 10],
+                    // ones + 1 is 10 when ones is 9, which collided with the
+                    // literal 10 distractor; step the other way in that case.
+                    options: shuffle([ones, teen, 10, ones === 9 ? ones - 1 : ones + 1]),
                     explanation: `${teen} = 10 + ${ones}. It has 1 ten and ${ones} ones.` };
             } else if (type === "compose") {
                 const ones = rand(1, 9);
@@ -6397,7 +6428,8 @@ const generators = {
             } else if (type === "place_value") {
                 const teen = rand(11, 19);
                 return { subType: type, question: `How many tens are in the number ${teen}?`, answer: 1, type: "conceptual",
-                    options: [1, teen - 10, 10, 2],
+                    // teen - 10 is 1 when the number is 11, colliding with the answer.
+                    options: shuffle([1, 10, teen, teen - 10 === 1 ? 2 : teen - 10]),
                     explanation: `${teen} has exactly 1 ten (and ${teen - 10} ones).` };
             } else {
                 const teen1 = rand(11, 15);
@@ -6523,6 +6555,18 @@ const generators = {
                 type: 'shape', mode: 'display',
                 data: { shape: shapeNameToVisual[shapeName] || shapeName, showMeasurements: false }
             });
+            // Counts can legitimately be 0 — a sphere has no vertices, faces or
+            // edges — so the old [n, n+1, max(0, n-1), n+2] pattern produced 0
+            // twice. Build distinct non-negative neighbours instead.
+            const countOpts = (n) => {
+                const o = [n];
+                for (const d of [1, 2, -1, 3, -2, 4, 5]) {
+                    const v = n + d;
+                    if (v >= 0 && !o.includes(v)) o.push(v);
+                    if (o.length >= 4) break;
+                }
+                return shuffle(o);
+            };
             const type = pick(["identify", "faces", "edges", "vertices", "real_world", "roll", "name_from_property"]);
 
             if (type === "identify") {
@@ -6536,21 +6580,21 @@ const generators = {
             if (type === "faces") {
                 const shape = pick(shapes3D.filter(s => s.faces > 0));
                 return { subType: type, question: `How many flat faces does a ${shape.name} have?`, answer: shape.faces, type: "conceptual",
-                    options: shuffle([shape.faces, shape.faces + 1, Math.max(0, shape.faces - 1), shape.faces + 2]),
+                    options: countOpts(shape.faces),
                     explanation: `A ${shape.name} has ${shape.faces} flat face${shape.faces !== 1 ? "s" : ""}.`,
                     visual: getVisual(shape.name) };
             }
             if (type === "edges") {
                 const shape = pick(shapes3D.filter(s => s.edges > 0));
                 return { subType: type, question: `How many edges does a ${shape.name} have?`, answer: shape.edges, type: "conceptual",
-                    options: shuffle([shape.edges, shape.edges + 1, Math.max(0, shape.edges - 1), shape.edges + 2]),
+                    options: countOpts(shape.edges),
                     explanation: `A ${shape.name} has ${shape.edges} edges.`,
                     visual: getVisual(shape.name) };
             }
             if (type === "vertices") {
                 const shape = pick(shapes3D);
                 return { subType: type, question: `How many vertices (corners) does a ${shape.name} have?`, answer: shape.vertices, type: "conceptual",
-                    options: shuffle([shape.vertices, shape.vertices + 1, Math.max(0, shape.vertices - 1), shape.vertices + 2]),
+                    options: countOpts(shape.vertices),
                     explanation: `A ${shape.name} has ${shape.vertices} vertices.`,
                     visual: getVisual(shape.name) };
             }
@@ -6754,7 +6798,7 @@ const generators = {
                 const thing = pick(["ribbon", "table", "string", "shelf", "branch", "path"]);
                 return { subType: type, question: `A ${thing} is ${cubes} ${tool} long. How many ${tool}?`,
                     answer: cubes, type: "procedural",
-                    options: shuffle([cubes, cubes + 1, Math.max(1, cubes - 1), cubes + 2]),
+                    options: shuffle(uniqOpts([cubes, cubes + 1, Math.max(1, cubes - 1), cubes + 2])),
                     explanation: `The ${thing} measures ${cubes} ${tool}.` };
             }
             if (type === "estimate") {
@@ -6772,7 +6816,7 @@ const generators = {
             const diff = longer.length - shorter.length;
             return { subType: type, question: `How many inches longer is a ${longer.name} (${longer.length} in) than a ${shorter.name} (${shorter.length} in)?`,
                 answer: diff, type: "procedural",
-                options: shuffle([diff, diff + 1, Math.max(1, diff - 1), diff + 2]),
+                options: shuffle(uniqOpts([diff, diff + 1, Math.max(1, diff - 1), diff + 2])),
                 explanation: `${longer.length} - ${shorter.length} = ${diff} inches.` };
         },
         "Positional Words": () => {
@@ -7056,10 +7100,10 @@ const generators = {
             } else if (type === "number_line") {
                 // Fractions on number line
                 const d = pick([2, 3, 4]);
-                const n = rand(1, d);
+                const n = rand(1, d - 1);
                 const lineDesc = d === 2 ? "two equal parts" : d === 3 ? "three equal parts" : "four equal parts";
                 return { question: `A number line from 0 to 1 is divided into ${lineDesc}. What fraction is at the ${n === 1 ? "1st" : n === 2 ? "2nd" : n === 3 ? "3rd" : "4th"} mark after 0?`,
-                    answer: n === d ? "1" : `${n}/${d}`, type: "conceptual", subType: "number_line",
+                    answer: `${n}/${d}`, type: "conceptual", subType: "number_line",
                     options: [`${n}/${d}`, `${d}/${n}`, `${n}/${d+1}`, `${d-n}/${d}`].filter((v,i,a) => a.indexOf(v) === i),
                     explanation: `The number line is divided into ${d} equal parts. The ${n === 1 ? "first" : n === 2 ? "second" : n === 3 ? "third" : "fourth"} mark represents ${n}/${d}${n === d ? " = 1" : ""}.` };
             } else {
@@ -7219,11 +7263,11 @@ const generators = {
             const type = pick(["toImproper", "toMixed", "compare", "add_mixed"]);
             if (type === "toImproper") {
                 return { subType: type, question: `Convert ${whole} ${n}/${d} to an improper fraction.`, answer: `${improper}/${d}`, type: "procedural",
-                    options: [`${improper}/${d}`, `${whole + n}/${d}`, `${whole * n}/${d}`, `${n}/${whole * d}`],
+                    options: [`${improper}/${d}`, `${whole + n}/${d}`, `${improper}/${d + 1}`, `${n}/${d}`],
                     explanation: `${whole} × ${d} + ${n} = ${improper}, so ${whole} ${n}/${d} = ${improper}/${d}` };
             } else if (type === "toMixed") {
                 return { subType: type, question: `Convert ${improper}/${d} to a mixed number.`, answer: `${whole} ${n}/${d}`, type: "procedural",
-                    options: [`${whole} ${n}/${d}`, `${whole + 1} ${n}/${d}`, `${whole} ${n + 1}/${d}`, `${improper - d} ${n}/${d}`],
+                    options: uniqOpts([`${whole} ${n}/${d}`, `${whole + 1} ${n}/${d}`, `${whole} ${n + 1}/${d}`, `${improper - d} ${n}/${d}`]),
                     explanation: `${improper} ÷ ${d} = ${whole} R ${n}, so ${improper}/${d} = ${whole} ${n}/${d}` };
             } else if (type === "compare") {
                 // Compare mixed number to improper fraction
@@ -7466,7 +7510,7 @@ const generators = {
             const feet = Math.floor(inches / 12);
             const remainInches = inches % 12;
             return { subType: type, question: `Convert ${inches} inches to feet and inches.`, answer: `${feet} ft ${remainInches} in`, type: "procedural",
-                options: [`${feet} ft ${remainInches} in`, `${feet + 1} ft ${remainInches} in`, `${feet} ft ${remainInches + 1} in`, `${remainInches} ft ${feet} in`],
+                options: [`${feet} ft ${remainInches} in`, `${feet + 1} ft ${remainInches} in`, `${feet} ft ${remainInches + 1} in`, feet === remainInches ? `${feet} ft ${remainInches + 2} in` : `${remainInches} ft ${feet} in`],
                 explanation: `${inches} ÷ 12 = ${feet} remainder ${remainInches}. So ${feet} feet and ${remainInches} inches.` };
         },
         Estimation: () => {
@@ -7476,14 +7520,14 @@ const generators = {
                 const roundA = Math.round(a / 10) * 10, roundB = Math.round(b / 10) * 10;
                 const estimate = roundA + roundB;
                 return { subType: type, question: `Estimate ${a} + ${b} by rounding to the nearest ten.`, answer: estimate, type: "procedural",
-                    options: [estimate, estimate + 10, estimate - 10, a + b],
+                    options: [estimate, estimate + 10, estimate - 10, a + b, estimate + 20, estimate - 20].filter((v, i, a) => a.indexOf(v) === i).slice(0, 4),
                     explanation: `${a} ≈ ${roundA}, ${b} ≈ ${roundB}. Estimate: ${roundA} + ${roundB} = ${estimate}` };
             } else if (type === "round_mult") {
                 const a = rand(3, 9), b = rand(18, 52);
                 const roundB = Math.round(b / 10) * 10;
                 const estimate = a * roundB;
                 return { subType: type, question: `Estimate ${a} × ${b} by rounding ${b} to the nearest ten.`, answer: estimate, type: "procedural",
-                    options: [estimate, a * b, estimate + 10, estimate - 10],
+                    options: uniqOpts([estimate, a * b, estimate + 10, estimate - 10]),
                     explanation: `${b} ≈ ${roundB}. Estimate: ${a} × ${roundB} = ${estimate}` };
             } else {
                 const scenarios = [
@@ -7565,7 +7609,7 @@ const generators = {
                         explanation: `Factors of ${n}: ${factors.join(", ")}. The smallest (other than 1) is ${factors[1]}.` };
                 } else if (askFor === "largest") {
                     return { subType: type, question: `What is the largest factor of ${n}?`, answer: n, type: "conceptual",
-                        options: [n, n/2, factors[factors.length-2], factors[1]],
+                        options: [n, factors[factors.length-2], factors[1], 1],
                         explanation: `The largest factor of any number is the number itself. ${n} ÷ ${n} = 1 ✓` };
                 } else {
                     return { subType: type, question: `How many factors does ${n} have?`, answer: factors.length, type: "procedural",
@@ -7583,7 +7627,7 @@ const generators = {
                 const multiples = [n, n*2, n*3, n*4, n*5];
                 const position = pick([3, 4, 5]);
                 return { subType: type, question: `What is the ${position === 3 ? "3rd" : position === 4 ? "4th" : "5th"} multiple of ${n}?`, answer: n * position, type: "procedural",
-                    options: [n * position, n * (position - 1), n * (position + 1), n + position],
+                    options: uniqOpts([n * position, n * (position - 1), n * (position + 1), n + position]),
                     explanation: `Multiples of ${n}: ${multiples.join(", ")}... The ${position === 3 ? "3rd" : position === 4 ? "4th" : "5th"} is ${n * position}.` };
             } else if (type === "is_multiple") {
                 const n = pick([3, 4, 5, 6]);
@@ -7599,7 +7643,7 @@ const generators = {
                 const commonFactors = [];
                 for (let i = 1; i <= Math.min(a, b); i++) { if (a % i === 0 && b % i === 0) commonFactors.push(i); }
                 return { subType: type, question: `What is the greatest common factor of ${a} and ${b}?`, answer: commonFactors[commonFactors.length - 1], type: "procedural",
-                    options: shuffle([commonFactors[commonFactors.length - 1], commonFactors[0], a, b]).slice(0, 4),
+                    options: shuffle(uniqOpts([commonFactors[commonFactors.length - 1], commonFactors[0], a, b])).slice(0, 4),
                     explanation: `Common factors of ${a} and ${b}: ${commonFactors.join(", ")}. GCF = ${commonFactors[commonFactors.length - 1]}` };
             }
         },
@@ -8100,7 +8144,7 @@ const generators = {
                 const elapsed = rand(1, maxElapsed);
                 const endHour = startHour + elapsed;
                 return { subType: type, question: `It is ${startHour}:00. What time will it be in ${elapsed} hour${elapsed > 1 ? "s" : ""}?`, answer: `${endHour}:00`, type: "procedural",
-                    options: [`${endHour}:00`, `${endHour - 1}:00`, `${startHour}:${elapsed}0`, `${Math.min(endHour + 1, 12)}:00`],
+                    options: [`${endHour}:00`, `${endHour - 1}:00`, `${startHour}:${elapsed}0`, `${endHour + 1 > 12 ? endHour - 2 : endHour + 1}:00`],
                     explanation: `${startHour}:00 + ${elapsed} hours = ${endHour}:00` };
             } else if (type === "forward_minutes") {
                 const startHour = rand(1, 11);
@@ -8306,7 +8350,7 @@ const generators = {
                 const denoms = [[2, 3, 6], [2, 4, 4], [3, 4, 12], [2, 5, 10], [3, 6, 6], [4, 6, 12], [2, 8, 8], [3, 9, 9]];
                 const [d1, d2, lcd] = pick(denoms);
                 return { subType: type, question: `What is the LCD (Least Common Denominator) of ${d1} and ${d2}?`, answer: lcd, type: "procedural",
-                    options: [lcd, d1 * d2, Math.max(d1, d2), lcd + d1],
+                    options: [lcd, d1 * d2, Math.max(d1, d2), lcd + d1, d1 + d2, lcd * 2].filter((v, i, a) => a.indexOf(v) === i).slice(0, 4),
                     explanation: `The LCD is the smallest number that both ${d1} and ${d2} divide into evenly. ${lcd} ÷ ${d1} = ${lcd/d1} ✓, ${lcd} ÷ ${d2} = ${lcd/d2} ✓. LCD = ${lcd}` };
             }
         },
@@ -8613,7 +8657,7 @@ const generators = {
                 const product = a * b;
                 const expSum = expA + expB;
                 return { subType: type, question: `(${a} × 10^${expA}) × (${b} × 10^${expB}) = ?`, answer: `${product} × 10^${expSum}`, type: "procedural",
-                    options: [`${product} × 10^${expSum}`, `${a + b} × 10^${expSum}`, `${product} × 10^${expA * expB}`, `${product} × 10^${expA}`],
+                    options: [`${product} × 10^${expSum}`, `${a + b} × 10^${expSum}`, `${product} × 10^${expA * expB}`, `${product} × 10^${expA}`, `${product} × 10^${expSum + 1}`, `${product + 1} × 10^${expSum}`].filter((v, i, a) => a.indexOf(v) === i).slice(0, 4),
                     explanation: `Multiply coefficients: ${a} × ${b} = ${product}. Add exponents: ${expA} + ${expB} = ${expSum}` };
             }
         },
@@ -8635,7 +8679,7 @@ const generators = {
                 const outside = rand(2, 5), inside = rand(2, 5);
                 const radicand = outside * outside * inside;
                 return { subType: type, question: `Simplify √${radicand}`, answer: `${outside}√${inside}`, type: "procedural",
-                    options: [`${outside}√${inside}`, `${inside}√${outside}`, `√${radicand}`, `${outside * inside}`],
+                    options: [`${outside}√${inside}`, `${inside}√${outside}`, `√${radicand}`, `${outside * inside}`, `${outside + 1}√${inside}`, `${outside}√${inside + 1}`].filter((v, i, a) => a.indexOf(v) === i).slice(0, 4),
                     explanation: `√${radicand} = √(${outside}² × ${inside}) = ${outside}√${inside}` };
             }
         },
@@ -8784,7 +8828,7 @@ const generators = {
                 return { subType: type,
                     question: `Find the midpoint of segment AB.`,
                     answer: `(${midX}, ${midY})`, type: "procedural",
-                    options: [`(${midX}, ${midY})`, `(${x1 + x2}, ${y1 + y2})`, `(${midY}, ${midX})`, `(${x2 - x1}, ${y2 - y1})`],
+                    options: [`(${midX}, ${midY})`, `(${x1 + x2}, ${y1 + y2})`, `(${midY}, ${midX})`, `(${x2 - x1}, ${y2 - y1})`, `(${midX + 1}, ${midY})`, `(${midX}, ${midY + 1})`].filter((v, i, a) => a.indexOf(v) === i).slice(0, 4),
                     explanation: `Midpoint = ((${x1}+${x2})/2, (${y1}+${y2})/2) = (${midX}, ${midY})`,
                     visual: { type: 'coordinate', mode: 'display', data: { xRange: [-1, 10], yRange: [-1, 10], gridStep: 1, points: [{ x: x1, y: y1, label: 'A' }, { x: x2, y: y2, label: 'B' }], lines: [{ points: [{ x: x1, y: y1 }, { x: x2, y: y2 }] }] } }
                 };
@@ -8920,7 +8964,7 @@ const generators = {
                 const prob = `${favorable}/${total}`;
                 const color = pick(["red", "blue", "green"]);
                 return { subType: type, question: `A bag has ${total} marbles. ${favorable} are ${color}. What is P(${color})?`, answer: prob, type: "procedural",
-                    options: [prob, `${total - favorable}/${total}`, `${favorable}/${favorable}`, `${total}/${favorable}`],
+                    options: uniqOpts([prob, `${total - favorable}/${total}`, `${favorable}/${favorable}`, `${total}/${favorable}`]),
                     explanation: `P(${color}) = favorable/total = ${favorable}/${total}` };
             } else if (type === "fraction") {
                 const die = true;
@@ -8934,7 +8978,7 @@ const generators = {
                 const favorable = rand(2, 8);
                 const complement = total - favorable;
                 return { subType: type, question: `P(winning) = ${favorable}/${total}. What is P(not winning)?`, answer: `${complement}/${total}`, type: "procedural",
-                    options: [`${complement}/${total}`, `${favorable}/${total}`, `${total}/${favorable}`, `1/${total}`],
+                    options: [`${complement}/${total}`, `${favorable}/${total}`, `${total}/${favorable}`, `1/${total}`, `${complement + 1}/${total}`, `${complement}/${total + 1}`].filter((v, i, a) => a.indexOf(v) === i).slice(0, 4),
                     explanation: `P(not winning) = 1 - P(winning) = 1 - ${favorable}/${total} = ${complement}/${total}` };
             } else if (type === "word_problem") {
                 const total = rand(5, 10);
@@ -9406,13 +9450,13 @@ const generators = {
             if (type === "simple") {
                 const favorable = rand(1, 5), total = favorable + rand(2, 6);
                 return { subType: type, question: `A bag has ${favorable} red and ${total - favorable} blue marbles. P(red)?`, answer: `${favorable}/${total}`, type: "procedural",
-                    options: [`${favorable}/${total}`, `${total - favorable}/${total}`, `${favorable}/${total - favorable}`, `1/${total}`],
+                    options: uniqOpts([`${favorable}/${total}`, `${total - favorable}/${total}`, `${favorable}/${total - favorable}`, `1/${total}`]),
                     explanation: `P(red) = favorable/total = ${favorable}/${total}` };
             } else if (type === "complement") {
                 const pct = rand(20, 80);
                 const complement = 100 - pct;
                 return { subType: type, question: `If P(rain) = ${pct}%, what is P(no rain)?`, answer: `${complement}%`, type: "procedural",
-                    options: [`${complement}%`, `${pct}%`, `${100 - complement}%`, `${pct / 2}%`],
+                    options: uniqOpts([`${complement}%`, `${pct}%`, `${100 - complement}%`, `${pct / 2}%`]),
                     explanation: `P(no rain) = 100% - P(rain) = 100% - ${pct}% = ${complement}%` };
             } else {
                 const dice = rand(1, 6);
@@ -9775,14 +9819,14 @@ const generators = {
                 const x = rand(0, 5), y = rand(0, 5);
                 return { subType: type, question: `Point (${x}, ${y}) is translated ${dx > 0 ? "right" : "left"} ${Math.abs(dx)} and ${dy > 0 ? "up" : "down"} ${Math.abs(dy)}. New coordinates?`,
                     answer: `(${x + dx}, ${y + dy})`, type: "procedural",
-                    options: [`(${x + dx}, ${y + dy})`, `(${x - dx}, ${y - dy})`, `(${x + dy}, ${y + dx})`, `(${dx}, ${dy})`],
+                    options: uniqOpts([`(${x + dx}, ${y + dy})`, `(${x - dx}, ${y - dy})`, `(${x + dy}, ${y + dx})`, `(${dx}, ${dy})`]),
                     explanation: `(${x} + ${dx}, ${y} + ${dy}) = (${x + dx}, ${y + dy})` };
             } else if (type === "reflection") {
                 const x = rand(1, 5), y = rand(1, 5);
                 const axis = pick(["x-axis", "y-axis"]);
                 const newCoord = axis === "x-axis" ? `(${x}, ${-y})` : `(${-x}, ${y})`;
                 return { subType: type, question: `Reflect (${x}, ${y}) over the ${axis}. New coordinates?`, answer: newCoord, type: "procedural",
-                    options: [`(${x}, ${-y})`, `(${-x}, ${y})`, `(${-x}, ${-y})`, `(${y}, ${x})`],
+                    options: uniqOpts([`(${x}, ${-y})`, `(${-x}, ${y})`, `(${-x}, ${-y})`, `(${y}, ${x})`]),
                     explanation: `Reflection over ${axis}: ${axis === "x-axis" ? "y changes sign" : "x changes sign"}. New point: ${newCoord}` };
             } else if (type === "rotation") {
                 const x = rand(1, 4), y = rand(1, 4);
@@ -9793,7 +9837,7 @@ const generators = {
                     270: `(${y}, ${-x})`
                 };
                 return { subType: type, question: `Rotate (${x}, ${y}) by ${degrees}° counterclockwise around the origin. New coordinates?`, answer: rotations[degrees], type: "procedural",
-                    options: [rotations[90], rotations[180], rotations[270], `(${x}, ${y})`],
+                    options: uniqOpts([rotations[90], rotations[180], rotations[270], `(${x}, ${y})`]),
                     explanation: `${degrees}° rotation: (${x}, ${y}) → ${rotations[degrees]}` };
             } else {
                 const transformations = [
@@ -9832,7 +9876,7 @@ const generators = {
                 const a1 = rand(2, 5), a2 = a1 * rand(2, 4);
                 const scale = a2 / a1;
                 return { subType: type, question: `Similar rectangles. Small side: ${a1}. Large side: ${a2}. Scale factor?`, answer: scale, type: "procedural",
-                    options: [scale, scale + 1, a2 - a1, a1 / a2],
+                    options: uniqOpts([scale, scale + 1, a2 - a1, a1 / a2]),
                     explanation: `Scale factor = large/small = ${a2}/${a1} = ${scale}` };
             } else {
                 const scale = rand(2, 3);
@@ -9847,18 +9891,18 @@ const generators = {
             if (type === "corresponding") {
                 const angle = rand(40, 140);
                 return { subType: type, question: `Parallel lines cut by a transversal. One angle is ${angle}°. Its corresponding angle is?`, answer: `${angle}°`, type: "conceptual",
-                    options: [`${angle}°`, `${180 - angle}°`, `${90 - angle}°`, `${angle + 90}°`],
+                    options: uniqOpts([`${angle}°`, `${180 - angle}°`, `${90 - angle}°`, `${angle + 90}°`]),
                     explanation: `Corresponding angles are equal when lines are parallel. Both are ${angle}°.` };
             } else if (type === "alternate_interior") {
                 const angle = rand(40, 140);
                 return { subType: type, question: `Parallel lines cut by a transversal. One alternate interior angle is ${angle}°. The other is?`, answer: `${angle}°`, type: "conceptual",
-                    options: [`${angle}°`, `${180 - angle}°`, `${90}°`, `${angle / 2}°`],
+                    options: uniqOpts([`${angle}°`, `${180 - angle}°`, `${90}°`, `${angle / 2}°`]),
                     explanation: `Alternate interior angles are equal. Both are ${angle}°.` };
             } else if (type === "same_side") {
                 const angle = rand(40, 140);
                 const supplement = 180 - angle;
                 return { subType: type, question: `Parallel lines cut by a transversal. One same-side interior angle is ${angle}°. The other is?`, answer: `${supplement}°`, type: "procedural",
-                    options: [`${supplement}°`, `${angle}°`, `${90}°`, `${angle * 2}°`],
+                    options: uniqOpts([`${supplement}°`, `${angle}°`, `${90}°`, `${angle * 2}°`]),
                     explanation: `Same-side interior angles are supplementary. ${angle}° + ${supplement}° = 180°` };
             } else {
                 const pairs = [
@@ -9973,12 +10017,12 @@ const generators = {
                 const a = rand(1, 6), b = rand(1, 6);
                 const sum = a + b, prod = a * b;
                 return { subType: type, question: `Factor: x² + ${sum}x + ${prod}`, answer: `(x+${a})(x+${b})`, type: "procedural",
-                    options: [`(x+${a})(x+${b})`, `(x+${sum})(x+1)`, `(x-${a})(x-${b})`, `(x+${prod})(x+1)`],
+                    options: uniqOpts([`(x+${a})(x+${b})`, `(x+${sum})(x+1)`, `(x-${a})(x-${b})`, `(x+${prod})(x+1)`]),
                     explanation: `Find two numbers that multiply to ${prod} and add to ${sum}: ${a} and ${b}. Factor: (x+${a})(x+${b})` };
             } else {
                 const a = rand(2, 8);
                 return { subType: type, question: `Factor: x² - ${a*a}`, answer: `(x+${a})(x-${a})`, type: "procedural",
-                    options: [`(x+${a})(x-${a})`, `(x-${a})²`, `(x+${a})²`, `(x-${a*a})(x+1)`],
+                    options: uniqOpts([`(x+${a})(x-${a})`, `(x-${a})²`, `(x+${a})²`, `(x-${a*a})(x+1)`]),
                     explanation: `Difference of squares: x² - ${a}² = (x+${a})(x-${a})` };
             }
         },
@@ -9995,7 +10039,7 @@ const generators = {
             const b = a * boundary;
             const dir = pick(["<", ">", "≤", "≥"]);
             return { question: `Solve: ${a}x ${dir} ${b}`, answer: `x ${dir} ${boundary}`, type: "procedural",
-                options: [`x ${dir} ${boundary}`, `x ${dir === '<' ? '>' : dir === '>' ? '<' : dir === '≤' ? '≥' : '≤'} ${boundary}`, `x ${dir} ${-boundary}`, `x ${dir} ${a}`],
+                options: uniqOpts([`x ${dir} ${boundary}`, `x ${dir === '<' ? '>' : dir === '>' ? '<' : dir === '≤' ? '≥' : '≤'} ${boundary}`, `x ${dir} ${-boundary}`, `x ${dir} ${a}`]),
                 explanation: `Divide both sides by ${a}: x ${dir} ${boundary}` };
         },
         Radicals: () => {
@@ -10015,13 +10059,13 @@ const generators = {
                 const outside = rand(2, 5), inside = pick([2, 3, 5, 6, 7]);
                 const radicand = outside * outside * inside;
                 return { subType: type, question: `Simplify: √${radicand}`, answer: `${outside}√${inside}`, type: "procedural",
-                    options: [`${outside}√${inside}`, `${inside}√${outside}`, `${outside * inside}`, `√${radicand}`],
+                    options: uniqOpts([`${outside}√${inside}`, `${inside}√${outside}`, `${outside * inside}`, `√${radicand}`]),
                     explanation: `√${radicand} = √(${outside}² × ${inside}) = ${outside}√${inside}` };
             } else if (type === "add") {
                 const coeff1 = rand(2, 5), coeff2 = rand(2, 5), inside = rand(2, 7);
                 const sum = coeff1 + coeff2;
                 return { subType: type, question: `Simplify: ${coeff1}√${inside} + ${coeff2}√${inside}`, answer: `${sum}√${inside}`, type: "procedural",
-                    options: [`${sum}√${inside}`, `${coeff1 * coeff2}√${inside}`, `${sum}√${inside * 2}`, `√${inside * sum}`],
+                    options: uniqOpts([`${sum}√${inside}`, `${coeff1 * coeff2}√${inside}`, `${sum}√${inside * 2}`, `√${inside * sum}`]),
                     explanation: `Like terms: (${coeff1} + ${coeff2})√${inside} = ${sum}√${inside}` };
             } else {
                 const a = pick([2, 3, 5, 6, 7]), b = pick([2, 3, 5, 6, 7]);
@@ -10031,7 +10075,7 @@ const generators = {
                 const isPerfectSquare = sqrtFloor * sqrtFloor === product;
                 if (isPerfectSquare) {
                     return { subType: type, question: `Simplify: √${a} × √${b}`, answer: `${sqrtFloor}`, type: "procedural",
-                        options: [`${sqrtFloor}`, `√${product}`, `${a + b}`, `${a * b}`],
+                        options: uniqOpts([`${sqrtFloor}`, `√${product}`, `${a + b}`, `${a * b}`]),
                         explanation: `√${a} × √${b} = √${product} = ${sqrtFloor}` };
                 }
                 // Check for partial simplification
@@ -10090,7 +10134,7 @@ const generators = {
             } else {
                 const seq = [a1, a1 + d, a1 + 2*d];
                 return { subType: type, question: `Sequence: ${seq.join(", ")}, ... Write the formula for the nth term.`, answer: `${a1} + ${d}(n-1)`, type: "conceptual",
-                    options: [`${a1} + ${d}(n-1)`, `${a1}n + ${d}`, `${d}n + ${a1}`, `${a1} × ${d}^(n-1)`],
+                    options: uniqOpts([`${a1} + ${d}(n-1)`, `${a1}n + ${d}`, `${d}n + ${a1}`, `${a1} × ${d}^(n-1)`]),
                     explanation: `aₙ = a₁ + (n-1)d = ${a1} + ${d}(n-1)` };
             }
         },
@@ -10108,7 +10152,7 @@ const generators = {
                     explanation: `r = ${seq[1]}/${seq[0]} = ${r}` };
             } else {
                 return { subType: type, question: `Geometric sequence with a₁ = ${a1} and r = ${r}. Which formula?`, answer: `${a1} × ${r}^(n-1)`, type: "conceptual",
-                    options: [`${a1} × ${r}^(n-1)`, `${a1} + ${r}(n-1)`, `${a1}n × ${r}`, `${r} × ${a1}^(n-1)`],
+                    options: uniqOpts([`${a1} × ${r}^(n-1)`, `${a1} + ${r}(n-1)`, `${a1}n × ${r}`, `${r} × ${a1}^(n-1)`]),
                     explanation: `Geometric: aₙ = a₁ × r^(n-1) = ${a1} × ${r}^(n-1)` };
             }
         },
@@ -10368,7 +10412,7 @@ const generators = {
             const m1 = rand(1, 2), b1 = y - m1 * x;
             const m2 = rand(-2, -1), b2 = y - m2 * x;
             return { question: `Lines y = ${m1}x + ${b1} and y = ${m2}x + ${b2} intersect at...?`, answer: `(${x}, ${y})`, type: "procedural",
-                options: [`(${x}, ${y})`, `(${y}, ${x})`, `(${-x}, ${y})`, `(${x}, ${-y})`],
+                options: uniqOpts([`(${x}, ${y})`, `(${y}, ${x})`, `(${-x}, ${y})`, `(${x}, ${-y})`]),
                 explanation: `Set equal: ${m1}x + ${b1} = ${m2}x + ${b2}. Solve: x = ${x}. Then y = ${m1}(${x}) + ${b1} = ${y}. Point: (${x}, ${y})`,
                 visual: { type: 'coordinate', mode: 'display', data: { xRange: [-2, 8], yRange: [-4, 8], gridStep: 1, lines: [{ equation: { m: m1, b: b1 } }, { equation: { m: m2, b: b2 }, secondary: true }], points: [{ x, y, label: '?' }] } } };
         },
@@ -10582,12 +10626,12 @@ const generators = {
             const circleVisual = { type: 'shape', mode: 'display', data: { shape: 'circle', dimensions: { radius: r }, showMeasurements: true } };
             if (type === "area") {
                 return { subType: type, question: `Find the area of this circle in terms of π.`, answer: `${r*r}π`, type: "procedural",
-                    options: [`${r*r}π`, `${2*r}π`, `${r}π`, `${2*r*r}π`],
+                    options: uniqOpts([`${r*r}π`, `${2*r}π`, `${r}π`, `${2*r*r}π`]),
                     explanation: `A = πr² = π(${r})² = ${r*r}π`,
                     visual: circleVisual };
             } else {
                 return { subType: type, question: `Find the circumference of this circle in terms of π.`, answer: `${2*r}π`, type: "procedural",
-                    options: [`${2*r}π`, `${r*r}π`, `${r}π`, `${4*r}π`],
+                    options: uniqOpts([`${2*r}π`, `${r*r}π`, `${r}π`, `${4*r}π`]),
                     explanation: `C = 2πr = 2π(${r}) = ${2*r}π`,
                     visual: circleVisual };
             }
@@ -10680,25 +10724,25 @@ const generators = {
                 const x = rand(1, 5), y = rand(1, 5);
                 const dx = rand(2, 6), dy = rand(2, 6);
                 return { subType: type, question: `Point (${x}, ${y}) translated right ${dx} and up ${dy}. New point?`, answer: `(${x + dx}, ${y + dy})`, type: "procedural",
-                    options: [`(${x + dx}, ${y + dy})`, `(${x - dx}, ${y + dy})`, `(${x + dx}, ${y - dy})`, `(${x + dy}, ${y + dx})`],
+                    options: uniqOpts([`(${x + dx}, ${y + dy})`, `(${x - dx}, ${y + dy})`, `(${x + dx}, ${y - dy})`, `(${x + dy}, ${y + dx})`]),
                     explanation: `Right ${dx}: x + ${dx} = ${x + dx}. Up ${dy}: y + ${dy} = ${y + dy}. New point: (${x + dx}, ${y + dy})` };
             } else if (type === "reflect") {
                 const x = rand(1, 8), y = rand(1, 8);
                 const axis = pick(["x-axis", "y-axis"]);
                 const newPoint = axis === "x-axis" ? `(${x}, ${-y})` : `(${-x}, ${y})`;
                 return { subType: type, question: `Point (${x}, ${y}) reflected over the ${axis}. New point?`, answer: newPoint, type: "procedural",
-                    options: [`(${x}, ${-y})`, `(${-x}, ${y})`, `(${-x}, ${-y})`, `(${y}, ${x})`],
+                    options: uniqOpts([`(${x}, ${-y})`, `(${-x}, ${y})`, `(${-x}, ${-y})`, `(${y}, ${x})`]),
                     explanation: `Reflect over ${axis}: ${axis === "x-axis" ? "negate y" : "negate x"}. New point: ${newPoint}` };
             } else if (type === "rotate") {
                 const x = rand(1, 5), y = rand(1, 5);
                 return { subType: type, question: `Point (${x}, ${y}) rotated 180° about origin. New point?`, answer: `(${-x}, ${-y})`, type: "procedural",
-                    options: [`(${-x}, ${-y})`, `(${x}, ${-y})`, `(${-x}, ${y})`, `(${y}, ${x})`],
+                    options: uniqOpts([`(${-x}, ${-y})`, `(${x}, ${-y})`, `(${-x}, ${y})`, `(${y}, ${x})`]),
                     explanation: `180° rotation: negate both coordinates. (${x}, ${y}) → (${-x}, ${-y})` };
             } else {
                 const x = rand(1, 4), y = rand(1, 4);
                 const scale = rand(2, 3);
                 return { subType: type, question: `Point (${x}, ${y}) dilated by factor ${scale} from origin. New point?`, answer: `(${x * scale}, ${y * scale})`, type: "procedural",
-                    options: [`(${x * scale}, ${y * scale})`, `(${x + scale}, ${y + scale})`, `(${x * scale}, ${y})`, `(${x}, ${y * scale})`],
+                    options: uniqOpts([`(${x * scale}, ${y * scale})`, `(${x + scale}, ${y + scale})`, `(${x * scale}, ${y})`, `(${x}, ${y * scale})`]),
                     explanation: `Dilation by ${scale}: multiply both coordinates. (${x}, ${y}) → (${x * scale}, ${y * scale})` };
             }
         },
@@ -10957,7 +11001,7 @@ const generators = {
                 const x1 = rand(1, 5) * 2, y1 = rand(1, 5) * 2, x2 = rand(1, 5) * 2, y2 = rand(1, 5) * 2;
                 const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
                 return { subType: type, question: `Midpoint of (${x1}, ${y1}) and (${x2}, ${y2})?`, answer: `(${mx}, ${my})`, type: "procedural",
-                    options: [`(${mx}, ${my})`, `(${(x1+x2)}, ${(y1+y2)})`, `(${x2-x1}, ${y2-y1})`, `(${Math.abs(x1-x2)}, ${Math.abs(y1-y2)})`],
+                    options: uniqOpts([`(${mx}, ${my})`, `(${(x1+x2)}, ${(y1+y2)})`, `(${x2-x1}, ${y2-y1})`, `(${Math.abs(x1-x2)}, ${Math.abs(y1-y2)})`]),
                     explanation: `Midpoint = ((${x1}+${x2})/2, (${y1}+${y2})/2) = (${mx}, ${my})` };
             } else if (type === "distance") {
                 const x1 = rand(1, 5), y1 = rand(1, 5), x2 = x1 + rand(3, 6), y2 = y1 + rand(3, 6);
@@ -10986,7 +11030,7 @@ const generators = {
                 const angle = rand(4, 16) * 10;
                 const half = angle / 2;
                 return { subType: type, question: `An angle bisector splits a ${angle}° angle. Each part measures...?`, answer: `${half}°`, type: "procedural",
-                    options: [`${half}°`, `${angle}°`, `${angle * 2}°`, `${90 - half}°`],
+                    options: uniqOpts([`${half}°`, `${angle}°`, `${angle * 2}°`, `${90 - half}°`]),
                     explanation: `${angle}° ÷ 2 = ${half}°` };
             }
         },
@@ -11081,7 +11125,7 @@ const generators = {
                 const central = rand(4, 16) * 10;
                 const inscribed = central / 2;
                 return { subType: type, question: `Central angle = ${central}°. Inscribed angle on same arc = ?`, answer: `${inscribed}°`, type: "procedural",
-                    options: [`${inscribed}°`, `${central}°`, `${central * 2}°`, `${180 - central}°`],
+                    options: uniqOpts([`${inscribed}°`, `${central}°`, `${central * 2}°`, `${180 - central}°`]),
                     explanation: `Inscribed = ½ × Central = ½ × ${central}° = ${inscribed}°` };
             } else {
                 return { subType: type, question: `An inscribed angle that intercepts a semicircle measures...?`, answer: "90°", type: "conceptual",
@@ -11173,7 +11217,7 @@ const generators = {
                 const x = rand(2, 6), y = rand(2, 6);
                 const k = rand(2, 4);
                 return { subType: type, question: `Dilate (${x}, ${y}) by scale factor ${k} from origin. New point?`, answer: `(${x * k}, ${y * k})`, type: "procedural",
-                    options: [`(${x * k}, ${y * k})`, `(${x + k}, ${y + k})`, `(${x - k}, ${y - k})`, `(${k}, ${k})`],
+                    options: uniqOpts([`(${x * k}, ${y * k})`, `(${x + k}, ${y + k})`, `(${x - k}, ${y - k})`, `(${k}, ${k})`]),
                     explanation: `Multiply each coordinate by k: (${x} × ${k}, ${y} × ${k}) = (${x * k}, ${y * k})` };
             } else {
                 return { subType: type, question: `Dilations preserve...?`, answer: "angle measures and shape", type: "conceptual",
@@ -11192,14 +11236,14 @@ const generators = {
                 const l = rand(6, 12), w = rand(4, 8);
                 const perimeter = 2 * (l + w);
                 return { subType: type, question: `Find the perimeter of this rectangle.`, answer: perimeter, type: "procedural",
-                    options: [perimeter, l * w, l + w, perimeter / 2],
+                    options: uniqOpts([perimeter, l * w, l + w, perimeter / 2]),
                     explanation: `P = 2(l + w) = 2(${l} + ${w}) = ${perimeter}`,
                     visual: { type: 'shape', mode: 'display', data: { shape: 'rectangle', dimensions: { width: l, height: w }, showMeasurements: true } } };
             } else if (type === "missing_side") {
                 const l = rand(5, 12), w = rand(3, 8);
                 const area = l * w;
                 return { subType: type, question: `Rectangle area = ${area}, length = ${l}. Find width.`, answer: w, type: "procedural",
-                    options: [w, area - l, l, area / 2],
+                    options: uniqOpts([w, area - l, l, area / 2]),
                     explanation: `A = l × w → ${area} = ${l} × w → w = ${area}/${l} = ${w}`,
                     visual: { type: 'shape', mode: 'display', data: { shape: 'rectangle', dimensions: { width: l, height: w }, showMeasurements: true } } };
             } else {
@@ -11790,7 +11834,7 @@ const generators = {
                 const constant = rand(1, 9);
                 const terms = `${lead}x^${deg} + ${mid}x^${deg - 1} + ${constant}`;
                 return { subType: type, question: `What is the degree of ${terms}?`, answer: deg, type: "conceptual",
-                    options: [deg, deg - 1, deg + 1, lead],
+                    options: uniqOpts([deg, deg - 1, deg + 1, lead]),
                     explanation: `The degree is the highest exponent. Here the highest power is x^${deg}, so degree = ${deg}.` };
             }
             if (type === "end_behavior") {
@@ -11828,7 +11872,7 @@ const generators = {
             return { subType: type,
                 question: `By the Rational Root Theorem, how many possible rational-root candidates does ${leading}x³ + x² − x + ${constant} have (counting both signs, before removing duplicates)?`,
                 answer: candidateCount, type: "procedural",
-                options: shuffle([candidateCount, pList.length, qList.length, pList.length * qList.length])
+                options: shuffle(uniqOpts([candidateCount, pList.length, qList.length, pList.length * qList.length]))
                     .filter((v, i, a) => a.indexOf(v) === i).slice(0, 4),
                 explanation: `p | ${constant} → ${pList.length} values. q | ${leading} → ${qList.length} values. Each p/q can be ± → ${pList.length} × ${qList.length} × 2 = ${candidateCount} candidates.`
             };
@@ -11924,7 +11968,7 @@ const generators = {
             if (type === "dimensions") {
                 const rows = rand(2, 4), cols = rand(2, 4);
                 return { subType: type, question: `A matrix with ${rows} rows and ${cols} columns has dimensions:`, answer: `${rows} × ${cols}`, type: "conceptual",
-                    options: [`${rows} × ${cols}`, `${cols} × ${rows}`, `${rows + cols}`, `${rows * cols}`],
+                    options: uniqOpts([`${rows} × ${cols}`, `${cols} × ${rows}`, `${rows + cols}`, `${rows * cols}`]),
                     explanation: `Matrix dimensions: rows × columns = ${rows} × ${cols}` };
             } else if (type === "add") {
                 const a = rand(1, 5), b = rand(1, 5), c = rand(1, 5), d = rand(1, 5);
@@ -11941,7 +11985,7 @@ const generators = {
                 const matrix = [[rand(1, 9), rand(1, 9)], [rand(1, 9), rand(1, 9)]];
                 const row = rand(1, 2), col = rand(1, 2);
                 return { subType: type, question: `Matrix [${matrix[0][0]} ${matrix[0][1]}; ${matrix[1][0]} ${matrix[1][1]}]. Element at row ${row}, column ${col}?`, answer: matrix[row - 1][col - 1], type: "procedural",
-                    options: [matrix[0][0], matrix[0][1], matrix[1][0], matrix[1][1]],
+                    options: uniqOpts([matrix[0][0], matrix[0][1], matrix[1][0], matrix[1][1]]),
                     explanation: `Row ${row}, Column ${col} = ${matrix[row - 1][col - 1]}` };
             }
         },
@@ -12137,7 +12181,7 @@ const generators = {
                 const b1 = rand(-5, 5), b2 = rand(-5, 5);
                 return { subType: type, question: `⟨${a1}, ${a2}⟩ + ⟨${b1}, ${b2}⟩ = ?`,
                     answer: `⟨${a1 + b1}, ${a2 + b2}⟩`, type: "procedural",
-                    options: shuffle([`⟨${a1 + b1}, ${a2 + b2}⟩`, `⟨${a1 * b1}, ${a2 * b2}⟩`, `⟨${a1 + a2}, ${b1 + b2}⟩`, `⟨${a1 - b1}, ${a2 - b2}⟩`]),
+                    options: shuffle(uniqOpts([`⟨${a1 + b1}, ${a2 + b2}⟩`, `⟨${a1 * b1}, ${a2 * b2}⟩`, `⟨${a1 + a2}, ${b1 + b2}⟩`, `⟨${a1 - b1}, ${a2 - b2}⟩`])),
                     explanation: `Add components: ⟨${a1}+${b1}, ${a2}+${b2}⟩ = ⟨${a1 + b1}, ${a2 + b2}⟩.` };
             }
             if (type === "magnitude") {
@@ -12161,7 +12205,7 @@ const generators = {
             const a = rand(-6, 6), b = rand(-6, 6);
             return { subType: type, question: `${k}⟨${a}, ${b}⟩ = ?`,
                 answer: `⟨${k * a}, ${k * b}⟩`, type: "procedural",
-                options: shuffle([`⟨${k * a}, ${k * b}⟩`, `⟨${k + a}, ${k + b}⟩`, `⟨${a}, ${b}⟩`, `⟨${k * a}, ${b}⟩`]),
+                options: shuffle(uniqOpts([`⟨${k * a}, ${k * b}⟩`, `⟨${k + a}, ${k + b}⟩`, `⟨${a}, ${b}⟩`, `⟨${k * a}, ${b}⟩`])),
                 explanation: `Multiply each component by ${k}: ⟨${k}·${a}, ${k}·${b}⟩ = ⟨${k * a}, ${k * b}⟩.` };
         },
         "Advanced Functions": () => {
@@ -12500,7 +12544,7 @@ const generators = {
             if (type === "amplitude") {
                 const a = rand(2, 6);
                 return { subType: type, question: `Amplitude of y = ${a}sin(x)?`, answer: a, type: "conceptual",
-                    options: [a, a * 2, 1, a - 1],
+                    options: uniqOpts([a, a * 2, 1, a - 1]),
                     explanation: `Amplitude = |A| in y = Asin(x). Here amplitude = ${a}` };
             } else if (type === "period") {
                 const b = pick([2, 3, 4]);
@@ -13255,7 +13299,7 @@ const generators = {
             if (type === "gradient") {
                 const a = rand(2, 4), b = rand(2, 4);
                 return { subType: type, question: `f(x,y) = ${a}x + ${b}y. Find ∇f.`, answer: `⟨${a}, ${b}⟩`, type: "procedural",
-                    options: [`⟨${a}, ${b}⟩`, `⟨${b}, ${a}⟩`, `${a} + ${b}`, `⟨${a*b}, 0⟩`],
+                    options: [`⟨${a}, ${b}⟩`, `⟨${b}, ${a}⟩`, `${a} + ${b}`, `⟨${a*b}, 0⟩`, `⟨${a + 1}, ${b}⟩`, `⟨${a}, ${b + 1}⟩`].filter((v, i, a) => a.indexOf(v) === i).slice(0, 4),
                     explanation: `∇f = ⟨∂f/∂x, ∂f/∂y⟩ = ⟨${a}, ${b}⟩` };
             } else if (type === "double") {
                 const a = rand(2, 4);
@@ -13336,7 +13380,7 @@ const generators = {
             if (type === "evaluate") {
                 const a = rand(2, 4);
                 return { subType: type, question: `∫₀¹∫₀¹ ${a} dx dy = ?`, answer: a, type: "procedural",
-                    options: [a, a * 2, a / 2, 1],
+                    options: [a, a * 2, a / 2, 1, a + 1, a + 2].filter((v, i, a) => a.indexOf(v) === i).slice(0, 4),
                     explanation: `∫₀¹∫₀¹ ${a} dx dy = ${a}∫₀¹ dx ∫₀¹ dy = ${a}(1)(1) = ${a}` };
             } else if (type === "setup") {
                 const r = rand(2, 4);
@@ -13361,7 +13405,7 @@ const generators = {
             if (type === "evaluate") {
                 const a = rand(2, 4);
                 return { subType: type, question: `∫₀¹∫₀¹∫₀¹ ${a} dx dy dz = ?`, answer: a, type: "procedural",
-                    options: [a, a * 3, a / 3, 1],
+                    options: [a, a * 3, a / 3, 1, a + 1, a + 2].filter((v, i, a) => a.indexOf(v) === i).slice(0, 4),
                     explanation: `∫₀¹∫₀¹∫₀¹ ${a} dx dy dz = ${a}(1)(1)(1) = ${a}` };
             } else if (type === "volume") {
                 const s = rand(2, 4);
@@ -13487,12 +13531,12 @@ const generators = {
                 const gcd = (a, b) => b === 0 ? a : gcd(b, a % b);
                 const result = gcd(a, b);
                 return { subType: type, question: `gcd(${a}, ${b}) = ?`, answer: result, type: "procedural",
-                    options: [result, a, b, 1],
+                    options: [result, a, b, 1, a * b, result + 1].filter((v, i, a) => a.indexOf(v) === i).slice(0, 4),
                     explanation: `Using Euclidean algorithm: gcd(${a}, ${b}) = ${result}` };
             } else if (type === "modular") {
                 const a = rand(10, 20), m = rand(3, 7);
                 return { subType: type, question: `${a} mod ${m} = ?`, answer: a % m, type: "procedural",
-                    options: [a % m, (a % m) + 1, m, a],
+                    options: uniqOpts([a % m, (a % m) + 1, m, a]),
                     explanation: `${a} = ${Math.floor(a/m)}×${m} + ${a % m}, so ${a} mod ${m} = ${a % m}` };
             } else {
                 const a = rand(2, 5), b = rand(3, 8);
@@ -44121,22 +44165,57 @@ if ('speechSynthesis' in window) {
   const ri = (a,b) => Math.floor(Math.random()*(b-a+1))+a;
   const sh = a => a.map(x=>[Math.random(),x]).sort((p,q)=>p[0]-q[0]).map(p=>p[1]);
   const pick = a => a[ri(0,a.length-1)];
-  // numeric option builder: seeds with the correct answer, adds distinct distractors, fills to 4
-  const opt = (ans, cands) => {
-    const s = [String(ans)];
-    for (const c of cands){ const t = String(c); if(!s.includes(t)) s.push(t); if(s.length>=4) break; }
-    let d = 1;
-    while (s.length < 4){ const t = String(ans + d); if(!s.includes(t)) s.push(t); d = d>0 ? -d : 1-d; }
-    return sh(s);
+  // Option builders. These used to top a short list up with `ans + d` or
+  // `ans + " ".repeat(d)`, which manufactures choices that normalise straight
+  // back to the answer — checkAnswer lowercases and trims, so "$70 " and "$70"
+  // were the same answer sitting on two buttons. Padding now perturbs the
+  // numbers inside the answer instead, candidates are compared the way the
+  // grader compares them, and anything that evaluates to the answer is dropped
+  // (so "3/3" is never offered as a wrong choice for "1"). Returns fewer than
+  // four options rather than inventing a bogus one.
+  const _key = v => String(v).trim().toLowerCase();
+  const _val = v => {
+    const t = String(v).trim();
+    const f = t.match(/^(-?\d+(?:\.\d+)?)\s*\/\s*(-?\d+(?:\.\d+)?)$/);
+    if (f) return parseFloat(f[1]) / parseFloat(f[2]);
+    return /^-?\d+(?:\.\d+)?$/.test(t) ? parseFloat(t) : NaN;
   };
-  // string option builder: seeds with the correct answer string, adds distinct string distractors
-  const optS = (ans, cands) => {
-    const s = [ans];
-    for (const c of cands){ if(!s.includes(c)) s.push(c); if(s.length>=4) break; }
-    let d = 1;
-    while (s.length < 4){ const t = ans + " ".repeat(d); if(!s.includes(t)) s.push(t); d++; }
-    return sh(s);
+  const _build = (ans, cands) => {
+    const seen = new Set(), out = [], tv = _val(ans);
+    const push = v => {
+      if (out.length >= 4) return;
+      const k = _key(v);
+      if (k === '' || seen.has(k)) return;
+      const cv = _val(v);
+      if (!isNaN(tv) && !isNaN(cv) && Math.abs(cv - tv) < 1e-9) return;
+      seen.add(k); out.push(v);
+    };
+    // The answer is seeded directly: the value guard below exists to stop a
+    // DISTRACTOR being a different spelling of the answer, and would otherwise
+    // reject the answer itself for equalling itself.
+    seen.add(_key(ans)); out.push(ans);
+    for (const c of (cands || [])) push(c);
+    if (out.length < 4 && typeof ans === 'number' && isFinite(ans)) {
+      const st = Math.max(1, Math.round(Math.abs(ans) * 0.1));
+      for (let m = 1; out.length < 4 && m <= 12; m++) {
+        push(parseFloat((ans + m * st).toFixed(4)));
+        push(parseFloat((ans - m * st).toFixed(4)));
+      }
+    } else if (out.length < 4) {
+      const s = String(ans), nums = [...s.matchAll(/-?\d+(?:\.\d+)?/g)];
+      for (const d of [1, -1, 2, -2, 3, -3, 5, -5]) {
+        for (let i = 0; i < nums.length && out.length < 4; i++) {
+          const m = nums[i], v = parseFloat(m[0]), nv = parseFloat((v + d).toFixed(4));
+          if (nv === v) continue;
+          push(s.slice(0, m.index) + nv + s.slice(m.index + m[0].length));
+        }
+        if (out.length >= 4) break;
+      }
+    }
+    return sh(out);
   };
+  const opt = _build;
+  const optS = _build;
 
   function _addSkill(tier, name, primaryTitle, difficulty, lessonObj, genFn){
     if(!TIERS[tier]) TIERS[tier]={name:"Tier "+tier, grades:"", domains:[]};
@@ -45203,14 +45282,47 @@ if ('speechSynthesis' in window) {
     Q_MATRIX["T"+tier+"::"+name]={primary_skill:primaryTitle, secondary_skills:[], difficulty:difficulty, discrimination:1, confidence:"manual"};
   }
 
-  // Shared safety helper: build exactly 4 unique options including the answer.
-  // Well-designed generators supply >=3 structurally-distinct distractors so
-  // padding never fires; the pad path only guarantees correctness.
+  // Shared safety helper: build up to 4 unique options including the answer.
+  // The old pad path appended `ans + ' '.repeat(k)`, which is the same answer
+  // to checkAnswer (it lowercases and trims) — two correct-looking buttons.
+  // Padding now perturbs the numbers inside the answer, uses the grader's own
+  // comparison, and drops any candidate that evaluates to the answer. Returns
+  // fewer than four rather than inventing a duplicate.
   function U(ans, cands){
-    const o=[ans];
-    for(const c of cands){ if(o.length>=4) break; if(o.indexOf(c)===-1) o.push(c); }
-    let k=1;
-    while(o.length<4){ const p=(typeof ans==='number')? ans+k : ans+' '.repeat(k); if(o.indexOf(p)===-1) o.push(p); k++; }
+    const key = v => String(v).trim().toLowerCase();
+    const val = v => {
+      const t = String(v).trim();
+      const f = t.match(/^(-?\d+(?:\.\d+)?)\s*\/\s*(-?\d+(?:\.\d+)?)$/);
+      if (f) return parseFloat(f[1]) / parseFloat(f[2]);
+      return /^-?\d+(?:\.\d+)?$/.test(t) ? parseFloat(t) : NaN;
+    };
+    const seen=new Set(), o=[], tv=val(ans);
+    const push = v => {
+      if(o.length>=4) return;
+      const k=key(v);
+      if(k===''||seen.has(k)) return;
+      const cv=val(v);
+      if(!isNaN(tv)&&!isNaN(cv)&&Math.abs(cv-tv)<1e-9) return;
+      seen.add(k); o.push(v);
+    };
+    // Seeded directly — the value guard is for distractors, and would reject
+    // the answer for equalling itself.
+    seen.add(key(ans)); o.push(ans);
+    for(const c of (cands||[])) push(c);
+    if(o.length<4 && typeof ans==='number' && isFinite(ans)){
+      const st=Math.max(1,Math.round(Math.abs(ans)*0.1));
+      for(let m=1;o.length<4&&m<=12;m++){ push(parseFloat((ans+m*st).toFixed(4))); push(parseFloat((ans-m*st).toFixed(4))); }
+    } else if(o.length<4){
+      const s=String(ans), nums=[...s.matchAll(/-?\d+(?:\.\d+)?/g)];
+      for(const d of [1,-1,2,-2,3,-3,5,-5]){
+        for(let i=0;i<nums.length&&o.length<4;i++){
+          const m=nums[i], v=parseFloat(m[0]), nv=parseFloat((v+d).toFixed(4));
+          if(nv===v) continue;
+          push(s.slice(0,m.index)+nv+s.slice(m.index+m[0].length));
+        }
+        if(o.length>=4) break;
+      }
+    }
     return o;
   }
 
@@ -47411,7 +47523,10 @@ if ('speechSynthesis' in window) {
         explanation:`By FTC Part 1, d/dx ∫₀ˣ (t² + ${c}) dt = x² + ${c} — replace t with x in the integrand.` };
     } else {
       const answer = "F(b) − F(a)";
-      const options = sh([answer, "F(a) − F(b)", "f(b) − f(a)", "F'(b) − F'(a)"]);
+      // "f(b) − f(a)" differs from the answer "F(b) − F(a)" only by case, and
+      // checkAnswer lowercases before comparing — it graded as correct, so it
+      // was never a wrong choice. Use a distractor that is actually distinct.
+      const options = sh([answer, "F(a) − F(b)", "F(b) + F(a)", "F'(b) − F'(a)"]);
       return { subType:"concept", type:"conceptual",
         question:`FTC Part 2 says ∫ₐᵇ f(x) dx equals which expression, where F is an antiderivative of f?`,
         answer, options,
