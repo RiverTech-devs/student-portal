@@ -355,6 +355,33 @@ for (const { tier, name } of placements) {
 }
 console.log(`generators executed: ${ran} × ${ITER} samples`);
 
+// ---- progress sync resolves to the right curriculum node ----
+// getSkillTreeName(domain) decides the skill_name the Dojo posts to the portal,
+// which is stored verbatim in skill_progress. The skill_progress_with_graph view
+// joins curriculum_nodes.legacy_name = skill_progress.skill_name, and legacy_name
+// is the node TITLE. So every playable skill must resolve to its graph title, or
+// that student's practice silently fails to link to any curriculum node.
+try {
+  vm.runInContext(
+    `globalThis.__DTT = ${literal('const DOJO_TO_TREE_SKILL = {')};
+` +
+    `globalThis.__STM = ${literal('const SKILL_TREE_MAPPING = {')};
+`,
+    ctx, { filename: 'math-dojo-maps.js' });
+  const resolve = d => ctx.__DTT[d] || ctx.__STM[d] || d;
+  for (const node of graph.nodes) {
+    const ds = node.dojo_skill || node.title;
+    if (!distinct.has(ds)) continue;
+    const got = resolve(ds);
+    if (got !== node.title) {
+      problems.push(`progress sync: "${ds}" resolves to "${got}" but ${node.id} is titled `
+        + `"${node.title}" — skill_progress rows will not join to the curriculum node`);
+    }
+  }
+} catch (e) {
+  problems.push(`could not check progress-sync mapping: ${e.message}`);
+}
+
 // ---- lessons, at runtime ----
 // tools/audit-lessons.js reads only the `const lessons` literal, so the lessons
 // registered by the V2 block were never checked, and it cannot see that
