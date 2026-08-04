@@ -1,4 +1,8 @@
 // Runtime audit of games/math-dojo.html lesson data.
+// NOTE: this reads only the `const lessons` literal. tools/audit-dojo-coverage.js
+// is authoritative — it evaluates the literal AND the V2 _addSkill block in
+// browser order, so it sees the lessons registered there and the fact that
+// _addSkill OVERWRITES literal entries at load time.
 // Extracts the `const lessons = {...}` literal, eval()s it with stub
 // rand()/shuffle(), then runs each lesson function multiple times and
 // checks for concrete bugs: answers missing from options, commonMistakes
@@ -96,7 +100,12 @@ function pick(arr) {
 // ---- Eval lessons and TIERS ----
 let lessons, TIERS;
 try {
-  lessons = new Function('rand', 'shuffle', 'pick', 'return ' + lessonsLiteral)(rand, shuffle, pick);
+  // Page-level helpers the lesson bodies close over (games/math-dojo.html).
+  // A missing one reports as a bogus "lesson function threw".
+  const gcd = (a, b) => b === 0 ? a : gcd(b, a % b);
+  const cap = s => String(s).length === 0 ? s : String(s).charAt(0).toUpperCase() + String(s).slice(1);
+  const simplifyFrac = (n, d) => { const g = gcd(Math.abs(n), Math.abs(d)); return [n / g, d / g]; };
+  lessons = new Function('rand', 'shuffle', 'pick', 'gcd', 'cap', 'simplifyFrac', 'return ' + lessonsLiteral)(rand, shuffle, pick, gcd, cap, simplifyFrac);
 } catch (e) {
   console.error('FAILED to eval lessons literal:', e.message);
   console.error('First 500 chars of literal:', lessonsLiteral.slice(0, 500));
@@ -113,7 +122,8 @@ console.log('Loaded lessons:', Object.keys(lessons).length, 'tiers');
 console.log('Loaded TIERS:', Object.keys(TIERS).length, 'tiers');
 
 // ---- Checks ----
-const findings = []; // { tier, skill, severity, msg }
+const findings = [];
+const mistakeStats = new Map(); // { tier, skill, severity, msg }
 
 function add(tier, skill, severity, msg) {
   findings.push({ tier, skill, severity, msg });
@@ -203,16 +213,23 @@ function checkLessonObject(tier, skill, obj) {
         }
       }
       if (step.commonMistakes && typeof step.commonMistakes === 'object') {
+        // A key colliding with the correct answer is normally harmless:
+        // selectGuidedOption() runs checkAnswer() FIRST and only consults
+        // commonMistakes in the incorrect branch, so a colliding key never
+        // fires. And the keys are computed — `[`${b} groups of ${a}`]` against
+        // answer `${a} groups of ${b}` — so they collide only on the draw where
+        // a === b and are good distractors otherwise. Record by ORDINAL and
+        // report only entries dead on EVERY draw: feedback that can never show.
         const normAns = norm(ans);
         const acceptSet = new Set((step.acceptableAnswers || []).map(norm));
-        for (const key of Object.keys(step.commonMistakes)) {
-          const nk = norm(key);
-          if (nk === normAns) {
-            add(tier, skill, 'error', `guided.interactiveSteps[${i}].commonMistakes key "${key}" equals the correct answer "${ans}"`);
-          } else if (acceptSet.has(nk)) {
-            add(tier, skill, 'error', `guided.interactiveSteps[${i}].commonMistakes key "${key}" matches an acceptableAnswer`);
-          }
-        }
+        if (!acceptSet.size) acceptSet.add(normAns);
+        Object.keys(step.commonMistakes).forEach((key, mi) => {
+          const id = `${tier}|${skill}|${i}|${mi}`;
+          const st = mistakeStats.get(id) || { seen: 0, dead: 0, sample: key, tier, skill, i };
+          st.seen++;
+          if (acceptSet.has(norm(key))) { st.dead++; st.sample = key; }
+          mistakeStats.set(id, st);
+        });
       }
     });
   }
@@ -230,6 +247,14 @@ function runLesson(tier, skill, fn, iterations) {
       return;
     }
     checkLessonObject(tier, skill, obj);
+  }
+}
+
+// An entry dead on every sampled draw is feedback the student can never reach.
+for (const st of mistakeStats.values()) {
+  if (st.seen >= 5 && st.dead === st.seen) {
+    add(st.tier, st.skill, 'error',
+      `guided.interactiveSteps[${st.i}].commonMistakes key "${st.sample}" is the correct answer on every draw — the hint can never show`);
   }
 }
 

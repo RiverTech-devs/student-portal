@@ -355,6 +355,118 @@ for (const { tier, name } of placements) {
 }
 console.log(`generators executed: ${ran} × ${ITER} samples`);
 
+// ---- lessons, at runtime ----
+// tools/audit-lessons.js reads only the `const lessons` literal, so the lessons
+// registered by the V2 block were never checked, and it cannot see that
+// _addSkill OVERWRITES a literal entry at load time — it reports defects in
+// lesson bodies the game replaces. These checks run against what the game
+// actually serves.
+const warnings = new Set();
+// A commonMistakes key colliding with the correct answer is usually harmless:
+// selectGuidedOption() runs checkAnswer() FIRST and only consults commonMistakes
+// in the incorrect branch, so a colliding key simply never fires — and lessons
+// randomise, so `[String(exp)]: ...` against answer String(base) collides only on
+// the 3^3 draw and is a good distractor on every other one. What IS a defect is a
+// key that collides on EVERY draw: feedback the author wrote that can never show.
+const mistakeStats = new Map();
+const REQUIRED = ['teachingSteps', 'example', 'keyPoints', 'mistakes', 'guided'];
+
+// A lesson is either a single body, or a `hasSubSkills` wrapper whose
+// subSkills[] entries each carry a full body. Checking the wrapper as if it
+// were a body reports every one of its fields as missing.
+function checkLessonBody(at, L) {
+  if (!L || typeof L !== 'object') { warnings.add(`${at}: lesson body is not an object`); return; }
+  for (const k of REQUIRED) if (!(k in L)) warnings.add(`${at}: lesson missing field ${k}`);
+  if (Array.isArray(L.teachingSteps)) {
+    if (L.teachingSteps.length < 3) warnings.add(`${at}: only ${L.teachingSteps.length} teaching step(s)`);
+    L.teachingSteps.forEach((s, i) => {
+      if (!s || typeof s !== 'object') warnings.add(`${at}: teachingSteps[${i}] is not an object`);
+      else if (!s.title || !s.explanation) warnings.add(`${at}: teachingSteps[${i}] missing title/explanation`);
+    });
+  }
+  if (Array.isArray(L.mistakes)) {
+    const seen = new Set();
+    L.mistakes.forEach((m, i) => {
+      if (!m || typeof m !== 'object') return;
+      if (!m.wrong || !m.why) warnings.add(`${at}: mistakes[${i}] missing wrong/why`);
+      const k = optKey(m.wrong);
+      if (seen.has(k)) warnings.add(`${at}: mistakes[${i}] repeats "${m.wrong}"`);
+      seen.add(k);
+    });
+  }
+  // The one that actually hurts a student: typing the correct answer into a
+  // guided step and being shown a "common mistake" correction for it.
+  if (L.guided && Array.isArray(L.guided.interactiveSteps)) {
+    L.guided.interactiveSteps.forEach((step, i) => {
+      if (!step || typeof step !== 'object') return;
+      const ans = step.answer;
+      if (ans === undefined || ans === null || ans === '') {
+        warnings.add(`${at}: guided step ${i} has no answer`);
+        return;
+      }
+      const nAns = optKey(ans);
+      const accept = (step.acceptableAnswers || []).map(optKey);
+      if (accept.length && !accept.includes(nAns)) {
+        warnings.add(`${at}: guided step ${i} acceptableAnswers omits "${ans}"`);
+      }
+      if (step.commonMistakes && typeof step.commonMistakes === 'object') {
+        const acceptSet = new Set(accept.length ? accept : [nAns]);
+        // Key by ORDINAL, not by the rendered key text. These keys are computed
+        // — `[`${b} groups of ${a}`]` against answer `${a} groups of ${b}` —
+        // so the rendering that collides only exists on the draw where it
+        // collides. Keying by text makes every conditional collision look
+        // permanently dead.
+        Object.keys(step.commonMistakes).forEach((key, mi) => {
+          const id = `${at}|guided step ${i}|entry ${mi}`;
+          const st = mistakeStats.get(id) || { seen: 0, dead: 0, sample: key };
+          st.seen++;
+          if (acceptSet.has(optKey(key))) { st.dead++; st.sample = key; }
+          mistakeStats.set(id, st);
+        });
+      }
+    });
+  }
+}
+
+for (const { tier, name } of placements) {
+  const fn = ctx.lessons[tier] && ctx.lessons[tier][name];
+  if (typeof fn !== 'function') continue;
+  const at = `T${tier} ${name}`;
+  // Literal lessons build their worked example from rand(), so a collision
+  // between a commonMistakes key and the correct answer often only fires for
+  // some draws. One call per lesson misses most of them.
+  for (let iter = 0; iter < 40; iter++) {
+    seed = (tier * 6737 + iter * 95443 + name.length * 2749) | 0;
+    let L;
+    try {
+      L = fn();
+    } catch (e) { problems.push(`${at}: lesson threw — ${e.message}`); break; }
+    if (!L || typeof L !== 'object') { problems.push(`${at}: lesson did not return an object`); break; }
+    if (L.hasSubSkills) {
+      if (!Array.isArray(L.subSkills)) { warnings.add(`${at}: hasSubSkills but subSkills is not an array`); break; }
+      if (!L.subSkills.length) { warnings.add(`${at}: subSkills is empty`); break; }
+      const ids = new Set();
+      L.subSkills.forEach((s, i) => {
+        if (s && s.id) {
+          if (ids.has(s.id)) warnings.add(`${at}: duplicate subSkill id ${s.id}`);
+          ids.add(s.id);
+        } else warnings.add(`${at}: subSkills[${i}] missing id`);
+        checkLessonBody(`${at}/${(s && s.id) || i}`, s);
+      });
+    } else {
+      checkLessonBody(at, L);
+    }
+  }
+}
+
+// An entry dead on every sampled draw is feedback that can never reach a student.
+for (const [id, st] of mistakeStats) {
+  if (st.seen >= 5 && st.dead === st.seen) {
+    const [at, step] = id.split('|');
+    warnings.add(`${at}: ${step} lists "${st.sample}" as a common mistake, but it is the correct answer on every draw — the hint can never show`);
+  }
+}
+
 // ---- report ----
 // --verbose prints one real failing sample per problem, which is the only way
 // to tell a bad distractor set from a bad answer format.
@@ -372,5 +484,9 @@ if (!uniq.length) console.log('  none — every playable skill has a lesson, a w
 if (hygiene.size) {
   console.log(`\n=== ${hygiene.size} generator hygiene warning(s) — repaired at runtime, not student-visible ===`);
   for (const h of [...hygiene].sort()) console.log('  ' + h);
+}
+if (warnings.size) {
+  console.log(`\n=== ${warnings.size} lesson quality warning(s) ===`);
+  for (const w of [...warnings].sort()) console.log('  ' + w);
 }
 process.exit(fatal.length || uniq.length ? 1 : 0);
