@@ -31394,41 +31394,64 @@
             }
           });
 
-          if (authError) {
+          // An auth user can already exist without a profile — earlier invites
+          // created the auth row and then failed on the profile insert. Supabase
+          // reports that either as an explicit error or (to avoid leaking which
+          // emails are registered) as a success with an empty identities array.
+          // The profile-existence check above already ran, so in both cases we
+          // fall through and let the RPC finish provisioning the orphan.
+          const alreadyRegistered =
+            (authError && /already\s*(registered|exists)|user_already_exists/i.test(authError.message || authError.code || '')) ||
+            (!authError && Array.isArray(authData?.user?.identities) && authData.user.identities.length === 0);
+
+          if (authError && !alreadyRegistered) {
             throw authError;
           }
 
-          if (!authData.user) {
+          if (!alreadyRegistered && !authData?.user) {
             throw new Error('Failed to create user account');
           }
 
-          // Create the teacher profile
-          const username = `${firstName.toLowerCase()}.${lastName.toLowerCase()}`.replace(/[^a-z.]/g, '') + '.' + Date.now().toString(36);
-
-          const { error: profileError } = await this.supabaseQuery(() => this.auth.supabase
-            .from('user_profiles')
-            .insert({
-              id: authData.user.id,
-              auth_user_id: authData.user.id,
-              email: email,
-              username: username,
-              first_name: firstName,
-              last_name: lastName,
-              user_type: 'teacher',
-              account_status: 'active',
-              can_login: true
-            }));
-
-          if (profileError) {
-            console.error('Profile creation error:', profileError);
-            throw new Error('Failed to create teacher profile: ' + profileError.message);
+          // signUp() only returns a session when email confirmation is disabled
+          // on the Supabase project — and that session REPLACES the admin's, so
+          // every call after this point would run as the invitee. Fail loudly
+          // rather than silently acting as them.
+          if (authData?.session) {
+            throw new Error(
+              'Sign-up returned a live session, which means email confirmation is turned off for this project. ' +
+              'The invite was stopped so it could not run under the new account — re-enable "Confirm email" in Supabase Auth settings, then log back in.'
+            );
           }
 
-          // Supabase will automatically send the confirmation email via emailRedirectTo
-          // No need for a separate resetPasswordForEmail call
+          // Create the teacher profile via the admin-only RPC. A direct insert
+          // is not possible (and shouldn't be): the user_profiles INSERT policy
+          // only allows id = auth.uid(), and validate_user_profile_insert()
+          // rejects any client-side insert that isn't a student or parent.
+          const suggestedUsername = `${firstName.toLowerCase()}.${lastName.toLowerCase()}`.replace(/[^a-z.]/g, '') + '.' + Date.now().toString(36);
 
+          const { data: provisionResult, error: provisionError } = await this.supabaseQuery(() => this.auth.supabase
+            .rpc('admin_create_teacher_profile', {
+              p_email: email,
+              p_first_name: firstName,
+              p_last_name: lastName,
+              p_username: suggestedUsername
+            }));
+
+          if (provisionError) {
+            console.error('Profile creation error:', provisionError);
+            throw new Error('Failed to create teacher profile: ' + provisionError.message);
+          }
+
+          if (provisionResult?.error) {
+            console.error('Profile creation rejected:', provisionResult.error);
+            throw new Error(provisionResult.error);
+          }
+
+          // Supabase sends the confirmation email via emailRedirectTo on signUp.
+          // A recovered orphan gets no new email — the admin is told to have them
+          // use "Forgot Password" instead.
           this.closeModal('invite-teacher');
-          this.showTeacherInviteSuccessModal(email, firstName, lastName, true);
+          this.showTeacherInviteSuccessModal(email, firstName, lastName, !alreadyRegistered);
 
         } catch (error) {
           console.error('Error sending teacher invitation:', error);
@@ -31442,14 +31465,16 @@
       }
 
       showTeacherInviteSuccessModal(email, firstName, lastName, emailSent) {
-        const teacherName = `${firstName} ${lastName}`;
+        const esc = (s) => this._escapeHtml ? this._escapeHtml(s) : s;
+        const teacherName = esc(`${firstName} ${lastName}`);
+        const safeEmail = esc(email);
 
         const modalContent = `
           <div>
             <div style="background: rgba(139, 255, 176, 0.1); border: 1px solid var(--accent-2); border-radius: 8px; padding: 15px; margin-bottom: 20px;">
               <p style="color: var(--accent-2); font-weight: 500; margin-bottom: 5px;">✅ Teacher Account Created!</p>
               <p style="color: var(--muted); font-size: 13px;">
-                Account created for <strong>${teacherName}</strong> (${email})
+                Account created for <strong>${teacherName}</strong> (${safeEmail})
               </p>
             </div>
 
@@ -31463,8 +31488,8 @@
             ` : `
               <div style="background: rgba(255, 211, 106, 0.1); border-radius: 8px; padding: 15px; margin-bottom: 20px;">
                 <p style="font-size: 13px; color: var(--muted);">
-                  <strong style="color: var(--warning);">⚠️ Email Could Not Be Sent</strong><br>
-                  The account was created, but the email could not be sent. Please ask the teacher to use "Forgot Password" on the login page to set their password.
+                  <strong style="color: var(--warning);">⚠️ No Confirmation Email Sent</strong><br>
+                  The sign-in account for this email already existed, so their profile was completed without a new email going out. Ask the teacher to use "Forgot Password" on the login page to set their password.
                 </p>
               </div>
             `}
