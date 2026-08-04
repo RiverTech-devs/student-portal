@@ -209,7 +209,68 @@ for (const n of graph.nodes) {
   }
 }
 
+// ---- mirror of generateQuestion's option pipeline in games/math-dojo.html ----
+// Keep these two in step: if the game's hygiene rules change, this must too, or
+// the audit starts grading something the student never sees.
+const optKey = v => String(v).trim().toLowerCase();
+function answerValue(str) {
+  const t = String(str).trim();
+  const f = t.match(/^(-?\d+(?:\.\d+)?)\s*\/\s*(-?\d+(?:\.\d+)?)$/);
+  if (f) return parseFloat(f[1]) / parseFloat(f[2]);
+  if (/^-?\d+(?:\.\d+)?$/.test(t)) return parseFloat(t);
+  return NaN;
+}
+function backfillOptions(answer, opts, seen, want = 4) {
+  const target = answerValue(answer);
+  const tryPush = cand => {
+    if (opts.length >= want) return;
+    const k = optKey(cand);
+    if (k === '' || seen.has(k)) return;
+    const cv = answerValue(cand);
+    if (!isNaN(target) && !isNaN(cv) && Math.abs(cv - target) < 1e-9) return;
+    seen.add(k); opts.push(cand);
+  };
+  if (typeof answer === 'number' && isFinite(answer)) {
+    const step = Math.max(1, Math.round(Math.abs(answer) * 0.1));
+    for (let m = 1; opts.length < want && m <= 12; m++) {
+      tryPush(parseFloat((answer + m * step).toFixed(4)));
+      tryPush(parseFloat((answer - m * step).toFixed(4)));
+    }
+    return opts;
+  }
+  const s = String(answer);
+  const nums = [...s.matchAll(/-?\d+(?:\.\d+)?/g)];
+  if (!nums.length) return opts;
+  for (const d of [1, -1, 2, -2, 3, -3, 5, -5, 10, -10]) {
+    for (let i = 0; i < nums.length && opts.length < want; i++) {
+      const m = nums[i];
+      const v = parseFloat(m[0]);
+      const nv = parseFloat((v + d).toFixed(4));
+      if (nv === v) continue;
+      tryPush(s.slice(0, m.index) + nv + s.slice(m.index + m[0].length));
+    }
+    if (opts.length >= want) break;
+  }
+  return opts;
+}
+function optionPipeline(q) {
+  const seen = new Set(), opts = [];
+  for (const o of (q.options || [])) {
+    const k = optKey(o);
+    if (k !== '' && !seen.has(k)) { seen.add(k); opts.push(o); }
+  }
+  if (!seen.has(optKey(q.answer))) { seen.add(optKey(q.answer)); opts.push(q.answer); }
+  if (opts.length < 4) backfillOptions(q.answer, opts, seen, 4);
+  return { options: opts, answerIndex: opts.findIndex(o => optKey(o) === optKey(q.answer)) };
+}
+
 // ---- run every generator ----
+const hygiene = new Set();
+const samples = new Map();
+const sample = (key, q) => {
+  if (!samples.has(key)) samples.set(key, JSON.stringify({
+    question: q.question, answer: q.answer, options: q.options }));
+};
 const ITER = 40;
 let ran = 0;
 for (const { tier, name } of placements) {
@@ -240,22 +301,52 @@ for (const { tier, name } of placements) {
     };
     walk(q, 'gen');
     if (Array.isArray(q.options)) {
-      const norm = x => String(x).trim().toLowerCase();
-      const opts = q.options.map(norm);
-      if (!opts.includes(norm(q.answer))) problems.push(`T${tier} ${name}: options omit the answer "${q.answer}"`);
-      if (new Set(opts).size !== opts.length) problems.push(`T${tier} ${name}: options contain duplicates`);
+      // What the student sees is the generator's output AFTER generateQuestion's
+      // option pipeline, so that is what must be correct. Raw defects the
+      // pipeline repairs are reported separately as hygiene warnings.
+      const raw = q.options.map(optKey);
+      const final = optionPipeline(q);
+      const fkeys = final.options.map(optKey);
+      if (new Set(fkeys).size !== fkeys.length) {
+        problems.push(`T${tier} ${name}: options contain duplicates`);
+        sample(`T${tier} ${name} [dup options]`, q);
+      }
+      if (final.answerIndex < 0) {
+        problems.push(`T${tier} ${name}: answer is not among the options`);
+        sample(`T${tier} ${name} [omits answer]`, q);
+      }
+      if (final.options.length < 2) {
+        problems.push(`T${tier} ${name}: fewer than two distinct options`);
+        sample(`T${tier} ${name} [too few options]`, q);
+      }
+      if (new Set(raw).size !== raw.length) hygiene.add(`T${tier} ${name}: emits duplicate options (repaired at runtime)`);
+      if (!raw.includes(optKey(q.answer))) hygiene.add(`T${tier} ${name}: omits its own answer (repaired at runtime)`);
     }
-    if (q.question) seen.add(q.question);
+    // Key on the whole item, not the prompt. Diagram-based skills ("What time
+    // does this clock show?") reuse one prompt and vary the `visual` and the
+    // answer; keying on question alone reports those as frozen when they are not.
+    if (q.question) seen.add([q.question, q.visual, q.answer].join(' '));
   }
   if (seen.size === 1) problems.push(`T${tier} ${name}: always produces the same question`);
 }
 console.log(`generators executed: ${ran} × ${ITER} samples`);
 
 // ---- report ----
+// --verbose prints one real failing sample per problem, which is the only way
+// to tell a bad distractor set from a bad answer format.
+if (process.argv.includes('--verbose')) {
+  console.log('\n=== samples ===');
+  for (const [key, s] of samples) console.log(`  ${key}\n      ${s}`);
+}
+
 const uniq = [...new Set(problems)];
 const fatal = uniq.filter(p => p.startsWith('FATAL'));
 console.log(`\n=== ${uniq.length} problem(s) ===`);
 for (const p of uniq) console.log('  ' + p);
 if (!uniq.length) console.log('  none — every playable skill has a lesson, a working generator, '
   + 'a matching graph node and a satisfiable prerequisite chain.');
+if (hygiene.size) {
+  console.log(`\n=== ${hygiene.size} generator hygiene warning(s) — repaired at runtime, not student-visible ===`);
+  for (const h of [...hygiene].sort()) console.log('  ' + h);
+}
 process.exit(fatal.length || uniq.length ? 1 : 0);

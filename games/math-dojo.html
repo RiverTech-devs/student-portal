@@ -4942,6 +4942,62 @@ function generateDistractors(correct, count = 3, variance = null) {
     return Array.from(distractors);
 }
 
+// Value of an answer string when it denotes a single number or fraction, else
+// NaN. Used so a manufactured distractor can never be a different spelling of
+// the correct answer — "3/3" must not be offered as a wrong choice for "1",
+// because checkAnswer accepts equivalent forms and would mark it right.
+function answerValue(str) {
+    const t = String(str).trim();
+    const f = t.match(/^(-?\d+(?:\.\d+)?)\s*\/\s*(-?\d+(?:\.\d+)?)$/);
+    if (f) return parseFloat(f[1]) / parseFloat(f[2]);
+    if (/^-?\d+(?:\.\d+)?$/.test(t)) return parseFloat(t);
+    return NaN;
+}
+
+// Top a thin option set back up to `want` choices. Numeric answers step around
+// the correct value; everything else has the numbers inside it perturbed, which
+// covers fractions, coordinates, currency, percentages, units and degrees
+// without needing to understand the notation. Answers containing no digits at
+// all (e.g. "left and right") cannot be backfilled — those generators have to
+// supply their own distractors.
+function backfillOptions(answer, opts, seen, want = 4) {
+    const optKey = v => String(v).trim().toLowerCase();
+    const target = answerValue(answer);
+    const tryPush = cand => {
+        if (opts.length >= want) return;
+        const k = optKey(cand);
+        if (k === '' || seen.has(k)) return;
+        const cv = answerValue(cand);
+        if (!isNaN(target) && !isNaN(cv) && Math.abs(cv - target) < 1e-9) return;
+        seen.add(k);
+        opts.push(cand);
+    };
+
+    if (typeof answer === 'number' && isFinite(answer)) {
+        const step = Math.max(1, Math.round(Math.abs(answer) * 0.1));
+        for (let m = 1; opts.length < want && m <= 12; m++) {
+            tryPush(parseFloat((answer + m * step).toFixed(4)));
+            tryPush(parseFloat((answer - m * step).toFixed(4)));
+        }
+        return opts;
+    }
+
+    const s = String(answer);
+    const nums = [...s.matchAll(/-?\d+(?:\.\d+)?/g)];
+    if (!nums.length) return opts;
+    for (const d of [1, -1, 2, -2, 3, -3, 5, -5, 10, -10]) {
+        for (let i = 0; i < nums.length && opts.length < want; i++) {
+            const m = nums[i];
+            const v = parseFloat(m[0]);
+            const nv = parseFloat((v + d).toFixed(4));
+            if (nv === v) continue;
+            tryPush(s.slice(0, m.index) + nv + s.slice(m.index + m[0].length));
+        }
+        if (opts.length >= want) break;
+    }
+    return opts;
+}
+
 function formatNumber(n) {
     if (Number.isInteger(n)) return n.toString();
     return parseFloat(n.toFixed(3)).toString();
@@ -11613,6 +11669,20 @@ const generators = {
             let available = getUnlockedSubSkillTypes('7_Permutations', subSkillToType, subSkillOrder);
             const type = pick(available);
             if (type === "formula") {
+                // Sub-skill gating holds a new student on 'formula' until they
+                // complete it, so a single fixed card here means the identical
+                // question every attempt. Three variants instead.
+                const v = pick(["formula", "order", "compare"]);
+                if (v === "order") {
+                    return { subType: type, question: `In P(n, r), does the order of the chosen items matter?`, answer: "yes, order matters", type: "conceptual",
+                        options: shuffle(["yes, order matters", "no, order does not matter", "only when r = n", "only when n is even"]),
+                        explanation: `Permutations count ordered arrangements — ABC and CAB are counted separately.` };
+                }
+                if (v === "compare") {
+                    return { subType: type, question: `For n > r > 1, which is larger: P(n, r) or C(n, r)?`, answer: "P(n, r)", type: "conceptual",
+                        options: shuffle(["P(n, r)", "C(n, r)", "they are always equal", "it depends on whether n is even"]),
+                        explanation: `P(n,r) = C(n,r) × r!, so the permutation count is larger by a factor of r!.` };
+                }
                 return { subType: type, question: `The permutation formula P(n,r) equals:`, answer: "n!/(n-r)!", type: "conceptual",
                     options: ["n!/(n-r)!", "n!/r!", "n!/(n-r)!r!", "(n-r)!/n!"],
                     explanation: `P(n,r) = n!/(n-r)! counts ordered arrangements.` };
@@ -11636,6 +11706,17 @@ const generators = {
             let available = getUnlockedSubSkillTypes('7_Combinations', subSkillToType, subSkillOrder);
             const type = pick(available);
             if (type === "formula") {
+                const v = pick(["formula", "order", "relate"]);
+                if (v === "order") {
+                    return { subType: type, question: `In C(n, r), does the order of the chosen items matter?`, answer: "no, order does not matter", type: "conceptual",
+                        options: shuffle(["no, order does not matter", "yes, order matters", "only when r = 2", "only when n is odd"]),
+                        explanation: `Combinations count unordered selections — the committee {A, B} is the same as {B, A}.` };
+                }
+                if (v === "relate") {
+                    return { subType: type, question: `C(n, r) equals P(n, r) divided by what?`, answer: "r!", type: "conceptual",
+                        options: shuffle(["r!", "n!", "(n − r)!", "n! − r!"]),
+                        explanation: `Each unordered selection of r items can be ordered in r! ways, so C(n,r) = P(n,r)/r!.` };
+                }
                 return { subType: type, question: `The combination formula C(n,r) equals:`, answer: "n!/(r!(n-r)!)", type: "conceptual",
                     options: ["n!/(r!(n-r)!)", "n!/(n-r)!", "n!/r!", "(n-r)!"],
                     explanation: `C(n,r) = n!/(r!(n-r)!) counts unordered selections.` };
@@ -12807,6 +12888,17 @@ const generators = {
             const type = pick(available);
 
             if (type === "formula") {
+                const v = pick(["formula", "denominator", "order"]);
+                if (v === "denominator") {
+                    return { subType: type, question: `In the quotient rule, what is the denominator of the result?`, answer: "g²", type: "conceptual",
+                        options: shuffle(["g²", "g", "f·g", "(f·g)²"]),
+                        explanation: `d/dx[f/g] = (f'g − fg')/g² — the denominator is the bottom function squared.` };
+                }
+                if (v === "order") {
+                    return { subType: type, question: `Which term comes first in the numerator of the quotient rule?`, answer: "f'g", type: "conceptual",
+                        options: shuffle(["f'g", "fg'", "g'f'", "f'g'"]),
+                        explanation: `The numerator is f'g − fg'. Reversing it flips the sign, which is the most common error here.` };
+                }
                 return { subType: type, question: `Quotient rule: d/dx[f/g] = ?`, answer: "(f'g − fg')/g²", type: "conceptual",
                     options: shuffle(["(f'g − fg')/g²", "(f'g + fg')/g²", "f'/g'", "(fg' − f'g)/g²"]),
                     explanation: `Quotient rule: d/dx[f/g] = (f'g − fg')/g².` };
@@ -12964,6 +13056,20 @@ const generators = {
             const type = pick(available);
 
             if (type === "formula") {
+                const v = pick(["formula", "reverses", "choose"]);
+                if (v === "reverses") {
+                    return { subType: type, question: `Integration by parts is the reverse of which differentiation rule?`, answer: "the product rule", type: "conceptual",
+                        options: shuffle(["the product rule", "the quotient rule", "the chain rule", "the power rule"]),
+                        explanation: `Integrating the product rule d(uv) = u dv + v du and rearranging gives ∫u dv = uv − ∫v du.` };
+                }
+                if (v === "choose") {
+                    return { subType: type, question: `When applying ∫u dv = uv − ∫v du, how should you choose u?`, answer: "the part that gets simpler when differentiated", type: "conceptual",
+                        options: shuffle(["the part that gets simpler when differentiated",
+                                          "the part that gets simpler when integrated",
+                                          "always the trigonometric factor",
+                                          "always whichever factor is written first"]),
+                        explanation: `Choosing u so that du is simpler is what makes the remaining ∫v du easier than the original integral.` };
+                }
                 return { subType: type, question: `Integration by parts formula: ∫u dv = ?`, answer: "uv − ∫v du", type: "conceptual",
                     options: shuffle(["uv − ∫v du", "uv + ∫v du", "u dv − v du", "∫u·∫v"]),
                     explanation: `Integration by parts: ∫u dv = uv − ∫v du.` };
@@ -38962,21 +39068,31 @@ function generateQuestion(tier, domain = null) {
     // Generate options if not provided
     if (!q.options) {
         if (typeof q.answer === "number") {
-            const distractors = generateDistractors(q.answer);
-            q.options = shuffle([q.answer, ...distractors]);
-            q.answerIndex = q.options.indexOf(q.answer);
+            q.options = [q.answer, ...generateDistractors(q.answer)];
         } else {
             q.options = [q.answer, ...generateDistractors(0, 3).map(d => `${d}`)];
-            q.answerIndex = 0;
-            q.options = shuffle(q.options);
-            q.answerIndex = q.options.indexOf(q.answer);
         }
-    } else {
-        // Deduplicate options to prevent identical answer buttons, then shuffle
-        q.options = shuffle(q.options.filter((v, i, a) => a.indexOf(v) === i));
-        q.answerIndex = q.options.findIndex(o => o == q.answer || o === q.answer);
-        if (q.answerIndex === -1) q.answerIndex = 0;
     }
+
+    // Option hygiene. Two long-standing bugs lived here:
+    //   * dedupe compared with strict equality, so "$75" and "$75 ", or the
+    //     number 9 and the string "9", both survived and the student saw the
+    //     same choice on two buttons;
+    //   * a missing answer fell back to answerIndex 0, silently marking an
+    //     arbitrary distractor correct.
+    // Options are now keyed the way checkAnswer compares them, the answer is
+    // guaranteed to be on the board, and thin numeric sets are topped back up.
+    const optKey = v => String(v).trim().toLowerCase();
+    const seen = new Set();
+    const opts = [];
+    for (const o of q.options) {
+        const k = optKey(o);
+        if (k !== "" && !seen.has(k)) { seen.add(k); opts.push(o); }
+    }
+    if (!seen.has(optKey(q.answer))) { seen.add(optKey(q.answer)); opts.push(q.answer); }
+    if (opts.length < 4) backfillOptions(q.answer, opts, seen, 4);
+    q.options = shuffle(opts);
+    q.answerIndex = q.options.findIndex(o => optKey(o) === optKey(q.answer));
 
     return q;
 }
