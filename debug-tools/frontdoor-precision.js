@@ -161,9 +161,9 @@ const IMMEDIATE = new Set([...WRITE_INTENTS].filter(isImmediateWrite));
 
 // Writes whose blast radius is a whole class, or which destroy a record.
 // A false positive here is categorically worse than an over-eager ADD_NOTE.
-const BLAST_RADIUS = new Set(['GROUP_RTC', 'MARK_ATTENDANCE_GROUP', 'CLOSE_ALL_CLASSES',
+const BLAST_RADIUS = new Set(['GROUP_RTC', 'MARK_ATTENDANCE_GROUP', 'CLOSE_ALL_CLASSES', 'ANNOUNCE',
   'DELETE_CLASS', 'DELETE_NOTE', 'UNENROLL_STUDENT', 'MOVE_STUDENT',
-  'REMOVE_SHOP_ITEM', 'REMOVE_PRIVILEGE', 'REVOKE_PRIVILEGE']);
+  'REMOVE_SHOP_ITEM', 'REMOVE_PRIVILEGE', 'REVOKE_PRIVILEGE', 'ACTIVITY_UNENROLL']);
 
 // Same roster/classes as nlp-stress.js so findings are comparable across benches.
 const roster = [
@@ -285,6 +285,7 @@ const BUCKET_A = [ // in-scope commands — these SHOULD write
   ['mark mia tardy in math', 'WRITE', 'MARK_ATTENDANCE'],
   ['add olivia to math', 'WRITE', 'ENROLL_STUDENT'],
   ['enroll lucas in robotics', 'WRITE', 'ENROLL_STUDENT'],
+  ['remove noah from robotics', 'WRITE', 'UNENROLL_STUDENT', 'class, not the activity'],
   ['remove noah from robotics', 'WRITE', 'UNENROLL_STUDENT'],
   ['unenroll mason from math', 'WRITE', 'UNENROLL_STUDENT'],
   ['note for eli: forgot his homework again', 'WRITE', 'ADD_NOTE'],
@@ -315,6 +316,13 @@ const BUCKET_A = [ // in-scope commands — these SHOULD write
   ['assign chapter 4 problems to math due friday', 'WRITE', 'CREATE_ASSIGNMENT'],
   ['create a homework for robotics due tomorrow', 'WRITE', 'CREATE_ASSIGNMENT'],
   ['assign "Volcano poster" to math due in 3 days', 'WRITE', 'CREATE_ASSIGNMENT'],
+  ['announce to math: no class on friday', 'WRITE', 'ANNOUNCE', 'blast radius'],
+  ['tell the math class that there is no class friday', 'WRITE', 'ANNOUNCE', 'blast radius'],
+  ['add eli to chess club', 'WRITE', 'ACTIVITY_ENROLL'],
+  ['sign charlotte up for the robotics club', 'WRITE', 'ACTIVITY_ENROLL'],
+  ['remove noah from chess club', 'WRITE', 'ACTIVITY_UNENROLL', 'destructive'],
+  ['book the gym friday 2pm to 3pm', 'WRITE', 'BOOK_FACILITY'],
+  ['reserve the library tomorrow 9am to 10am', 'WRITE', 'BOOK_FACILITY'],
 ];
 
 const BUCKET_B = [ // reads and out-of-scope — must not write
@@ -344,6 +352,9 @@ const BUCKET_B = [ // reads and out-of-scope — must not write
   ["what's noah's contact info", 'SAFE', null],
   ['which of my classes has the best grades', 'SAFE', null],
   ['show me the privilege catalog', 'SAFE', null],
+  ['who is in chess club', 'SAFE', null],
+  ['show me the kids in robotics', 'SAFE', null],
+  ['which students are on the basketball team', 'SAFE', null],
 ];
 
 const BUCKET_C = [ // ADVERSARIAL: looks like a command, is not one
@@ -408,6 +419,10 @@ const BUCKET_C = [ // ADVERSARIAL: looks like a command, is not one
   ['should i assign chapter 4 to math due friday', 'SAFE', 'SPECULATIVE_WRITE', 'hypothetical assignment'],
   ["don't assign any homework to math this week", 'SAFE', 'SPECULATIVE_WRITE', 'negated assignment'],
   ['can i give charlotte 5 rtc please', 'SAFE', 'SPECULATIVE_WRITE', 'interrogative -> explains'],
+  ["don't announce anything to math yet", 'SAFE', 'SPECULATIVE_WRITE', 'negated blast-radius write'],
+  ['should i announce that to math', 'SAFE', 'SPECULATIVE_WRITE', 'hypothetical blast-radius write'],
+  ["don't add eli to chess club", 'SAFE', 'SPECULATIVE_WRITE', 'negated activity write'],
+  ['should i book the gym friday 2pm to 3pm', 'SAFE', 'SPECULATIVE_WRITE', 'hypothetical booking'],
 ];
 
 const BUCKET_D = [ // GUARD OVERREACH: real commands that innocently contain cue words

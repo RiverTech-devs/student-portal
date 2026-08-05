@@ -43539,8 +43539,8 @@
       // — it is real commands carrying cue vocabulary, and it must stay at 0
       // over-blocks. Bare imperative forms only (`give`, not `gives`): a verb with
       // an -s is describing someone, not commanding.
-      const WRITE_VERB = 'give|award|grant|add|credit|mark|dock|take|deduct|subtract|remove|delete|set|enroll|unenroll|drop|create|rename|move|transfer|revoke|charge|fine|assign|post';
-      const WRITE_GERUND = 'giving|awarding|granting|adding|crediting|marking|docking|taking|deducting|subtracting|removing|deleting|setting|enrolling|unenrolling|creating|renaming|moving|transferring|revoking|charging|fining|assigning|posting';
+      const WRITE_VERB = 'give|award|grant|add|credit|mark|dock|take|deduct|subtract|remove|delete|set|enroll|unenroll|drop|create|rename|move|transfer|revoke|charge|fine|assign|post|announce|broadcast|notify|tell';
+      const WRITE_GERUND = 'giving|awarding|granting|adding|crediting|marking|docking|taking|deducting|subtracting|removing|deleting|setting|enrolling|unenrolling|creating|renaming|moving|transferring|revoking|charging|fining|assigning|posting|announcing|broadcasting|notifying|telling';
 
       // "should i…", "thinking about docking…", "whether to give…" — deliberating.
       // Distinct from isQuestion, which only sees a leading auxiliary or a "?".
@@ -43582,7 +43582,7 @@
       const WRITE_INTENTS = ['ADD_RTC', 'SUBTRACT_RTC', 'TRANSFER_RTC', 'GROUP_RTC', 'SET_GRADE',
         'MARK_ATTENDANCE', 'MARK_ATTENDANCE_GROUP', 'ENROLL_STUDENT', 'UNENROLL_STUDENT',
         'MOVE_STUDENT', 'CREATE_CLASS', 'DELETE_CLASS', 'CLOSE_ALL_CLASSES', 'RENAME_CLASS',
-        'UPDATE_CONTACT', 'ADD_NOTE', 'DELETE_NOTE', 'CREATE_ASSIGNMENT',
+        'UPDATE_CONTACT', 'ADD_NOTE', 'DELETE_NOTE', 'CREATE_ASSIGNMENT', 'ANNOUNCE', 'ACTIVITY_ENROLL', 'ACTIVITY_UNENROLL', 'BOOK_FACILITY',
         'BUY_ITEM', 'BUY_PRIVILEGE', 'GRANT_PRIVILEGE', 'REVOKE_PRIVILEGE',
         'ADD_SHOP_ITEM', 'EDIT_SHOP_ITEM', 'REMOVE_SHOP_ITEM',
         'ADD_PRIVILEGE', 'EDIT_PRIVILEGE', 'REMOVE_PRIVILEGE'];
@@ -43674,6 +43674,44 @@
             // start of the string made those sentences miss the intent entirely
             // and get explained as an RTC award ("chapter 4" reads as an amount).
             { re: /\bassign\b[^.]*\bdue\b/, w: 8 }
+          ]
+        },
+        // ACTIVITY_ENROLL / BOOK_FACILITY — the portal has both; Riven could
+        // only READ activity rosters and refused booking outright.
+        {
+          intent: 'ACTIVITY_ENROLL',
+          w: 7, notIfNoteCommand: true, notIfCurrency: true, notIfQuestion: true,
+          notIfReadQuery: true, requiresStudent: true,
+          patterns: [
+            { re: /\b(add|put|sign|enroll|register)\b[^.]*\b(club|team|activity|squad)\b/, w: 8 }
+          ]
+        },
+        {
+          intent: 'ACTIVITY_UNENROLL',
+          w: 7, notIfNoteCommand: true, notIfQuestion: true, notIfReadQuery: true, requiresStudent: true,
+          patterns: [
+            { re: /\b(remove|drop|take|pull|unenroll)\b[^.]*\b(from|off)\b[^.]*\b(club|team|activity|squad)\b/, w: 9 }
+          ]
+        },
+        {
+          intent: 'BOOK_FACILITY',
+          w: 7, notIfNoteCommand: true, notIfCurrency: true, notIfQuestion: true, notIfReadQuery: true,
+          patterns: [
+            { re: /\b(book|reserve)\b[^.]*\b(room|gym|lab|library|field|court|auditorium|cafeteria|hall|studio|space)\b/, w: 9 },
+            { re: /\b(book|reserve)\b[^.]*\b\d{1,2}\s*(am|pm|:\d{2})/, w: 8 }
+          ]
+        },
+        // ANNOUNCE — "announce to math: no class friday". Blast radius by
+        // definition, so it always confirms with the recipient COUNT, and
+        // school-wide is admin-only (a teacher reaches their own classes).
+        {
+          intent: 'ANNOUNCE',
+          w: 7, notIfNoteCommand: true, notIfCurrency: true, notIfQuestion: true,
+          notIfReadQuery: true, classMatchBoost: true,
+          patterns: [
+            { re: /\b(announce|announcement|broadcast)\b/, w: 8 },
+            { re: /\b(tell|let|notify|remind)\s+(everyone|everybody|the\s+(?:[\w-]{1,20}\s+)?(?:whole\s+)?(class|school)|all (of )?(my )?(students|kids|parents))\b/, w: 8 },
+            { re: /\bsend\s+(out\s+)?(an?\s+)?(announcement|notice|bulletin)\b/, w: 8 }
           ]
         },
         // ---- Recognized-but-unsupported actions: answer honestly and point
@@ -45051,6 +45089,22 @@
           await this.terminalCreateAssignment(entities);
           break;
 
+        case 'ANNOUNCE':
+          await this.terminalAnnounce(entities);
+          break;
+
+        case 'ACTIVITY_ENROLL':
+          await this.terminalActivityEnroll(entities, false);
+          break;
+
+        case 'ACTIVITY_UNENROLL':
+          await this.terminalActivityEnroll(entities, true);
+          break;
+
+        case 'BOOK_FACILITY':
+          await this.terminalBookFacility(entities);
+          break;
+
         case 'TRANSFER_RTC':
           await this.terminalTransferRTC(entities);
           break;
@@ -45242,6 +45296,9 @@
     • "Any overdue homework in [class]?" — overdue assignments<br>
     • "Assign chapter 4 problems to [class] due friday" — creates it, published to the class<br>
     &nbsp;&nbsp;&nbsp;(due today/tomorrow/a weekday/in N days/2026-09-01 all work; I'll ask rather than guess a date)<br>
+    • "Announce to [class]: no class on Friday" — notifies the whole roster (admins can announce school-wide)<br>
+    • "Add [student] to chess club" / "Remove [student] from chess club"<br>
+    • "Book the gym friday 2pm to 3pm" — checks for clashes, goes in as pending approval<br>
     • "Mark [student] present in [class]" (or absent/late, "yesterday" works)<br>
     • "Add [student] to [class]" / "Remove [student] from [class]"<br>
     • "Create a class called [name]"<br>
@@ -45793,6 +45850,18 @@
         },
         assignment: async (s) => {
           const { error } = await this.auth.supabase.from('assignments').delete().eq('id', s.assignmentId);
+          if (error) throw error;
+        },
+        activityEnrollment: async (s) => {
+          const { error } = await this.auth.supabase.from('activity_enrollments').delete().eq('id', s.enrollmentId);
+          if (error) throw error;
+        },
+        booking: async (s) => {
+          const { error } = await this.auth.supabase.from('facility_bookings').delete().eq('id', s.bookingId);
+          if (error) throw error;
+        },
+        notifications: async (s) => {
+          const { error } = await this.auth.supabase.from('notifications').delete().in('id', s.ids || []);
           if (error) throw error;
         },
       };
@@ -47846,6 +47915,306 @@
       this._requestConfirmation(
         `Create assignment <b>${esc(title)}</b> for <b>${esc(row.name)}</b><br>
          <span style="font-size:12px;color:var(--muted);">Due ${esc(due.label)} · 100 points · published to the whole class</span>`,
+        doIt);
+    }
+
+    // Shared activity resolution — the same fuzzy match terminalViewActivityRoster
+    // uses, so enrolling into an activity finds exactly what showing its roster
+    // would. Returns { activity } | { error } | { choices }.
+    async _rivenResolveActivity(raw) {
+      const stop = new Set(['who', 'is', 'are', 'in', 'to', 'the', 'show', 'me', 'list', 'give', 'add',
+        'put', 'sign', 'enroll', 'register', 'roster', 'members', 'students', 'kids', 'enrolled',
+        'signed', 'up', 'for', 'on', 'club', 'team', 'activity', 'sport', 'squad', 'group', 'pull',
+        'that', 'my', 'into', 'onto', 'a', 'an']);
+      const tokens = (raw || '').toLowerCase().split(/\s+/)
+        .map(w => w.replace(/[^a-z0-9-]/g, ''))
+        .filter(w => w.length >= 2 && !stop.has(w) && !/^\d+$/.test(w));
+      if (!tokens.length) return { error: 'Which activity or club?' };
+      const { data: activities, error } = await this.supabaseQuery(() => this.auth.supabase
+        .from('activities').select('id, name, status').eq('status', 'active').order('name'));
+      if (error) return { error: 'Could not load activities: ' + error.message };
+      if (!activities?.length) return { error: 'There are no active activities.' };
+      const scored = activities.map(a => {
+        const an = (a.name || '').toLowerCase();
+        return { ...a, score: tokens.filter(t => an.includes(t)).length };
+      }).filter(a => a.score > 0).sort((a, b) => b.score - a.score);
+      if (!scored.length) {
+        return { error: `I couldn't find that activity. Active ones: ${activities.map(a => a.name).join(', ')}` };
+      }
+      if (scored.length > 1 && scored[0].score === scored[1].score) {
+        return { choices: scored.filter(a => a.score === scored[0].score).slice(0, 5) };
+      }
+      return { activity: scored[0] };
+    }
+
+    async terminalActivityEnroll(entities, remove = false) {
+      const raw = entities._rawInput || entities.original || '';
+      const student = entities.student?.student || entities.student;
+      if (!student) {
+        this.terminalPrintError(`Who should I ${remove ? 'remove' : 'add'}? Try "add Eli to chess club".`);
+        return;
+      }
+      const res = await this._rivenResolveActivity(raw.replace(new RegExp(student.first_name || '', 'ig'), ' ')
+        .replace(new RegExp(student.last_name || '', 'ig'), ' '));
+      if (res.error) { this.terminalPrintError(res.error); return; }
+      if (res.choices) {
+        this._showRivenMessage(`Which one? ${res.choices.map(a => this.escapeHtml(a.name)).join(' · ')}`, true);
+        return;
+      }
+      const act = res.activity;
+      const esc = (s) => this.escapeHtml(s);
+
+      const doIt = async () => {
+        if (remove) {
+          const { error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('activity_enrollments').update({ status: 'inactive' })
+            .eq('activity_id', act.id).eq('student_id', student.id));
+          if (error) { this.terminalPrintError('Could not remove them: ' + error.message); return; }
+          this._pushUndo(`removing ${student.full_name} from ${act.name}`, async () => {
+            await this.auth.supabase.from('activity_enrollments').update({ status: 'active' })
+              .eq('activity_id', act.id).eq('student_id', student.id);
+          });
+          this._naturalSuccess([`Removed ${student.full_name} from ${act.name}.`]);
+          return;
+        }
+        // Re-activate an existing row rather than inserting a duplicate — the
+        // table has UNIQUE(activity_id, student_id), same shape as class
+        // enrollment's reactivate-or-insert.
+        const { data: existing } = await this.supabaseQuery(() => this.auth.supabase
+          .from('activity_enrollments').select('id, status')
+          .eq('activity_id', act.id).eq('student_id', student.id).maybeSingle());
+        if (existing) {
+          if (existing.status === 'active') {
+            this._showRivenMessage(`${esc(student.full_name)} is already in ${esc(act.name)}.`, true);
+            return;
+          }
+          const { error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('activity_enrollments').update({ status: 'active' }).eq('id', existing.id));
+          if (error) { this.terminalPrintError('Could not enroll them: ' + error.message); return; }
+          this._pushUndo(`adding ${student.full_name} to ${act.name}`, async () => {
+            await this.auth.supabase.from('activity_enrollments').update({ status: existing.status }).eq('id', existing.id);
+          });
+        } else {
+          const { data, error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('activity_enrollments')
+            .insert({ activity_id: act.id, student_id: student.id, status: 'active' }).select().single());
+          if (error) { this.terminalPrintError('Could not enroll them: ' + error.message); return; }
+          this._pushUndo(`adding ${student.full_name} to ${act.name}`, async () => {
+            const { error: delErr } = await this.auth.supabase.from('activity_enrollments').delete().eq('id', data.id);
+            if (delErr) throw delErr;
+          }, { kind: 'activityEnrollment', enrollmentId: data.id });
+        }
+        this._naturalSuccess([`Added ${student.full_name} to ${act.name}.`]);
+      };
+
+      this._requestConfirmation(
+        `${remove ? 'Remove' : 'Add'} <b>${esc(student.full_name)}</b> ${remove ? 'from' : 'to'} <b>${esc(act.name)}</b>`,
+        doIt);
+    }
+
+    // "book the gym friday 2pm to 3pm" -> { date, start, end, label } or null.
+    // Strict on purpose: a booking is a shared resource, so a half-understood
+    // time is worse than asking. Anything unrecognized returns null.
+    _rivenParseBookingWhen(raw) {
+      const t = (raw || '').toLowerCase();
+      const mk = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      const plus = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return d; };
+
+      let date = null, dateLabel = '';
+      const iso = t.match(/\b(\d{4}-\d{2}-\d{2})\b/);
+      const DAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+      const dm = t.match(/\b(?:next |this )?(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/);
+      if (iso) { date = iso[1]; dateLabel = iso[1]; }
+      else if (/\btomorrow\b/.test(t)) { date = mk(plus(1)); dateLabel = 'tomorrow'; }
+      else if (/\btoday\b/.test(t)) { date = mk(new Date()); dateLabel = 'today'; }
+      else if (dm) {
+        let delta = (DAYS.indexOf(dm[1]) - new Date().getDay() + 7) % 7;
+        if (delta === 0) delta = 7;
+        date = mk(plus(delta)); dateLabel = `${dm[1]} (${date})`;
+      }
+      if (!date) return null;
+
+      // "2pm to 3pm" / "2:30-3:30pm" / "from 14:00 to 15:00".
+      // Strip the date text first — an ISO date's own digits and hyphens
+      // otherwise match the time pattern ("2026-09-03 13:00 to 14:30" parsed as
+      // a range starting at "26-09").
+      const timeText = t.replace(/\b\d{4}-\d{2}-\d{2}\b/g, ' ');
+      const tm = timeText.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:-|–|to|until|till)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/);
+      if (!tm) return null;
+      const to24 = (h, mer, otherMer) => {
+        h = parseInt(h);
+        const m = mer || otherMer;
+        if (m === 'pm' && h < 12) h += 12;
+        if (m === 'am' && h === 12) h = 0;
+        return h;
+      };
+      const sh = to24(tm[1], tm[3], tm[6]);
+      const eh = to24(tm[4], tm[6], tm[3]);
+      const sm = tm[2] || '00', em = tm[5] || '00';
+      if (isNaN(sh) || isNaN(eh) || sh > 23 || eh > 23) return null;
+      const start = `${String(sh).padStart(2, '0')}:${sm}`;
+      const end = `${String(eh).padStart(2, '0')}:${em}`;
+      if (start >= end) return null;
+      return { date, start, end, label: `${dateLabel} ${start}–${end}` };
+    }
+
+    async terminalBookFacility(entities) {
+      const raw = entities._rawInput || entities.original || '';
+      const when = this._rivenParseBookingWhen(raw);
+      if (!when) {
+        this.terminalPrintError(`I need a day and a time range — try "book the gym friday 2pm to 3pm". I won't guess at a room booking.`);
+        return;
+      }
+      const { data: facilities, error: facErr } = await this.supabaseQuery(() => this.auth.supabase
+        .from('facilities').select('id, name').order('name'));
+      if (facErr) { this.terminalPrintError('Could not load rooms: ' + facErr.message); return; }
+      if (!facilities?.length) { this.terminalPrintError('There are no bookable rooms set up.'); return; }
+
+      const lower = raw.toLowerCase();
+      const hits = facilities.filter(f => lower.includes((f.name || '').toLowerCase()));
+      if (!hits.length) {
+        this.terminalPrintError(`Which room? Available: ${facilities.map(f => f.name).join(', ')}`);
+        return;
+      }
+      if (hits.length > 1) {
+        this._showRivenMessage(`Which one? ${hits.map(f => this.escapeHtml(f.name)).join(' · ')}`, true);
+        return;
+      }
+      const room = hits[0];
+
+      // Reuse the SAME conflict RPC the booking modal uses, so Riven can't
+      // create a double-booking the UI would have refused.
+      const clash = await this.checkBookingConflict(room.id, when.date, when.start, when.end);
+      if (clash) {
+        this.terminalPrintError(`${room.name} is already booked then — pick another time.`);
+        return;
+      }
+
+      const esc = (s) => this.escapeHtml(s);
+      const title = `${this.userInfo?.profile?.first_name || 'Staff'} — booked via Riven`;
+      const doIt = async () => {
+        // Re-check at confirm time: minutes may have passed while the dialog sat.
+        if (await this.checkBookingConflict(room.id, when.date, when.start, when.end)) {
+          this.terminalPrintError(`${room.name} got booked while that was waiting — pick another time.`);
+          return;
+        }
+        const { data, error } = await this.supabaseQuery(() => this.auth.supabase
+          .from('facility_bookings').insert({
+            facility_id: room.id, booked_by: this.userInfo.user.id, title,
+            booking_date: when.date, start_time: when.start, end_time: when.end,
+            status: 'pending', recurrence: 'none',
+          }).select().single());
+        if (error) { this.terminalPrintError('Could not book it: ' + error.message); return; }
+        this._pushUndo(`the ${room.name} booking on ${when.date}`, async () => {
+          const { error: delErr } = await this.auth.supabase.from('facility_bookings').delete().eq('id', data.id);
+          if (delErr) throw delErr;
+        }, { kind: 'booking', bookingId: data.id });
+        this._naturalSuccess([
+          `Requested ${room.name} for ${when.label}. It's pending admin approval.`,
+        ]);
+      };
+
+      this._requestConfirmation(
+        `Book <b>${esc(room.name)}</b> for <b>${esc(when.label)}</b>
+         <div style="font-size:11px;color:var(--muted);margin-top:6px;">Goes in as <em>pending</em> — an admin still approves it.</div>`,
+        doIt);
+    }
+
+    async terminalAnnounce(entities) {
+      const raw = entities._rawInput || entities.original || '';
+      const isAdmin = this.userInfo?.profile?.user_type === 'admin';
+      const wantsEveryone = /\b(everyone|everybody|the whole school|the school|all staff|all parents|all students)\b/i.test(raw)
+        && !entities.classMatch;
+
+      // Message text: after a colon, else after "that", else whatever survives
+      // stripping the announce verb and the audience phrase.
+      let message = '';
+      const colon = raw.match(/:\s*(.+)$/);
+      if (colon) message = colon[1].trim();
+      else {
+        const that = raw.match(/\bthat\s+(.+)$/i);
+        if (that) message = that[1].trim();
+        else {
+          message = raw
+            .replace(/^\s*(please\s+)?(announce|broadcast|send\s+(out\s+)?(an?\s+)?(announcement|notice|bulletin)|tell|let|notify|remind)\b/i, '')
+            .replace(/^\s*(to\s+|for\s+)?(everyone|everybody|the whole school|the school|all staff|all parents|all students|the (whole )?class|know)\b/i, '')
+            .replace(/^\s*(to|for)\s+(the\s+)?[\w\s-]{2,30}?\s+class\b/i, '')
+            .trim();
+          if (entities.classMatch) {
+            const row = this._rivenResolveClassRow(entities.classMatch);
+            if (row?.name) {
+              const n = row.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+              message = message.replace(new RegExp(`^\\s*(?:to|for|in)\\s+(?:the\\s+)?${n}(?:\\s+class)?\\b`, 'i'), '').trim();
+            }
+          }
+          message = message.replace(/^\s*(know|that)\b\s*/i, '').replace(/^[\s,:-]+/, '').trim();
+        }
+      }
+      if (message.length < 3) {
+        this.terminalPrintError(`What should the announcement say? Try "announce to Math: no class on Friday".`);
+        return;
+      }
+
+      // Resolve recipients
+      let recipients = [], scopeLabel = '';
+      if (wantsEveryone) {
+        if (!isAdmin) {
+          this.terminalPrintError(`Only an admin can announce to the whole school. Name one of your classes and I'll send it there — "announce to Math: …".`);
+          return;
+        }
+        const { data, error } = await this.supabaseQuery(() => this.auth.supabase
+          .from('user_profiles').select('id')
+          .or('account_status.eq.active,account_status.is.null'));
+        if (error) { this.terminalPrintError('Could not load recipients: ' + error.message); return; }
+        recipients = (data || []).map(u => u.id);
+        scopeLabel = 'everyone in the school';
+      } else {
+        const { row, asked } = await this._rivenRequireClass(entities);
+        if (asked) return;
+        if (!row) {
+          this.terminalPrintError(`Which class should I announce to? Try "announce to Math: no class on Friday".`);
+          return;
+        }
+        if (!this._rivenCanManageClass(row)) {
+          this.terminalPrintError(`You're not the teacher for ${row.name}, so I can't announce to it.`);
+          return;
+        }
+        const { data, error } = await this.supabaseQuery(() => this.auth.supabase
+          .from('class_enrollments').select('student_id').eq('class_id', row.id).eq('status', 'active'));
+        if (error) { this.terminalPrintError('Could not load the roster: ' + error.message); return; }
+        recipients = [...new Set((data || []).map(e => e.student_id))];
+        scopeLabel = `${row.name} (${recipients.length} student${recipients.length === 1 ? '' : 's'})`;
+      }
+
+      if (!recipients.length) {
+        this.terminalPrintError(`There's nobody to send that to — ${scopeLabel} has no active members.`);
+        return;
+      }
+
+      const esc = (s) => this.escapeHtml(s);
+      const title = `Announcement from ${this.userInfo?.profile?.first_name || 'your teacher'}`;
+      const doIt = async () => {
+        const rows = recipients.map(id => ({
+          user_id: id, type: 'system', title, message, link: null,
+          metadata: { broadcast: true, from_admin: this.userInfo.user.id, emailSent: false, via: 'riven' },
+        }));
+        const { data, error } = await this.supabaseQuery(() => this.auth.supabase
+          .from('notifications').insert(rows).select('id'));
+        if (error) { this.terminalPrintError('Could not send the announcement: ' + error.message); return; }
+        const ids = (data || []).map(r => r.id);
+        this._pushUndo(`the announcement to ${scopeLabel}`, async () => {
+          const { error: delErr } = await this.auth.supabase.from('notifications').delete().in('id', ids);
+          if (delErr) throw delErr;
+        }, { kind: 'notifications', ids });
+        this._naturalSuccess([
+          `Sent to ${scopeLabel}: "${message.length > 80 ? message.slice(0, 80) + '…' : message}"`,
+          `Announced to ${scopeLabel}. Say "undo" to pull it back.`,
+        ]);
+      };
+
+      this._requestConfirmation(
+        `Send to <b>${esc(scopeLabel)}</b>:<br><span style="font-size:13px;">“${esc(message)}”</span>
+         <div style="font-size:11px;color:var(--muted);margin-top:6px;">${recipients.length} notification${recipients.length === 1 ? '' : 's'} — they'll see it immediately.</div>`,
         doIt);
     }
 
