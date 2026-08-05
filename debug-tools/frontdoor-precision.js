@@ -18,28 +18,40 @@
 //   commands — which is the metric that matters, because Riven's front-door
 //   mutates balances, grades, attendance and enrollment.
 //
-//   The load-bearing rule from that lesson: never trade precision for recall on
-//   a money or mutation path. Over-deferral is free (it just routes to the
-//   semantic layer, or asks). Over-firing is a wrong write.
+// FIVE buckets. A and D are the recall halves; B and C are the precision halves.
+//   A  in-scope commands              → expect WRITE (and the right intent)
+//   B  reads / out-of-scope           → expect SAFE
+//   C  ADVERSARIAL look-alikes        → expect SAFE   ← finds over-firing
+//   D  GUARD OVERREACH                → expect WRITE  ← finds over-blocking
+//   E  context-carrying + compound    → mixed; the multi-turn surface
 //
-// What it measures:
-//   WRITE-PRECISION = correct writes / everything classified as a write.
-//   Target is 1.0. Recall is reported for information but is NOT gated —
-//   a missed write costs the teacher one rephrase.
+//   Bucket D is the one a naive bench omits, and omitting it is how a precision
+//   fix quietly destroys recall. The first version of this bench shipped without
+//   it, and the negative-cue guards it motivated blocked four REAL commands:
+//     "don't forget to give eli 5 rtc"      ← idiom: means DO it
+//     "give eli 5 rtc he never gives up"    ← "never" describing the student
+//     "give noah 5 rtc instead of a warning"← comparison, not a refusal
+//     "mark charlotte present she never misses"
+//   None were visible until D existed. A guard bench needs both directions.
 //
-// Buckets:
-//   A  in-scope commands            → expect WRITE (and the right one)
-//   B  reads / out-of-scope         → expect SAFE
-//   C  ADVERSARIAL look-alikes      → expect SAFE   ← the bucket that finds bugs
+// THREE metrics, because a false positive's cost is not uniform:
+//   write-precision            every write intent, flat.
+//   IMMEDIATE-write precision  writes whose executor does NOT call
+//                              _requestConfirmation — these hit the database
+//                              with nothing in front of them. Derived from the
+//                              source, not a hand-list, so it can't drift.
+//   blast-radius precision     writes that touch a whole class or destroy a
+//                              record. One of these is worth many ADD_NOTEs.
+//   All three are gated at 1.0. Recall is reported and gated separately.
 //
-// SCOPE: this covers the REGEX front-door only (`_matchIntent`), which is the
-// tier that runs for every teacher with no download. The MiniLM and Llama tiers
-// sit behind it and have their own guards (semantic writes always confirm;
-// phi3 output is re-validated through this same matcher). A false positive here
-// is the one that reaches a teacher with nothing in front of it.
+// SCOPE: the REGEX front-door only (`_matchIntent` + the parts of
+// `_executeNaturalLanguage` that decide whether it is reached). That is the tier
+// every teacher gets with no download. The MiniLM and Llama tiers sit behind it
+// with their own guards (semantic writes always confirm; phi3 output is
+// re-validated through this same matcher).
 //
 // Run:  node debug-tools/frontdoor-precision.js
-// Exit: 0 if write-precision == 1.0, else 1.
+// Exit: 0 only if all three precision metrics are 1.0 and recall is 1.0.
 // ─────────────────────────────────────────────────────────────────────────────
 const fs = require('fs');
 const path = require('path');
@@ -57,13 +69,26 @@ if (!SRC) {
 }
 const src = fs.readFileSync(SRC, 'utf8');
 
-// Pull a method body out of the class by name using brace matching, so the
-// bench runs the SHIPPED code and can never drift from it.
-function extract(name) {
-  const re = new RegExp('\\n    ' + name + '\\s*\\(', 'g');
+// Brace-match a method body out of the class so the bench runs SHIPPED code.
+function bodyOf(name, { anyIndent = false } = {}) {
+  const re = anyIndent
+    ? new RegExp('\\n\\s+(?:async\\s+)?' + name + '\\s*\\(', 'g')
+    : new RegExp('\\n    ' + name + '\\s*\\(', 'g');
   const m = re.exec(src);
-  if (!m) throw new Error('method not found: ' + name);
-  let i = src.indexOf('{', m.index + m[0].length - 1);
+  if (!m) return null;
+  // Walk the PARAMETER LIST to its closing paren first. Jumping straight to the
+  // next "{" lands inside a destructured parameter — e.g.
+  //   async terminalAddRTC(args, { reason: fixedReason = null } = {}) {
+  // — and brace-matches the destructuring instead of the body, which silently
+  // truncates it. That mis-derived the confirmation map (ADD_RTC read as
+  // unconfirmed when terminalAddRTC does gate) until this was fixed.
+  let p = src.indexOf('(', m.index);
+  let pd = 0;
+  for (; p < src.length; p++) {
+    if (src[p] === '(') pd++;
+    else if (src[p] === ')') { pd--; if (pd === 0) { p++; break; } }
+  }
+  let i = src.indexOf('{', p);
   let depth = 0, start = i;
   for (; i < src.length; i++) {
     const c = src[i];
@@ -71,10 +96,16 @@ function extract(name) {
     else if (c === '}') { depth--; if (depth === 0) { i++; break; } }
   }
   const sig = src.slice(m.index + 1, start).trim();
-  const args = sig.slice(sig.indexOf('(') + 1, sig.lastIndexOf(')'));
-  const body = src.slice(start + 1, i - 1);
+  return {
+    args: sig.slice(sig.indexOf('(') + 1, sig.lastIndexOf(')')),
+    body: src.slice(start + 1, i - 1),
+  };
+}
+function extract(name) {
+  const b = bodyOf(name);
+  if (!b) throw new Error('method not found: ' + name);
   // eslint-disable-next-line no-new-func
-  return new Function(...args.split(',').map(s => s.trim()).filter(Boolean), body);
+  return new Function(...b.args.split(',').map(s => s.trim()).filter(Boolean), b.body);
 }
 
 const methods = ['_normalizeInput', '_resolvePronouns', '_isFollowUpCommand',
@@ -87,18 +118,52 @@ const methods = ['_normalizeInput', '_resolvePronouns', '_isFollowUpCommand',
 const app = { _nlpContext: {} };
 for (const name of methods) { const fn = extract(name); app[name] = function (...a) { return fn.apply(app, a); }; }
 
-// The production write list, lifted verbatim out of _matchIntent so this bench
-// cannot drift from the code it is grading.
+// ── Risk model, derived from the source so it cannot drift ───────────────────
+
+// The production write list, lifted verbatim out of _matchIntent.
 function productionWriteIntents() {
   const m = src.match(/const WRITE_INTENTS = \[([\s\S]*?)\];/);
   if (!m) throw new Error('could not locate the WRITE_INTENTS array in _matchIntent');
   return m[1].match(/'([A-Z_]+)'/g).map(s => s.replace(/'/g, ''));
 }
 const WRITE_INTENTS = new Set(productionWriteIntents());
-// Writes that destroy or move records rather than adjust a number. A false
-// positive on one of these is materially worse than on the others.
-const DESTRUCTIVE = new Set(['DELETE_CLASS', 'CLOSE_ALL_CLASSES', 'UNENROLL_STUDENT',
-  'MOVE_STUDENT', 'REMOVE_SHOP_ITEM', 'REMOVE_PRIVILEGE', 'DELETE_NOTE', 'REVOKE_PRIVILEGE']);
+
+// Map each write intent to the executor(s) _executeIntent dispatches to, by
+// walking the `case 'X':` blocks of the intent switch.
+function intentExecutors() {
+  const start = src.indexOf('async _executeIntent(');
+  if (start < 0) throw new Error('could not locate _executeIntent');
+  const region = src.slice(start, start + 120000);
+  const map = {};
+  let current = null;
+  const tok = /case '([A-Z_]+)':|this\.(terminal[A-Za-z]+|_riven[A-Za-z]+)\s*\(/g;
+  let m;
+  while ((m = tok.exec(region))) {
+    if (m[1]) { current = m[1]; map[current] = map[current] || new Set(); }
+    else if (current && m[2] && !/^terminalPrint/.test(m[2])) map[current].add(m[2]);
+  }
+  return map;
+}
+const EXECUTORS = intentExecutors();
+
+// A write is IMMEDIATE when no executor it can reach calls _requestConfirmation.
+// Those are the ones that hit the database with nothing in front of the teacher.
+function isImmediateWrite(intent) {
+  const fns = EXECUTORS[intent];
+  if (!fns || !fns.size) return true;               // unknown dispatch → assume worst
+  for (const fn of fns) {
+    const b = bodyOf(fn, { anyIndent: true });
+    if (b && /_requestConfirmation\s*\(/.test(b.body)) return false;
+  }
+  return true;
+}
+const IMMEDIATE = new Set([...WRITE_INTENTS].filter(isImmediateWrite));
+
+// Writes whose blast radius is a whole class, or which destroy a record.
+// A false positive here is categorically worse than an over-eager ADD_NOTE.
+const BLAST_RADIUS = new Set(['GROUP_RTC', 'MARK_ATTENDANCE_GROUP', 'CLOSE_ALL_CLASSES',
+  'DELETE_CLASS', 'DELETE_NOTE', 'UNENROLL_STUDENT', 'MOVE_STUDENT',
+  'REMOVE_SHOP_ITEM', 'REMOVE_PRIVILEGE', 'REVOKE_PRIVILEGE']);
 
 // Same roster/classes as nlp-stress.js so findings are comparable across benches.
 const roster = [
@@ -121,31 +186,34 @@ app._terminalAllClasses = [
   { id: 'c4', name: 'World History', subject: 'History', teacher_id: 't2', secondary_teacher_id: null, is_active: true },
 ];
 
-// Replicate the production decision path exactly (mirrors _executeNaturalLanguage).
+// ── Production decision path (mirrors _executeNaturalLanguage) ───────────────
 // Returns { verdict: 'WRITE'|'SAFE', intent, why }.
-function decide(input) {
-  app._nlpContext = {};   // every item is judged cold — no borrowed context
-
+function decideOne(input) {
   const small = app._matchSmalltalk(input);
   if (small && !small.remainder) return { verdict: 'SAFE', intent: 'SMALLTALK:' + small.key, why: 'smalltalk' };
-  const text = small?.remainder || input;
+  let text = small?.remainder || input;
 
   // Correction / filler peeling, as in _executeNaturalLanguage
-  let peeled = text;
-  const corrLead = peeled.match(/^\s*(?:no+[,!. ]+|i meant?[,: ]+|actually[,: ]+|i mean[,: ]+|sorry[,: ]+i meant?\s+)/i);
+  const corrLead = text.match(/^\s*(?:no+[,!. ]+|i meant?[,: ]+|actually[,: ]+|i mean[,: ]+|sorry[,: ]+i meant?\s+)/i);
   if (corrLead) {
-    const rest = peeled.slice(corrLead[0].length).trim();
-    if (rest.split(/\s+/).length >= 3 && !/^not what/i.test(rest)) peeled = rest;
+    const rest = text.slice(corrLead[0].length).trim();
+    if (rest.split(/\s+/).length >= 3 && !/^not what/i.test(rest)) text = rest;
   }
-  const filler = peeled.match(/^\s*(?:now|ok(?:ay)?|also|please|then|next)[,\s]+/i);
-  if (filler && peeled.slice(filler[0].length).trim().split(/\s+/).length >= 2) peeled = peeled.slice(filler[0].length);
+  const filler = text.match(/^\s*(?:now|ok(?:ay)?|also|please|then|next)[,\s]+/i);
+  if (filler && text.slice(filler[0].length).trim().split(/\s+/).length >= 2) text = text.slice(filler[0].length);
 
-  const normalized = app._normalizeInput(peeled);
+  const normalized = app._normalizeInput(text);
   const resolved = app._resolvePronouns(normalized);
-  const entities = app._extractEntities(resolved, peeled);
+  const entities = app._extractEntities(resolved, text);
 
-  // An unresolved pronoun with no context never reaches the matcher in
-  // production — it asks "Who do you mean?" instead.
+  // Follow-up context, as in _executeNaturalLanguage
+  const firstPerson = /\bmy\b|\bdo i\b|\bam i\b/.test(resolved);
+  if (!entities.student && app._nlpContext?.lastStudent && !app._isAggregateQuery(normalized)
+      && !entities.classMatch && !firstPerson && app._isFollowUpCommand(normalized)) {
+    entities.student = { student: app._nlpContext.lastStudent, score: 0.95, ambiguous: false, fromContext: true };
+  }
+
+  // An unresolved pronoun with no context asks "Who do you mean?" in production.
   if (!entities.student && /\b(he|she|him|her|his|hers)\b/.test(resolved)) {
     return { verdict: 'SAFE', intent: 'ASK_WHO', why: 'unresolved pronoun' };
   }
@@ -155,19 +223,18 @@ function decide(input) {
   }
 
   const intent = app._matchIntent(resolved, entities);
+  const stu = entities.student?.student || entities.student;
+  if (intent && stu && !entities.student?.fromContext) app._nlpContext.lastStudent = stu;
+
   if (!intent) return { verdict: 'SAFE', intent: 'NONE', why: 'no match' };
   const conf = intent.confidence ?? intent.conf ?? 0;
-  // Below 0.5 the regex layer defers to the semantic/LLM tier — not a write here.
   if (conf < 0.5) return { verdict: 'SAFE', intent: intent.intent, why: 'below threshold, defers' };
-  // CLARIFY_INTENT is the near-tie guard: it ASKS rather than writing.
   if (intent.intent === 'CLARIFY_INTENT') return { verdict: 'SAFE', intent: 'CLARIFY_INTENT', why: 'asks which write' };
-
   if (!WRITE_INTENTS.has(intent.intent)) return { verdict: 'SAFE', intent: intent.intent, why: 'read intent' };
 
-  // A write intent whose target is missing does NOT write in production — the
-  // executor asks for the missing piece ("Tell me like: give [name] 5"). The
-  // matcher deliberately returns the intent anyway so the executor can name
-  // what it needs, so grading on the intent alone over-counts writes.
+  // A write intent whose target is missing does NOT write — the executor asks
+  // for the missing piece. The matcher returns the intent anyway so the executor
+  // can name what it needs, so grading on the intent alone over-counts writes.
   const NEEDS_TARGET = new Set(['ADD_RTC', 'SUBTRACT_RTC', 'TRANSFER_RTC', 'MARK_ATTENDANCE',
     'ENROLL_STUDENT', 'UNENROLL_STUDENT', 'MOVE_STUDENT', 'SET_GRADE', 'ADD_NOTE',
     'BUY_ITEM', 'BUY_PRIVILEGE', 'GRANT_PRIVILEGE', 'REVOKE_PRIVILEGE']);
@@ -175,12 +242,33 @@ function decide(input) {
     const hasTarget = !!(entities.student || entities.students?.length || entities.studentFrom || entities.classMatch);
     if (!hasTarget) return { verdict: 'SAFE', intent: intent.intent, why: 'no target — executor asks' };
   }
-
   return { verdict: 'WRITE', intent: intent.intent, why: 'matched write intent' };
 }
 
+// Full path including the compound-command split. A false positive in the RIGHT
+// half of "show me eli's grades and give him 5 rtc" is invisible to a bench that
+// only ever hands _matchIntent the whole string.
+function decide(input, { prior = [], keepContext = false } = {}) {
+  if (!keepContext) app._nlpContext = {};
+  for (const p of prior) decide(p, { keepContext: true });
+
+  const seam = input.match(/\s+(?:and|then|,)\s+(?:then\s+)?(give|add|award|mark|set|remove|take|deduct|dock|save|log|record|note|enroll|unenroll|put|send|show|tell|check|what|how)\b/i);
+  if (seam && seam.index > 5 && !/[:"]/i.test(input.slice(0, seam.index))) {
+    const left = input.slice(0, seam.index).trim();
+    const right = input.slice(seam.index).replace(/^\s*(?:and|then|,)\s*(?:then\s+)?/i, '').trim();
+    if (left.split(/\s+/).length >= 3 && right.split(/\s+/).length >= 2) {
+      const l = decideOne(left), r = decideOne(right);
+      // Production runs both halves; either one writing is a write.
+      if (l.verdict === 'WRITE') return { ...l, why: l.why + ' (compound: left)' };
+      if (r.verdict === 'WRITE') return { ...r, why: r.why + ' (compound: right)' };
+      return { verdict: 'SAFE', intent: `${l.intent}+${r.intent}`, why: 'compound: neither half writes' };
+    }
+  }
+  return decideOne(input);
+}
+
 // ── The bench ────────────────────────────────────────────────────────────────
-// [input, expectedVerdict, expectedIntent|null, note]
+// item = [input, expectedVerdict, expectedIntent|null, note?, opts?]
 
 const BUCKET_A = [ // in-scope commands — these SHOULD write
   ['give charlotte 5 rtc', 'WRITE', 'ADD_RTC'],
@@ -204,7 +292,20 @@ const BUCKET_A = [ // in-scope commands — these SHOULD write
   ["set charlotte's grade in math to 92", 'WRITE', 'SET_GRADE'],
   ['create a class called Advanced Physics', 'WRITE', 'CREATE_CLASS'],
   ['move olivia from math to robotics', 'WRITE', 'MOVE_STUDENT'],
-  ['give the whole math class 2 rtc', 'WRITE', null],  // GROUP_RTC or ADD_RTC — either writes
+  // blast-radius + destructive writes must still be REACHABLE
+  ['mark everyone in math present today', 'WRITE', 'MARK_ATTENDANCE_GROUP', 'blast radius'],
+  ['give the whole math class 2 rtc', 'WRITE', null, 'blast radius'],
+  ['rename math to Algebra I', 'WRITE', 'RENAME_CLASS'],
+  ['grant charlotte the vip perk for 7 days', 'WRITE', 'GRANT_PRIVILEGE'],
+  ["revoke eli's homework pass", 'WRITE', 'REVOKE_PRIVILEGE', 'destructive'],
+  ['add granola bar to the shop for 4 rtc', 'WRITE', 'ADD_SHOP_ITEM'],
+  // Catalog edits must name the shop/store/catalog to reach the REGEX tier —
+  // every EDIT_SHOP_ITEM pattern anchors on that word. A bare "change the price
+  // of granola bar to 6 rtc" is DELIBERATELY left to the semantic tier (it is in
+  // the MiniLM example bank), so it is out of this bench's scope, not a bug.
+  ['change the price of granola bar in the shop to 6 rtc', 'WRITE', 'EDIT_SHOP_ITEM'],
+  ['remove granola bar from the shop', 'WRITE', 'REMOVE_SHOP_ITEM', 'destructive'],
+  ["change charlotte's phone to 555-1234", 'WRITE', 'UPDATE_CONTACT'],
 ];
 
 const BUCKET_B = [ // reads and out-of-scope — must not write
@@ -220,7 +321,7 @@ const BUCKET_B = [ // reads and out-of-scope — must not write
   ['compare charlotte and noah', 'SAFE', null],
   ['show me the shop', 'SAFE', null],
   ['what privileges does mia have', 'SAFE', null],
-  ["what homework does eli have coming up", 'SAFE', null],
+  ['what homework does eli have coming up', 'SAFE', null],
   ['how is the math class doing', 'SAFE', null],
   ['show me notes about charlotte from last month', 'SAFE', null],
   ['hello', 'SAFE', null],
@@ -228,6 +329,8 @@ const BUCKET_B = [ // reads and out-of-scope — must not write
   ['what can you do', 'SAFE', null],
   ['how much rtc did charlotte have last week', 'SAFE', null],
   ["what's noah's contact info", 'SAFE', null],
+  ['which of my classes has the best grades', 'SAFE', null],
+  ['show me the privilege catalog', 'SAFE', null],
 ];
 
 const BUCKET_C = [ // ADVERSARIAL: looks like a command, is not one
@@ -238,6 +341,7 @@ const BUCKET_C = [ // ADVERSARIAL: looks like a command, is not one
   ['not sure if i should mark eli absent in math', 'SAFE', null, 'hypothetical'],
   ['thinking about removing noah from robotics', 'SAFE', null, 'hypothetical'],
   ['debating whether to give mia 5 rtc', 'SAFE', null, 'hypothetical'],
+  ['considering marking everyone in math absent today', 'SAFE', null, 'hypothetical + blast'],
 
   // — past tense / already happened / reported —
   ['i already gave charlotte 5 rtc yesterday', 'SAFE', null, 'past tense'],
@@ -252,6 +356,8 @@ const BUCKET_C = [ // ADVERSARIAL: looks like a command, is not one
   ['do not mark eli absent', 'SAFE', null, 'negated'],
   ['no need to award noah rtc today', 'SAFE', null, 'negated'],
   ["i'm not going to dock mia 3 rtc", 'SAFE', null, 'negated'],
+  ["don't remove noah from robotics", 'SAFE', null, 'negated + destructive'],
+  ['never mark the whole class absent', 'SAFE', null, 'negated + blast'],
 
   // — command text quoted INSIDE note content —
   ['note for eli: i told him i would give him 5 rtc if he finishes', 'WRITE', 'ADD_NOTE', 'command inside note'],
@@ -261,10 +367,11 @@ const BUCKET_C = [ // ADVERSARIAL: looks like a command, is not one
   // — prose ABOUT the mechanism —
   ['the policy says teachers can give 5 rtc for participation', 'SAFE', null, 'prose about mechanism'],
   ['explain how awarding rtc works', 'SAFE', null, 'prose about mechanism'],
-  ['what happens if i delete a class', 'SAFE', null, 'prose about mechanism'],
+  ['what happens if i delete a class', 'SAFE', null, 'prose + destructive'],
   ['how do i mark a student absent', 'SAFE', null, 'how-to question'],
   ['remind me how transfers work', 'SAFE', null, 'how-to question'],
   ['is 5 rtc too much for finishing homework', 'SAFE', null, 'prose about amount'],
+  ['what would happen if i closed all my classes', 'SAFE', null, 'prose + blast'],
 
   // — polite / interrogative command forms (the isQuestion guard) —
   ['can i give charlotte 5 rtc', 'SAFE', null, 'interrogative'],
@@ -280,76 +387,146 @@ const BUCKET_C = [ // ADVERSARIAL: looks like a command, is not one
   ['remove the student from the class', 'SAFE', null, 'placeholder target'],
 
   // — info questions that name a mutation verb —
-  ["what did charlotte get on her last test", 'SAFE', null, 'info + verb'],
+  ['what did charlotte get on her last test', 'SAFE', null, 'info + verb'],
   ["give me eli's attendance in math over the last 5 weeks", 'SAFE', null, 'give = show'],
   ['show me who i marked absent yesterday', 'SAFE', null, 'info + verb'],
   ['pull up the grades i set for math', 'SAFE', null, 'info + verb'],
+  ['who did i give rtc to today', 'SAFE', null, 'info + verb'],
+];
+
+const BUCKET_D = [ // GUARD OVERREACH: real commands that innocently contain cue words
+  // — negation vocabulary describing the STUDENT, not refusing the action —
+  ['give eli 5 rtc he never gives up', 'WRITE', 'ADD_RTC', "'never' describes the student"],
+  ['give charlotte 3 rtc for not giving up today', 'WRITE', 'ADD_RTC', "bare 'not'"],
+  ['mark mia present she never misses class', 'WRITE', 'MARK_ATTENDANCE', "'never' in a subclause"],
+  ['give noah 5 rtc instead of a warning', 'WRITE', 'ADD_RTC', "'instead of' is a comparison"],
+  ['note for eli: does not turn in homework', 'WRITE', 'ADD_NOTE', "'does not' inside note content"],
+
+  // — idioms where the negation means DO IT —
+  ["don't forget to give eli 5 rtc", 'WRITE', 'ADD_RTC', "'don't forget' means do it"],
+  ["don't hesitate to dock mia 3 rtc", 'WRITE', 'SUBTRACT_RTC', "'don't hesitate' means do it"],
+
+  // — deliberative vocabulary about something OTHER than the action —
+  ['give charlotte 5 rtc she was wondering if she earned it', 'WRITE', 'ADD_RTC', "'wondering' is the student"],
+  ['mark eli present he was thinking about staying home', 'WRITE', 'MARK_ATTENDANCE', "'thinking about' is the student"],
+
+  // — time adverbials that share conditional vocabulary —
+  ['mark charlotte present after lunch', 'WRITE', 'MARK_ATTENDANCE', "'after lunch' is a time, not a condition"],
+  ['give noah 5 rtc when i see him', 'WRITE', 'ADD_RTC', 'colloquial, still an instruction'],
+
+  // — the word "if"/"once" inside a note body —
+  ['note for mia: asks if she can retake the quiz', 'WRITE', 'ADD_NOTE', "'if' inside note content"],
+];
+
+const BUCKET_E = [ // context-carrying + compound — the multi-turn write surface
+  // a compound whose RIGHT half is the write
+  ["show me eli's grades and give him 5 rtc", 'WRITE', 'ADD_RTC', 'compound right half',
+    {}],
+  // a compound whose right half is adversarial must not write
+  ["show me eli's grades and tell me if i should give him 5 rtc", 'SAFE', null, 'compound + hypothetical', {}],
+  // follow-up pronoun resolves from context → legitimate write
+  ['give him 5 rtc', 'WRITE', 'ADD_RTC', 'pronoun from context', { prior: ['show me eli'] }],
+  // ...but a HYPOTHETICAL follow-up on the same context must not
+  ['should i give him 5 rtc', 'SAFE', null, 'hypothetical follow-up', { prior: ['show me eli'] }],
+  // a negated follow-up on live context must not write
+  ["don't give him any more rtc", 'SAFE', null, 'negated follow-up', { prior: ['show me eli'] }],
+  // stale context + a bare read must not become a write
+  ['what about charlotte', 'SAFE', null, 'read follow-up', { prior: ['show me eli'] }],
 ];
 
 // ── Runner ───────────────────────────────────────────────────────────────────
-const buckets = [['A in-scope commands', BUCKET_A], ['B reads / out-of-scope', BUCKET_B], ['C ADVERSARIAL look-alikes', BUCKET_C]];
+const buckets = [
+  ['A in-scope commands', BUCKET_A],
+  ['B reads / out-of-scope', BUCKET_B],
+  ['C ADVERSARIAL look-alikes', BUCKET_C],
+  ['D GUARD OVERREACH (real commands w/ cue words)', BUCKET_D],
+  ['E context-carrying + compound', BUCKET_E],
+];
 
-let truePos = 0, falsePos = 0, trueNeg = 0, falseNeg = 0;
+const stats = {
+  all: { tp: 0, fp: 0 }, immediate: { tp: 0, fp: 0 }, blast: { tp: 0, fp: 0 },
+};
+let trueNeg = 0, falseNeg = 0;
 const falsePositives = [], falseNegatives = [], wrongWrite = [];
 
 for (const [label, items] of buckets) {
   console.log(`\n== ${label} (${items.length}) ==`);
-  for (const [input, expectVerdict, expectIntent, note] of items) {
+  for (const [input, expectVerdict, expectIntent, note, opts] of items) {
     let got;
-    try { got = decide(input); }
+    try { got = decide(input, opts || {}); }
     catch (e) { got = { verdict: 'ERROR', intent: 'ERROR:' + e.message, why: 'threw' }; }
 
-    const verdictOk = got.verdict === expectVerdict;
     const intentOk = !expectIntent || got.intent === expectIntent;
-    const ok = verdictOk && intentOk;
+    const ok = got.verdict === expectVerdict && intentOk;
 
     if (expectVerdict === 'WRITE' && got.verdict === 'WRITE') {
-      if (intentOk) truePos++; else { truePos++; wrongWrite.push([input, expectIntent, got.intent]); }
+      stats.all.tp++;
+      if (IMMEDIATE.has(got.intent)) stats.immediate.tp++;
+      if (BLAST_RADIUS.has(got.intent)) stats.blast.tp++;
+      if (!intentOk) wrongWrite.push([input, expectIntent, got.intent]);
     } else if (expectVerdict === 'SAFE' && got.verdict === 'WRITE') {
-      falsePos++; falsePositives.push([input, got.intent, note || '']);
+      stats.all.fp++;
+      if (IMMEDIATE.has(got.intent)) stats.immediate.fp++;
+      if (BLAST_RADIUS.has(got.intent)) stats.blast.fp++;
+      falsePositives.push([input, got.intent, note || '']);
     } else if (expectVerdict === 'WRITE' && got.verdict !== 'WRITE') {
-      falseNeg++; falseNegatives.push([input, expectIntent, got.intent + ' (' + got.why + ')']);
+      falseNeg++; falseNegatives.push([input, expectIntent, got.intent + ' (' + got.why + ')', note || '']);
     } else {
       trueNeg++;
     }
 
-    const mark = ok ? ' ok ' : (got.verdict === 'WRITE' && expectVerdict === 'SAFE' ? 'FIRE' : 'miss');
-    const tag = note ? `  [${note}]` : '';
-    console.log(`  ${mark} ${JSON.stringify(input).padEnd(62)} -> ${got.verdict}/${got.intent}${tag}`);
+    let mark = ' ok ';
+    if (!ok) mark = (got.verdict === 'WRITE' && expectVerdict === 'SAFE') ? 'FIRE'
+      : (expectVerdict === 'WRITE' && got.verdict !== 'WRITE') ? 'BLOK' : 'miss';
+    const risk = BLAST_RADIUS.has(got.intent) ? ' ‼' : (IMMEDIATE.has(got.intent) ? ' !' : '');
+    console.log(`  ${mark} ${JSON.stringify(input).padEnd(64)} -> ${got.verdict}/${got.intent}${risk}${note ? '  [' + note + ']' : ''}`);
   }
 }
 
-const classifiedWrite = truePos + falsePos;
-const precision = classifiedWrite ? truePos / classifiedWrite : 1;
-const recall = (truePos + falseNeg) ? truePos / (truePos + falseNeg) : 1;
+const pct = (s) => (s.tp + s.fp) ? (s.tp / (s.tp + s.fp)) : 1;
+const recall = (stats.all.tp + falseNeg) ? stats.all.tp / (stats.all.tp + falseNeg) : 1;
 
-console.log('\n' + '─'.repeat(72));
-console.log('CONFUSION MATRIX (write vs safe)');
-console.log(`  true  write : ${truePos}`);
-console.log(`  FALSE write : ${falsePos}   <-- the number that matters`);
+console.log('\n' + '─'.repeat(74));
+console.log('RISK MODEL (derived from portal/index.html, not hand-maintained)');
+console.log(`  write intents          : ${WRITE_INTENTS.size}`);
+console.log(`  IMMEDIATE (no confirm) : ${[...IMMEDIATE].sort().join(', ') || '(none)'}`);
+console.log(`  blast radius           : ${[...BLAST_RADIUS].sort().join(', ')}`);
+
+console.log('\nCONFUSION MATRIX (write vs safe)');
+console.log(`  true  write : ${stats.all.tp}`);
+console.log(`  FALSE write : ${stats.all.fp}   <-- over-firing`);
 console.log(`  true  safe  : ${trueNeg}`);
-console.log(`  missed write: ${falseNeg}`);
-console.log(`\n  WRITE-PRECISION : ${(precision * 100).toFixed(1)}%  (target 100%)`);
-console.log(`  write-recall    : ${(recall * 100).toFixed(1)}%  (informational, not gated)`);
+console.log(`  BLOCKED     : ${falseNeg}   <-- over-blocking (bucket D catches these)`);
+
+console.log('\nPRECISION (all three gated at 100%)');
+console.log(`  write-precision            : ${(pct(stats.all) * 100).toFixed(1)}%   (${stats.all.tp}/${stats.all.tp + stats.all.fp})`);
+console.log(`  IMMEDIATE-write precision  : ${(pct(stats.immediate) * 100).toFixed(1)}%   (${stats.immediate.tp}/${stats.immediate.tp + stats.immediate.fp})  writes with no confirm dialog`);
+console.log(`  blast-radius precision     : ${(pct(stats.blast) * 100).toFixed(1)}%   (${stats.blast.tp}/${stats.blast.tp + stats.blast.fp})  whole-class / destructive`);
+console.log(`  write-recall               : ${(recall * 100).toFixed(1)}%   (${stats.all.tp}/${stats.all.tp + falseNeg})`);
 
 if (falsePositives.length) {
-  console.log('\nFALSE POSITIVES — Riven would have written on these:');
+  console.log('\nOVER-FIRING — Riven would have written on these:');
   for (const [input, intent, note] of falsePositives) {
-    console.log(`  ${DESTRUCTIVE.has(intent) ? '!! ' : '   '}${JSON.stringify(input)}`);
-    console.log(`       fired: ${intent}${DESTRUCTIVE.has(intent) ? '   ** DESTRUCTIVE **' : ''}${note ? '   [' + note + ']' : ''}`);
+    const tag = BLAST_RADIUS.has(intent) ? '  ** BLAST RADIUS **' : (IMMEDIATE.has(intent) ? '  ** NO CONFIRM **' : '');
+    console.log(`  ${JSON.stringify(input)}\n       fired: ${intent}${tag}${note ? '   [' + note + ']' : ''}`);
+  }
+}
+if (falseNegatives.length) {
+  console.log('\nOVER-BLOCKING — real commands Riven refused:');
+  for (const [input, want, got, note] of falseNegatives) {
+    console.log(`  ${JSON.stringify(input)}\n       want ${want}, got ${got}${note ? '   [' + note + ']' : ''}`);
   }
 }
 if (wrongWrite.length) {
-  console.log('\nWRITE FIRED, WRONG INTENT (still a write, but not the one asked for):');
+  console.log('\nWROTE, WRONG INTENT:');
   for (const [input, want, got] of wrongWrite) console.log(`  ${JSON.stringify(input)}  want ${want}, got ${got}`);
 }
-if (falseNegatives.length) {
-  console.log('\nMISSED WRITES (safe failure — costs one rephrase):');
-  for (const [input, want, got] of falseNegatives) console.log(`  ${JSON.stringify(input)}  want ${want}, got ${got}`);
-}
 
-const pass = falsePos === 0 && wrongWrite.length === 0;
+const pass = stats.all.fp === 0 && falseNeg === 0 && wrongWrite.length === 0;
 console.log('\n' + (pass
-  ? 'PASS — write-precision is 1.0 on the adversarial stream.'
-  : `FAIL — ${falsePos} false positive(s), ${wrongWrite.length} misrouted write(s). Fix by making the matcher ABSTAIN more (negative-cue guards, tighter anchors); never by loosening a read.`));
+  ? `PASS — ${stats.all.tp} writes, 0 over-fired, 0 over-blocked. All precision metrics 1.0.`
+  : `FAIL — ${stats.all.fp} over-fired, ${falseNeg} over-blocked, ${wrongWrite.length} misrouted.
+  Over-firing  -> make the matcher ABSTAIN more (negative cues, tighter anchors).
+  Over-blocking-> SCOPE a guard (bind the cue to the command verb; exempt note content
+                  and idioms). Never fix over-blocking by deleting a guard outright.`));
 process.exit(pass ? 0 : 1);

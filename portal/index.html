@@ -43523,15 +43523,46 @@
       // Over-deferral here is free — the teacher rephrases. Over-firing is a
       // balance, a grade or an attendance record changed on a musing.
 
-      // "should i…", "thinking about…", "wondering whether…" — deliberating,
-      // not instructing. Distinct from isQuestion: these sit mid-sentence.
-      const isDeliberative = /\b(should i|shall i|whether to|whether or not|thinking (about|of)|debating|wondering (if|whether)|not sure (if|whether)|considering (giving|docking|marking|removing|adding)|maybe i (should|could|will)|i might)\b/.test(normalized);
+      // Every cue below is BOUND TO A COMMAND VERB rather than matched loosely.
+      // An unbound cue reads the teacher's vocabulary instead of their intent and
+      // blocks real work: "give eli 5 rtc he never gives up" is an award, not a
+      // refusal, and "don't forget to give eli 5 rtc" is an instruction to give.
+      // Bucket D of debug-tools/frontdoor-precision.js exists to keep these honest
+      // — it is real commands carrying cue vocabulary, and it must stay at 0
+      // over-blocks. Bare imperative forms only (`give`, not `gives`): a verb with
+      // an -s is describing someone, not commanding.
+      const WRITE_VERB = 'give|award|grant|add|credit|mark|dock|take|deduct|subtract|remove|delete|set|enroll|unenroll|drop|create|rename|move|transfer|revoke|charge|fine';
+      const WRITE_GERUND = 'giving|awarding|granting|adding|crediting|marking|docking|taking|deducting|subtracting|removing|deleting|setting|enrolling|unenrolling|creating|renaming|moving|transferring|revoking|charging|fining';
 
-      // "do not mark…", "i'm not going to dock…", "no need to award…"
-      const isNegatedAction = /\b(do not|don'?t|does not|doesn'?t|did not|didn'?t|never|no need to|not going to|isn'?t going to|won'?t|will not|wouldn'?t|shouldn'?t|rather not|instead of)\b/.test(normalized);
+      // "should i…", "thinking about docking…", "whether to give…" — deliberating.
+      // Distinct from isQuestion, which only sees a leading auxiliary or a "?".
+      const isDeliberative = new RegExp(
+        '\\b(?:' +
+          'should\\s+(?:i|we)\\b|shall\\s+(?:i|we)\\b|' +
+          '(?:if|whether)\\s+(?:i|we)\\s+(?:should|shall|ought)\\b|' +   // "tell me if i should give…"
+          'whether\\s+(?:or\\s+not\\s+)?to\\s+(?:' + WRITE_VERB + ')\\b|' +
+          '(?:thinking|debating|considering)\\s+(?:about\\s+|of\\s+)?(?:' + WRITE_GERUND + ')\\b|' +
+          '(?:wondering|not\\s+sure)\\s+(?:if|whether)\\s+(?:i|we)\\s+(?:should|shall)\\b|' +
+          'maybe\\s+(?:i|we)\\s+(?:should|could|will)\\s+(?:' + WRITE_VERB + ')\\b' +
+        ')').test(normalized);
+
+      // "do not mark…", "not going to dock…", "never give…". The verb binding is
+      // what separates a refusal from a description: "never give" is a refusal,
+      // "never gives up" is praise. Idioms that INVERT to an instruction
+      // ("don't forget to…", "don't hesitate to…") fall out for free, because the
+      // word after the negator is `forget`/`hesitate`, not a write verb.
+      const isNegatedAction = new RegExp(
+        '\\b(?:do\\s+not|don\'?t|does\\s+not|doesn\'?t|did\\s+not|didn\'?t|never|' +
+        'no\\s+need\\s+to|not\\s+going\\s+to|isn\'?t\\s+going\\s+to|aren\'?t\\s+going\\s+to|' +
+        'won\'?t|will\\s+not|would\\s+not|wouldn\'?t|shouldn\'?t|rather\\s+not)\\s+' +
+        '(?:to\\s+|ever\\s+|really\\s+|actually\\s+|just\\s+){0,2}' +
+        '(?:' + WRITE_VERB + ')\\b').test(normalized);
 
       // "if he finishes, give him 5" / "give her 5 once she turns it in" —
       // Riven executes NOW and cannot schedule, so a conditional must not fire.
+      // The trailing form needs a real completion verb after the conjunction, so
+      // a bare time adverbial ("mark charlotte present after lunch") stays a
+      // command and "give noah 5 rtc when i see him" is not read as deferred.
       const isConditionalAction = /^(if|when|once|after|unless)\b/.test(normalized.trim())
         || /\b(once|after|when|if|unless|as soon as)\s+(he|she|they|it|\w+)\s+(finishes?|finished|turns?|turned|hands?|handed|completes?|completed|does|did|gets?|got|comes?|came|shows?|showed|brings?|brought|passes?|passed|improves?|improved)\b/.test(normalized);
 
@@ -43999,7 +44030,13 @@
           w: 7, notIfNoteCommand: true, notIfBank: true,
           patterns: [
             { re: /\b(assign|assigns?ing|assigned|extend|renew)\b[^.]*\b(privileges?|perk|pass)\b/, w: 8 },
-            { re: /\badd\b(?![^.]*\bfor\s+\d+)[^.]*\b(privileges?|perk|pass)\b/, w: 8 },
+            // The lookahead excludes CATALOG creation, which carries a PRICE
+            // ("add homework pass to privileges for 15 rtc for 7 days"). It must
+            // test for a price specifically, not any "for <number>" — a bare
+            // "for 7 days" is a DURATION, and excluding it sent the documented
+            // "grant charlotte the vip perk for 7 days" to ADD_PRIVILEGE, which
+            // would have created a junk catalog entry instead of granting a perk.
+            { re: /\badd\b(?![^.]*\bfor\s+\d+\s*(rtc|gold|coins?|points?)\b)[^.]*\b(privileges?|perk|pass)\b/, w: 8 },
             { re: /\b(privileges?|perk|pass)\b[^.]*\b(assign|activate)\b/, w: 8 }
           ],
           requiresStudent: true
