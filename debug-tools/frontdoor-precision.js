@@ -294,6 +294,10 @@ const BUCKET_A = [ // in-scope commands — these SHOULD write
   ['move olivia from math to robotics', 'WRITE', 'MOVE_STUDENT'],
   // blast-radius + destructive writes must still be REACHABLE
   ['mark everyone in math present today', 'WRITE', 'MARK_ATTENDANCE_GROUP', 'blast radius'],
+  // Naming the class must not weaken the intent — this regressed to
+  // VIEW_ATTENDANCE because the class match fed a READ's entity bonus.
+  ['take attendance for robotics', 'WRITE', 'MARK_ATTENDANCE_GROUP', 'blast radius'],
+  ['take attendance', 'WRITE', 'MARK_ATTENDANCE_GROUP', 'blast radius'],
   ['give the whole math class 2 rtc', 'WRITE', null, 'blast radius'],
   ['rename math to Algebra I', 'WRITE', 'RENAME_CLASS'],
   ['grant charlotte the vip perk for 7 days', 'WRITE', 'GRANT_PRIVILEGE'],
@@ -335,9 +339,9 @@ const BUCKET_B = [ // reads and out-of-scope — must not write
 
 const BUCKET_C = [ // ADVERSARIAL: looks like a command, is not one
   // — hypothetical / deliberative —
-  ['should i give charlotte 5 rtc for this', 'SAFE', null, 'hypothetical'],
+  ['should i give charlotte 5 rtc for this', 'SAFE', 'SPECULATIVE_WRITE', 'hypothetical -> explains'],
   ['would it be fair to give noah 10 rtc', 'SAFE', null, 'hypothetical'],
-  ['wondering whether to dock eli 3 rtc', 'SAFE', null, 'hypothetical'],
+  ['wondering whether to dock eli 3 rtc', 'SAFE', 'SPECULATIVE_WRITE', 'hypothetical -> explains'],
   ['not sure if i should mark eli absent in math', 'SAFE', null, 'hypothetical'],
   ['thinking about removing noah from robotics', 'SAFE', null, 'hypothetical'],
   ['debating whether to give mia 5 rtc', 'SAFE', null, 'hypothetical'],
@@ -353,7 +357,7 @@ const BUCKET_C = [ // ADVERSARIAL: looks like a command, is not one
 
   // — negated —
   ["don't give charlotte any rtc", 'SAFE', null, 'negated'],
-  ['do not mark eli absent', 'SAFE', null, 'negated'],
+  ['do not mark eli absent', 'SAFE', 'SPECULATIVE_WRITE', 'negated -> explains'],
   ['no need to award noah rtc today', 'SAFE', null, 'negated'],
   ["i'm not going to dock mia 3 rtc", 'SAFE', null, 'negated'],
   ["don't remove noah from robotics", 'SAFE', null, 'negated + destructive'],
@@ -378,8 +382,8 @@ const BUCKET_C = [ // ADVERSARIAL: looks like a command, is not one
   ['could you dock eli 3 rtc', 'SAFE', null, 'interrogative'],
 
   // — conditional —
-  ['if eli finishes his work give him 5 rtc', 'SAFE', null, 'conditional'],
-  ['give charlotte 5 rtc once she turns it in', 'SAFE', null, 'conditional'],
+  ['if eli finishes his work give him 5 rtc', 'SAFE', 'SPECULATIVE_WRITE', 'conditional -> offers a note'],
+  ['give charlotte 5 rtc once she turns it in', 'SAFE', 'SPECULATIVE_WRITE', 'conditional -> offers a note'],
 
   // — no resolvable target —
   ['give them 5 rtc', 'SAFE', null, 'no referent'],

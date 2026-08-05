@@ -41247,6 +41247,9 @@
       }
     }
 
+    // NOTE: `_undoStack` here is the SPREADSHEET undo (cell/grid entries).
+    // Riven keeps its own `_rivenUndoStack` — see _pushUndo. Don't merge them:
+    // the entry shapes are incompatible and each silently corrupted the other.
     sheetUndo() {
       if (this._undoStack.length === 0) return;
       const action = this._undoStack.pop();
@@ -41955,7 +41958,7 @@
     clearTerminalChat() {
       try { localStorage.removeItem(this._terminalChatKey()); } catch (_) {}
       this._nlpContext = {};
-      this._undoStack = [];
+      this._rivenUndoStack = [];
       this._pendingAction = null;
       this.renderTeacherTerminal();
     }
@@ -43659,7 +43662,15 @@
         // The executor asks "Which class?" when no context exists.
         {
           intent: 'MARK_ATTENDANCE_GROUP',
-          w: 5, notIfNoteCommand: true,
+          // classMatchBoost: naming the class must make this MORE likely, not
+          // less. Without it, "take attendance for robotics" scored 15 while
+          // VIEW_ATTENDANCE scored 16 (its +2 requiresStudentOrClass bonus for
+          // the very same class match) — so being specific about which class
+          // silently turned the day's most common command into a read. Bare
+          // "take attendance" worked; adding the class broke it. Only fires
+          // when one of the patterns below already matched, and none of them
+          // match a read phrasing like "show attendance for robotics".
+          w: 5, notIfNoteCommand: true, classMatchBoost: true,
           patterns: [
             { re: /\bmark\b.*\b(everyone|everybody|all|the (whole )?class)\b.*\b(present|absent|late|tardy|here)\b/, w: 7 },
             { re: /\b(everyone|everybody|the (whole )?class)\b.*\b(is|was|are|were)\s*(present|absent|here)\b/, w: 6 },
@@ -44582,6 +44593,7 @@
       // the array order; a near-tie between two different WRITE intents asks
       // the user instead of guessing.
       const candidates = [];
+      const blockedWrites = [];   // writes a speculative cue kept out of the bidding
       for (let i = 0; i < patterns.length; i++) {
         const pattern = patterns[i];
         // Safety: don't allow an info-question to mutate balances
@@ -44604,13 +44616,8 @@
         if (pattern.notIfCommandVerb && isExplicitCommand) continue;
         // Question/hypothetical phrasing must not fire a balance mutation.
         if (pattern.notIfQuestion && isQuestion) continue;
-        // Deliberating / refusing / promising is never an instruction to write.
-        // EXCEPT for an explicit note command: everything after "note for X:"
-        // is CONTENT, and teachers write exactly these words into notes
-        // ("told him i'd give him 5 rtc if he finishes"). Same principle as the
-        // compound splitter refusing to split inside note content.
-        if (blockSpeculativeWrite && WRITE_INTENTS.includes(pattern.intent)
-            && !(isNoteCommand && pattern.intent === 'ADD_NOTE')) continue;
+        // (the speculative-write block moved BELOW the pattern test, so we only
+        //  record a block when the pattern would genuinely have matched)
         if (pattern.requiresFromTo && !hasFromTo) continue;
         if (pattern.requiresPair && !(hasPair || hasFromTo)) continue;
         if (pattern.requiresSince && !entities.sinceDate) continue;
@@ -44629,6 +44636,23 @@
         }
         if (!hit) continue;
 
+        // Deliberating / refusing / promising is never an instruction to write.
+        // EXCEPT for an explicit note command: everything after "note for X:"
+        // is CONTENT, and teachers write exactly these words into notes
+        // ("told him i'd give him 5 rtc if he finishes"). Same principle as the
+        // compound splitter refusing to split inside note content.
+        //
+        // Checked HERE rather than with the other guards so we know the pattern
+        // really did match. That distinction is what lets Riven say "I didn't
+        // do that, and here's what I heard" instead of silently falling through
+        // to a student card — which is the same masking failure the
+        // UNKNOWN_ACTION honesty guard was written to prevent.
+        if (blockSpeculativeWrite && WRITE_INTENTS.includes(pattern.intent)
+            && !(isNoteCommand && pattern.intent === 'ADD_NOTE')) {
+          blockedWrites.push(pattern.intent);
+          continue;
+        }
+
         let score = 10 + w;
         if (pattern.requiresStudent) score += 2;
         if (pattern.requiresAmount) score += 2;
@@ -44645,8 +44669,34 @@
         // "note for eli: told him i'd give him 5 rtc if he finishes" was losing
         // to VIEW_STUDENT 17-16 and silently becoming a student card.
         if (isNoteCommand && pattern.intent === 'ADD_NOTE') score += 8;
+        // A recognized-but-unsupported request must WIN, or the carefully
+        // written "that lives in the Bank Helper / Testing tab" reply is dead
+        // code and the teacher gets a student card instead of the answer.
+        // Both were losing by a single point to VIEW_STUDENT / VIEW_HISTORY
+        // (16 vs 17), which is the worst possible outcome: Riven knows exactly
+        // where the feature lives and says nothing. `isBank` is already a
+        // position-independent domain rule ("bank makes any RTC phrasing a
+        // banking request") — this makes the score agree with that rule.
+        // Scoped to what these deflections are actually FOR: a request about a
+        // specific student's banking or test results. An unscoped boost stole
+        // general help queries — "test how this works, what can i do" tripped
+        // the tests pattern on `test`…`do` and answered with the Testing tab
+        // instead of the help text.
+        if (pattern.intent === 'CAPABILITY' && (isBank || entities.student)) score += 8;
 
         candidates.push({ intent: pattern.intent, capability: pattern.capability || null, score, w, order: i });
+      }
+
+      // A write was recognized and deliberately not run. Say so. Falling through
+      // to whatever read happens to match ("do not mark eli absent" -> his
+      // attendance card) tells the teacher nothing about why nothing changed,
+      // and worse, looks like it might have worked.
+      if (blockedWrites.length) {
+        return {
+          intent: 'SPECULATIVE_WRITE', confidence: 0.9,
+          blockedIntent: blockedWrites[0],
+          cue: isNegatedAction ? 'negated' : (isConditionalAction ? 'conditional' : 'deliberative')
+        };
       }
 
       if (candidates.length) {
@@ -44949,6 +44999,10 @@
 
         case 'UNKNOWN_ACTION':
           this._respondUnknownAction(entities);
+          break;
+
+        case 'SPECULATIVE_WRITE':
+          this._respondSpeculativeWrite(intent, entities);
           break;
 
         case 'TRANSFER_RTC':
@@ -45640,22 +45694,32 @@
 
     // ---- Undo stack: every write pushes a reversal closure ----
 
+    // Riven's undo stack is DELIBERATELY named apart from the Class Sheets
+    // spreadsheet undo (`this._undoStack`, around commitCellEdit/sheetUndo).
+    // Both are methods on this same app object, and they push incompatible
+    // shapes — {desc, fn, timestamp} here vs {type:'cell', r, c, oldVal} there.
+    // While they shared a name: sheetUndo() popped a Riven entry, found no
+    // `type`, fell through every branch and silently ate the reversal;
+    // terminalUndoLast() popped a cell entry and threw on `entry.fn()`;
+    // openSheet()/showClassSheets() reset the array outright, wiping every
+    // pending Riven reversal the moment a teacher opened a class sheet.
+    // Keep these two stacks separate.
     _pushUndo(desc, fn) {
-      this._undoStack = this._undoStack || [];
-      this._undoStack.push({ desc, fn, timestamp: Date.now() });
-      if (this._undoStack.length > 15) this._undoStack.shift();
+      this._rivenUndoStack = this._rivenUndoStack || [];
+      this._rivenUndoStack.push({ desc, fn, timestamp: Date.now() });
+      if (this._rivenUndoStack.length > 15) this._rivenUndoStack.shift();
     }
 
     async terminalUndoLast() {
-      this._undoStack = this._undoStack || [];
-      const entry = this._undoStack.pop();
+      this._rivenUndoStack = this._rivenUndoStack || [];
+      const entry = this._rivenUndoStack.pop();
       if (!entry) {
         this.terminalPrintError("There's nothing recent to undo — the undo list is empty for this session.");
         return;
       }
       try {
         await entry.fn();
-        const next = this._undoStack[this._undoStack.length - 1];
+        const next = this._rivenUndoStack[this._rivenUndoStack.length - 1];
         const hint = next ? ` (Say "undo" again to also reverse ${next.desc}.)` : '';
         this._naturalSuccess([
           `Undone — reversed ${entry.desc}.${hint}`,
@@ -45665,6 +45729,45 @@
         console.error('Undo failed:', err);
         this.terminalPrintError('Undo failed: ' + err.message);
       }
+    }
+
+    // A write was recognized and deliberately not run, because the sentence was
+    // deliberating about it, refusing it, or making it conditional. Name what
+    // was heard and offer the nearest thing Riven CAN do, rather than leaving
+    // the teacher to guess why nothing happened.
+    _respondSpeculativeWrite(intent, entities) {
+      const esc = (s) => this._escapeHtml ? this._escapeHtml(s) : s;
+      const who = (entities.student?.student || entities.student)?.full_name
+        || entities.classMatch?.name || null;
+      const ACTION = {
+        ADD_RTC: 'award RTC', SUBTRACT_RTC: 'take RTC away', TRANSFER_RTC: 'move RTC',
+        GROUP_RTC: 'award RTC to the class', MARK_ATTENDANCE: 'mark attendance',
+        MARK_ATTENDANCE_GROUP: 'mark attendance for the class',
+        ENROLL_STUDENT: 'enroll', UNENROLL_STUDENT: 'unenroll', MOVE_STUDENT: 'move',
+        SET_GRADE: 'set a grade', ADD_NOTE: 'save a note', DELETE_NOTE: 'delete a note',
+        CREATE_CLASS: 'create a class', DELETE_CLASS: 'deactivate a class',
+        RENAME_CLASS: 'rename a class', UPDATE_CONTACT: 'change contact info',
+        GRANT_PRIVILEGE: 'grant a privilege', REVOKE_PRIVILEGE: 'revoke a privilege',
+        BUY_ITEM: 'log a purchase', BUY_PRIVILEGE: 'buy a privilege',
+      };
+      const what = ACTION[intent.blockedIntent] || 'make that change';
+      const target = who ? ` for <b>${esc(who)}</b>` : '';
+
+      const REASON = {
+        negated: `that reads as telling me <b>not</b> to`,
+        conditional: `that's conditional — I act now and can't schedule something for later`,
+        deliberative: `that reads as thinking it over rather than asking me to`,
+      };
+      const reason = REASON[intent.cue] || REASON.deliberative;
+
+      // A conditional is the one shape with an obviously useful alternative:
+      // Riven can't schedule it, but it CAN write it down so it isn't lost.
+      const offer = intent.cue === 'conditional' && who
+        ? `<div style="margin-top:8px;font-size:13px;">Want me to save it as a note instead? Say <em>note for ${esc(who.split(' ')[0])}: …</em></div>`
+        : `<div style="margin-top:8px;font-size:13px;">If you do want it done, say it straight — e.g. <em>${esc(what.replace(/^(award|take) /, m => m))}${who ? ' ' + esc(who.split(' ')[0]) : ''}</em>.</div>`;
+
+      this._showRivenMessage(
+        `I didn't ${esc(what)}${target} — ${reason}, so I left everything alone.${offer}`, true);
     }
 
     // ---- Conversational layer & honest fallbacks ----
@@ -46352,7 +46455,7 @@
       const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
       // Check if there's a recent undoable action for context-aware oops response
       const recentUndo = (() => {
-        const top = (this._undoStack || [])[this._undoStack?.length - 1];
+        const top = (this._rivenUndoStack || [])[this._rivenUndoStack?.length - 1];
         return (top && Date.now() - (top.timestamp || 0) < 5 * 60 * 1000) ? top : null;
       })();
       // Last student context for continuation responses
@@ -46446,7 +46549,7 @@
     }
 
     _respondCorrection() {
-      const top = (this._undoStack || [])[this._undoStack?.length - 1];
+      const top = (this._rivenUndoStack || [])[this._rivenUndoStack?.length - 1];
       if (top && Date.now() - top.timestamp < 5 * 60 * 1000) {
         this._showRivenMessage(`Sorry about that! My last change was <b>${this.escapeHtml(top.desc)}</b> — say "undo" and I'll reverse it. Then tell me what you actually wanted.`, true);
       } else {
@@ -48765,7 +48868,7 @@
     }
 
     terminalActivityLog() {
-      const stack = [...(this._undoStack || [])].reverse();
+      const stack = [...(this._rivenUndoStack || [])].reverse();
       if (!stack.length) {
         this._showRivenMessage(`I haven't made any changes this session. Reads (balances, rosters, grades…) don't count — only writes show up here.`, true);
         return;
@@ -48945,10 +49048,10 @@
     }
 
     async terminalDeleteLastNote() {
-      this._undoStack = this._undoStack || [];
-      for (let i = this._undoStack.length - 1; i >= 0; i--) {
-        if (/^the (missing-assignments )?note /.test(this._undoStack[i].desc)) {
-          const entry = this._undoStack.splice(i, 1)[0];
+      this._rivenUndoStack = this._rivenUndoStack || [];
+      for (let i = this._rivenUndoStack.length - 1; i >= 0; i--) {
+        if (/^the (missing-assignments )?note /.test(this._rivenUndoStack[i].desc)) {
+          const entry = this._rivenUndoStack.splice(i, 1)[0];
           try {
             await entry.fn();
             this._naturalSuccess([`Deleted ${entry.desc}.`, `Gone — removed ${entry.desc}.`]);
