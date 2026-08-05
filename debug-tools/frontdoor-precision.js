@@ -310,6 +310,11 @@ const BUCKET_A = [ // in-scope commands — these SHOULD write
   ['change the price of granola bar in the shop to 6 rtc', 'WRITE', 'EDIT_SHOP_ITEM'],
   ['remove granola bar from the shop', 'WRITE', 'REMOVE_SHOP_ITEM', 'destructive'],
   ["change charlotte's phone to 555-1234", 'WRITE', 'UPDATE_CONTACT'],
+  // assignments — the vocabulary overlaps VIEW_HOMEWORK almost completely, so
+  // both directions need holding down (see bucket B/C for the read side).
+  ['assign chapter 4 problems to math due friday', 'WRITE', 'CREATE_ASSIGNMENT'],
+  ['create a homework for robotics due tomorrow', 'WRITE', 'CREATE_ASSIGNMENT'],
+  ['assign "Volcano poster" to math due in 3 days', 'WRITE', 'CREATE_ASSIGNMENT'],
 ];
 
 const BUCKET_B = [ // reads and out-of-scope — must not write
@@ -326,6 +331,10 @@ const BUCKET_B = [ // reads and out-of-scope — must not write
   ['show me the shop', 'SAFE', null],
   ['what privileges does mia have', 'SAFE', null],
   ['what homework does eli have coming up', 'SAFE', null],
+  ['what hw is due this week', 'SAFE', null],
+  ['does jordan have any assignments due', 'SAFE', null],
+  ['any overdue homework in math class', 'SAFE', null],
+  ['show me pending hw for charlotte', 'SAFE', null],
   ['how is the math class doing', 'SAFE', null],
   ['show me notes about charlotte from last month', 'SAFE', null],
   ['hello', 'SAFE', null],
@@ -396,6 +405,9 @@ const BUCKET_C = [ // ADVERSARIAL: looks like a command, is not one
   ['show me who i marked absent yesterday', 'SAFE', null, 'info + verb'],
   ['pull up the grades i set for math', 'SAFE', null, 'info + verb'],
   ['who did i give rtc to today', 'SAFE', null, 'info + verb'],
+  ['should i assign chapter 4 to math due friday', 'SAFE', 'SPECULATIVE_WRITE', 'hypothetical assignment'],
+  ["don't assign any homework to math this week", 'SAFE', 'SPECULATIVE_WRITE', 'negated assignment'],
+  ['can i give charlotte 5 rtc please', 'SAFE', 'SPECULATIVE_WRITE', 'interrogative -> explains'],
 ];
 
 const BUCKET_D = [ // GUARD OVERREACH: real commands that innocently contain cue words

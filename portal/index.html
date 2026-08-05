@@ -41702,6 +41702,10 @@
       // Restore the persisted conversation (survives tab switches and logins)
       // and keep persisting on every change
       this._restoreTerminalChat();
+      // Reversals from earlier today, rebuilt from their specs. Without this a
+      // reload silently emptied the undo list while the chat above still showed
+      // the writes that were made.
+      this._restoreRivenUndo();
       this._setupTerminalPersistence();
 
       // Proactive briefing: surface anything needing attention (throttled to
@@ -41957,6 +41961,7 @@
 
     clearTerminalChat() {
       try { localStorage.removeItem(this._terminalChatKey()); } catch (_) {}
+      try { localStorage.removeItem(this._rivenUndoKey()); } catch (_) {}
       this._nlpContext = {};
       this._rivenUndoStack = [];
       this._pendingAction = null;
@@ -43534,8 +43539,8 @@
       // — it is real commands carrying cue vocabulary, and it must stay at 0
       // over-blocks. Bare imperative forms only (`give`, not `gives`): a verb with
       // an -s is describing someone, not commanding.
-      const WRITE_VERB = 'give|award|grant|add|credit|mark|dock|take|deduct|subtract|remove|delete|set|enroll|unenroll|drop|create|rename|move|transfer|revoke|charge|fine';
-      const WRITE_GERUND = 'giving|awarding|granting|adding|crediting|marking|docking|taking|deducting|subtracting|removing|deleting|setting|enrolling|unenrolling|creating|renaming|moving|transferring|revoking|charging|fining';
+      const WRITE_VERB = 'give|award|grant|add|credit|mark|dock|take|deduct|subtract|remove|delete|set|enroll|unenroll|drop|create|rename|move|transfer|revoke|charge|fine|assign|post';
+      const WRITE_GERUND = 'giving|awarding|granting|adding|crediting|marking|docking|taking|deducting|subtracting|removing|deleting|setting|enrolling|unenrolling|creating|renaming|moving|transferring|revoking|charging|fining|assigning|posting';
 
       // "should i…", "thinking about docking…", "whether to give…" — deliberating.
       // Distinct from isQuestion, which only sees a leading auxiliary or a "?".
@@ -43577,7 +43582,7 @@
       const WRITE_INTENTS = ['ADD_RTC', 'SUBTRACT_RTC', 'TRANSFER_RTC', 'GROUP_RTC', 'SET_GRADE',
         'MARK_ATTENDANCE', 'MARK_ATTENDANCE_GROUP', 'ENROLL_STUDENT', 'UNENROLL_STUDENT',
         'MOVE_STUDENT', 'CREATE_CLASS', 'DELETE_CLASS', 'CLOSE_ALL_CLASSES', 'RENAME_CLASS',
-        'UPDATE_CONTACT', 'ADD_NOTE', 'DELETE_NOTE',
+        'UPDATE_CONTACT', 'ADD_NOTE', 'DELETE_NOTE', 'CREATE_ASSIGNMENT',
         'BUY_ITEM', 'BUY_PRIVILEGE', 'GRANT_PRIVILEGE', 'REVOKE_PRIVILEGE',
         'ADD_SHOP_ITEM', 'EDIT_SHOP_ITEM', 'REMOVE_SHOP_ITEM',
         'ADD_PRIVILEGE', 'EDIT_PRIVILEGE', 'REMOVE_PRIVILEGE'];
@@ -43645,6 +43650,30 @@
             // "document that phoenix helped a classmate"
             /\b(log|record|document|jot down)\s+that\b/,
             /\b(log|record|document)\b.+\b(was|is|has|had|did|does|keeps|kept|said|told|showed|helped|refused|arrived|left)\b/
+          ]
+        },
+        // CREATE_ASSIGNMENT — "assign chapter 4 problems to math due friday".
+        // The single biggest write gap: VIEW_HOMEWORK could only READ, so the
+        // most routine task a teacher has was answered with "I can't do that".
+        // Guards do the heavy lifting here because the vocabulary overlaps
+        // VIEW_HOMEWORK almost completely — the difference is grammatical mood,
+        // not words: notIfQuestion kills "does jordan have any assignments due",
+        // notIfReadQuery kills "what hw is due this week", and classMatchBoost
+        // rewards naming the class (the lesson from take-attendance).
+        {
+          intent: 'CREATE_ASSIGNMENT',
+          w: 7, notIfNoteCommand: true, notIfCurrency: true, notIfQuestion: true,
+          notIfReadQuery: true, classMatchBoost: true,
+          patterns: [
+            { re: /\b(assign|create|add|make|post|set up)\b[^.]*\b(assignment|homework|hw|worksheet|classwork)\b/, w: 8 },
+            { re: /\b(new|another)\s+(assignment|homework|hw)\b/, w: 7 },
+            { re: /\b(assignment|homework|hw|worksheet)\b[^.]*\bdue\b/, w: 7 },
+            // Unanchored: "should i assign chapter 4 to math due friday" is
+            // still ABOUT assigning, and the question/negation cues below turn
+            // it into an explanation rather than a write. Anchoring this to the
+            // start of the string made those sentences miss the intent entirely
+            // and get explained as an RTC award ("chapter 4" reads as an amount).
+            { re: /\bassign\b[^.]*\bdue\b/, w: 8 }
           ]
         },
         // ---- Recognized-but-unsupported actions: answer honestly and point
@@ -44614,8 +44643,9 @@
         // Explicit write command (e.g. "mark eli present too") outranks the
         // "…too" relay; relay-pronoun forms are exempted via isExplicitCommand.
         if (pattern.notIfCommandVerb && isExplicitCommand) continue;
-        // Question/hypothetical phrasing must not fire a balance mutation.
-        if (pattern.notIfQuestion && isQuestion) continue;
+        // (notIfQuestion is handled with the other speculative cues BELOW the
+        //  pattern test, so an interrogative about something Riven CAN do gets
+        //  explained rather than answered with "I can't do that".)
         // (the speculative-write block moved BELOW the pattern test, so we only
         //  record a block when the pattern would genuinely have matched)
         if (pattern.requiresFromTo && !hasFromTo) continue;
@@ -44647,11 +44677,9 @@
         // do that, and here's what I heard" instead of silently falling through
         // to a student card — which is the same masking failure the
         // UNKNOWN_ACTION honesty guard was written to prevent.
-        if (blockSpeculativeWrite && WRITE_INTENTS.includes(pattern.intent)
-            && !(isNoteCommand && pattern.intent === 'ADD_NOTE')) {
-          blockedWrites.push(pattern.intent);
-          continue;
-        }
+        const suppressed = (blockSpeculativeWrite || (pattern.notIfQuestion && isQuestion))
+          && WRITE_INTENTS.includes(pattern.intent)
+          && !(isNoteCommand && pattern.intent === 'ADD_NOTE');
 
         let score = 10 + w;
         if (pattern.requiresStudent) score += 2;
@@ -44684,6 +44712,16 @@
         // instead of the help text.
         if (pattern.intent === 'CAPABILITY' && (isBank || entities.student)) score += 8;
 
+        // A suppressed write is SCORED before being set aside, so the
+        // explanation names the intent the sentence was really about. Taking
+        // the first one in array order instead reported "award RTC" for
+        // "should i assign chapter 4 to math" — "chapter 4" reads as an amount,
+        // so ADD_RTC matched too and simply sits earlier in the table.
+        if (suppressed) {
+          blockedWrites.push({ intent: pattern.intent, score, order: i });
+          continue;
+        }
+
         candidates.push({ intent: pattern.intent, capability: pattern.capability || null, score, w, order: i });
       }
 
@@ -44692,10 +44730,14 @@
       // attendance card) tells the teacher nothing about why nothing changed,
       // and worse, looks like it might have worked.
       if (blockedWrites.length) {
+        blockedWrites.sort((a, b) => (b.score - a.score) || (a.order - b.order));
         return {
           intent: 'SPECULATIVE_WRITE', confidence: 0.9,
-          blockedIntent: blockedWrites[0],
-          cue: isNegatedAction ? 'negated' : (isConditionalAction ? 'conditional' : 'deliberative')
+          blockedIntent: blockedWrites[0].intent,
+          cue: isNegatedAction ? 'negated'
+            : isConditionalAction ? 'conditional'
+            : isDeliberative ? 'deliberative'
+            : 'question'
         };
       }
 
@@ -45005,6 +45047,10 @@
           this._respondSpeculativeWrite(intent, entities);
           break;
 
+        case 'CREATE_ASSIGNMENT':
+          await this.terminalCreateAssignment(entities);
+          break;
+
         case 'TRANSFER_RTC':
           await this.terminalTransferRTC(entities);
           break;
@@ -45194,6 +45240,8 @@
     • "What classes is [student] in?" / "Who's in [class]?"<br>
     • "What homework does [student] have coming up?" — pending assignments<br>
     • "Any overdue homework in [class]?" — overdue assignments<br>
+    • "Assign chapter 4 problems to [class] due friday" — creates it, published to the class<br>
+    &nbsp;&nbsp;&nbsp;(due today/tomorrow/a weekday/in N days/2026-09-01 all work; I'll ask rather than guess a date)<br>
     • "Mark [student] present in [class]" (or absent/late, "yesterday" works)<br>
     • "Add [student] to [class]" / "Remove [student] from [class]"<br>
     • "Create a class called [name]"<br>
@@ -45704,10 +45752,78 @@
     // openSheet()/showClassSheets() reset the array outright, wiping every
     // pending Riven reversal the moment a teacher opened a class sheet.
     // Keep these two stacks separate.
-    _pushUndo(desc, fn) {
+    _pushUndo(desc, fn, spec = null) {
       this._rivenUndoStack = this._rivenUndoStack || [];
-      this._rivenUndoStack.push({ desc, fn, timestamp: Date.now() });
+      this._rivenUndoStack.push({ desc, fn, timestamp: Date.now(), spec });
       if (this._rivenUndoStack.length > 15) this._rivenUndoStack.shift();
+      if (spec) this._persistRivenUndo();
+    }
+
+    // ---- Durable undo -----------------------------------------------------
+    // The stack above holds CLOSURES, so a refresh used to lose every reversal:
+    // a teacher who awarded RTC, reloaded, and then said "undo" was told the
+    // list was empty. Callers may pass an optional SPEC — a serializable
+    // description of the reversal — and only those survive a reload. Everything
+    // else behaves exactly as before, so this is additive: a call site without a
+    // spec is unchanged.
+    //
+    // A restored entry is marked `stale` and CONFIRMS before running. Reversing
+    // a write from a previous session is a different risk from reversing one
+    // you just made — the balance may have moved since, so the teacher should
+    // see what they're undoing rather than have it happen on one word.
+    _rivenUndoKey() {
+      return 'riven_undo_' + (this.userInfo?.profile?.id || 'anon');
+    }
+
+    get _rivenUndoReversers() {
+      return {
+        // Reverse an RTC change. Stored as the REVERSING amount, so replaying it
+        // needs no arithmetic and can't drift from the original.
+        rtc: async (s) => {
+          await this._rtcTxn({ userId: s.userId, amount: s.amount, type: s.type || 'admin_adjustment',
+            description: s.description, refId: s.refId || null, refType: 'undo' });
+          if (s.noteId) {
+            await this.auth.supabase.from('notes').delete().eq('id', s.noteId)
+              .then(({ error }) => { if (error) console.warn('undo auto-note delete failed:', error); });
+          }
+        },
+        note: async (s) => {
+          const { error } = await this.auth.supabase.from('notes').delete().eq('id', s.noteId);
+          if (error) throw error;
+        },
+        assignment: async (s) => {
+          const { error } = await this.auth.supabase.from('assignments').delete().eq('id', s.assignmentId);
+          if (error) throw error;
+        },
+      };
+    }
+
+    _persistRivenUndo() {
+      try {
+        const durable = (this._rivenUndoStack || [])
+          .filter(e => e && e.spec)
+          .map(e => ({ desc: e.desc, timestamp: e.timestamp, spec: e.spec }));
+        localStorage.setItem(this._rivenUndoKey(), JSON.stringify(durable));
+      } catch (_) { /* quota or private mode — undo just stays session-only */ }
+    }
+
+    _restoreRivenUndo() {
+      try {
+        const raw = localStorage.getItem(this._rivenUndoKey());
+        if (!raw) return;
+        // One school day. Older than that and "undo that" is not what anyone means.
+        const cutoff = Date.now() - 12 * 60 * 60 * 1000;
+        const reversers = this._rivenUndoReversers;
+        const restored = (JSON.parse(raw) || [])
+          .filter(e => e && e.spec && e.timestamp > cutoff && reversers[e.spec.kind])
+          .map(e => ({
+            desc: e.desc, timestamp: e.timestamp, spec: e.spec, stale: true,
+            fn: async () => reversers[e.spec.kind].call(this, e.spec),
+          }));
+        if (!restored.length) { localStorage.removeItem(this._rivenUndoKey()); return; }
+        // Restored entries sit UNDER anything from this session.
+        this._rivenUndoStack = restored.concat(this._rivenUndoStack || []);
+      } catch (_) { /* corrupt payload — ignore rather than break the terminal */ }
     }
 
     async terminalUndoLast() {
@@ -45717,18 +45833,37 @@
         this.terminalPrintError("There's nothing recent to undo — the undo list is empty for this session.");
         return;
       }
-      try {
-        await entry.fn();
-        const next = this._rivenUndoStack[this._rivenUndoStack.length - 1];
-        const hint = next ? ` (Say "undo" again to also reverse ${next.desc}.)` : '';
-        this._naturalSuccess([
-          `Undone — reversed ${entry.desc}.${hint}`,
-          `Reverted ${entry.desc}.${hint}`
-        ]);
-      } catch (err) {
-        console.error('Undo failed:', err);
-        this.terminalPrintError('Undo failed: ' + err.message);
+      const run = async () => {
+        try {
+          await entry.fn();
+          if (entry.spec) this._persistRivenUndo();
+          const next = this._rivenUndoStack[this._rivenUndoStack.length - 1];
+          const hint = next ? ` (Say "undo" again to also reverse ${next.desc}.)` : '';
+          this._naturalSuccess([
+            `Undone — reversed ${entry.desc}.${hint}`,
+            `Reverted ${entry.desc}.${hint}`
+          ]);
+        } catch (err) {
+          console.error('Undo failed:', err);
+          this.terminalPrintError('Undo failed: ' + err.message);
+        }
+      };
+
+      // Reversing something from an EARLIER session is a different risk from
+      // reversing what you just did — the balance may have moved since, and the
+      // teacher may not remember the write. Show it and ask.
+      if (entry.stale) {
+        const when = new Date(entry.timestamp);
+        const ago = Math.round((Date.now() - entry.timestamp) / 60000);
+        const whenTxt = ago < 60 ? `${ago} min ago`
+          : when.toLocaleString(undefined, { hour: 'numeric', minute: '2-digit', weekday: 'short' });
+        this._requestConfirmation(
+          `Reverse <b>${this.escapeHtml(entry.desc)}</b> from ${this.escapeHtml(whenTxt)}?<br>
+           <span style="font-size:12px;color:var(--muted);">That was before this page was reloaded — check it's still what you want.</span>`,
+          run);
+        return;
       }
+      await run();
     }
 
     // A write was recognized and deliberately not run, because the sentence was
@@ -45757,6 +45892,7 @@
         negated: `that reads as telling me <b>not</b> to`,
         conditional: `that's conditional — I act now and can't schedule something for later`,
         deliberative: `that reads as thinking it over rather than asking me to`,
+        question: `that's phrased as a question, and I don't change data on a maybe`,
       };
       const reason = REASON[intent.cue] || REASON.deliberative;
 
@@ -47589,6 +47725,128 @@
       if (p >= 77) return 'C+'; if (p >= 73) return 'C'; if (p >= 70) return 'C-';
       if (p >= 67) return 'D+'; if (p >= 63) return 'D'; if (p >= 60) return 'D-';
       return 'F';
+    }
+
+    // "due friday" / "due tomorrow" / "due in 3 days" / "due 2026-08-12".
+    // Returns { iso, label } or null. Deliberately narrow: an assignment with a
+    // silently-wrong due date is worse than one Riven declines to guess at, so
+    // anything unrecognized returns null and the executor asks.
+    _rivenParseDueDate(raw) {
+      const t = (raw || '').toLowerCase();
+      const m = t.match(/\bdue\s+(?:on\s+|by\s+|before\s+|the\s+)?([a-z0-9\/\-\s]{2,24}?)\s*(?:[,.;!?]|$)/);
+      if (!m) return null;
+      const phrase = m[1].trim().replace(/\s+/g, ' ');
+      const mk = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      const plus = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return d; };
+
+      if (/^today$/.test(phrase)) return { iso: mk(new Date()), label: 'today' };
+      if (/^tomorrow$/.test(phrase)) return { iso: mk(plus(1)), label: 'tomorrow' };
+      if (/^next week$/.test(phrase)) return { iso: mk(plus(7)), label: 'next week' };
+      const inN = phrase.match(/^in (\d{1,2}) days?$/);
+      if (inN) return { iso: mk(plus(parseInt(inN[1]))), label: `in ${inN[1]} days` };
+
+      const DAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+      const dm = phrase.match(/^(?:next |this )?(sunday|monday|tuesday|wednesday|thursday|friday|saturday)$/);
+      if (dm) {
+        // Always the NEXT occurrence strictly in the future — "due friday" said
+        // on a Friday means the coming Friday, not today. The resolved date is
+        // shown in the confirmation so a mismatch is caught before it's saved.
+        let delta = (DAYS.indexOf(dm[1]) - new Date().getDay() + 7) % 7;
+        if (delta === 0) delta = 7;
+        const d = plus(delta);
+        return { iso: mk(d), label: `${dm[1]} (${mk(d)})` };
+      }
+      const iso = phrase.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (iso) return { iso: phrase, label: phrase };
+      const slash = phrase.match(/^(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?$/);
+      if (slash) {
+        const yr = slash[3] ? (slash[3].length === 2 ? 2000 + +slash[3] : +slash[3]) : new Date().getFullYear();
+        const d = new Date(yr, +slash[1] - 1, +slash[2]);
+        if (!isNaN(d)) return { iso: mk(d), label: mk(d) };
+      }
+      return null;
+    }
+
+    // Pull the assignment's title out of the sentence: strip the command verb,
+    // the "due …" clause and the class reference, and keep what's left. A
+    // colon or quotes win outright when present.
+    _rivenExtractAssignmentTitle(raw, classRow) {
+      let t = (raw || '').trim();
+      const quoted = t.match(/["“”'‘’](.{2,120}?)["“”'‘’]/);
+      if (quoted) return quoted[1].trim();
+      const colon = t.match(/:\s*(.+)$/);
+      if (colon) t = colon[1];
+      else t = t.replace(/^\s*(?:please\s+)?(assign|create|add|make|post|set up)\s+(?:a\s+|an\s+|the\s+)?(?:new\s+)?(?:assignment|homework|hw|worksheet|classwork)?\s*/i, '');
+      t = t.replace(/\bdue\s+(?:on\s+|by\s+|before\s+|the\s+)?[a-z0-9\/\-\s]{2,24}?\s*(?:[,.;!?]|$)/i, ' ');
+      if (classRow?.name) {
+        const n = classRow.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        t = t.replace(new RegExp(`\\b(?:to|for|in)\\s+(?:the\\s+)?${n}(?:\\s+class)?\\b`, 'i'), ' ');
+      }
+      t = t.replace(/\b(?:to|for|in)\s+(?:the\s+)?(?:my\s+)?\w+\s+class\b/i, ' ')
+           .replace(/^(?:assignment|homework|hw|worksheet|classwork)\b\s*/i, '')
+           .replace(/\s{2,}/g, ' ')
+           .replace(/^[\s,:-]+|[\s,:-]+$/g, '');
+      return t.length >= 2 ? t : '';
+    }
+
+    async terminalCreateAssignment(entities) {
+      const raw = entities._rawInput || entities.original || '';
+      const { row, asked } = await this._rivenRequireClass(entities);
+      if (asked) return;
+      if (!row) {
+        this.terminalPrintError('Which class is it for? Try "assign chapter 4 problems to Math due friday".');
+        return;
+      }
+      if (!this._rivenCanManageClass(row)) {
+        this.terminalPrintError(`You're not the teacher for ${row.name}, so I can't add assignments to it.`);
+        return;
+      }
+      const due = this._rivenParseDueDate(raw);
+      if (!due) {
+        this.terminalPrintError(`When's it due? Add e.g. "due friday", "due tomorrow" or "due 2026-08-12" — I won't guess a date.`);
+        return;
+      }
+      const title = this._rivenExtractAssignmentTitle(raw, row);
+      if (!title) {
+        this.terminalPrintError(`What should I call it? Try "assign Chapter 4 problems to ${row.name} due ${due.label.split(' ')[0]}".`);
+        return;
+      }
+
+      const esc = (s) => this.escapeHtml(s);
+      const doIt = async () => {
+        const payload = {
+          class_id: row.id,
+          title,
+          description: '',
+          due_date: new Date(due.iso + 'T23:59:00').toISOString(),
+          max_points: 100,
+          grading_type: 'points',
+          is_published: true,
+          assigned_to_all: true,
+          graded_offline: false,
+          assignment_type: 'regular',
+          rtc_reward: 0,
+          max_submit_size_mb: 1024,
+        };
+        const { data, error } = await this.supabaseQuery(() => this.auth.supabase
+          .from('assignments').insert([payload]).select().single());
+        if (error) { this.terminalPrintError('Could not create the assignment: ' + error.message); return; }
+
+        this._pushUndo(`the assignment "${title}" in ${row.name}`, async () => {
+          const { error: delErr } = await this.auth.supabase.from('assignments').delete().eq('id', data.id);
+          if (delErr) throw delErr;
+        }, { kind: 'assignment', assignmentId: data.id });
+
+        this._naturalSuccess([
+          `Created "${title}" for ${row.name}, due ${due.label}. Students can see it now.`,
+          `Done — "${title}" is assigned to ${row.name}, due ${due.label}.`,
+        ]);
+      };
+
+      this._requestConfirmation(
+        `Create assignment <b>${esc(title)}</b> for <b>${esc(row.name)}</b><br>
+         <span style="font-size:12px;color:var(--muted);">Due ${esc(due.label)} · 100 points · published to the whole class</span>`,
+        doIt);
     }
 
     async _rivenCurrentQuarter() {
@@ -49676,7 +49934,7 @@
         this._pushUndo(`the note for ${targets}`, async () => {
           const { error } = await this.auth.supabase.from('notes').delete().eq('id', saved.id);
           if (error) throw error;
-        });
+        }, { kind: 'note', noteId: saved.id });   // survives a reload
         this._naturalSuccess([
           `Noted — saved a ${visibility === 'private' ? 'private ' : ''}note for ${targets}: "${note.length > 90 ? note.slice(0, 90) + '…' : note}"`,
           `Got it. Note saved for ${targets}. Say "undo" if you didn't mean that.`,
@@ -50138,6 +50396,11 @@
               if (error) console.warn('undo auto-note delete failed:', error);
             });
           }
+        }, {
+          // Serializable twin of the closure above, so this survives a reload.
+          kind: 'rtc', userId: student.id, amount: -amount, type: 'admin_adjustment',
+          description: `Undo of ${amount > 0 ? '+' : ''}${amount} RTC${txId ? ' (txn ' + txId + ')' : ''}`,
+          refId: txId, noteId: autoNoteId || null,
         });
 
         // Phase 4: Natural varied responses (different phrasing for subtractions)
