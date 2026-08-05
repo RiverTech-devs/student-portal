@@ -43511,6 +43511,43 @@
       const isQuestion = /^(should|shall|did|does|do|has|have|had|is|are|was|were|would|could|can|may|might|will|am)\b/.test(normalized.trim())
         || /\?\s*$/.test(normalized.trim());
 
+      // ── Speculative-write cues ────────────────────────────────────────────
+      // isQuestion only catches a LEADING auxiliary or a trailing "?". These
+      // three catch the rest of the ways a teacher talks ABOUT a write without
+      // asking for one. Each blocks every write intent from bidding; reads are
+      // untouched, so the sentence still lands somewhere useful.
+      //
+      // Measured, not guessed: `debug-tools/frontdoor-precision.js` scored the
+      // matcher at 77% write-precision on an adversarial stream before these,
+      // with all seven false positives falling into exactly these three shapes.
+      // Over-deferral here is free — the teacher rephrases. Over-firing is a
+      // balance, a grade or an attendance record changed on a musing.
+
+      // "should i…", "thinking about…", "wondering whether…" — deliberating,
+      // not instructing. Distinct from isQuestion: these sit mid-sentence.
+      const isDeliberative = /\b(should i|shall i|whether to|whether or not|thinking (about|of)|debating|wondering (if|whether)|not sure (if|whether)|considering (giving|docking|marking|removing|adding)|maybe i (should|could|will)|i might)\b/.test(normalized);
+
+      // "do not mark…", "i'm not going to dock…", "no need to award…"
+      const isNegatedAction = /\b(do not|don'?t|does not|doesn'?t|did not|didn'?t|never|no need to|not going to|isn'?t going to|won'?t|will not|wouldn'?t|shouldn'?t|rather not|instead of)\b/.test(normalized);
+
+      // "if he finishes, give him 5" / "give her 5 once she turns it in" —
+      // Riven executes NOW and cannot schedule, so a conditional must not fire.
+      const isConditionalAction = /^(if|when|once|after|unless)\b/.test(normalized.trim())
+        || /\b(once|after|when|if|unless|as soon as)\s+(he|she|they|it|\w+)\s+(finishes?|finished|turns?|turned|hands?|handed|completes?|completed|does|did|gets?|got|comes?|came|shows?|showed|brings?|brought|passes?|passed|improves?|improved)\b/.test(normalized);
+
+      // A write must be an instruction, not a musing, a refusal, or a promise.
+      const blockSpeculativeWrite = isDeliberative || isNegatedAction || isConditionalAction;
+
+      // Every intent that mutates data. Declared here (rather than beside the
+      // near-tie check further down) so the bidding loop can gate on it.
+      const WRITE_INTENTS = ['ADD_RTC', 'SUBTRACT_RTC', 'TRANSFER_RTC', 'GROUP_RTC', 'SET_GRADE',
+        'MARK_ATTENDANCE', 'MARK_ATTENDANCE_GROUP', 'ENROLL_STUDENT', 'UNENROLL_STUDENT',
+        'MOVE_STUDENT', 'CREATE_CLASS', 'DELETE_CLASS', 'CLOSE_ALL_CLASSES', 'RENAME_CLASS',
+        'UPDATE_CONTACT', 'ADD_NOTE', 'DELETE_NOTE',
+        'BUY_ITEM', 'BUY_PRIVILEGE', 'GRANT_PRIVILEGE', 'REVOKE_PRIVILEGE',
+        'ADD_SHOP_ITEM', 'EDIT_SHOP_ITEM', 'REMOVE_SHOP_ITEM',
+        'ADD_PRIVILEGE', 'EDIT_PRIVILEGE', 'REMOVE_PRIVILEGE'];
+
       const patterns = [
         // UNDO_RTC (uses context, no student/amount needed)
         {
@@ -44530,6 +44567,13 @@
         if (pattern.notIfCommandVerb && isExplicitCommand) continue;
         // Question/hypothetical phrasing must not fire a balance mutation.
         if (pattern.notIfQuestion && isQuestion) continue;
+        // Deliberating / refusing / promising is never an instruction to write.
+        // EXCEPT for an explicit note command: everything after "note for X:"
+        // is CONTENT, and teachers write exactly these words into notes
+        // ("told him i'd give him 5 rtc if he finishes"). Same principle as the
+        // compound splitter refusing to split inside note content.
+        if (blockSpeculativeWrite && WRITE_INTENTS.includes(pattern.intent)
+            && !(isNoteCommand && pattern.intent === 'ADD_NOTE')) continue;
         if (pattern.requiresFromTo && !hasFromTo) continue;
         if (pattern.requiresPair && !(hasPair || hasFromTo)) continue;
         if (pattern.requiresSince && !entities.sinceDate) continue;
@@ -44558,6 +44602,12 @@
         if (pattern.requiresStudentOrClass) score += 2;
         if (pattern.requiresGroupContext) score += entities.classMatch ? 3 : 2;
         if (pattern.classMatchBoost && entities.classMatch) score += 8;
+        // An explicit note command wins outright. `notIfNoteCommand` already
+        // knocks competing WRITES out, but a READ could still edge ADD_NOTE out
+        // by a point when the note's BODY mentions RTC or grades — e.g.
+        // "note for eli: told him i'd give him 5 rtc if he finishes" was losing
+        // to VIEW_STUDENT 17-16 and silently becoming a student card.
+        if (isNoteCommand && pattern.intent === 'ADD_NOTE') score += 8;
 
         candidates.push({ intent: pattern.intent, capability: pattern.capability || null, score, w, order: i });
       }
@@ -44567,13 +44617,7 @@
         const top = candidates[0];
         const second = candidates.find(c => c.intent !== top.intent);
         const margin = second ? top.score - second.score : Infinity;
-        const writeIntents = ['ADD_RTC', 'SUBTRACT_RTC', 'TRANSFER_RTC', 'GROUP_RTC', 'SET_GRADE',
-          'MARK_ATTENDANCE', 'MARK_ATTENDANCE_GROUP', 'ENROLL_STUDENT', 'UNENROLL_STUDENT',
-          'MOVE_STUDENT', 'CREATE_CLASS', 'DELETE_CLASS', 'CLOSE_ALL_CLASSES', 'UPDATE_CONTACT', 'ADD_NOTE', 'DELETE_NOTE',
-          'BUY_ITEM', 'BUY_PRIVILEGE', 'GRANT_PRIVILEGE', 'REVOKE_PRIVILEGE',
-          'ADD_SHOP_ITEM', 'EDIT_SHOP_ITEM', 'REMOVE_SHOP_ITEM',
-          'ADD_PRIVILEGE', 'EDIT_PRIVILEGE', 'REMOVE_PRIVILEGE'];
-        if (second && margin < 1.5 && writeIntents.includes(top.intent) && writeIntents.includes(second.intent)) {
+        if (second && margin < 1.5 && WRITE_INTENTS.includes(top.intent) && WRITE_INTENTS.includes(second.intent)) {
           return { intent: 'CLARIFY_INTENT', confidence: 0.9, options: [top, second] };
         }
         return {
@@ -44590,7 +44634,7 @@
       // +/- sign) with an amount, but a required piece (usually the student)
       // is missing. Return the intent anyway so _executeIntent can ask for
       // the specific missing piece instead of a generic "I'm not sure".
-      if (entities.amount && !blockMutation && !isQuestion) {
+      if (entities.amount && !blockMutation && !isQuestion && !blockSpeculativeWrite) {
         const subAction = /(^|\s)-\d|\b(remove|subtract|deduct|minus|take)\b/.test(normalized);
         const addAction = /(^|\s)\+\d|\b(add|plus)\b|\d+ (rtc )?(to|for)\b/.test(normalized);
         if (subAction) return { intent: 'SUBTRACT_RTC', confidence: 0.7 };
