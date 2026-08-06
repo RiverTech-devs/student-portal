@@ -42637,7 +42637,7 @@
         const learned = this._rivenPhrasebookLookup(this._rivenPhraseShape(resolvedInput, entities));
         if (learned) {
           intent = { intent: learned, confidence: 0.85, learned: true };
-          this._rivenRecordOutcome('learned', resolvedInput);
+          this._rivenRecordOutcome('learned', resolvedInput, learned);
         }
       }
       if (!intent) intent = this._matchIntent(resolvedInput, entities);
@@ -42670,7 +42670,7 @@
         'ADD_NOTE', 'DELETE_NOTE', 'MARK_READ'];
       const weakWin = typeof intent.w === 'number' && intent.w <= 3
         && intent.intent !== 'CAPABILITY' && !writeWins.includes(intent.intent);
-      if (!intent.learned) this._rivenRecordOutcome((intent.lastResort || weakWin) ? 'weak' : 'routed', resolvedInput);
+      if (!intent.learned) this._rivenRecordOutcome((intent.lastResort || weakWin) ? 'weak' : 'routed', resolvedInput, intent.intent);
       if ((intent.lastResort || weakWin) && resolvedInput.split(/\s+/).length >= 4) {
         if (this._phi3State?.active && this._phi3State?.pipe && !opts?._fromPhi3) {
           this._phi3Interpret(input, resolvedInput, entities).catch(() => this._handleUnknown(resolvedInput, entities));
@@ -45388,6 +45388,9 @@
     • "Who's been absent in [class] this month?"<br>
     • "How is [class] doing?" — class overview: enrollment, grade avg, attendance<br>
     • "Which of my classes has the best grades?" — ranks all your classes<br>
+    • "Which students are failing?" — everyone below passing, across your classes<br>
+    • "Message [student]" / "Message [student]'s parents" — opens a message to them<br>
+    • "Rename [class] to [new name]"<br>
     • "Show attendance for [class]" — per-student breakdown for the class<br>
     • "What classes is [student] in?" / "Who's in [class]?"<br>
     • "What homework does [student] have coming up?" — pending assignments<br>
@@ -46892,11 +46895,19 @@
 
     // kind: 'routed' (parser was confident) | 'weak' (parser guessed) |
     //       'miss' (parser had nothing) | 'learned' (phrasebook hit)
-    _rivenRecordOutcome(kind, normalized) {
+    _rivenRecordOutcome(kind, normalized, intent) {
       try {
         const raw = localStorage.getItem(this._rivenStatsKey());
-        const st = raw ? JSON.parse(raw) : { routed: 0, weak: 0, miss: 0, learned: 0, misses: [], since: Date.now() };
+        const st = raw ? JSON.parse(raw) : { routed: 0, weak: 0, miss: 0, learned: 0, misses: [], byIntent: {}, since: Date.now() };
         st[kind] = (st[kind] || 0) + 1;
+        // Which capabilities actually get used. A tally only — no sentences —
+        // so it costs nothing to keep and still answers "what are our use
+        // cases", and tells you which intents would be missed if the model
+        // tiers went away.
+        if (intent && (kind === 'routed' || kind === 'learned' || kind === 'weak')) {
+          st.byIntent = st.byIntent || {};
+          st.byIntent[intent] = (st.byIntent[intent] || 0) + 1;
+        }
         if (kind === 'miss' || kind === 'weak') {
           // Keep the actual phrasings — the counter says HOW OFTEN the parser
           // falls short, this says WHAT to teach it next.
@@ -46971,6 +46982,20 @@
       if (!total) { this._showRivenMessage(`No coverage data yet.`, true); return; }
       const pct = (n) => ((n || 0) / total * 100).toFixed(1) + '%';
       const recent = (st.misses || []).slice(-12).reverse();
+      const used = Object.entries(st.byIntent || {}).sort((a, b) => b[1] - a[1]).slice(0, 12);
+      const LABEL = (() => {
+        const t = this._rivenSuggestionTemplates(), out = {};
+        for (const [k, v] of Object.entries(t)) out[k] = v.label.toLowerCase();
+        return Object.assign(out, {
+          ADD_RTC: 'award rtc', SUBTRACT_RTC: 'deduct rtc', TRANSFER_RTC: 'transfer rtc',
+          GROUP_RTC: 'award the class rtc', MARK_ATTENDANCE: 'mark attendance',
+          MARK_ATTENDANCE_GROUP: 'take class attendance', SET_GRADE: 'set a grade',
+          ENROLL_STUDENT: 'enroll a student', UNENROLL_STUDENT: 'unenroll a student',
+          CREATE_ASSIGNMENT: 'create an assignment', ANNOUNCE: 'send an announcement',
+          BOOK_FACILITY: 'book a room', ACTIVITY_ENROLL: 'add to a club',
+          GRANT_PRIVILEGE: 'grant a privilege', BUY_ITEM: 'log a purchase',
+        });
+      })();
       const learned = Object.entries(book).filter(([, e]) => e.hits >= 2).length;
       this._showRivenMessage(`
         <div style="font-weight:700;color:#2f6b6d;margin-bottom:6px;">How often I understood you</div>
@@ -46982,7 +47007,12 @@
           ❓ had to ask — <b>${pct(st.miss)}</b> (${st.miss || 0})<br>
           📖 phrases learned: <b>${learned}</b>
         </div>
-        ${recent.length ? `<div style="margin-top:10px;font-size:12px;color:var(--muted);">
+        ${used.length ? `<div style="margin-top:12px;font-size:12px;">
+          <b style="color:#2f6b6d;">What you actually use me for</b><br>
+          <div style="margin-top:4px;line-height:1.7;">${used.map(([i, c]) =>
+            `<span style="display:inline-block;min-width:150px;">${this.escapeHtml(LABEL[i] || i.replace(/_/g, ' ').toLowerCase())}</span>
+             <b>${c}</b> <span style="color:var(--muted);">(${(c / total * 100).toFixed(0)}%)</span>`).join('<br>')}</div></div>` : ''}
+        ${recent.length ? `<div style="margin-top:12px;font-size:12px;color:var(--muted);">
           <b>Recent ones I struggled with:</b><br>${recent.map(m => '· ' + this.escapeHtml(m.s)).join('<br>')}</div>` : ''}
         <div style="font-size:11px;color:var(--muted);margin-top:8px;">All of this stays on this device.</div>`, true);
     }

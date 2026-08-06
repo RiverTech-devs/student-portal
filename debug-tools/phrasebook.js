@@ -103,6 +103,19 @@ check(st.misses.length === 2, 'the actual phrasings are kept, not just the count
 check(st.misses.some(m => m.s.includes('vibing')), 'a miss records what was said');
 check(!st.misses.some(m => m.s.includes('give jordan 5 rtc')), 'a success is not recorded as a miss');
 
+console.log('\n== usage histogram answers "what do we use Riven for" ==');
+app._rivenRecordOutcome('routed', 'give jordan 5 rtc', 'ADD_RTC');
+app._rivenRecordOutcome('routed', 'give mia 3 rtc', 'ADD_RTC');
+app._rivenRecordOutcome('routed', 'show jordan grades', 'VIEW_GRADES');
+app._rivenRecordOutcome('learned', 'has jordan been showing up', 'VIEW_ATTENDANCE');
+app._rivenRecordOutcome('miss', 'is jordan vibing', null);
+const st2 = JSON.parse(localStorage.getItem(app._rivenStatsKey()));
+check(st2.byIntent.ADD_RTC === 2, `most-used intent tallied (ADD_RTC ${st2.byIntent.ADD_RTC})`);
+check(st2.byIntent.VIEW_ATTENDANCE === 1, 'a learned phrase counts toward its intent');
+check(!('null' in st2.byIntent) && !('undefined' in st2.byIntent), 'a miss adds no intent tally');
+check(Object.values(st2.byIntent).every(v => typeof v === 'number'),
+  'the histogram stores COUNTS only, never the sentences');
+
 console.log('\n== nothing leaves the device ==');
 check(!/fetch\(|XMLHttpRequest|navigator\.sendBeacon/.test(bodyOf('_rivenRecordOutcome').body),
   '_rivenRecordOutcome makes no network call');
