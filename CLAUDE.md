@@ -70,6 +70,7 @@ Repo: `RiverTech-devs/student-portal` → GitHub Pages (CNAME → rivertech.me).
 - **Realtime:** Enabled only on the `notifications` table. Everything else needs explicit refetch.
 - **Edge functions** (TypeScript, in `supabase/functions/`): `delete-account`, `send-notification-email`, `due-date-reminders`, `missed-emails`, `get-drive-upload-url`.
 - **Hosting:** GitHub Pages (static). Supabase is the backend. Cache-bust JS/CSS edits with `?v=N` query params.
+- **`.nojekyll` at the repo root turns Jekyll off. Keep it there.** GitHub Pages runs Jekyll by default, and Jekyll silently deletes every file and directory whose name starts with `_` from the published site — no error, the deploy goes green and the files just 404. This site has no Jekyll features, so turning it off costs nothing and drops a build step from every deploy. The trap matters most for generated or exported assets, which often carry `_`-prefixed names.
 
 ## Architecture: there are TWO frontends
 1. **`index.html`** at the repo root (~5k lines) — the **student-facing** portal: dashboard, grades, skills, games, login.
