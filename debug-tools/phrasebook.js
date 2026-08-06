@@ -52,7 +52,7 @@ const METHODS = ['_normalizeInput', '_resolvePronouns', '_extractEntities', '_pa
   '_commonWords', '_segmentClauses', '_classifyClauseShape', '_semanticExampleBank',
   '_rivenContentTokens', '_rivenSuggestionTemplates', '_rivenStatsKey', '_rivenPhrasebookKey',
   '_rivenRecordOutcome', '_rivenPhraseShape', '_rivenLearnableIntent', '_rivenLearnPhrase',
-  '_rivenPhrasebookLookup'];
+  '_rivenPhrasebookLookup', '_rivenFlushPayload', '_isoDaysAgo'];
 const app = { _nlpContext: {}, userInfo: { profile: { id: 'teacher-1', user_type: 'teacher' }, user: { id: 't1' } } };
 for (const n of METHODS) { const f = mk(n); app[n] = function (...a) { return f.apply(app, a); }; }
 
@@ -115,6 +115,49 @@ check(st2.byIntent.VIEW_ATTENDANCE === 1, 'a learned phrase counts toward its in
 check(!('null' in st2.byIntent) && !('undefined' in st2.byIntent), 'a miss adds no intent tally');
 check(Object.values(st2.byIntent).every(v => typeof v === 'number'),
   'the histogram stores COUNTS only, never the sentences');
+
+console.log('\n== THE FLUSH CANNOT CARRY A STUDENT NAME ==');
+// The load-bearing privacy property. A miss is a teacher's utterance about a
+// named child; in localStorage that's a scratch buffer on their laptop, but in
+// a Postgres table it would be a searchable, retained log of what staff said
+// about which students. Only counts and entity-stripped shapes may leave.
+{
+  const norm = app._normalizeInput('is jordan vibing today');
+  const resolved = app._resolvePronouns(norm);
+  const ent = app._extractEntities(resolved, 'is jordan vibing today');
+  const shape = app._rivenPhraseShape(resolved, ent);
+  check(!/jordan/i.test(shape), `the shape drops the student name (${JSON.stringify(shape)})`);
+
+  // A buffer holding the RAW text, exactly as _rivenRecordOutcome stores it.
+  const st = {
+    routed: 3, learned: 1, weak: 1, miss: 2,
+    byIntent: { ADD_RTC: 3, VIEW_ATTENDANCE: 1 },
+    misses: [
+      { t: Date.now(), k: 'miss', s: 'is jordan vibing today', shape },
+      { t: Date.now(), k: 'weak', s: 'whats up with charlotte tebow', shape: 'whats' },
+      { t: Date.now(), k: 'miss', s: 'mia wilson seems off', shape: null }, // no shape -> not sent
+    ],
+    since: Date.now(),
+  };
+  const rows = app._rivenFlushPayload(st);
+  const blob = JSON.stringify(rows).toLowerCase();
+
+  for (const name of ['jordan', 'charlotte', 'tebow', 'mia', 'wilson']) {
+    check(!blob.includes(name), `flush payload contains no "${name}"`);
+  }
+  check(!blob.includes('vibing today'), 'flush payload contains no raw sentence');
+  check(rows.every(r => r.p_shape === null || /^[a-z0-9_]+( [a-z0-9_]+)*$/.test(r.p_shape)),
+    'every shape sent matches the column CHECK constraint');
+  check(rows.every(r => r.p_shape === null || ['weak', 'miss'].includes(r.p_outcome)),
+    'a shape is only ever attached to a gap row');
+  check(!rows.some(r => r.p_shape === null && r.p_intent === null && r.p_outcome === 'miss' && r.p_count === 0),
+    'no empty rows');
+  check(rows.some(r => r.p_intent === 'ADD_RTC' && r.p_count === 3), 'intent tallies are sent');
+  const missRow = rows.find(r => r.p_outcome === 'miss' && r.p_shape);
+  check(!!missRow, 'a gap row with a shape is sent so the parser can be taught');
+  // the third miss had shape:null and must be silently dropped, not sent raw
+  check(!blob.includes('seems off'), 'a miss with no computed shape is dropped, never sent raw');
+}
 
 console.log('\n== nothing leaves the device ==');
 check(!/fetch\(|XMLHttpRequest|navigator\.sendBeacon/.test(bodyOf('_rivenRecordOutcome').body),

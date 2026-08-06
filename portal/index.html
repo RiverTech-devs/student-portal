@@ -41706,6 +41706,8 @@
       // reload silently emptied the undo list while the chat above still showed
       // the writes that were made.
       this._restoreRivenUndo();
+      // Roll yesterday's buffer up on open; batched thereafter.
+      this._rivenFlushUsage({ force: true }).catch(() => {});
       this._setupTerminalPersistence();
 
       // Proactive briefing: surface anything needing attention (throttled to
@@ -42643,7 +42645,7 @@
       if (!intent) intent = this._matchIntent(resolvedInput, entities);
 
       if (!intent || intent.confidence < 0.5) {
-        this._rivenRecordOutcome('miss', resolvedInput);
+        this._rivenRecordOutcome('miss', resolvedInput, null, this._rivenPhraseShape(resolvedInput, entities));
         if (this._phi3State?.active && this._phi3State?.pipe && !opts?._fromPhi3) {
           // Phi-3 is the fallback — skip the 25MB semantic layer entirely
           this._phi3Interpret(input, resolvedInput, entities).catch(() => this._handleUnknown(resolvedInput, entities));
@@ -42670,7 +42672,11 @@
         'ADD_NOTE', 'DELETE_NOTE', 'MARK_READ'];
       const weakWin = typeof intent.w === 'number' && intent.w <= 3
         && intent.intent !== 'CAPABILITY' && !writeWins.includes(intent.intent);
-      if (!intent.learned) this._rivenRecordOutcome((intent.lastResort || weakWin) ? 'weak' : 'routed', resolvedInput, intent.intent);
+      if (!intent.learned) {
+        const _weak = intent.lastResort || weakWin;
+        this._rivenRecordOutcome(_weak ? 'weak' : 'routed', resolvedInput, intent.intent,
+          _weak ? this._rivenPhraseShape(resolvedInput, entities) : null);
+      }
       if ((intent.lastResort || weakWin) && resolvedInput.split(/\s+/).length >= 4) {
         if (this._phi3State?.active && this._phi3State?.pipe && !opts?._fromPhi3) {
           this._phi3Interpret(input, resolvedInput, entities).catch(() => this._handleUnknown(resolvedInput, entities));
@@ -42725,6 +42731,9 @@
 
       // Phase 3: Update context
       this._updateContext(intent, entities);
+
+      // Batched, fire-and-forget: no-ops until the buffer is worth a round trip.
+      this._rivenFlushUsage().catch(() => {});
     }
 
     _resolvePronouns(normalized) {
@@ -46895,7 +46904,7 @@
 
     // kind: 'routed' (parser was confident) | 'weak' (parser guessed) |
     //       'miss' (parser had nothing) | 'learned' (phrasebook hit)
-    _rivenRecordOutcome(kind, normalized, intent) {
+    _rivenRecordOutcome(kind, normalized, intent, shape) {
       try {
         const raw = localStorage.getItem(this._rivenStatsKey());
         const st = raw ? JSON.parse(raw) : { routed: 0, weak: 0, miss: 0, learned: 0, misses: [], byIntent: {}, since: Date.now() };
@@ -46912,7 +46921,14 @@
           // Keep the actual phrasings — the counter says HOW OFTEN the parser
           // falls short, this says WHAT to teach it next.
           st.misses = st.misses || [];
-          st.misses.push({ t: Date.now(), k: kind, s: String(normalized || '').slice(0, 120) });
+          // `s` is the raw phrasing and NEVER leaves this device — it is what
+          // the teacher sees in their own /coverage. `shape` is the stripped
+          // form and is the only part the school-wide flush may send.
+          st.misses.push({
+            t: Date.now(), k: kind,
+            s: String(normalized || '').slice(0, 120),
+            shape: (shape || '').slice(0, 120) || null,
+          });
           if (st.misses.length > 200) st.misses = st.misses.slice(-200);
         }
         localStorage.setItem(this._rivenStatsKey(), JSON.stringify(st));
@@ -46973,6 +46989,87 @@
       this.executeTerminalCommand(cmd);
     }
 
+    // ---- School-wide rollup (Supabase) ------------------------------------
+    // localStorage stays the working buffer; this rolls it up so an admin can
+    // see the WHOLE school's coverage, which is the number that actually
+    // decides whether the model tiers still earn their keep. The admin is the
+    // one person who never hits the gaps — they know how it parses.
+    //
+    // The payload is built from counters and STRIPPED SHAPES only. A raw
+    // sentence names a student, and a table of those is a different artifact
+    // from a scratch buffer on one laptop. _rivenFlushPayload is a pure
+    // function so the harness can assert that directly.
+
+    _rivenFlushPayload(st) {
+      if (!st) return [];
+      const rows = [];
+      const day = this._isoDaysAgo(0);
+      for (const k of ['routed', 'learned', 'weak', 'miss']) {
+        const n = st[k] || 0;
+        if (n > 0) rows.push({ p_day: day, p_intent: null, p_outcome: k, p_shape: null, p_count: n });
+      }
+      for (const [intent, n] of Object.entries(st.byIntent || {})) {
+        if (n > 0 && intent && intent !== 'null') {
+          rows.push({ p_day: day, p_intent: intent, p_outcome: 'routed', p_shape: null, p_count: n });
+        }
+      }
+      // Gap SHAPES — what to teach the parser next. Never m.s (the raw text).
+      const shapeCounts = {};
+      for (const m of st.misses || []) {
+        const shape = m.shape;                       // set at record time, already stripped
+        if (!shape) continue;                        // no shape -> nothing is sent
+        const key = (m.k === 'weak' ? 'weak' : 'miss') + ' ' + shape;
+        shapeCounts[key] = (shapeCounts[key] || 0) + 1;
+      }
+      for (const [key, n] of Object.entries(shapeCounts)) {
+        const [outcome, shape] = key.split(' ');
+        rows.push({ p_day: day, p_intent: null, p_outcome: outcome, p_shape: shape, p_count: n });
+      }
+      return rows;
+    }
+
+    async _rivenFlushUsage({ force = false } = {}) {
+      try {
+        const raw = localStorage.getItem(this._rivenStatsKey());
+        if (!raw) return;
+        const st = JSON.parse(raw);
+        const total = (st.routed || 0) + (st.weak || 0) + (st.miss || 0) + (st.learned || 0);
+        // Batch: a flush is a rollup, not an event stream.
+        if (!force && total - (st.flushedAt || 0) < 15) return;
+
+        const rows = this._rivenFlushPayload(st);
+        if (!rows.length) return;
+        for (const r of rows) {
+          // Fire-and-forget: telemetry must never block or break the terminal.
+          await this.auth.supabase.rpc('riven_usage_bump', r).catch(() => {});
+        }
+        // Reset the buffer's counted portion so the next flush is a delta.
+        localStorage.setItem(this._rivenStatsKey(), JSON.stringify({
+          ...st, routed: 0, weak: 0, miss: 0, learned: 0, byIntent: {},
+          misses: (st.misses || []).slice(-40), flushedAt: 0,
+          lifetime: (st.lifetime || 0) + total, since: st.since || Date.now(),
+        }));
+      } catch (_) { /* offline, RLS, table absent — all non-fatal */ }
+    }
+
+    // Admin view: the same questions, answered across every teacher.
+    async _rivenSchoolCoverage() {
+      const { data, error } = await this.supabaseQuery(() => this.auth.supabase
+        .from('riven_usage')
+        .select('user_id, intent, outcome, shape, count')
+        .gte('day', this._isoDaysAgo(30)));
+      if (error || !data) return null;
+      const tot = { routed: 0, learned: 0, weak: 0, miss: 0 };
+      const byIntent = {}, byShape = {}, teachers = new Set();
+      for (const r of data) {
+        teachers.add(r.user_id);
+        if (!r.intent && !r.shape) tot[r.outcome] = (tot[r.outcome] || 0) + r.count;
+        if (r.intent) byIntent[r.intent] = (byIntent[r.intent] || 0) + r.count;
+        if (r.shape) byShape[r.shape] = (byShape[r.shape] || 0) + r.count;
+      }
+      return { tot, byIntent, byShape, teachers: teachers.size };
+    }
+
     async terminalCoverageReport() {
       let st = null, book = {};
       try { st = JSON.parse(localStorage.getItem(this._rivenStatsKey()) || 'null'); } catch (_) {}
@@ -47014,7 +47111,47 @@
              <b>${c}</b> <span style="color:var(--muted);">(${(c / total * 100).toFixed(0)}%)</span>`).join('<br>')}</div></div>` : ''}
         ${recent.length ? `<div style="margin-top:12px;font-size:12px;color:var(--muted);">
           <b>Recent ones I struggled with:</b><br>${recent.map(m => '· ' + this.escapeHtml(m.s)).join('<br>')}</div>` : ''}
-        <div style="font-size:11px;color:var(--muted);margin-top:8px;">All of this stays on this device.</div>`, true);
+        <div style="font-size:11px;color:var(--muted);margin-top:8px;">
+          Your raw phrasings above stay on this device. Only counts and
+          name-stripped shapes are shared for the school-wide view.</div>`, true);
+
+      // Admins also get the whole school — the number that decides whether the
+      // model tiers still earn their keep. An admin's own miss rate never does:
+      // they're the one person who knows how it parses.
+      if (this.userInfo?.profile?.user_type === 'admin') {
+        await this._rivenFlushUsage({ force: true }).catch(() => {});
+        const school = await this._rivenSchoolCoverage().catch(() => null);
+        if (!school) {
+          this._showRivenMessage(`<span style="font-size:12px;color:var(--muted);">School-wide view unavailable — has the <code>riven_usage</code> migration been run?</span>`, true);
+          return;
+        }
+        const sTotal = Object.values(school.tot).reduce((a, b) => a + b, 0);
+        if (!sTotal) {
+          this._showRivenMessage(`<span style="font-size:12px;color:var(--muted);">No school-wide data yet — it appears once teachers have used Riven.</span>`, true);
+          return;
+        }
+        const sp = (n) => ((n || 0) / sTotal * 100).toFixed(1) + '%';
+        const topIntents = Object.entries(school.byIntent).sort((a, b) => b[1] - a[1]).slice(0, 12);
+        const topShapes = Object.entries(school.byShape).sort((a, b) => b[1] - a[1]).slice(0, 15);
+        this._showRivenMessage(`
+          <div style="font-weight:700;color:#2f6b6d;margin-bottom:6px;">🏫 Whole school — last 30 days</div>
+          <div style="font-size:13px;line-height:1.7;">
+            <b>${sTotal}</b> requests from <b>${school.teachers}</b> staff<br>
+            ✅ understood outright — <b>${sp(school.tot.routed)}</b><br>
+            🧠 a taught phrase — <b>${sp(school.tot.learned)}</b><br>
+            🤔 best guess — <b>${sp(school.tot.weak)}</b><br>
+            ❓ had to ask — <b>${sp(school.tot.miss)}</b>
+          </div>
+          ${topIntents.length ? `<div style="margin-top:12px;font-size:12px;">
+            <b style="color:#2f6b6d;">What the school uses</b><br>
+            <div style="margin-top:4px;line-height:1.7;">${topIntents.map(([i, c]) =>
+              `<span style="display:inline-block;min-width:150px;">${this.escapeHtml(LABEL[i] || i.replace(/_/g, ' ').toLowerCase())}</span><b>${c}</b>`).join('<br>')}</div></div>` : ''}
+          ${topShapes.length ? `<div style="margin-top:12px;font-size:12px;color:var(--muted);">
+            <b>Phrasings to teach the parser next</b> (names removed)<br>
+            ${topShapes.map(([sh, c]) => `· ${this.escapeHtml(sh)} <b>×${c}</b>`).join('<br>')}</div>` : ''}
+          <div style="font-size:11px;color:var(--muted);margin-top:8px;">
+            Counts and name-stripped shapes only — no student is identifiable here.</div>`, true);
+      }
     }
 
     // ---- Deterministic recovery ladder -----------------------------------
