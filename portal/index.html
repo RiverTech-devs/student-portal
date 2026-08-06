@@ -42415,6 +42415,8 @@
         await this.terminalViewPrivilegeCatalog();
 
       // Utility commands
+      } else if (cmd === '/coverage') {
+        await this.terminalCoverageReport();
       } else if (cmd === '/help') {
         this.terminalPrintHelp();
       } else if (cmd === '/clear') {
@@ -42629,9 +42631,19 @@
         intent = { intent: reuseSrc, confidence: 0.9 };
       }
 
+      // A shape this teacher has confirmed twice from the recovery ladder
+      // routes directly. Reads only — see _rivenLearnableIntent.
+      if (!intent) {
+        const learned = this._rivenPhrasebookLookup(this._rivenPhraseShape(resolvedInput, entities));
+        if (learned) {
+          intent = { intent: learned, confidence: 0.85, learned: true };
+          this._rivenRecordOutcome('learned', resolvedInput);
+        }
+      }
       if (!intent) intent = this._matchIntent(resolvedInput, entities);
 
       if (!intent || intent.confidence < 0.5) {
+        this._rivenRecordOutcome('miss', resolvedInput);
         if (this._phi3State?.active && this._phi3State?.pipe && !opts?._fromPhi3) {
           // Phi-3 is the fallback — skip the 25MB semantic layer entirely
           this._phi3Interpret(input, resolvedInput, entities).catch(() => this._handleUnknown(resolvedInput, entities));
@@ -42658,6 +42670,7 @@
         'ADD_NOTE', 'DELETE_NOTE', 'MARK_READ'];
       const weakWin = typeof intent.w === 'number' && intent.w <= 3
         && intent.intent !== 'CAPABILITY' && !writeWins.includes(intent.intent);
+      if (!intent.learned) this._rivenRecordOutcome((intent.lastResort || weakWin) ? 'weak' : 'routed', resolvedInput);
       if ((intent.lastResort || weakWin) && resolvedInput.split(/\s+/).length >= 4) {
         if (this._phi3State?.active && this._phi3State?.pipe && !opts?._fromPhi3) {
           this._phi3Interpret(input, resolvedInput, entities).catch(() => this._handleUnknown(resolvedInput, entities));
@@ -45430,7 +45443,15 @@
     <code style="background: rgba(61, 40, 23, 0.12); padding: 2px 6px; border-radius: 3px;">/top</code>,
     <code style="background: rgba(61, 40, 23, 0.12); padding: 2px 6px; border-radius: 3px;">/history</code>,
     <code style="background: rgba(61, 40, 23, 0.12); padding: 2px 6px; border-radius: 3px;">/attendance</code>,
-    <code style="background: rgba(61, 40, 23, 0.12); padding: 2px 6px; border-radius: 3px;">/undo</code>, etc.
+    <code style="background: rgba(61, 40, 23, 0.12); padding: 2px 6px; border-radius: 3px;">/undo</code>,
+    <code style="background: rgba(61, 40, 23, 0.12); padding: 2px 6px; border-radius: 3px;">/coverage</code>, etc.
+  </div>
+  <div style="font-size: 11px; color: #6b5236; line-height: 1.6; margin-top: 6px;">
+    <code style="background: rgba(61, 40, 23, 0.12); padding: 2px 6px; border-radius: 3px;">/coverage</code>
+    shows how often I understood you outright, and the phrasings I struggled with.
+    When you tap one of my "did you mean…" suggestions I remember it — after twice,
+    that phrasing goes straight through. (Look-ups only; I never learn to make a
+    change on my own. All of it stays on this device.)
   </div>
 </div>
 
@@ -46861,6 +46882,197 @@
         Sensitive changes always ask you to confirm first.`, true);
     }
 
+    // ---- Coverage telemetry + learned phrasebook --------------------------
+    // Both exist to make dropping the LLM tiers a MEASURED decision rather than
+    // an assumed one. Everything here is local to the browser; nothing is sent
+    // anywhere, which keeps Riven's "no server sees your students" property.
+
+    _rivenStatsKey() { return 'riven_coverage_' + (this.userInfo?.profile?.id || 'anon'); }
+    _rivenPhrasebookKey() { return 'riven_phrasebook_' + (this.userInfo?.profile?.id || 'anon'); }
+
+    // kind: 'routed' (parser was confident) | 'weak' (parser guessed) |
+    //       'miss' (parser had nothing) | 'learned' (phrasebook hit)
+    _rivenRecordOutcome(kind, normalized) {
+      try {
+        const raw = localStorage.getItem(this._rivenStatsKey());
+        const st = raw ? JSON.parse(raw) : { routed: 0, weak: 0, miss: 0, learned: 0, misses: [], since: Date.now() };
+        st[kind] = (st[kind] || 0) + 1;
+        if (kind === 'miss' || kind === 'weak') {
+          // Keep the actual phrasings — the counter says HOW OFTEN the parser
+          // falls short, this says WHAT to teach it next.
+          st.misses = st.misses || [];
+          st.misses.push({ t: Date.now(), k: kind, s: String(normalized || '').slice(0, 120) });
+          if (st.misses.length > 200) st.misses = st.misses.slice(-200);
+        }
+        localStorage.setItem(this._rivenStatsKey(), JSON.stringify(st));
+      } catch (_) { /* private mode / quota — telemetry is best-effort */ }
+    }
+
+    // The shape of a phrase with entity names removed, so "has jordan been
+    // showing up" and "has mia been showing up" are the SAME lesson.
+    _rivenPhraseShape(normalized, entities) {
+      let t = normalized || '';
+      const stu = entities?.student?.student || entities?.student;
+      for (const part of [stu?.first_name, stu?.last_name, entities?.classMatch?.name]) {
+        if (part) t = t.replace(new RegExp(part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'ig'), ' ');
+      }
+      return this._rivenContentTokens(t).sort().join(' ');
+    }
+
+    // Only READ intents are ever learned. A phrase that silently starts writing
+    // because it was tapped twice is not a tradeoff worth making — ADD_NOTE and
+    // every mutation stay offered-and-tapped, forever.
+    _rivenLearnableIntent(intent) {
+      const t = this._rivenSuggestionTemplates()[intent];
+      return !!t && intent !== 'ADD_NOTE';
+    }
+
+    _rivenLearnPhrase(shape, intent) {
+      if (!shape || !this._rivenLearnableIntent(intent)) return;
+      try {
+        const raw = localStorage.getItem(this._rivenPhrasebookKey());
+        const book = raw ? JSON.parse(raw) : {};
+        const e = book[shape] && book[shape].intent === intent ? book[shape] : { intent, hits: 0 };
+        e.hits += 1; e.at = Date.now();
+        book[shape] = e;
+        const keys = Object.keys(book);
+        if (keys.length > 300) { // bounded; drop the least recently confirmed
+          keys.sort((a, b) => (book[a].at || 0) - (book[b].at || 0)).slice(0, keys.length - 300)
+            .forEach(k => delete book[k]);
+        }
+        localStorage.setItem(this._rivenPhrasebookKey(), JSON.stringify(book));
+      } catch (_) {}
+    }
+
+    // A shape routes directly once the same teacher has confirmed it twice.
+    _rivenPhrasebookLookup(shape) {
+      if (!shape) return null;
+      try {
+        const raw = localStorage.getItem(this._rivenPhrasebookKey());
+        if (!raw) return null;
+        const e = (JSON.parse(raw) || {})[shape];
+        return (e && e.hits >= 2 && this._rivenLearnableIntent(e.intent)) ? e.intent : null;
+      } catch (_) { return null; }
+    }
+
+    // Called by a recovery-ladder button: record the lesson, then run the
+    // canonical command through the ordinary pipeline.
+    _rivenLearnAndRun(intent, shape, cmd) {
+      this._rivenLearnPhrase(shape, intent);
+      this.executeTerminalCommand(cmd);
+    }
+
+    async terminalCoverageReport() {
+      let st = null, book = {};
+      try { st = JSON.parse(localStorage.getItem(this._rivenStatsKey()) || 'null'); } catch (_) {}
+      try { book = JSON.parse(localStorage.getItem(this._rivenPhrasebookKey()) || '{}'); } catch (_) {}
+      if (!st) { this._showRivenMessage(`No coverage data yet — ask me a few things first.`, true); return; }
+      const total = (st.routed || 0) + (st.weak || 0) + (st.miss || 0) + (st.learned || 0);
+      if (!total) { this._showRivenMessage(`No coverage data yet.`, true); return; }
+      const pct = (n) => ((n || 0) / total * 100).toFixed(1) + '%';
+      const recent = (st.misses || []).slice(-12).reverse();
+      const learned = Object.entries(book).filter(([, e]) => e.hits >= 2).length;
+      this._showRivenMessage(`
+        <div style="font-weight:700;color:#2f6b6d;margin-bottom:6px;">How often I understood you</div>
+        <div style="font-size:13px;line-height:1.7;">
+          <b>${total}</b> requests since ${new Date(st.since || Date.now()).toLocaleDateString()}<br>
+          ✅ understood outright — <b>${pct(st.routed)}</b> (${st.routed || 0})<br>
+          🧠 matched a phrase you taught me — <b>${pct(st.learned)}</b> (${st.learned || 0})<br>
+          🤔 best guess — <b>${pct(st.weak)}</b> (${st.weak || 0})<br>
+          ❓ had to ask — <b>${pct(st.miss)}</b> (${st.miss || 0})<br>
+          📖 phrases learned: <b>${learned}</b>
+        </div>
+        ${recent.length ? `<div style="margin-top:10px;font-size:12px;color:var(--muted);">
+          <b>Recent ones I struggled with:</b><br>${recent.map(m => '· ' + this.escapeHtml(m.s)).join('<br>')}</div>` : ''}
+        <div style="font-size:11px;color:var(--muted);margin-top:8px;">All of this stays on this device.</div>`, true);
+    }
+
+    // ---- Deterministic recovery ladder -----------------------------------
+    // Without a model, a miss must not be a dead end. This ranks the intents
+    // Riven MIGHT have meant using the SAME example bank the MiniLM tier embeds
+    // — but by content-token overlap instead of cosine similarity. Same data,
+    // no 25MB download, and the ranking is inspectable.
+    //
+    // Every suggestion issues a canonical command back through the normal
+    // pipeline rather than executing an intent directly, so a tap can't reach
+    // anything a typed command couldn't: same guards, same confirmation gates,
+    // same undo. An intent with no template here is never suggested.
+    _rivenSuggestionTemplates() {
+      const s = (n) => n, f = (n) => (n || '').split(' ')[0];
+      return {
+        VIEW_STUDENT:        { icon: '👤', label: 'Their card',    needs: 'student', cmd: (n) => `show ${s(n)}` },
+        VIEW_HISTORY:        { icon: '📜', label: 'RTC history',   needs: 'student', cmd: (n) => `history for ${s(n)}` },
+        BALANCE_AT:          { icon: '💰', label: 'Balance',       needs: 'student', cmd: (n) => `how much rtc does ${s(n)} have` },
+        VIEW_GRADES:         { icon: '🎓', label: 'Grades',        needs: 'student', cmd: (n) => `show ${s(n)} grades` },
+        VIEW_ATTENDANCE:     { icon: '📅', label: 'Attendance',    needs: 'student', cmd: (n) => `show ${s(n)} attendance` },
+        VIEW_NOTES:          { icon: '🗒️', label: 'Notes',         needs: 'student', cmd: (n) => `show notes for ${s(n)}` },
+        VIEW_ENROLLMENTS:    { icon: '📚', label: 'Their classes', needs: 'student', cmd: (n) => `what classes is ${s(n)} in` },
+        VIEW_CONTACT:        { icon: '📇', label: 'Contact info',  needs: 'student', cmd: (n) => `contact info for ${s(n)}` },
+        VIEW_HOMEWORK:       { icon: '📝', label: 'Homework',      needs: 'student', cmd: (n) => `what homework does ${s(n)} have` },
+        STUDENT_TENURE:      { icon: '⏳', label: 'How long here', needs: 'student', cmd: (n) => `how long has ${s(n)} been here` },
+        VIEW_STUDENT_PRIVILEGES: { icon: '🎟️', label: 'Privileges', needs: 'student', cmd: (n) => `what privileges does ${s(n)} have` },
+        ADD_NOTE:            { icon: '🗒️', label: 'Save as a note', needs: 'student', cmd: (n, _c, raw) => `note for ${f(n)}: ${raw}` },
+        VIEW_ROSTER:         { icon: '👥', label: 'Roster',        needs: 'class',   cmd: (_n, c) => `who is in ${c}` },
+        CLASS_STATS:         { icon: '📊', label: 'Class stats',   needs: 'class',   cmd: (_n, c) => `how is ${c} doing` },
+        CLASS_INFO:          { icon: 'ℹ️', label: 'Class info',    needs: 'class',   cmd: (_n, c) => `tell me about ${c}` },
+        LIST_CLASSES:        { icon: '📚', label: 'My classes',    needs: null,      cmd: () => `list my classes` },
+        LIST_STUDENTS:       { icon: '🧑‍🎓', label: 'All students', needs: null,     cmd: () => `list all students` },
+        BRIEFING:            { icon: '☀️', label: 'Briefing',      needs: null,      cmd: () => `anything i should know` },
+        VIEW_TOP:            { icon: '🏆', label: 'Leaderboard',   needs: null,      cmd: () => `show me the top 10 students` },
+        VIEW_STATS:          { icon: '📈', label: 'School stats',  needs: null,      cmd: () => `show stats` },
+        VIEW_SHOP:           { icon: '🛒', label: 'The shop',      needs: null,      cmd: () => `show me the shop` },
+        VIEW_PRIVILEGE_CATALOG: { icon: '🎟️', label: 'Privileges', needs: null,     cmd: () => `show me the privilege catalog` },
+        ATTENDANCE_ISSUES:   { icon: '🚩', label: 'Attendance flags', needs: null,   cmd: () => `which students have bad attendance` },
+        GRADE_ISSUES:        { icon: '📉', label: 'Failing students', needs: null,   cmd: () => `which students are failing` },
+        ACTIVITY_LOG:        { icon: '🕐', label: 'What I just did', needs: null,    cmd: () => `what did you just do` },
+      };
+    }
+
+    _rivenContentTokens(text) {
+      const STOP = new Set(('a an and the of to in on at for with from by is are was were be been am ' +
+        'i you he she it we they me him her us them my your our their will would can could should may ' +
+        'might do did does done has have had as so or but if then than not no yes let lets about into ' +
+        'out up down over under again more most some any all what which who whom whose how when where ' +
+        'why this that these those there here just really very much many please show tell give get').split(' '));
+      return (text || '').toLowerCase().match(/[a-z0-9_]+/g)?.filter(w => w.length > 2 && !STOP.has(w)) || [];
+    }
+
+    // Rank candidate intents by content-token overlap against the example bank.
+    // Deliberately lexical: no model, no download, and you can read WHY a
+    // suggestion appeared. Returns [{intent, score}] best-first.
+    _rivenRankIntents(resolvedInput, entities) {
+      let text = resolvedInput || '';
+      // Names carry no intent signal and would skew every score identically.
+      const stu = entities?.student?.student || entities?.student;
+      for (const part of [stu?.first_name, stu?.last_name, entities?.classMatch?.name]) {
+        if (part) text = text.replace(new RegExp(part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'ig'), ' ');
+      }
+      const q = new Set(this._rivenContentTokens(text));
+      if (!q.size) return [];
+      const templates = this._rivenSuggestionTemplates();
+      let bank = {};
+      try { bank = this._semanticExampleBank() || {}; } catch (_) { bank = {}; }
+
+      const scored = [];
+      for (const intent of Object.keys(templates)) {
+        const examples = bank[intent] || [];
+        let best = 0;
+        for (const ex of examples) {
+          const e = new Set(this._rivenContentTokens(ex));
+          if (!e.size) continue;
+          let inter = 0;
+          for (const t of q) if (e.has(t)) inter++;
+          if (!inter) continue;
+          best = Math.max(best, inter / Math.min(q.size, e.size));
+        }
+        // The intent's own name is a weak extra signal ("attendance" -> VIEW_ATTENDANCE)
+        const nameTokens = intent.toLowerCase().split('_').filter(w => w.length > 2);
+        if (nameTokens.some(t => q.has(t))) best = Math.max(best, 0.5);
+        if (best >= 0.25) scored.push({ intent, score: best });
+      }
+      return scored.sort((a, b) => b.score - a.score);
+    }
+
     _handleUnknown(normalized, entities) {
       const cmdBtn = (icon, lbl, cmd) =>
         `<button onclick="app.executeTerminalCommand('${cmd.replace(/'/g, '&#39;')}')"
@@ -46870,6 +47082,42 @@
       const stu = entities?.student?.student || entities?.student;
       if (stu && stu.full_name) {
         const n = stu.full_name;
+        // Rank by what the sentence actually SAID, rather than always offering
+        // the same five. The fixed set stays as the floor when nothing scores.
+        const templates = this._rivenSuggestionTemplates();
+        const ranked = this._rivenRankIntents(normalized, entities)
+          .filter(r => templates[r.intent]?.needs !== 'class')
+          .slice(0, 4);
+
+        // A sentence with a named student and no command verb is almost always
+        // an OBSERVATION ("charlotte keeps interrupting during lessons"). That
+        // is the one thing the model tier did that patterns shouldn't guess at
+        // — so offer it first rather than silently writing a note.
+        const looksObserved = !this._hasCommandVerb(normalized)
+          && normalized.trim().split(/\s+/).length >= 4;
+        const noteBody = normalized.replace(new RegExp('^\\s*' + (stu.first_name || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*', 'i'), '').trim();
+        const order = [];
+        if (looksObserved && noteBody.length >= 3) order.push({ intent: 'ADD_NOTE', score: 1 });
+        for (const r of ranked) if (!order.find(o => o.intent === r.intent)) order.push(r);
+
+        if (order.length) {
+          // Tapping teaches as well as runs: the phrase SHAPE (names stripped)
+          // is recorded against the chosen intent, and after two confirmations
+          // it routes directly. Reads only — a write never becomes automatic.
+          const shape = this._rivenPhraseShape(normalized, entities);
+          const learnBtn = (icon, lbl, intent, cmd) =>
+            `<button onclick="app._rivenLearnAndRun('${intent}', '${shape.replace(/'/g, '&#39;')}', '${cmd.replace(/'/g, '&#39;')}')"
+              style="padding: 5px 12px; border-radius: 8px; border: 1px solid #b08d5a; background: rgba(176,141,90,0.15); color: inherit; cursor: pointer; font-size: 12px; font-weight: 600;">${icon} ${lbl}</button>`;
+          const btns = order.slice(0, 5).map(r => {
+            const t = templates[r.intent];
+            return learnBtn(t.icon, t.label, r.intent, t.cmd(n, null, noteBody));
+          }).join('');
+          this._showRivenMessage(`I can tell this is about <b>${this.escapeHtml(n)}</b>, but I'm not sure what you need. One of these?
+            <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px;">${btns}</div>
+            <div style="font-size: 11px; color: var(--muted); margin-top: 6px;">…or just rephrase.</div>`, true);
+          return;
+        }
+
         this._showRivenMessage(`I can tell this is about <b>${this.escapeHtml(n)}</b>, but I'm not sure what you need. One of these?
           <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px;">
             ${cmdBtn('💰', 'Balance', `how much rtc does ${n} have`)}
