@@ -1,34 +1,33 @@
-// Typed-answer gate for games/math-dojo.html.
+// Question-bank size gate for games/math-dojo.html.
 //
-// From Algebra I up (tier 5+) students type the answer instead of picking from
-// four buttons. Two things have to hold for that to be safe, and this harness
-// checks both:
+// A skill is mastered with 5 correct in a row. If the generator can only ever
+// produce a handful of distinct questions, "mastered" certifies that the
+// student memorised those questions — and it still awards RTC and flips the
+// skill graph. Area Between Curves shipped with a bank of THREE: the same two
+// curves every time, with the upper limit drawn from {4, 6}.
 //
-//   1. COVERAGE  — how many generated questions actually render as typed input.
-//   2. ROUND-TRIP — for every question that renders as typed, a student who
-//      types the generator's OWN expected answer, character for character, is
-//      graded correct. If AnswerInterpreter can't parse an answer it produced
-//      itself, that question is unanswerable and the skill is bricked.
+// renderPracticePhase already knows: "Many generators have fixed pools of 3-10
+// items; forcing 'never seen' eventually exhausts the pool and every retry
+// lands on a repeat anyway." That comment treats a curriculum problem as a UI
+// one. This harness makes the curriculum problem visible and keeps it fixed.
 //
-// (2) is the one that matters. Multiple choice hid every parser gap, because
-// the student clicked a string and we compared strings. Typed input exposes
-// them all at once.
+// Counts DISTINCT question+answer pairs over many draws, per skill.
 //
-// This extracts the REAL functions from the page (shouldTypeAnswer,
-// answerIsTypeable, typedAnswerIsCorrect, AnswerInterpreter) so it cannot drift
-// from shipped code — same approach as the Riven harnesses.
-//
-// Usage: node debug-tools/typed-answer-coverage.js
-// Exits non-zero if any tier 5+ question fails to round-trip.
+// Usage:  node debug-tools/question-bank-size.js [--floor N] [--tier N] [--all]
+// Exits non-zero if any tier-5+ skill is under the floor.
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
 const ROOT = path.resolve(__dirname, '..');
 const src = fs.readFileSync(path.join(ROOT, 'games/math-dojo.html'), 'utf8');
-const SAMPLES = Number(process.env.SAMPLES || 400);
+const argv = process.argv.slice(2);
+const argOf = (flag, dflt) => { const i = argv.indexOf(flag); return i >= 0 ? Number(argv[i + 1]) : dflt; };
+const FLOOR = argOf('--floor', 30);
+const ONLY_TIER = argOf('--tier', 0);
+const SHOW_ALL = argv.includes('--all');
+const DRAWS = argOf('--draws', 4000);
 
-// ---- brace matcher that understands strings, template literals and comments ----
 function findMatchingBrace(text, openIdx) {
   if (text[openIdx] !== '{') return -1;
   const stack = [{ mode: 'code', depth: 1 }];
@@ -57,34 +56,10 @@ function findMatchingBrace(text, openIdx) {
   }
   return -1;
 }
-function literal(decl) {
-  const d = src.indexOf(decl);
-  if (d < 0) throw new Error(`${decl} not found`);
-  const o = src.indexOf('{', d);
-  return src.slice(o, findMatchingBrace(src, o) + 1);
-}
-// AnswerInterpreter contains regex quantifier braces ({1,3}) that defeat the
-// brace matcher, so slice it by line: declaration through the next column-0 `};`.
-function sliceByLine(startsWith) {
-  const lines = src.split('\n');
-  const s = lines.findIndex(l => l.startsWith(startsWith));
-  if (s < 0) throw new Error(`${startsWith} not found`);
-  let e = s + 1;
-  while (e < lines.length && !/^\};/.test(lines[e])) e++;
-  return lines.slice(s, e + 1).join('\n');
-}
-// Pull a top-level `function name(...) {...}` out of the page verbatim.
-function fnSource(name) {
-  const d = src.indexOf(`function ${name}(`);
-  if (d < 0) throw new Error(`function ${name} not found`);
-  const o = src.indexOf('{', d);
-  return src.slice(d, findMatchingBrace(src, o) + 1);
-}
-
+function literal(decl) { const d = src.indexOf(decl); if (d < 0) throw new Error(`${decl} not found`); const o = src.indexOf('{', d); return src.slice(o, findMatchingBrace(src, o) + 1); }
 const V2 = src.slice(src.indexOf('// ===== V2 NEW-SKILL CONTENT'),
   src.lastIndexOf('// ===== end V2 NEW-SKILL CONTENT =====') + '// ===== end V2 NEW-SKILL CONTENT ====='.length);
 
-// ---- page helper stubs (mirrors tools/audit-dojo-coverage.js) ----
 let seed = 1;
 function seeded() {
   seed = (seed + 0x6D2B79F5) | 0;
@@ -156,8 +131,8 @@ sandbox.answerValue = answerValue;
 sandbox.backfillOptions = backfillOptions;
 sandbox.uniqOpts = uniqOpts;
 sandbox.simplifyFrac = (n, d) => { const g = sandbox.gcd(Math.abs(n), Math.abs(d)); return [n / g, d / g]; };
-// Expose the whole generator surface so the harness sees every question type,
-// not just the first gate. The live game unlocks these progressively.
+// Expose the whole generator surface: bank size is a property of the skill,
+// not of how far one student has progressed through its sub-skills.
 sandbox.getUnlockedSubSkillTypes = (k, map, ord) => {
   const out = [];
   for (const id of ord) { const v = map[id]; if (Array.isArray(v)) out.push(...v); else if (v) out.push(v); }
@@ -167,85 +142,55 @@ sandbox.globalThis = sandbox;
 
 const ctx = vm.createContext(sandbox);
 vm.runInContext(
-  `${sliceByLine('const AnswerInterpreter = {')}\n` +
-  `${literal('const NON_TYPEABLE_ANSWER_TYPES = new Set(')
-      ? '' : ''}` +
-  `const NON_TYPEABLE_ANSWER_TYPES = ${src.slice(
-      src.indexOf('const NON_TYPEABLE_ANSWER_TYPES = new Set(') + 'const NON_TYPEABLE_ANSWER_TYPES = '.length,
-      src.indexOf(']);', src.indexOf('const NON_TYPEABLE_ANSWER_TYPES = new Set(')) + 3)};\n` +
-  `${fnSource('answerIsTypeable')}\n` +
-  `${fnSource('shouldTypeAnswer')}\n` +
-  `${fnSource('typedAnswerIsCorrect')}\n` +
   `const TIERS = ${literal('const TIERS = {')};\n` +
   `const Q_MATRIX = ${literal('const Q_MATRIX = {')};\n` +
   `const generators = ${literal('const generators = {')};\n` +
   `const lessons = ${literal('const lessons = {')};\n` +
-  `globalThis.AnswerInterpreter = AnswerInterpreter;\n` +
-  `globalThis.shouldTypeAnswer = shouldTypeAnswer;\n` +
-  `globalThis.typedAnswerIsCorrect = typedAnswerIsCorrect;\n` +
   `globalThis.TIERS = TIERS; globalThis.Q_MATRIX = Q_MATRIX;\n` +
   `globalThis.generators = generators; globalThis.lessons = lessons;\n`,
-  ctx, { filename: 'math-dojo-typed.js' });
-vm.runInContext(V2, ctx, { filename: 'math-dojo-v2.js' });
+  ctx, { filename: 'literals.js' });
+vm.runInContext(V2, ctx, { filename: 'v2.js' });
 
-// ---- run ----
 const strip = h => String(h == null ? '' : h).replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
-let total = 0, typed = 0;
-const failures = new Map();   // "T{tier} {skill}" -> [{q, answer}]
-const stillMC = [];
-
+const rows = [];
 for (const [ts, t] of Object.entries(ctx.TIERS)) {
   const tier = Number(ts);
   if (tier < 5) continue;
+  if (ONLY_TIER && tier !== ONLY_TIER) continue;
   for (const name of t.domains) {
     const gf = ctx.generators[tier] && ctx.generators[tier][name];
     if (typeof gf !== 'function') continue;
-    let n = 0, ty = 0;
-    const mcAnswers = new Set();
-    for (let i = 0; i < SAMPLES; i++) {
-      let q; try { q = gf(); } catch (e) { continue; }
-      if (!q || q.answer === undefined || q.answer === null) continue;
-      n++; total++;
-      if (!ctx.shouldTypeAnswer(q, tier)) {
-        if (mcAnswers.size < 4) mcAnswers.add(String(q.answer));
-        continue;
-      }
-      ty++; typed++;
-      // ROUND-TRIP: type the generator's own answer verbatim.
-      // Pass the whole question so declared acceptableAnswers count too.
-      if (!ctx.typedAnswerIsCorrect(String(q.answer), q)) {
-        const key = `T${tier} ${name}`;
-        if (!failures.has(key)) failures.set(key, []);
-        const list = failures.get(key);
-        if (list.length < 3) list.push({ q: strip(q.question).slice(0, 74), a: String(q.answer) });
-      }
+    const items = new Set(); const types = new Set(); let threw = 0;
+    for (let i = 0; i < DRAWS; i++) {
+      let q; try { q = gf(); } catch (e) { threw++; continue; }
+      if (!q) continue;
+      items.add(strip(q.question) + ' ⇒ ' + strip(q.answer));
+      types.add(q.subType || q.type || '(untyped)');
     }
-    if (n && ty === 0) stillMC.push({ tier, name, answers: [...mcAnswers] });
+    rows.push({ tier, name, items: items.size, types: types.size, threw });
   }
 }
 
-console.log(`tier 5+ questions sampled: ${total}`);
-console.log(`renders as TYPED input:    ${typed} (${(100 * typed / total).toFixed(1)}%)`);
-console.log(`remains multiple choice:   ${total - typed} (${(100 * (total - typed) / total).toFixed(1)}%)`);
-console.log();
-console.log(`skills still fully multiple choice: ${stillMC.length}`);
-for (const s of stillMC) {
-  console.log(`  T${s.tier} ${s.name}  — e.g. ${s.answers.slice(0, 3).map(a => JSON.stringify(a)).join(', ')}`);
-}
-console.log();
+rows.sort((a, b) => a.items - b.items || a.tier - b.tier);
+const under = rows.filter(r => r.items < FLOOR);
 
-if (failures.size === 0) {
-  console.log('=== ROUND-TRIP: 0 failures ===');
-  console.log('  every typed question accepts its own expected answer.');
+const pad = (s, n) => String(s).padEnd(n);
+console.log(`floor: ${FLOOR} distinct items · ${DRAWS} draws per skill · ${rows.length} skills (tier 5+)\n`);
+if (SHOW_ALL) {
+  console.log(`  ${pad('TIER', 6)}${pad('SKILL', 46)}${pad('ITEMS', 8)}TYPES`);
+  for (const r of rows) console.log(`  ${pad('T' + r.tier, 6)}${pad(r.name.slice(0, 44), 46)}${pad(r.items, 8)}${r.types}`);
+  console.log();
+}
+
+if (!under.length) {
+  console.log(`=== PASS — every tier-5+ skill has at least ${FLOOR} distinct questions ===`);
   process.exit(0);
 }
-let count = 0;
-console.log(`=== ROUND-TRIP FAILURES in ${failures.size} skill(s) ===`);
-console.log('  A student typing the exact expected answer is marked WRONG.');
-console.log('  Fix AnswerInterpreter, or add acceptableAnswers, or keep the skill on MC.\n');
-for (const [k, list] of failures) {
-  console.log(`  ${k}`);
-  for (const f of list) { console.log(`      Q: ${f.q}`); console.log(`      expected: ${JSON.stringify(f.a)}`); }
-  count += list.length;
-}
+console.log(`=== ${under.length} skill(s) UNDER the floor of ${FLOOR} ===`);
+console.log(`  With 5-correct-in-a-row required, these are memorisation tasks.\n`);
+console.log(`  ${pad('TIER', 6)}${pad('SKILL', 46)}${pad('ITEMS', 8)}TYPES`);
+for (const r of under) console.log(`  ${pad('T' + r.tier, 6)}${pad(r.name.slice(0, 44), 46)}${pad(r.items, 8)}${r.types}`);
+const byTier = {};
+for (const r of under) byTier[r.tier] = (byTier[r.tier] || 0) + 1;
+console.log(`\n  by tier: ${Object.entries(byTier).map(([t, n]) => `T${t}=${n}`).join('  ')}`);
 process.exit(1);

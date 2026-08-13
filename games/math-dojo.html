@@ -5093,13 +5093,28 @@ function shouldTypeAnswer(q, tier) {
 
 // Shared grader for typed input: AnswerInterpreter first, then a
 // case/whitespace-insensitive fallback so "X + 5" never loses to "x + 5".
-function typedAnswerIsCorrect(userInput, expected) {
+//
+// Accepts either a bare expected answer or the whole question object, so a
+// generator can declare alternate forms via `acceptableAnswers`. Typed input
+// makes that matter in a way multiple choice never did: "64π/3" and "(64/3)π"
+// are the same answer, and a student who writes the second is not wrong.
+function typedAnswerIsCorrect(userInput, expectedOrQuestion) {
     if (!userInput) return false;
+    const isQ = expectedOrQuestion && typeof expectedOrQuestion === 'object'
+        && !Array.isArray(expectedOrQuestion) && 'answer' in expectedOrQuestion;
+    const expected = isQ ? expectedOrQuestion.answer : expectedOrQuestion;
+    const extra = (isQ && Array.isArray(expectedOrQuestion.acceptableAnswers))
+        ? expectedOrQuestion.acceptableAnswers : [];
+    const alts = (Array.isArray(expected) ? expected : [expected])
+        .concat(extra)
+        .filter(a => a !== undefined && a !== null && String(a).trim() !== '');
+    if (!alts.length) return false;
     let correct = false;
-    try { correct = AnswerInterpreter.checkAnswer(userInput, expected).correct; } catch (e) { correct = false; }
-    if (!correct && expected != null) {
+    try {
+        correct = AnswerInterpreter.checkAnswer(userInput, alts.length === 1 ? alts[0] : alts).correct;
+    } catch (e) { correct = false; }
+    if (!correct) {
         const norm = s => String(s).toLowerCase().replace(/\s+/g, '');
-        const alts = Array.isArray(expected) ? expected : [expected];
         if (alts.some(a => norm(a) === norm(userInput))) correct = true;
     }
     return correct;
@@ -12677,55 +12692,222 @@ const generators = {
     // TIER 9: Calculus (12+)
     9: {
         Derivatives: () => {
-            const subSkillToType = { 'power': 'power', 'trig': 'trig', 'chain': 'chain' };
+            // The bank here used to be 12 items: x²…x⁶, three trig lookups, and a
+            // "chain" branch that was actually the power rule (its own explanation
+            // said "Constant multiple + power rule"), so the chain-rule sub-skill
+            // taught composites and then quizzed d/dx(2x³). Each sub-skill id now
+            // maps to an ARRAY of question types — getUnlockedSubSkillTypes
+            // supports that — so gating still only exposes what has been taught.
+            const subSkillToType = {
+                'power': ['power', 'power_coeff', 'power_sum', 'power_const'],
+                'trig': ['trig', 'trig_coeff', 'explog'],
+                'chain': ['chain_trig', 'chain_poly', 'chain_exp', 'chain_inner']
+            };
             const subSkillOrder = ["power", "trig", "chain"];
             let available = getUnlockedSubSkillTypes('9_Derivatives', subSkillToType, subSkillOrder);
             const type = pick(available);
+            // Render coefficient·x^exp, collapsing x^1 → x and x^0 → the constant.
+            // The old code emitted "2x^1" for d/dx(x²) and taught bad form.
+            const pw = (c, e) => e === 0 ? `${c}` : (e === 1 ? (c === 1 ? 'x' : `${c}x`) : (c === 1 ? `x^${e}` : `${c}x^${e}`));
+
             if (type === "power") {
-                const n = rand(2, 6);
-                return { subType: type, question: `d/dx(x${["⁰","¹","²","³","⁴","⁵","⁶"][n]}) = ?`, answer: `${n}x^${n-1}`, type: "procedural",
-                    options: [`${n}x^${n-1}`, `x^${n+1}`, `${n}x^${n}`, `x^${n-1}`],
-                    explanation: `Power rule: d/dx(x^n) = nx^(n-1). So d/dx(x^${n}) = ${n}x^${n-1}` };
-            } else if (type === "trig") {
+                const n = rand(2, 8);
+                const ans = pw(n, n - 1);
+                return { subType: type, question: `d/dx(x^${n}) = ?`, answer: ans, type: "procedural",
+                    options: uniqOpts([ans, pw(1, n + 1), pw(n, n), pw(1, n - 1)]),
+                    explanation: `Power rule: d/dx(x^n) = n·x^(n−1). So d/dx(x^${n}) = ${ans}.` };
+            }
+            if (type === "power_coeff") {
+                const a = rand(2, 9), n = rand(2, 6);
+                const ans = pw(a * n, n - 1);
+                return { subType: type, question: `d/dx(${a}x^${n}) = ?`, answer: ans, type: "procedural",
+                    options: uniqOpts([ans, pw(a, n - 1), pw(a * n, n), pw(a + n, n - 1)]),
+                    explanation: `Constants ride along: d/dx(${a}x^${n}) = ${a}·${n}x^${n - 1} = ${ans}.` };
+            }
+            if (type === "power_sum") {
+                const a = rand(2, 6), n = rand(2, 5), b = rand(2, 9);
+                const ans = `${pw(a * n, n - 1)} + ${b}`;
+                return { subType: type, question: `d/dx(${a}x^${n} + ${b}x) = ?`, answer: ans, type: "procedural",
+                    options: uniqOpts([ans, `${pw(a * n, n - 1)} + ${b}x`, `${pw(a, n - 1)} + ${b}`, `${pw(a * n, n)} + ${b}`]),
+                    explanation: `Differentiate term by term: d/dx(${a}x^${n}) = ${pw(a * n, n - 1)}, and d/dx(${b}x) = ${b}. Sum: ${ans}.` };
+            }
+            if (type === "power_const") {
+                const c = rand(2, 40);
+                return { subType: type, question: `d/dx(${c}) = ?`, answer: "0", type: "procedural",
+                    options: uniqOpts(["0", `${c}`, "1", `${c}x`]),
+                    explanation: `A constant never changes, so its rate of change is 0.` };
+            }
+            if (type === "trig") {
                 const funcs = [
                     { f: "sin(x)", d: "cos(x)" }, { f: "cos(x)", d: "-sin(x)" },
-                    { f: "tan(x)", d: "sec²(x)" }
+                    { f: "tan(x)", d: "sec^2(x)" }, { f: "sec(x)", d: "sec(x)tan(x)" },
+                    { f: "cot(x)", d: "-csc^2(x)" }, { f: "csc(x)", d: "-csc(x)cot(x)" }
                 ];
                 const func = pick(funcs);
                 return { subType: type, question: `d/dx(${func.f}) = ?`, answer: func.d, type: "procedural",
-                    options: ["cos(x)", "-sin(x)", "sin(x)", "sec²(x)"],
-                    explanation: `d/dx(${func.f}) = ${func.d}` };
-            } else {
-                const a = rand(2, 5);
-                return { subType: type, question: `d/dx(${a}x³) = ?`, answer: `${3*a}x²`, type: "procedural",
-                    options: [`${3*a}x²`, `${a}x²`, `${3*a}x³`, `${a}x⁴`],
-                    explanation: `Constant multiple + power rule: ${a} × 3x² = ${3*a}x²` };
+                    options: uniqOpts([func.d, ...shuffle(funcs.filter(x => x.d !== func.d)).slice(0, 3).map(x => x.d)]),
+                    explanation: `d/dx(${func.f}) = ${func.d}. The three "co" functions (cos, cot, csc) all pick up a minus sign.` };
             }
+            if (type === "trig_coeff") {
+                const a = rand(2, 7);
+                const funcs = [{ f: "sin(x)", d: "cos(x)" }, { f: "cos(x)", d: "-sin(x)" }];
+                const func = pick(funcs);
+                const ans = func.d.startsWith('-') ? `-${a}${func.d.slice(1)}` : `${a}${func.d}`;
+                return { subType: type, question: `d/dx(${a}${func.f}) = ?`, answer: ans, type: "procedural",
+                    options: uniqOpts([ans, `${a}${func.f}`, func.d, `${a}${func.d.startsWith('-') ? func.d.slice(1) : '-' + func.d}`]),
+                    explanation: `The constant ${a} rides along: d/dx(${a}${func.f}) = ${a}·(${func.d}) = ${ans}.` };
+            }
+            if (type === "explog") {
+                const bank = [
+                    { f: "e^x", d: "e^x", why: "e^x is its own derivative — the only function (up to a constant) that is." },
+                    { f: "ln(x)", d: "1/x", why: "d/dx[ln(x)] = 1/x for x > 0." },
+                    { f: "2e^x", d: "2e^x", why: "The constant rides along, and e^x is its own derivative." },
+                    { f: "3ln(x)", d: "3/x", why: "d/dx[3ln(x)] = 3·(1/x) = 3/x." }
+                ];
+                const b = pick(bank);
+                return { subType: type, question: `d/dx(${b.f}) = ?`, answer: b.d, type: "procedural",
+                    options: uniqOpts([b.d, ...shuffle(bank.filter(x => x.d !== b.d)).slice(0, 3).map(x => x.d)]),
+                    explanation: b.why };
+            }
+            if (type === "chain_trig") {
+                const a = rand(2, 6);
+                const outer = pick(["sin", "cos"]);
+                const ans = outer === "sin" ? `${a}cos(${a}x)` : `-${a}sin(${a}x)`;
+                return { subType: type, question: `d/dx(${outer}(${a}x)) = ?`, answer: ans, type: "procedural",
+                    options: uniqOpts([ans, outer === "sin" ? `cos(${a}x)` : `-sin(${a}x)`,
+                        outer === "sin" ? `${a}cos(x)` : `-${a}sin(x)`,
+                        outer === "sin" ? `-${a}cos(${a}x)` : `${a}sin(${a}x)`]),
+                    explanation: `Outer derivative × inner derivative: d/dx[${outer}(u)] with u = ${a}x gives ${outer === "sin" ? "cos" : "−sin"}(${a}x)·${a} = ${ans}.` };
+            }
+            if (type === "chain_poly") {
+                const a = rand(2, 5), b = rand(1, 6), n = rand(2, 4);
+                const ans = `${a * n}(${a}x + ${b})^${n - 1}`;
+                return { subType: type, question: `d/dx((${a}x + ${b})^${n}) = ?`, answer: ans, type: "procedural",
+                    options: uniqOpts([ans, `${n}(${a}x + ${b})^${n - 1}`, `${a * n}(${a}x + ${b})^${n}`, `${a}(${a}x + ${b})^${n - 1}`]),
+                    explanation: `Bring the power down, keep the inside, then multiply by the inside's derivative: ${n}(${a}x + ${b})^${n - 1}·${a} = ${ans}. Forgetting that last ×${a} is the #1 chain-rule error.` };
+            }
+            if (type === "chain_exp") {
+                const a = rand(2, 6);
+                const which = pick(["exp", "log"]);
+                const ans = which === "exp" ? `${a}e^(${a}x)` : `1/x`;
+                return { subType: type, question: `d/dx(${which === "exp" ? `e^(${a}x)` : `ln(${a}x)`}) = ?`, answer: ans, type: "procedural",
+                    options: uniqOpts([ans, which === "exp" ? `e^(${a}x)` : `${a}/x`, which === "exp" ? `${a}x·e^(${a}x)` : `1/(${a}x)`, which === "exp" ? `${a}e^x` : `${a}x`]),
+                    explanation: which === "exp"
+                        ? `d/dx[e^u] = e^u·u′ with u = ${a}x, so the answer is e^(${a}x)·${a} = ${ans}.`
+                        : `d/dx[ln(${a}x)] = (1/(${a}x))·${a} = 1/x. The constant cancels — ln(${a}x) and ln(x) differ by a constant.` };
+            }
+            // chain_inner — identify the inside function, the step students skip
+            const inners = [
+                { f: "sin(x²)", u: "x²" }, { f: "(3x + 1)⁵", u: "3x + 1" },
+                { f: "e^(x²)", u: "x²" }, { f: "cos(4x)", u: "4x" },
+                { f: "ln(x³)", u: "x³" }, { f: "√(2x + 7)", u: "2x + 7" }
+            ];
+            const it = pick(inners);
+            return { subType: "chain_inner", type: "conceptual",
+                question: `For ${it.f}, what is the INNER function u?`, answer: it.u,
+                options: uniqOpts([it.u, ...shuffle(inners.filter(x => x.u !== it.u)).slice(0, 3).map(x => x.u)]),
+                explanation: `Working outside-in, the inner function is u = ${it.u}. The chain rule then needs u′ as the second factor.` };
         },
         Integrals: () => {
-            const subSkillToType = { 'power': 'power', 'trig': 'trig', 'definite': 'definite' };
+            // Was 9 items. The 'definite' branch in particular was one integrand
+            // forever — ∫₀^b x dx with b ∈ {2,3,4} — so a student never met a
+            // non-linear integrand, a non-zero lower limit, or signed area.
+            const subSkillToType = {
+                'power': ['power', 'power_coeff', 'const', 'recip_exp'],
+                'trig': ['trig', 'trig_coeff'],
+                'definite': ['definite', 'definite_sq', 'definite_ab', 'definite_lin', 'definite_signed']
+            };
             const subSkillOrder = ["power", "trig", "definite"];
             let available = getUnlockedSubSkillTypes('9_Integrals', subSkillToType, subSkillOrder);
             const type = pick(available);
+            const frac = (p, q) => { const g = (a, b) => b ? g(b, a % b) : a; const s = q < 0 ? -1 : 1; p *= s; q *= s;
+                const d = g(Math.abs(p), Math.abs(q)) || 1; p /= d; q /= d; return q === 1 ? String(p) : `${p}/${q}`; };
+
             if (type === "power") {
-                const n = rand(1, 4);
-                return { subType: type, question: `∫x${["⁰","¹","²","³","⁴"][n]} dx = ?`, answer: `x^${n+1}/${n+1} + C`, type: "procedural",
-                    options: [`x^${n+1}/${n+1} + C`, `${n}x^${n-1} + C`, `x^${n+1} + C`, `x^${n}/${n} + C`],
-                    explanation: `Power rule: ∫x^n dx = x^(n+1)/(n+1) + C` };
-            } else if (type === "trig") {
+                const n = rand(1, 6);
+                const ans = `x^${n + 1}/${n + 1} + C`;
+                return { subType: type, question: `∫x^${n} dx = ?`, answer: ans, type: "procedural",
+                    options: uniqOpts([ans, `${n}x^${n - 1} + C`, `x^${n + 1} + C`, `x^${n}/${n} + C`]),
+                    explanation: `Power rule for integrals: ∫x^n dx = x^(n+1)/(n+1) + C. Raise the power, divide by the new power.` };
+            }
+            if (type === "power_coeff") {
+                const a = rand(2, 8), n = rand(1, 4);
+                const ans = `${frac(a, n + 1)}x^${n + 1} + C`;
+                return { subType: type, question: `∫${a}x^${n} dx = ?`, answer: ans, type: "procedural",
+                    options: uniqOpts([ans, `${a}x^${n + 1} + C`, `${a * n}x^${n - 1} + C`, `${frac(a, n)}x^${n + 1} + C`]),
+                    explanation: `∫${a}x^${n} dx = ${a}·x^${n + 1}/${n + 1} + C = ${ans}.` };
+            }
+            if (type === "const") {
+                const k = rand(2, 12);
+                return { subType: type, question: `∫${k} dx = ?`, answer: `${k}x + C`, type: "procedural",
+                    options: uniqOpts([`${k}x + C`, `${k} + C`, `x + C`, `${k}x²/2 + C`]),
+                    explanation: `A constant integrates to that constant times x: ∫${k} dx = ${k}x + C.` };
+            }
+            if (type === "recip_exp") {
+                const bank = [
+                    { f: "1/x", i: "ln|x| + C", why: "The power rule fails at n = −1 (it would divide by zero). ∫(1/x) dx = ln|x| + C." },
+                    { f: "e^x", i: "e^x + C", why: "e^x is its own antiderivative." },
+                    { f: "2e^x", i: "2e^x + C", why: "Constants factor straight out of the integral." },
+                    { f: "3/x", i: "3ln|x| + C", why: "∫(3/x) dx = 3∫(1/x) dx = 3ln|x| + C." }
+                ];
+                const b = pick(bank);
+                return { subType: type, question: `∫${b.f} dx = ?`, answer: b.i, type: "procedural",
+                    options: uniqOpts([b.i, ...shuffle(bank.filter(x => x.i !== b.i)).slice(0, 3).map(x => x.i)]),
+                    explanation: b.why };
+            }
+            if (type === "trig") {
                 const funcs = [
-                    { f: "cos(x)", i: "sin(x) + C" }, { f: "sin(x)", i: "-cos(x) + C" }
+                    { f: "cos(x)", i: "sin(x) + C" }, { f: "sin(x)", i: "-cos(x) + C" },
+                    { f: "sec^2(x)", i: "tan(x) + C" }, { f: "csc^2(x)", i: "-cot(x) + C" }
                 ];
                 const func = pick(funcs);
                 return { subType: type, question: `∫${func.f} dx = ?`, answer: func.i, type: "procedural",
-                    options: ["sin(x) + C", "-cos(x) + C", "cos(x) + C", "-sin(x) + C"],
-                    explanation: `∫${func.f} dx = ${func.i}` };
-            } else {
-                const a = 0, b = rand(2, 4);
-                const answer = (b * b) / 2;
-                return { subType: type, question: `∫₀${["⁰","¹","²","³","⁴"][b]} x dx = ?`, answer, type: "procedural",
-                    explanation: `[x²/2]₀^${b} = ${b}²/2 - 0 = ${answer}` };
+                    options: uniqOpts([func.i, ...shuffle(funcs.filter(x => x.i !== func.i)).slice(0, 3).map(x => x.i)]),
+                    explanation: `∫${func.f} dx = ${func.i}. Integration reverses differentiation, so the signs flip compared with the derivative table.` };
             }
+            if (type === "trig_coeff") {
+                const a = rand(2, 6);
+                const which = pick(["cos", "sin"]);
+                const ans = which === "cos" ? `${a}sin(x) + C` : `-${a}cos(x) + C`;
+                return { subType: type, question: `∫${a}${which}(x) dx = ?`, answer: ans, type: "procedural",
+                    options: uniqOpts([ans, which === "cos" ? `-${a}sin(x) + C` : `${a}cos(x) + C`,
+                        which === "cos" ? `sin(x) + C` : `-cos(x) + C`, `${a}${which}(x) + C`]),
+                    explanation: `Pull the ${a} out: ∫${a}${which}(x) dx = ${a}∫${which}(x) dx = ${ans}.` };
+            }
+            if (type === "definite") {
+                const b = rand(2, 7);
+                const answer = frac(b * b, 2);
+                return { subType: type, question: `∫₀^${b} x dx = ?`, answer, type: "procedural",
+                    options: uniqOpts([answer, String(b * b), String(b), frac(b * b, 4)]),
+                    explanation: `An antiderivative of x is x²/2, so ∫₀^${b} x dx = [x²/2]₀^${b} = ${b * b}/2 − 0 = ${answer}.` };
+            }
+            if (type === "definite_sq") {
+                const b = rand(2, 6);
+                const answer = frac(b * b * b, 3);
+                return { subType: type, question: `∫₀^${b} x² dx = ?`, answer, type: "procedural",
+                    options: uniqOpts([answer, frac(b * b, 2), String(b * b * b), frac(b * b * b, 2)]),
+                    explanation: `[x³/3]₀^${b} = ${b * b * b}/3 − 0 = ${answer}.` };
+            }
+            if (type === "definite_ab") {
+                const a = rand(1, 4), b = a + rand(1, 4);
+                const answer = frac(b * b - a * a, 2);
+                return { subType: type, question: `∫${a}^${b} x dx = ?`, answer, type: "procedural",
+                    options: uniqOpts([answer, frac(b * b + a * a, 2), String(b - a), frac((b - a) * (b - a), 2)]),
+                    explanation: `[x²/2]${a}^${b} = ${b * b}/2 − ${a * a}/2 = ${answer}. Evaluate at the TOP limit first, then subtract the bottom.` };
+            }
+            if (type === "definite_lin") {
+                const m = rand(2, 5), c = rand(1, 6), b = rand(1, 4);
+                const answer = frac(m * b * b + 2 * c * b, 2);
+                return { subType: type, question: `∫₀^${b} (${m}x + ${c}) dx = ?`, answer, type: "procedural",
+                    options: uniqOpts([answer, frac(m * b * b, 2), String(m * b + c), frac(m * b * b + c * b, 2)]),
+                    explanation: `[${m}x²/2 + ${c}x]₀^${b} = ${m}·${b * b}/2 + ${c}·${b} = ${frac(m * b * b, 2)} + ${c * b} = ${answer}.` };
+            }
+            // definite_signed — the lesson teaches signed area but never asked for it
+            const b2 = rand(1, 4);
+            return { subType: "definite_signed", type: "procedural",
+                question: `∫₋${b2}^${b2} x dx = ?`, answer: "0",
+                options: uniqOpts(["0", frac(b2 * b2, 2), String(b2 * b2), frac(b2 * b2, 1)]),
+                explanation: `[x²/2]₋${b2}^${b2} = ${b2 * b2}/2 − ${b2 * b2}/2 = 0. The area below the axis on [−${b2}, 0] cancels the area above it on [0, ${b2}] — the definite integral measures SIGNED area.` };
         },
         Limits: () => {
             // Procedural: 'fundamental' picks from a bank of classic limits with rand()
@@ -12816,19 +12998,115 @@ const generators = {
                 explanation: `Same highest degree ⇒ limit = leading coefficients ratio = ${n1}/${n2} = ${ansStr}.` };
         },
         Applications: () => {
-            const subSkillToType = { 'critical': 'critical', 'maxmin': 'maxmin' };
+            // This skill was four questions — three upward parabolas x² − 2ax and
+            // one fixed conceptual item — under the name "Applications". It now
+            // covers the AB application strand it was named for: critical points,
+            // increasing/decreasing, concavity and inflection, the closed-interval
+            // method, and motion (position → velocity → acceleration), which the
+            // whole tier previously never asked about once.
+            const subSkillToType = {
+                'critical': ['critical', 'critical_cubic', 'increasing'],
+                'maxmin': ['maxmin', 'concavity', 'inflection', 'closed_interval', 'motion_v', 'motion_a', 'motion_rest']
+            };
             const subSkillOrder = ["critical", "maxmin"];
             let available = getUnlockedSubSkillTypes('9_Applications', subSkillToType, subSkillOrder);
             const type = pick(available);
+
             if (type === "critical") {
-                const a = rand(1, 3);
-                return { subType: type, question: `f(x) = x² - ${2*a}x. Find critical point.`, answer: a, type: "procedural",
-                    explanation: `f'(x) = 2x - ${2*a} = 0. x = ${a}` };
-            } else {
-                return { subType: type, question: `If f'(c) = 0 and f''(c) > 0, then x = c is a...`, answer: "local minimum", type: "conceptual",
-                    options: ["local minimum", "local maximum", "inflection point", "saddle point"],
-                    explanation: `Second derivative test: f''(c) > 0 means concave up, so minimum` };
+                const a = rand(1, 8), s = pick([1, -1]);
+                // f(x) = x² − 2ax  → f′ = 2x − 2a → critical at x = a
+                const q = s === 1 ? `f(x) = x² − ${2 * a}x` : `f(x) = x² + ${2 * a}x`;
+                const ans = s === 1 ? a : -a;
+                return { subType: type, question: `${q}. Find the critical point.`, answer: String(ans), type: "procedural",
+                    options: uniqOpts([String(ans), String(-ans), String(2 * a * s), "0"]),
+                    explanation: `f′(x) = 2x ${s === 1 ? '−' : '+'} ${2 * a}. Setting f′(x) = 0 gives x = ${ans}.` };
             }
+            if (type === "critical_cubic") {
+                // f(x) = x³ − 3a²x → f′ = 3x² − 3a² = 0 → x = ±a
+                const a = rand(1, 5);
+                return { subType: type, question: `f(x) = x³ − ${3 * a * a}x. Find the POSITIVE critical point.`,
+                    answer: String(a), type: "procedural",
+                    options: uniqOpts([String(a), String(a * a), String(3 * a * a), String(2 * a)]),
+                    explanation: `f′(x) = 3x² − ${3 * a * a} = 0 → x² = ${a * a} → x = ±${a}. The positive one is ${a}.` };
+            }
+            if (type === "increasing") {
+                const a = rand(1, 6);
+                return { subType: type, question: `f(x) = x² − ${2 * a}x. On which interval is f INCREASING?`,
+                    answer: `x > ${a}`, type: "procedural",
+                    options: uniqOpts([`x > ${a}`, `x < ${a}`, `x > ${2 * a}`, `all x`]),
+                    explanation: `f′(x) = 2x − ${2 * a} is positive when x > ${a}, so f increases there and decreases for x < ${a}.` };
+            }
+            if (type === "maxmin") {
+                const bank = [
+                    { q: `If f′(c) = 0 and f″(c) > 0, then x = c is a...`, a: "local minimum",
+                      d: ["local maximum", "inflection point", "point of discontinuity"],
+                      e: `Second derivative test: f″(c) > 0 means concave up at c, so the critical point is a local minimum.` },
+                    { q: `If f′(c) = 0 and f″(c) < 0, then x = c is a...`, a: "local maximum",
+                      d: ["local minimum", "inflection point", "vertical asymptote"],
+                      e: `f″(c) < 0 means concave down at c, so the critical point is a local maximum.` },
+                    { q: `If f′(c) = 0 and f″(c) = 0, the second derivative test is...`, a: "inconclusive",
+                      d: ["a local minimum", "a local maximum", "an inflection point"],
+                      e: `f″(c) = 0 tells you nothing on its own — fall back to the first derivative test and check the sign of f′ on each side.` },
+                    { q: `f′ changes from positive to negative at x = c. What is x = c?`, a: "local maximum",
+                      d: ["local minimum", "inflection point", "not a critical point"],
+                      e: `First derivative test: rising then falling means the graph turns over at c — a local maximum.` },
+                    { q: `f′ changes from negative to positive at x = c. What is x = c?`, a: "local minimum",
+                      d: ["local maximum", "inflection point", "not a critical point"],
+                      e: `Falling then rising means the graph bottoms out at c — a local minimum.` },
+                    { q: `f′(c) = 0 but f′ does NOT change sign at c. What is x = c?`, a: "neither a max nor a min",
+                      d: ["a local maximum", "a local minimum", "a discontinuity"],
+                      e: `A flat spot with no sign change, like y = x³ at x = 0 — a stationary point of inflection, not an extremum.` }
+                ];
+                const b = pick(bank);
+                return { subType: type, question: b.q, answer: b.a, type: "conceptual",
+                    options: uniqOpts([b.a, ...b.d]), explanation: b.e };
+            }
+            if (type === "concavity") {
+                const a = rand(1, 6);
+                return { subType: type, question: `f(x) = x³ − ${3 * a}x². On which interval is f CONCAVE UP?`,
+                    answer: `x > ${a}`, type: "procedural",
+                    options: uniqOpts([`x > ${a}`, `x < ${a}`, `x > ${3 * a}`, `x > 0`]),
+                    explanation: `f′(x) = 3x² − ${6 * a}x, so f″(x) = 6x − ${6 * a}. That is positive when x > ${a}, so f is concave up there.` };
+            }
+            if (type === "inflection") {
+                const a = rand(1, 6);
+                return { subType: type, question: `f(x) = x³ − ${3 * a}x². Find the x-value of the inflection point.`,
+                    answer: String(a), type: "procedural",
+                    options: uniqOpts([String(a), String(2 * a), String(3 * a), "0"]),
+                    explanation: `f″(x) = 6x − ${6 * a} = 0 gives x = ${a}, and f″ changes sign there, so it is an inflection point. Note this is NOT where f′ = 0.` };
+            }
+            if (type === "closed_interval") {
+                // f(x) = x² − 2ax on [0, b] with b > 2a: min at x = a, max at x = b.
+                const a = rand(1, 4), b = 2 * a + rand(1, 4);
+                const fb = b * b - 2 * a * b;
+                return { subType: type, question: `f(x) = x² − ${2 * a}x on [0, ${b}]. What is the ABSOLUTE maximum value?`,
+                    answer: String(fb), type: "procedural",
+                    options: uniqOpts([String(fb), String(-a * a), "0", String(b)]),
+                    explanation: `Check the critical point and both endpoints. f′ = 2x − ${2 * a} = 0 at x = ${a}, giving f(${a}) = ${-a * a}. f(0) = 0 and f(${b}) = ${fb}. The largest is ${fb}, at the endpoint — endpoints are where absolute extrema often hide.` };
+            }
+            if (type === "motion_v") {
+                const a = rand(2, 6), b = rand(1, 8), t = rand(1, 5);
+                const v = 2 * a * t - b;
+                return { subType: type, question: `A particle has position s(t) = ${a}t² − ${b}t. Find its velocity at t = ${t}.`,
+                    answer: String(v), type: "procedural",
+                    options: uniqOpts([String(v), String(a * t * t - b * t), String(2 * a), String(2 * a * t + b)]),
+                    explanation: `Velocity is the derivative of position: v(t) = s′(t) = ${2 * a}t − ${b}. At t = ${t}, v = ${2 * a}·${t} − ${b} = ${v}.` };
+            }
+            if (type === "motion_a") {
+                const a = rand(2, 6), b = rand(1, 8);
+                return { subType: type, question: `A particle has position s(t) = ${a}t² − ${b}t. Find its acceleration.`,
+                    answer: String(2 * a), type: "procedural",
+                    options: uniqOpts([String(2 * a), String(a), `${2 * a}t − ${b}`, String(-b)]),
+                    explanation: `Acceleration is the SECOND derivative of position: v(t) = ${2 * a}t − ${b}, so a(t) = v′(t) = ${2 * a} (constant).` };
+            }
+            // motion_rest — when is the particle at rest?
+            const a3 = rand(2, 6), b3 = 2 * a3 * rand(1, 4);
+            const tRest = b3 / (2 * a3);
+            return { subType: "motion_rest", type: "procedural",
+                question: `A particle has position s(t) = ${a3}t² − ${b3}t. At what time t is it at rest?`,
+                answer: String(tRest),
+                options: uniqOpts([String(tRest), String(b3), String(2 * a3), "0"]),
+                explanation: `"At rest" means velocity zero, not position zero. v(t) = ${2 * a3}t − ${b3} = 0 gives t = ${tRest}.` };
         },
         "Differential Equations": () => {
             // Procedural: 'identify' composes ODEs on the fly from random coefficients
@@ -12901,42 +13179,149 @@ const generators = {
                 explanation: `Separable: dy/y = ${k} dx → ln|y| = ${k}x + c → y = C·e^(${k}x).` };
         },
         "Chain Rule": () => {
-            const subSkillToType = { 'basic': 'basic', 'trig': 'trig', 'exponential': 'exponential' };
+            const subSkillToType = { 'basic': ['basic', 'inner'], 'trig': ['trig'], 'exponential': ['exponential'] };
             const subSkillOrder = ["basic", "trig", "exponential"];
             let available = getUnlockedSubSkillTypes('9_Chain Rule', subSkillToType, subSkillOrder);
             const type = pick(available);
+            // Was 16 items across three one-shape branches. The constant term in
+            // the bracket is now varied (it was always "+ 1"), cos and the inner
+            // x² cases are covered, and ln is included so the student meets the
+            // case where the chain factor cancels.
             if (type === "basic") {
-                const a = rand(2, 4), n = rand(2, 4);
-                return { subType: type, question: `d/dx(${a}x + 1)^${n} = ?`, answer: `${a * n}(${a}x + 1)^${n - 1}`, type: "procedural",
-                    options: [`${a * n}(${a}x + 1)^${n - 1}`, `${n}(${a}x + 1)^${n - 1}`, `${a}(${a}x + 1)^${n}`, `${n}x^${n - 1}`],
-                    explanation: `Chain rule: ${n}(${a}x + 1)^${n-1} × ${a} = ${a * n}(${a}x + 1)^${n - 1}` };
-            } else if (type === "trig") {
-                const a = rand(2, 5);
-                return { subType: type, question: `d/dx[sin(${a}x)] = ?`, answer: `${a}cos(${a}x)`, type: "procedural",
-                    options: [`${a}cos(${a}x)`, `cos(${a}x)`, `-${a}cos(${a}x)`, `${a}sin(${a}x)`],
-                    explanation: `Chain rule: cos(${a}x) × ${a} = ${a}cos(${a}x)` };
-            } else {
-                const a = rand(2, 4);
-                return { subType: type, question: `d/dx[e^(${a}x)] = ?`, answer: `${a}e^(${a}x)`, type: "procedural",
-                    options: [`${a}e^(${a}x)`, `e^(${a}x)`, `${a}e^x`, `xe^(${a}x)`],
-                    explanation: `Chain rule: e^(${a}x) × ${a} = ${a}e^(${a}x)` };
+                const a = rand(2, 6), n = rand(2, 5), c = rand(1, 7);
+                const ans = `${a * n}(${a}x + ${c})^${n - 1}`;
+                return { subType: type, question: `d/dx(${a}x + ${c})^${n} = ?`, answer: ans, type: "procedural",
+                    options: uniqOpts([ans, `${n}(${a}x + ${c})^${n - 1}`, `${a}(${a}x + ${c})^${n}`, `${a * n}(${a}x + ${c})^${n}`]),
+                    explanation: `Power down, inside unchanged, times the inside's derivative: ${n}(${a}x + ${c})^${n - 1} × ${a} = ${ans}. Dropping that ×${a} is the classic slip.` };
             }
+            if (type === "trig") {
+                const a = rand(2, 7);
+                const v = pick(["sin_lin", "cos_lin", "sin_sq"]);
+                if (v === "sin_lin") {
+                    return { subType: type, question: `d/dx[sin(${a}x)] = ?`, answer: `${a}cos(${a}x)`, type: "procedural",
+                        options: uniqOpts([`${a}cos(${a}x)`, `cos(${a}x)`, `-${a}cos(${a}x)`, `${a}sin(${a}x)`]),
+                        explanation: `Outside: cos(${a}x). Inside derivative: ${a}. Product: ${a}cos(${a}x).` };
+                }
+                if (v === "cos_lin") {
+                    return { subType: type, question: `d/dx[cos(${a}x)] = ?`, answer: `-${a}sin(${a}x)`, type: "procedural",
+                        options: uniqOpts([`-${a}sin(${a}x)`, `${a}sin(${a}x)`, `-sin(${a}x)`, `-${a}cos(${a}x)`]),
+                        explanation: `Outside: −sin(${a}x). Inside derivative: ${a}. Product: −${a}sin(${a}x). Two things to remember here — the minus AND the ${a}.` };
+                }
+                return { subType: type, question: `d/dx[sin(x²)] = ?`, answer: "2x·cos(x²)", type: "procedural",
+                    options: uniqOpts(["2x·cos(x²)", "cos(x²)", "cos(2x)", "2x·sin(x²)"]),
+                    explanation: `u = x², so u′ = 2x. d/dx[sin(u)] = cos(u)·u′ = cos(x²)·2x. Note it is cos(x²), NOT cos(2x).` };
+            }
+            if (type === "exponential") {
+                const a = rand(2, 6);
+                const v = pick(["exp_lin", "exp_sq", "ln_lin"]);
+                if (v === "exp_lin") {
+                    return { subType: type, question: `d/dx[e^(${a}x)] = ?`, answer: `${a}e^(${a}x)`, type: "procedural",
+                        options: uniqOpts([`${a}e^(${a}x)`, `e^(${a}x)`, `${a}e^x`, `xe^(${a}x)`]),
+                        explanation: `d/dx[e^u] = e^u·u′ with u = ${a}x, so e^(${a}x)·${a} = ${a}e^(${a}x).` };
+                }
+                if (v === "exp_sq") {
+                    return { subType: type, question: `d/dx[e^(x²)] = ?`, answer: "2xe^(x²)", type: "procedural",
+                        options: uniqOpts(["2xe^(x²)", "e^(x²)", "2e^(x²)", "x²e^(x²)"]),
+                        explanation: `u = x², u′ = 2x. d/dx[e^u] = e^u·u′ = e^(x²)·2x.` };
+                }
+                return { subType: type, question: `d/dx[ln(${a}x)] = ?`, answer: "1/x", type: "procedural",
+                    options: uniqOpts(["1/x", `${a}/x`, `1/(${a}x)`, `${a}/(${a}x)`]),
+                    explanation: `(1/(${a}x))·${a} = 1/x. The chain factor cancels — ln(${a}x) = ln(${a}) + ln(x), and ln(${a}) is a constant.` };
+            }
+            // 'inner' — naming the inside function, which is where students actually fail
+            const items = [
+                { f: "(5x − 2)⁴", u: "5x − 2", du: "5" }, { f: "cos(3x²)", u: "3x²", du: "6x" },
+                { f: "e^(4x)", u: "4x", du: "4" }, { f: "√(x + 9)", u: "x + 9", du: "1" },
+                { f: "ln(x² + 1)", u: "x² + 1", du: "2x" }, { f: "sin⁵(x)", u: "sin(x)", du: "cos(x)" }
+            ];
+            const it = pick(items);
+            const askU = pick([true, false]);
+            return { subType: "inner", type: "conceptual",
+                question: askU ? `For ${it.f}, what is the inner function u?` : `For ${it.f} with u = ${it.u}, what is u′?`,
+                answer: askU ? it.u : it.du,
+                options: uniqOpts([askU ? it.u : it.du,
+                    ...shuffle(items.filter(x => x.u !== it.u)).slice(0, 3).map(x => askU ? x.u : x.du)]),
+                explanation: askU
+                    ? `Working outside-in, the inner function is u = ${it.u}.`
+                    : `u = ${it.u}, so u′ = ${it.du}. This is the factor the chain rule multiplies by.` };
         },
         "Product Rule": () => {
-            const subSkillToType = { 'basic': 'basic', 'trig': 'trig' };
+            // 'formula' rides on the first sub-skill so the conceptual branch is
+            // reachable — getUnlockedSubSkillTypes only ever returns types listed
+            // in this map, so a branch with no entry here is dead code.
+            const subSkillToType = { 'basic': ['basic', 'formula'], 'trig': ['trig'] };
             const subSkillOrder = ["basic", "trig"];
             let available = getUnlockedSubSkillTypes('9_Product Rule', subSkillToType, subSkillOrder);
             const type = pick(available);
+            // Was four items: one e^(ax) form with a ∈ {2,3,4} and one fixed
+            // x·sin(x). Both factors are now varied, and the formula/order items
+            // give the student somewhere to fail that isn't arithmetic.
             if (type === "basic") {
-                const a = rand(2, 4);
-                return { subType: type, question: `d/dx[x · e^(${a}x)] = ?`, answer: `e^(${a}x) + ${a}xe^(${a}x)`, type: "procedural",
-                    options: [`e^(${a}x) + ${a}xe^(${a}x)`, `${a}xe^(${a}x)`, `e^(${a}x)`, `${a}e^(${a}x)`],
-                    explanation: `Product rule: (1)·e^(${a}x) + x·(${a}e^(${a}x)) = e^(${a}x) + ${a}xe^(${a}x)` };
-            } else {
-                return { subType: type, question: `d/dx[x·sin(x)] = ?`, answer: "sin(x) + x·cos(x)", type: "procedural",
-                    options: ["sin(x) + x·cos(x)", "x·cos(x)", "sin(x)", "cos(x)"],
-                    explanation: `Product rule: (1)·sin(x) + x·cos(x) = sin(x) + x·cos(x)` };
+                const a = rand(2, 6);
+                const v = pick(["exp", "poly", "polyexp"]);
+                if (v === "exp") {
+                    const ans = `e^(${a}x) + ${a}xe^(${a}x)`;
+                    return { subType: type, question: `d/dx[x · e^(${a}x)] = ?`, answer: ans, type: "procedural",
+                        options: uniqOpts([ans, `${a}xe^(${a}x)`, `e^(${a}x)`, `${a}e^(${a}x)`]),
+                        explanation: `f = x, g = e^(${a}x). f′g + fg′ = (1)·e^(${a}x) + x·(${a}e^(${a}x)) = ${ans}.` };
+                }
+                if (v === "poly") {
+                    const b = rand(1, 6), n = rand(2, 4);
+                    // d/dx[x^n(x + b)] = nx^(n-1)(x + b) + x^n. Collapse x^1 → x;
+                    // printing "2x^1" teaches sloppy form in a skill about form.
+                    const px = (c, e) => e === 1 ? `${c}x` : `${c}x^${e}`;
+                    const ans = `${px(n, n - 1)}(x + ${b}) + x^${n}`;
+                    return { subType: type, question: `d/dx[x^${n}(x + ${b})] = ?`, answer: ans, type: "procedural",
+                        options: uniqOpts([ans, px(n, n - 1), `${px(n, n - 1)}(x + ${b})`, `${px(n, n - 1)} · 1`]),
+                        explanation: `f = x^${n}, g = x + ${b}. f′g + fg′ = ${px(n, n - 1)}(x + ${b}) + x^${n}·1 = ${ans}.` };
+                }
+                const b2 = rand(2, 5);
+                const ansX = `${b2}e^(${a}x) + ${a * b2}xe^(${a}x)`;
+                return { subType: type, question: `d/dx[${b2}x · e^(${a}x)] = ?`, answer: ansX, type: "procedural",
+                    options: uniqOpts([ansX, `${a * b2}xe^(${a}x)`, `${b2}e^(${a}x)`, `${b2}e^(${a}x) + ${a}xe^(${a}x)`]),
+                    explanation: `f = ${b2}x, g = e^(${a}x). f′g + fg′ = ${b2}e^(${a}x) + ${b2}x·${a}e^(${a}x) = ${ansX}.` };
             }
+            if (type === "trig") {
+                const v = pick(["xsin", "xcos", "coeff", "sincos"]);
+                if (v === "xsin") {
+                    return { subType: type, question: `d/dx[x·sin(x)] = ?`, answer: "sin(x) + x·cos(x)", type: "procedural",
+                        options: uniqOpts(["sin(x) + x·cos(x)", "x·cos(x)", "cos(x)", "sin(x) − x·cos(x)"]),
+                        explanation: `f = x, g = sin(x). f′g + fg′ = (1)·sin(x) + x·cos(x).` };
+                }
+                if (v === "xcos") {
+                    return { subType: type, question: `d/dx[x·cos(x)] = ?`, answer: "cos(x) − x·sin(x)", type: "procedural",
+                        options: uniqOpts(["cos(x) − x·sin(x)", "cos(x) + x·sin(x)", "−x·sin(x)", "−sin(x)"]),
+                        explanation: `f = x, g = cos(x). f′g + fg′ = cos(x) + x·(−sin(x)) = cos(x) − x·sin(x). The minus comes from cos′, not from the product rule.` };
+                }
+                if (v === "coeff") {
+                    const a = rand(2, 6);
+                    const ans = `${a}sin(x) + ${a}x·cos(x)`;
+                    return { subType: type, question: `d/dx[${a}x·sin(x)] = ?`, answer: ans, type: "procedural",
+                        options: uniqOpts([ans, `${a}x·cos(x)`, `${a}cos(x)`, `sin(x) + ${a}x·cos(x)`]),
+                        explanation: `f = ${a}x, g = sin(x). f′g + fg′ = ${a}sin(x) + ${a}x·cos(x).` };
+                }
+                return { subType: type, question: `d/dx[sin(x)·cos(x)] = ?`, answer: "cos^2(x) − sin^2(x)", type: "procedural",
+                    options: uniqOpts(["cos^2(x) − sin^2(x)", "cos^2(x) + sin^2(x)", "−sin(x)·cos(x)", "cos(x) − sin(x)"]),
+                    explanation: `f′g + fg′ = cos(x)·cos(x) + sin(x)·(−sin(x)) = cos²(x) − sin²(x). (That is also cos(2x).)` };
+            }
+            // formula / when-to-use — the reasoning the arithmetic branches skip
+            const bank = [
+                { q: `The product rule states (fg)′ = ?`, a: "f′g + fg′",
+                  d: ["f′g′", "f′g − fg′", "(f + g)′"],
+                  e: `(fg)′ = f′g + fg′. It is a SUM of two terms, each differentiating one factor at a time.` },
+                { q: `Why is (fg)′ = f′g′ wrong?`, a: "the derivative of a product is not the product of the derivatives",
+                  d: ["it is only wrong for trig functions", "it is missing a minus sign", "it is only wrong for definite integrals"],
+                  e: `Test it: d/dx[x·x] = 2x, but x′·x′ = 1·1 = 1. Differentiation does not distribute over multiplication.` },
+                { q: `d/dx[x²·x³] can be done two ways. What should you get either way?`, a: "5x^4",
+                  d: ["6x^4", "2x·3x²", "x^5"],
+                  e: `Product rule: 2x·x³ + x²·3x² = 2x⁴ + 3x⁴ = 5x⁴. Or simplify first: x⁵ → 5x⁴. Same answer — a good self-check.` },
+                { q: `Which expression NEEDS the product rule?`, a: "x²·sin(x)",
+                  d: ["x² + sin(x)", "sin(x)/x²", "sin(x²)"],
+                  e: `Only x²·sin(x) is a product of two x-dependent factors. A sum differentiates term by term, a quotient needs the quotient rule, and sin(x²) is a composite needing the chain rule.` }
+            ];
+            const b = pick(bank);
+            return { subType: "formula", type: "conceptual", question: b.q, answer: b.a,
+                options: uniqOpts([b.a, ...b.d]), explanation: b.e };
         },
         "Integration Techniques": () => {
             // Procedural: 'substitution' picks from multiple inner-function forms.
@@ -13068,20 +13453,75 @@ const generators = {
             const subSkillOrder = ["circle", "product", "concept"];
             let available = getUnlockedSubSkillTypes('9_Implicit Differentiation', subSkillToType, subSkillOrder);
             const type = pick(available);
+            // Was six items: one circle, one xy = 6, one fixed concept question.
+            // Now includes ellipses, cubics, evaluating dy/dx at a point, and the
+            // vertical-tangent case the lesson gestures at.
             if (type === "circle") {
-                const r = rand(2, 5);
-                return { subType: type, question: `x² + y² = ${r*r}. Find dy/dx.`, answer: "-x/y", type: "procedural",
-                    options: ["-x/y", "x/y", "-y/x", "y/x"],
-                    explanation: `Differentiate: 2x + 2y(dy/dx) = 0. Solve: dy/dx = -x/y` };
-            } else if (type === "product") {
-                return { subType: type, question: `xy = 6. Find dy/dx.`, answer: "-y/x", type: "procedural",
-                    options: ["-y/x", "y/x", "-x/y", "-6/x²"],
-                    explanation: `Product rule: y + x(dy/dx) = 0. So dy/dx = -y/x` };
-            } else {
-                return { subType: type, question: `When do we use implicit differentiation?`, answer: "When y isn't isolated", type: "conceptual",
-                    options: ["When y isn't isolated", "When y = f(x)", "For polynomials only", "When there's no y"],
-                    explanation: `Implicit differentiation is used when y cannot be easily solved for as a function of x.` };
+                const r = rand(2, 6);
+                const v = pick(["plain", "ellipse", "at_point", "vertical"]);
+                if (v === "plain") {
+                    return { subType: type, question: `x² + y² = ${r * r}. Find dy/dx.`, answer: "-x/y", type: "procedural",
+                        options: uniqOpts(["-x/y", "x/y", "-y/x", "y/x"]),
+                        explanation: `Differentiate both sides: 2x + 2y(dy/dx) = 0, so dy/dx = −x/y.` };
+                }
+                if (v === "ellipse") {
+                    const a = rand(2, 5), b = rand(2, 5);
+                    return { subType: type, question: `${a}x² + ${b}y² = ${a + b}. Find dy/dx.`,
+                        answer: `-${a}x/(${b}y)`, type: "procedural",
+                        options: uniqOpts([`-${a}x/(${b}y)`, `${a}x/(${b}y)`, `-${b}y/(${a}x)`, `-${a}x/${b}`]),
+                        explanation: `${2 * a}x + ${2 * b}y(dy/dx) = 0 → dy/dx = −${2 * a}x/${2 * b}y = −${a}x/(${b}y).` };
+                }
+                if (v === "at_point") {
+                    // Pythagorean point on x² + y² = 25 so the slope is exact.
+                    const pts = [[3, 4], [4, 3], [-3, 4], [3, -4]];
+                    const p = pick(pts);
+                    const frac = (n, d) => { const g = (a, b) => b ? g(b, a % b) : a; const s = d < 0 ? -1 : 1; n *= s; d *= s;
+                        const q = g(Math.abs(n), Math.abs(d)) || 1; return `${n / q}/${d / q}`; };
+                    const ans = frac(-p[0], p[1]);
+                    return { subType: type, question: `On x² + y² = 25, find dy/dx at the point (${p[0]}, ${p[1]}).`,
+                        answer: ans, type: "procedural",
+                        options: uniqOpts([ans, frac(p[0], p[1]), frac(-p[1], p[0]), frac(p[1], p[0])]),
+                        explanation: `dy/dx = −x/y, so at (${p[0]}, ${p[1]}) the slope is −(${p[0]})/(${p[1]}) = ${ans}.` };
+                }
+                return { subType: type, question: `On x² + y² = ${r * r}, what happens to dy/dx at the point (${r}, 0)?`,
+                    answer: "it is undefined — the tangent is vertical", type: "conceptual",
+                    options: uniqOpts(["it is undefined — the tangent is vertical", "it equals 0", `it equals −${r}`, "it equals 1"]),
+                    explanation: `dy/dx = −x/y and y = 0 there, so the slope is undefined. Geometrically the tangent to a circle at its rightmost point is vertical.` };
             }
+            if (type === "product") {
+                const k = rand(2, 12);
+                const v = pick(["xy", "xy_plus", "cubic"]);
+                if (v === "xy") {
+                    return { subType: type, question: `xy = ${k}. Find dy/dx.`, answer: "-y/x", type: "procedural",
+                        options: uniqOpts(["-y/x", "y/x", "-x/y", `-${k}/x²`]),
+                        explanation: `Product rule on the left: y + x(dy/dx) = 0, so dy/dx = −y/x.` };
+                }
+                if (v === "xy_plus") {
+                    return { subType: type, question: `xy + y = ${k}. Find dy/dx.`, answer: "-y/(x + 1)", type: "procedural",
+                        options: uniqOpts(["-y/(x + 1)", "-y/x", "y/(x + 1)", "-1/(x + 1)"]),
+                        explanation: `y + x(dy/dx) + dy/dx = 0 → (x + 1)(dy/dx) = −y → dy/dx = −y/(x + 1). Factor dy/dx out of every term that has it.` };
+                }
+                return { subType: type, question: `x³ + y³ = ${k}. Find dy/dx.`, answer: "-x²/y²", type: "procedural",
+                    options: uniqOpts(["-x²/y²", "x²/y²", "-y²/x²", "-x/y"]),
+                    explanation: `3x² + 3y²(dy/dx) = 0 → dy/dx = −x²/y².` };
+            }
+            const bank = [
+                { q: `When do we use implicit differentiation?`, a: "When y isn't isolated",
+                  d: ["When y = f(x)", "For polynomials only", "When there's no y"],
+                  e: `Use it when the equation relates x and y without y being solved for.` },
+                { q: `Differentiating y² with respect to x gives:`, a: "2y(dy/dx)",
+                  d: ["2y", "2(dy/dx)", "y²(dy/dx)"],
+                  e: `y is a function of x, so the chain rule applies: d/dx[y²] = 2y·(dy/dx). Forgetting the dy/dx is the defining error of this topic.` },
+                { q: `Why does dy/dx appear when differentiating a term containing y?`, a: "because y is itself a function of x",
+                  d: ["because y is a constant", "because of the product rule", "because the equation is implicit by name only"],
+                  e: `Every y-term needs the chain rule, and dy/dx is the inner derivative it produces.` },
+                { q: `An implicit derivative usually contains BOTH x and y. Why is that acceptable?`, a: "the slope depends on which point on the curve you are at",
+                  d: ["it is a mistake and should be simplified out", "y can always be eliminated", "only for circles"],
+                  e: `A curve like x² + y² = 25 has two different slopes above and below the x-axis for the same x, so the slope formula must reference y too.` }
+            ];
+            const b = pick(bank);
+            return { subType: "concept", type: "conceptual", question: b.q, answer: b.a,
+                options: uniqOpts([b.a, ...b.d]), explanation: b.e };
         },
         "Related Rates": () => {
             // Procedural: both 'setup' (sphere) and 'circle' now use rand() for r and dr/dt.
@@ -13149,20 +13589,94 @@ const generators = {
             const subSkillOrder = ["identify", "solve", "reverse"];
             let available = getUnlockedSubSkillTypes('9_U-Substitution', subSkillToType, subSkillOrder);
             const type = pick(available);
+            // Was five items total, and the 'reverse' sub-skill (a lesson about
+            // back-substituting u → x) was quizzed with a FORWARD du question.
+            // 'reverse' now actually asks for the final answer in x, and the
+            // definite-integral limit change — taught in one bullet and never
+            // asked — is here too.
             if (type === "identify") {
-                const a = rand(2, 4);
-                return { subType: type, question: `∫${a}x(x² + 1)³ dx. Best substitution?`, answer: "u = x² + 1", type: "procedural",
-                    options: ["u = x² + 1", "u = x²", `u = ${a}x`, "u = (x² + 1)³"],
-                    explanation: `u = x² + 1, du = 2x dx. The ${a}x dx can be written as (${a}/2)du.` };
-            } else if (type === "solve") {
-                return { subType: type, question: `∫2x·e^(x²) dx = ?`, answer: "e^(x²) + C", type: "procedural",
-                    options: ["e^(x²) + C", "2e^(x²) + C", "x²e^(x²) + C", "e^(2x) + C"],
-                    explanation: `u = x², du = 2x dx. ∫e^u du = e^u + C = e^(x²) + C` };
-            } else {
-                return { subType: type, question: `If u = 3x + 2, then du = ?`, answer: "3 dx", type: "procedural",
-                    options: ["3 dx", "dx", "3x dx", "(3x + 2) dx"],
-                    explanation: `Differentiate u = 3x + 2: du/dx = 3, so du = 3 dx` };
+                const a = rand(2, 6);
+                const bank = [
+                    { q: `∫${a}x(x² + 1)³ dx. Best substitution?`, u: "u = x² + 1",
+                      d: ["u = x²", `u = ${a}x`, "u = (x² + 1)³"],
+                      e: `u = x² + 1 gives du = 2x dx, and the ${a}x dx supplies exactly that (times a constant).` },
+                    { q: `∫${a}x·e^(x²) dx. Best substitution?`, u: "u = x²",
+                      d: ["u = e^(x²)", `u = ${a}x`, "u = x"],
+                      e: `u = x² gives du = 2x dx, which matches the ${a}x dx up to a constant.` },
+                    { q: `∫cos(${a}x) dx. Best substitution?`, u: `u = ${a}x`,
+                      d: ["u = cos(x)", `u = sin(${a}x)`, "u = x"],
+                      e: `u = ${a}x gives du = ${a} dx — a pure constant adjustment.` },
+                    { q: `∫x²(x³ + 5)⁴ dx. Best substitution?`, u: "u = x³ + 5",
+                      d: ["u = x³", "u = x²", "u = (x³ + 5)⁴"],
+                      e: `u = x³ + 5 gives du = 3x² dx, and x² dx is sitting right there.` },
+                    { q: `∫(ln x)/x dx. Best substitution?`, u: "u = ln x",
+                      d: ["u = 1/x", "u = x", "u = x·ln x"],
+                      e: `u = ln x gives du = (1/x) dx, which is exactly the rest of the integrand.` }
+                ];
+                const b = pick(bank);
+                return { subType: type, question: b.q, answer: b.u, type: "procedural",
+                    options: uniqOpts([b.u, ...b.d]), explanation: b.e };
             }
+            if (type === "solve") {
+                const a = rand(2, 5), n = rand(2, 4);
+                const v = pick(["exp", "power", "trig", "recip"]);
+                if (v === "exp") {
+                    return { subType: type, question: `∫2x·e^(x²) dx = ?`, answer: "e^(x²) + C", type: "procedural",
+                        options: uniqOpts(["e^(x²) + C", "2e^(x²) + C", "x²e^(x²) + C", "e^(2x) + C"]),
+                        explanation: `u = x², du = 2x dx. ∫e^u du = e^u + C = e^(x²) + C.` };
+                }
+                if (v === "power") {
+                    const ans = `(x² + 1)^${n + 1}/${n + 1} + C`;
+                    return { subType: type, question: `∫2x(x² + 1)^${n} dx = ?`, answer: ans, type: "procedural",
+                        options: uniqOpts([ans, `(x² + 1)^${n + 1} + C`, `(x² + 1)^${n}/${n} + C`, `2(x² + 1)^${n + 1}/${n + 1} + C`]),
+                        explanation: `u = x² + 1, du = 2x dx. ∫u^${n} du = u^${n + 1}/${n + 1} + C = ${ans}.` };
+                }
+                if (v === "trig") {
+                    return { subType: type, question: `∫${a}cos(${a}x) dx = ?`, answer: `sin(${a}x) + C`, type: "procedural",
+                        options: uniqOpts([`sin(${a}x) + C`, `${a}sin(${a}x) + C`, `sin(x) + C`, `-sin(${a}x) + C`]),
+                        explanation: `u = ${a}x, du = ${a} dx. ∫cos(u) du = sin(u) + C = sin(${a}x) + C.` };
+                }
+                return { subType: type, question: `∫(2x)/(x² + 1) dx = ?`, answer: "ln|x² + 1| + C", type: "procedural",
+                    options: uniqOpts(["ln|x² + 1| + C", "2ln|x² + 1| + C", "ln|2x| + C", "1/(x² + 1) + C"]),
+                    explanation: `u = x² + 1, du = 2x dx. ∫(1/u) du = ln|u| + C = ln|x² + 1| + C.` };
+            }
+            // reverse — finish the job: back-substitute, or change the limits
+            const v2 = pick(["back", "back2", "limits", "limits2", "du"]);
+            if (v2 === "back") {
+                const n = rand(2, 4);
+                return { subType: "reverse", type: "procedural",
+                    question: `After ∫2x(x² + 3)^${n} dx you get u^${n + 1}/${n + 1} + C. Write the answer in terms of x.`,
+                    answer: `(x² + 3)^${n + 1}/${n + 1} + C`,
+                    options: uniqOpts([`(x² + 3)^${n + 1}/${n + 1} + C`, `u^${n + 1}/${n + 1} + C`, `(x² + 3)^${n + 1} + C`, `x^${n + 1}/${n + 1} + C`]),
+                    explanation: `Substitute u = x² + 3 back in. Leaving the answer in u is the most common way to lose the mark.` };
+            }
+            if (v2 === "back2") {
+                return { subType: "reverse", type: "procedural",
+                    question: `After ∫cos(x)·sin(x) dx with u = sin(x) you get u²/2 + C. Write the answer in terms of x.`,
+                    answer: "sin^2(x)/2 + C",
+                    options: uniqOpts(["sin^2(x)/2 + C", "u²/2 + C", "cos^2(x)/2 + C", "sin(x)/2 + C"]),
+                    explanation: `u = sin(x), so u²/2 + C = sin²(x)/2 + C. Always return to the original variable.` };
+            }
+            if (v2 === "limits") {
+                const b = rand(1, 4);
+                return { subType: "reverse", type: "procedural",
+                    question: `For ∫₀^${b} 2x(x² + 1)³ dx with u = x² + 1, what are the NEW limits of integration?`,
+                    answer: `1 to ${b * b + 1}`,
+                    options: uniqOpts([`1 to ${b * b + 1}`, `0 to ${b}`, `0 to ${b * b + 1}`, `1 to ${b}`]),
+                    explanation: `Substitute the old limits into u: at x = 0, u = 1; at x = ${b}, u = ${b}² + 1 = ${b * b + 1}. Change the limits and you never have to back-substitute.` };
+            }
+            if (v2 === "limits2") {
+                return { subType: "reverse", type: "conceptual",
+                    question: `You change variables in a DEFINITE integral but keep the original limits. What happens?`,
+                    answer: "the answer is wrong unless you back-substitute first",
+                    options: uniqOpts(["the answer is wrong unless you back-substitute first", "nothing — limits are unaffected", "the integral becomes indefinite", "you must add a constant C"]),
+                    explanation: `The limits belong to x. Either convert them to u-values, or return to x before evaluating — doing neither is the single most common u-substitution error.` };
+            }
+            const a2 = rand(2, 9), c2 = rand(1, 9);
+            return { subType: "reverse", type: "procedural",
+                question: `If u = ${a2}x + ${c2}, then du = ?`, answer: `${a2} dx`,
+                options: uniqOpts([`${a2} dx`, "dx", `${a2}x dx`, `(${a2}x + ${c2}) dx`]),
+                explanation: `Differentiate u = ${a2}x + ${c2}: du/dx = ${a2}, so du = ${a2} dx.` };
         },
         "Integration by Parts": () => {
             // Procedural: 'choose_u' uses a 10-item integrand bank; 'apply' uses a bank
@@ -13212,7 +13726,30 @@ const generators = {
                     explanation: `${f.reason}. So u = ${f.u}.` };
             }
             // apply — bank of worked-out IBP results, with random coefficients.
-            const variant = pick(["x_ex", "x_sinx", "x_cosx", "lnx", "x_ekx"]);
+            // x_ksinx / x_kcosx vary the inner coefficient so the bank is not
+            // five fixed integrals, and the +C entry covers the classic omission
+            // that this skill's mistakes list never mentioned.
+            const variant = pick(["x_ex", "x_sinx", "x_cosx", "lnx", "x_ekx", "x_ksinx", "x_kcosx", "plusC"]);
+            if (variant === "x_ksinx") {
+                const k = rand(2, 6);
+                const ans = `-x·cos(${k}x)/${k} + sin(${k}x)/${k * k} + C`;
+                return { subType: type, question: `∫x·sin(${k}x) dx = ?`, answer: ans, type: "procedural",
+                    options: shuffle(uniqOpts([ans, `-x·cos(${k}x)/${k} + C`, `-x·cos(${k}x) + sin(${k}x) + C`, `x·cos(${k}x)/${k} + sin(${k}x)/${k * k} + C`])),
+                    explanation: `u = x, dv = sin(${k}x) dx → v = −cos(${k}x)/${k}. uv − ∫v du = −x·cos(${k}x)/${k} + (1/${k})∫cos(${k}x) dx = ${ans}.` };
+            }
+            if (variant === "x_kcosx") {
+                const k = rand(2, 6);
+                const ans = `x·sin(${k}x)/${k} + cos(${k}x)/${k * k} + C`;
+                return { subType: type, question: `∫x·cos(${k}x) dx = ?`, answer: ans, type: "procedural",
+                    options: shuffle(uniqOpts([ans, `x·sin(${k}x)/${k} + C`, `x·sin(${k}x) + cos(${k}x) + C`, `-x·sin(${k}x)/${k} + cos(${k}x)/${k * k} + C`])),
+                    explanation: `u = x, dv = cos(${k}x) dx → v = sin(${k}x)/${k}. uv − ∫v du = x·sin(${k}x)/${k} − (1/${k})∫sin(${k}x) dx = ${ans}.` };
+            }
+            if (variant === "plusC") {
+                return { subType: type, question: `You finish ∫x·e^x dx and write "xe^x − e^x". What is missing?`,
+                    answer: "+ C", type: "conceptual",
+                    options: shuffle(["+ C", "a factor of x", "a minus sign", "nothing — it is complete"]),
+                    explanation: `Every indefinite integral needs the constant of integration. Integration by parts is no exception — the + C goes on at the very end, once.` };
+            }
             if (variant === "x_ex") {
                 return { subType: type, question: "∫x·e^x dx = ?", answer: "xe^x − e^x + C", type: "procedural",
                     options: shuffle(["xe^x − e^x + C", "xe^x + C", "x²e^x/2 + C", "e^x + C"]),
@@ -42081,7 +42618,7 @@ function submitAnswer() {
         // Typed answer - use intelligent interpreter
         const input = document.getElementById('typed-answer-input');
         const userInput = input?.value?.trim();
-        correct = typedAnswerIsCorrect(userInput, q.answer);
+        correct = typedAnswerIsCorrect(userInput, q);
         correctAnswerDisplay = q.answer;
     } else {
         // Standard multiple choice
@@ -43821,7 +44358,7 @@ function submitPracticeTypedAnswer() {
     if (input) input.disabled = true;
     const btn = document.getElementById('practice-submit-btn');
     if (btn) btn.disabled = true;
-    applyPracticeResult(question, typedAnswerIsCorrect(userInput, question.answer), -1);
+    applyPracticeResult(question, typedAnswerIsCorrect(userInput, question), -1);
 }
 
 function selectPracticeOption(index) {
@@ -47396,15 +47933,57 @@ if ('speechSynthesis' in window) {
   }, function(){
     const ri=(a,b)=>Math.floor(Math.random()*(b-a+1))+a; const sh=a=>a.map(x=>[Math.random(),x]).sort((p,q)=>p[0]-q[0]).map(p=>p[1]);
     const pk=a=>a[ri(0,a.length-1)];
-    const t = ri(0,2);
+    // Was 15 items and drilled ONE discontinuity type: the removable hole from
+    // (x² − c²)/(x − c) was the goal problem, the worked example, the guided
+    // practice and two of three question types. Jump discontinuities got a
+    // single bullet and were never asked — so a piecewise case is now here, and
+    // the three-part formal definition is checkable.
+    const t = ri(0,5);
     if(t===0){
-      const c = ri(3,7);
+      const c = ri(3,9);
       const answer = "Removable (hole)";
       const options = sh([answer, "Jump", "Infinite (asymptote)", "None — f is continuous"]);
       return { subType:"removable", type:"conceptual",
         question:`Classify the discontinuity of f(x) = (x² − ${c*c})/(x − ${c}) at x = ${c}.`,
         answer, options,
         explanation:`x² − ${c*c} factors as (x − ${c})(x + ${c}). The (x − ${c}) cancels, leaving x + ${c}, so there is a single missing point — a removable (hole) discontinuity at x = ${c}.` };
+    } else if(t===3){
+      // Jump discontinuity from an explicit piecewise definition.
+      const c = ri(1,5), p = ri(1,6), q = p + ri(1,6);
+      const answer = "Jump";
+      const options = sh([answer, "Removable (hole)", "Infinite (asymptote)", "None — f is continuous"]);
+      return { subType:"jump", type:"conceptual",
+        question:`f(x) = { x + ${p} if x < ${c}; x + ${q} if x ≥ ${c} }. Classify the discontinuity at x = ${c}.`,
+        answer, options,
+        explanation:`Left limit: ${c} + ${p} = ${c+p}. Right limit: ${c} + ${q} = ${c+q}. Both one-sided limits exist but disagree (${c+p} ≠ ${c+q}), so the graph jumps.` };
+    } else if(t===4){
+      // Make it continuous — solve for the value that closes the gap.
+      const c = ri(1,5), p = ri(1,6);
+      const k = c + p;
+      const answer = String(k);
+      const options = sh(uniqOpts([answer, String(p), String(c), String(k+1)]));
+      return { subType:"make_continuous", type:"procedural",
+        question:`f(x) = { x + ${p} if x < ${c}; k if x ≥ ${c} }. What value of k makes f continuous at x = ${c}?`,
+        answer, options,
+        explanation:`For continuity the two sides must meet: the left limit is ${c} + ${p} = ${k}, so k = ${k}.` };
+    } else if(t===5){
+      const bank = [
+        { q:`f is continuous at x = a when which three conditions hold?`,
+          a:"f(a) exists, lim f(x) exists, and they are equal",
+          d:["f(a) exists and f is increasing","the limit exists and f(a) = 0","f is differentiable at a"],
+          e:`All three: the value exists, the limit exists, and the limit equals the value. Dropping any one gives a different kind of discontinuity.` },
+        { q:`A function is differentiable at x = a. Is it continuous there?`,
+          a:"yes, always",
+          d:["no, never","only if f(a) = 0","only for polynomials"],
+          e:`Differentiability implies continuity. The converse fails — |x| is continuous at 0 but has a corner, so it is not differentiable there.` },
+        { q:`f is continuous at x = a but NOT differentiable there. What could the graph look like?`,
+          a:"a corner or a cusp",
+          d:["a hole","a vertical asymptote","a jump"],
+          e:`Holes, asymptotes and jumps all break continuity. A corner (like |x| at 0) keeps the graph connected but has no single tangent slope.` }
+      ];
+      const b = bank[ri(0,bank.length-1)];
+      return { subType:"definition", type:"conceptual", question:b.q, answer:b.a,
+        options:sh(uniqOpts([b.a, ...b.d])), explanation:b.e };
     } else if(t===1){
       const c = ri(2,7);
       const answer = "Infinite (asymptote)";
@@ -47538,24 +48117,50 @@ if ('speechSynthesis' in window) {
   }, function(){
     const ri=(a,b)=>Math.floor(Math.random()*(b-a+1))+a; const sh=a=>a.map(x=>[Math.random(),x]).sort((p,q)=>p[0]-q[0]).map(p=>p[1]);
     const pk=a=>a[ri(0,a.length-1)];
-    const t = ri(0,2);
+    // Was 15 items: the definite branch was ∫₀^b 3x² dx with b ∈ {2,4}, so a
+    // student saw two definite integrals in the whole skill. Non-zero lower
+    // limits, a constant integrand, and the +C reasoning are now included.
+    const t = ri(0,4);
     if(t===0){
-      const n=ri(1,4), m=ri(2,4), co=m*(n+1);
+      const n=ri(1,5), m=ri(2,6), co=m*(n+1);
       const answer = `${m}x^${n+1} + C`;
-      const options = sh([answer, `${m}x^${n} + C`, `${co}x^${n+1} + C`, `${m}x^${n+1}`]);
+      const options = sh(uniqOpts([answer, `${m}x^${n} + C`, `${co}x^${n+1} + C`, `${m}x^${n+1}`]));
       return { subType:"indefinite", type:"procedural",
         question:`Evaluate the indefinite integral: ∫ ${co}x^${n} dx`,
         answer, options,
         explanation:`Raise the exponent (${n} → ${n+1}) and divide the coefficient by it: ${co}/${n+1} = ${m}. Add +C: ${answer}.` };
     } else if(t===1){
-      const b=pk([2,4]);
+      const b=ri(2,6);
       const ans=b*b*b;
       const answer = String(ans);
-      const options = sh([answer, String(b*b), String(3*b*b), String(ans+3)]);
+      const options = sh(uniqOpts([answer, String(b*b), String(3*b*b), String(ans+3)]));
       return { subType:"definite", type:"procedural",
         question:`Evaluate the definite integral: ∫₀^${b} 3x² dx`,
         answer, options,
         explanation:`An antiderivative of 3x² is x³. So ∫₀^${b} 3x² dx = [x³]₀^${b} = ${b}³ − 0 = ${ans}.` };
+    } else if(t===3){
+      const a=ri(1,4), b=a+ri(1,4);
+      const ans=b*b*b-a*a*a;
+      const answer = String(ans);
+      const options = sh(uniqOpts([answer, String(b*b*b), String((b-a)*(b-a)*(b-a)), String(3*(b*b-a*a))]));
+      return { subType:"definite_ab", type:"procedural",
+        question:`Evaluate the definite integral: ∫${a}^${b} 3x² dx`,
+        answer, options,
+        explanation:`[x³]${a}^${b} = ${b}³ − ${a}³ = ${b*b*b} − ${a*a*a} = ${ans}. Top limit first, then subtract the bottom.` };
+    } else if(t===4){
+      const bank = [
+        { q:`Why does an indefinite integral need "+ C" but a definite one does not?`,
+          a:"the constant cancels when you subtract F(a) from F(b)",
+          d:["definite integrals have no antiderivative","C is only needed for trig integrals","definite integrals are always zero"],
+          e:`F(b) + C − (F(a) + C) = F(b) − F(a). The constant cancels, so it is only carried in the indefinite case.` },
+        { q:`An indefinite integral evaluates to a ___, a definite integral to a ___.`,
+          a:"family of functions; number",
+          d:["number; family of functions","function; function","number; number"],
+          e:`∫f(x) dx is every antiderivative of f (a family, hence + C). ∫ₐᵇ f(x) dx is a single accumulated value.` }
+      ];
+      const b2 = bank[ri(0,bank.length-1)];
+      return { subType:"concept_c", type:"conceptual", question:b2.q, answer:b2.a,
+        options:sh(uniqOpts([b2.a, ...b2.d])), explanation:b2.e };
     } else {
       const answer = "Definite integral";
       const options = sh([answer, "Indefinite integral", "Antiderivative", "Both give a family of functions"]);
@@ -47611,24 +48216,48 @@ if ('speechSynthesis' in window) {
     };
   }, function(){
     const ri=(a,b)=>Math.floor(Math.random()*(b-a+1))+a; const sh=a=>a.map(x=>[Math.random(),x]).sort((p,q)=>p[0]-q[0]).map(p=>p[1]);
-    const t = ri(0,2);
+    const pk=a=>a[ri(0,a.length-1)];
+    // Was nine items. Part 1 had a single shape (t² + c), so the chain-rule form
+    // d/dx ∫ₐ^g(x) f(t)dt — an AB-tested skill — never appeared, nor did a
+    // variable lower limit or any accumulation-function reasoning.
+    const t = ri(0,4);
     if(t===0){
-      const b=ri(4,6);
-      const ans=b*b-1;
-      const answer = String(ans);
-      const options = sh([answer, String(b*b), String((b-1)*(b-1)), String(2*b-2)]);
+      const b=ri(3,8);
+      // Even coefficient so ∫₁^b co·x dx = (co/2)(b² − 1) is always an integer.
+      const co=2*ri(1,4);
+      const answer = String((co/2)*(b*b-1));
+      const options = sh(uniqOpts([answer, String(co*b*b), String((b-1)*(b-1)), String(co*(b-1))]));
       return { subType:"part2", type:"procedural",
-        question:`Use the Fundamental Theorem: ∫₁^${b} 2x dx = ?`,
+        question:`Use the Fundamental Theorem: ∫₁^${b} ${co}x dx = ?`,
         answer, options,
-        explanation:`An antiderivative of 2x is x². So ∫₁^${b} 2x dx = ${b}² − 1² = ${b*b} − 1 = ${ans}.` };
+        explanation:`An antiderivative of ${co}x is ${co}x²/2. So ∫₁^${b} ${co}x dx = ${co}·${b}²/2 − ${co}·1/2 = ${answer}.` };
     } else if(t===1){
-      const c=ri(1,5);
-      const answer = `x² + ${c}`;
-      const options = sh([answer, `x³/3 + ${c}x`, `2x`, `x² + ${c}x`]);
+      const c=ri(1,7);
+      const p=pk([2,3]);
+      const answer = p===2 ? `x² + ${c}` : `x³ + ${c}`;
+      const options = sh(uniqOpts([answer, p===2?`x³/3 + ${c}x`:`x⁴/4 + ${c}x`, p===2?`2x`:`3x²`, `x${p===2?'²':'³'} + ${c}x`]));
       return { subType:"part1", type:"procedural",
-        question:`Let F(x) = ∫₀ˣ (t² + ${c}) dt. Find F'(x).`,
+        question:`Let F(x) = ∫₀ˣ (t${p===2?'²':'³'} + ${c}) dt. Find F'(x).`,
         answer, options,
-        explanation:`By FTC Part 1, d/dx ∫₀ˣ (t² + ${c}) dt = x² + ${c} — replace t with x in the integrand.` };
+        explanation:`FTC Part 1: differentiating an accumulation function just replaces t with x in the integrand. F′(x) = ${answer}. No integration required.` };
+    } else if(t===2){
+      // Part 1 with a chain rule on the upper limit — the AB form that was missing.
+      const k=ri(2,5);
+      const answer = `${k}·sin(${k}x)`;
+      const options = sh(uniqOpts([answer, `sin(${k}x)`, `${k}·sin(x)`, `cos(${k}x)`]));
+      return { subType:"part1_chain", type:"procedural",
+        question:`Let F(x) = ∫₀^(${k}x) sin(t) dt. Find F'(x).`,
+        answer, options,
+        explanation:`FTC Part 1 with a non-trivial upper limit g(x) = ${k}x: F′(x) = f(g(x))·g′(x) = sin(${k}x)·${k} = ${answer}. The chain factor is what students drop here.` };
+    } else if(t===3){
+      // Accumulation-function reasoning: where is F increasing?
+      const c=ri(2,6);
+      const answer = `where f is positive`;
+      const options = sh(uniqOpts([answer, `where f is increasing`, `where f is negative`, `where f' is positive`]));
+      return { subType:"accumulation", type:"conceptual",
+        question:`F(x) = ∫₀ˣ f(t) dt. On which intervals is F increasing?`,
+        answer, options,
+        explanation:`F′ = f by FTC Part 1, so F increases exactly where f is POSITIVE — not where f is increasing. Those are different conditions.` };
     } else {
       const answer = "F(b) − F(a)";
       // "f(b) − f(a)" differs from the answer "F(b) − F(a)" only by case, and
@@ -47688,24 +48317,89 @@ if ('speechSynthesis' in window) {
   }, function(){
     const ri=(a,b)=>Math.floor(Math.random()*(b-a+1))+a; const sh=a=>a.map(x=>[Math.random(),x]).sort((p,q)=>p[0]-q[0]).map(p=>p[1]);
     const pk=a=>a[ri(0,a.length-1)];
-    const t = ri(0,1);
-    if(t===0){
-      const b=pk([4,6]);
-      const ans=(b*b)/2;
-      const answer = String(ans);
-      const options = sh([answer, String(b*b), String(b), String(ans+b)]);
-      return { subType:"compute", type:"procedural",
-        question:`Find the area between y = 2x and y = x from x = 0 to x = ${b}.`,
+    // Reduced fraction as a typed-friendly string ("4/3", or "6" when exact).
+    const frac=(p,q)=>{ const g=(a,b)=>b?g(b,a%b):a; const s=q<0?-1:1; p*=s; q*=s;
+      const d=g(Math.abs(p),Math.abs(q))||1; p/=d; q/=d; return q===1?String(p):`${p}/${q}`; };
+    // This skill used to be TWO lines (y=2x and y=x) with the upper limit drawn
+    // from {4,6} — a bank of three questions for an AP Calculus AB topic. The
+    // families below vary the curves, force the student to FIND the limits by
+    // solving for the intersections, and include a region where the upper curve
+    // is the parabola rather than the line.
+    const t = pk(["lines","lines","para_line","para_line","horiz","find_limits","concept","concept_dy"]);
+
+    if(t==="lines"){
+      const m=ri(2,6); const n=ri(1,m-1); const b=ri(2,6);
+      const ans=frac((m-n)*b*b,2);
+      const answer=String(ans);
+      const options=sh(uniqOpts([answer, frac((m+n)*b*b,2), String((m-n)*b), frac((m-n)*b*b,4)]));
+      return { subType:"lines", type:"procedural",
+        question:`Find the area between y = ${m}x and y = ${n}x from x = 0 to x = ${b}.`,
         answer, options,
-        explanation:`Top minus bottom: 2x − x = x. Area = ∫₀^${b} x dx = [x²/2]₀^${b} = ${b*b}/2 = ${ans}.` };
-    } else {
-      const answer = "∫ₐᵇ (f − g) dx";
-      const options = sh([answer, "∫ₐᵇ (g − f) dx", "∫ₐᵇ (f + g) dx", "∫ₐᵇ f·g dx"]);
-      return { subType:"concept", type:"conceptual",
-        question:`Which integral gives the area between an upper curve f and a lower curve g on [a, b]?`,
-        answer, options,
-        explanation:`Area between curves is ∫ₐᵇ (top − bottom) dx = ∫ₐᵇ (f − g) dx when f is above g.` };
+        explanation:`Top minus bottom: ${m}x − ${n}x = ${m-n}x. Area = ∫₀^${b} ${m-n}x dx = [${m-n}x²/2]₀^${b} = ${m-n}·${b*b}/2 = ${ans}.` };
     }
+
+    if(t==="para_line"){
+      // y = kx and y = x² meet at x = 0 and x = k; the LINE is on top between them.
+      const k=ri(2,7);
+      const ans=frac(k*k*k,6);
+      const answer=String(ans);
+      const options=sh(uniqOpts([answer, frac(k*k*k,3), frac(k*k*k,2), String(k*k)]));
+      return { subType:"para_line", type:"procedural",
+        question:`Find the area of the region enclosed by y = ${k}x and y = x².`,
+        answer, options,
+        explanation:`Set ${k}x = x² → x = 0 or x = ${k}. On (0, ${k}) the line is above the parabola, so Area = ∫₀^${k} (${k}x − x²) dx = [${k}x²/2 − x³/3]₀^${k} = ${frac(k*k*k,2)} − ${frac(k*k*k,3)} = ${ans}.` };
+    }
+
+    if(t==="horiz"){
+      // y = m² (horizontal) above y = x², meeting at x = ±m. Area = 4m³/3.
+      const m=ri(2,5);
+      const ans=frac(4*m*m*m,3);
+      const answer=String(ans);
+      const options=sh(uniqOpts([answer, frac(2*m*m*m,3), String(4*m*m*m), frac(m*m*m,3)]));
+      return { subType:"horiz", type:"procedural",
+        question:`Find the area of the region enclosed by y = x² and y = ${m*m}.`,
+        answer, options,
+        explanation:`They meet where x² = ${m*m} → x = ±${m}. The horizontal line is on top, so Area = ∫₋${m}^${m} (${m*m} − x²) dx = [${m*m}x − x³/3]₋${m}^${m} = ${ans}.` };
+    }
+
+    if(t==="find_limits"){
+      // y = x and y = x² meet at 0 and 1; scaled: y = c·x and y = c·x² meet at 0 and 1.
+      const c=ri(2,9);
+      const ans=frac(c,6);
+      const answer=String(ans);
+      const options=sh(uniqOpts([answer, frac(c,3), frac(c,2), frac(c*c,6)]));
+      return { subType:"find_limits", type:"procedural",
+        question:`Find the area of the region enclosed by y = ${c}x and y = ${c}x².`,
+        answer, options,
+        explanation:`Set ${c}x = ${c}x² → x = 0 or x = 1. On (0, 1) the line is above, so Area = ∫₀¹ (${c}x − ${c}x²) dx = [${c}x²/2 − ${c}x³/3]₀¹ = ${frac(c,2)} − ${frac(c,3)} = ${ans}.` };
+    }
+
+    if(t==="concept_dy"){
+      const answer="∫_c^d (right − left) dy";
+      const options=sh([answer, "∫_c^d (left − right) dy", "∫_c^d (top − bottom) dy", "∫ₐᵇ (right − left) dx"]);
+      return { subType:"concept_dy", type:"conceptual",
+        question:`When integrating with respect to y, the area between two curves is:`,
+        answer, options,
+        explanation:`Integrating in y sweeps horizontal strips, so you subtract the LEFT curve from the RIGHT one: ∫_c^d (right − left) dy.` };
+    }
+
+    const conceptBank=[
+      { q:`Which integral gives the area between an upper curve f and a lower curve g on [a, b]?`,
+        a:"∫ₐᵇ (f − g) dx", d:["∫ₐᵇ (g − f) dx","∫ₐᵇ (f + g) dx","∫ₐᵇ f·g dx"],
+        e:`Area between curves is ∫ₐᵇ (top − bottom) dx = ∫ₐᵇ (f − g) dx when f is above g.` },
+      { q:`Before integrating to find the area enclosed by two curves, what must you find first?`,
+        a:"the x-values where the curves intersect", d:["the y-intercept of each curve","the derivative of each curve","the concavity of each curve"],
+        e:`The intersections are the limits of integration — without them you have no interval to integrate over.` },
+      { q:`You compute ∫ₐᵇ (f − g) dx and get a NEGATIVE number. What does that tell you?`,
+        a:"g was actually above f on [a, b]", d:["the area is negative","you integrated the wrong variable","the curves never intersect"],
+        e:`Area is never negative. A negative result means you subtracted in the wrong order — g was the upper curve.` },
+      { q:`The curves y = f(x) and y = g(x) cross at x = c inside [a, b]. What must you do?`,
+        a:"split into two integrals at x = c", d:["integrate from a to b as usual","use the average of f and g","integrate only from a to c"],
+        e:`Which curve is on top changes at x = c, so the region needs two integrals — one on [a, c], one on [c, b].` }
+    ];
+    const cb=pk(conceptBank);
+    return { subType:"concept", type:"conceptual", question:cb.q, answer:cb.a,
+      options:sh([cb.a,...cb.d]), explanation:cb.e };
   });
 
   // ---- M-301 Volumes of Revolution ----
@@ -47754,24 +48448,93 @@ if ('speechSynthesis' in window) {
   }, function(){
     const ri=(a,b)=>Math.floor(Math.random()*(b-a+1))+a; const sh=a=>a.map(x=>[Math.random(),x]).sort((p,q)=>p[0]-q[0]).map(p=>p[1]);
     const pk=a=>a[ri(0,a.length-1)];
-    const t = ri(0,1);
-    if(t===0){
-      const b=pk([4,6]);
-      const co=(b*b)/2;
-      const answer = `${co}π`;
-      const options = sh([answer, `${b*b}π`, `${co}`, `${b}π`]);
+    const frac=(p,q)=>{ const g=(a,b)=>b?g(b,a%b):a; const s=q<0?-1:1; p*=s; q*=s;
+      const d=g(Math.abs(p),Math.abs(q))||1; p/=d; q/=d; return q===1?String(p):`${p}/${q}`; };
+    // Render coefficient×π as "64π/3", not "64/3π" — the latter reads as
+    // 64/(3π) and is what a student would then type.
+    const piStr=(p,q)=>{ const g=(a,b)=>b?g(b,a%b):a; const d=g(Math.abs(p),Math.abs(q))||1;
+      const n=p/d, m=q/d;
+      const num = n===1?"π":(n===-1?"−π":`${n}π`);
+      return m===1?num:`${num}/${m}`; };
+    // Was a bank of three: always y = √x about the x-axis with b drawn from {4,6}.
+    // Washers and shells were introduced in the lesson and never asked at all.
+    const t = pk(["disk_sqrt","disk_line","disk_pow","washer","shell","concept","concept","concept"]);
+
+    if(t==="disk_sqrt"){
+      const b=ri(2,7);
+      const answer=piStr(b*b,2);
+      const options=sh(uniqOpts([answer, piStr(b*b,1), frac(b*b,2), piStr(b,1)]));
       return { subType:"disk", type:"procedural",
         question:`The region under y = √x from x = 0 to x = ${b} is rotated about the x-axis. Find the volume (disk method).`,
         answer, options,
-        explanation:`V = π∫₀^${b} (√x)² dx = π∫₀^${b} x dx = π[x²/2]₀^${b} = π·(${b*b}/2) = ${answer}.` };
-    } else {
-      const answer = "π∫ₐᵇ [f(x)]² dx";
-      const options = sh([answer, "π∫ₐᵇ f(x) dx", "2π∫ₐᵇ f(x) dx", "∫ₐᵇ [f(x)]² dx"]);
-      return { subType:"concept", type:"conceptual",
-        question:`Which formula gives the volume by the disk method when y = f(x) is rotated about the x-axis on [a, b]?`,
-        answer, options,
-        explanation:`Each disk has area π[f(x)]², so V = π∫ₐᵇ [f(x)]² dx.` };
+        explanation:`V = π∫₀^${b} (√x)² dx = π∫₀^${b} x dx = π[x²/2]₀^${b} = ${answer}.` };
     }
+
+    if(t==="disk_line"){
+      // y = mx about the x-axis on [0,b]: V = π m² b³/3.
+      const m=ri(1,4), b=ri(2,5);
+      const answer=piStr(m*m*b*b*b,3);
+      const options=sh(uniqOpts([answer, piStr(m*b*b*b,3), piStr(m*m*b*b,2), piStr(m*m*b*b*b,1)]));
+      return { subType:"disk_line", type:"procedural",
+        question:`The region under y = ${m===1?"":m}x from x = 0 to x = ${b} is rotated about the x-axis. Find the volume (disk method).`,
+        answer, options,
+        explanation:`V = π∫₀^${b} (${m===1?"":m}x)² dx = π∫₀^${b} ${m*m}x² dx = π[${m*m}x³/3]₀^${b} = ${answer}.` };
+    }
+
+    if(t==="disk_pow"){
+      // y = x^n about the x-axis on [0,b]: V = π b^(2n+1)/(2n+1).
+      const n=pk([2,3]), b=ri(1,3);
+      const p=2*n+1;
+      const answer=piStr(Math.pow(b,p),p);
+      const options=sh(uniqOpts([answer, piStr(Math.pow(b,p),1), piStr(Math.pow(b,n+1),n+1), piStr(Math.pow(b,p),p+1)]));
+      return { subType:"disk_pow", type:"procedural",
+        question:`The region under y = x${n===2?"²":"³"} from x = 0 to x = ${b} is rotated about the x-axis. Find the volume (disk method).`,
+        answer, options,
+        explanation:`V = π∫₀^${b} (x${n===2?"²":"³"})² dx = π∫₀^${b} x^${2*n} dx = π[x^${p}/${p}]₀^${b} = ${answer}.` };
+    }
+
+    if(t==="washer"){
+      // Between y = R (outer) and y = r (inner), both constants, on [0,b].
+      const R=ri(3,6), r=ri(1,R-1), b=ri(1,4);
+      const answer=piStr((R*R-r*r)*b,1);
+      const options=sh(uniqOpts([answer, piStr((R-r)*(R-r)*b,1), piStr((R*R+r*r)*b,1), piStr((R-r)*b,1)]));
+      return { subType:"washer", type:"procedural",
+        question:`The region between y = ${R} and y = ${r} from x = 0 to x = ${b} is rotated about the x-axis. Find the volume (washer method).`,
+        answer, options,
+        explanation:`V = π∫₀^${b} ([${R}]² − [${r}]²) dx = π∫₀^${b} (${R*R} − ${r*r}) dx = π·${R*R-r*r}·${b} = ${answer}. Subtract the squares — not the radii.` };
+    }
+
+    if(t==="shell"){
+      // y = c on [0,b] about the y-axis: V = 2π∫₀^b x·c dx = π c b².
+      const c=ri(2,5), b=ri(2,5);
+      const answer=piStr(c*b*b,1);
+      const options=sh(uniqOpts([answer, piStr(2*c*b*b,1), piStr(c*b,1), piStr(c*b*b,2)]));
+      return { subType:"shell", type:"procedural",
+        question:`The region under y = ${c} from x = 0 to x = ${b} is rotated about the y-axis. Find the volume (shell method).`,
+        answer, options,
+        explanation:`Shells: V = 2π∫₀^${b} x·${c} dx = 2π·${c}[x²/2]₀^${b} = 2π·${c}·${b*b}/2 = ${answer}.` };
+    }
+
+    const conceptBank=[
+      { q:`Which formula gives the volume by the disk method when y = f(x) is rotated about the x-axis on [a, b]?`,
+        a:"π∫ₐᵇ [f(x)]² dx", d:["π∫ₐᵇ f(x) dx","2π∫ₐᵇ f(x) dx","∫ₐᵇ [f(x)]² dx"],
+        e:`Each disk has area π[f(x)]², so V = π∫ₐᵇ [f(x)]² dx.` },
+      { q:`The solid of revolution has a hole through the middle. Which method applies?`,
+        a:"washer", d:["disk","shell about the same axis","cross-section"],
+        e:`A hole means an outer radius R and an inner radius r: V = π∫ₐᵇ ([R]² − [r]²) dx.` },
+      { q:`In the washer method, V = π∫ₐᵇ (R² − r²) dx. What is the classic error?`,
+        a:"computing (R − r)² instead of R² − r²", d:["forgetting the π","using dy instead of dx","squaring only the outer radius"],
+        e:`(R − r)² ≠ R² − r². You subtract the SQUARES of the radii, not the radii themselves.` },
+      { q:`Which formula gives the volume by the shell method about the y-axis?`,
+        a:"2π∫ₐᵇ x·f(x) dx", d:["π∫ₐᵇ [f(x)]² dx","2π∫ₐᵇ [f(x)]² dx","∫ₐᵇ x·f(x) dx"],
+        e:`Each shell has circumference 2πx and height f(x), so V = 2π∫ₐᵇ x·f(x) dx.` },
+      { q:`Rotating about the x-axis, what does the radius of each disk equal?`,
+        a:"f(x), the function value", d:["x, the input","[f(x)]², the squared value","the width dx"],
+        e:`The disk's radius is the distance from the axis to the curve, which is f(x). You square it inside the integral.` }
+    ];
+    const cb=pk(conceptBank);
+    return { subType:"concept", type:"conceptual", question:cb.q, answer:cb.a,
+      options:sh([cb.a,...cb.d]), explanation:cb.e };
   });
 
   // ============================================================
@@ -49326,6 +50089,30 @@ if ('speechSynthesis' in window) {
     const why = form === "minus" ? `${a*a} − ${a*a}sin²θ = ${a*a}cos²θ, so the root becomes ${a} cos θ`
               : form === "plus"  ? `${a*a} + ${a*a}tan²θ = ${a*a}sec²θ, so the root becomes ${a} sec θ`
               : `${a*a}sec²θ − ${a*a} = ${a*a}tan²θ, so the root becomes ${a} tan θ`;
+    // The skill only ever asked WHICH substitution to pick. The two branches
+    // below carry it one step further — what dx becomes, and what the radical
+    // simplifies to — which is where the technique actually gets used.
+    const stage = pick(["choose","choose","dx","simplify"]);
+    if (stage === "dx") {
+      const dx = form === "minus" ? `${a} cos θ dθ`
+               : form === "plus"  ? `${a} sec²θ dθ`
+               : `${a} sec θ tan θ dθ`;
+      return { subType: form + "_dx", type: "procedural",
+        question: `You substitute ${ans} to handle ${expr}. What does dx become?`,
+        answer: dx,
+        options: opt4(dx, [`${a} cos θ dθ`, `${a} sec²θ dθ`, `${a} sec θ tan θ dθ`, `${a} sin θ dθ`]),
+        explanation: `Differentiate ${ans}: dx = ${dx}. Substituting the radical without also substituting dx is the step students skip.` };
+    }
+    if (stage === "simplify") {
+      const simp = form === "minus" ? `${a} cos θ`
+                 : form === "plus"  ? `${a} sec θ`
+                 : `${a} tan θ`;
+      return { subType: form + "_simplify", type: "procedural",
+        question: `After substituting ${ans}, what does ${expr} simplify to?`,
+        answer: simp,
+        options: opt4(simp, [`${a} cos θ`, `${a} sec θ`, `${a} tan θ`, `${a} sin θ`]),
+        explanation: `${why}. The whole point of the substitution is to turn the radical into a single trig function.` };
+    }
     return {
       subType: form,
       question: `Which trigonometric substitution should you use to integrate an expression containing ${expr}?`,
