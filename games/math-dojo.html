@@ -5039,6 +5039,73 @@ function formatNumber(n) {
 }
 
 // ========================================
+// TYPED-ANSWER RULE (single source of truth)
+// ========================================
+// From Algebra I up (tier 5+), a student types the answer. Multiple choice
+// lets them recognise instead of compute, and several generators have question
+// banks of only 3-10 items, so four buttons plus a small bank is a memorisation
+// task rather than an assessment.
+//
+// This lives in one place because the rule used to exist ONLY in
+// renderQuestion (the arcade/test path). The learning path's practice phase —
+// the "5 correct in a row" gate that actually marks a skill mastered — rendered
+// question.options unconditionally, so every skill at every tier was mastered
+// by multiple choice no matter what this rule said.
+//
+// We fall back to multiple choice only when the answer is a vocabulary word or
+// other text-shaped response the student would have to recall by spelling
+// rather than compute. AnswerInterpreter parses numbers, fractions,
+// coordinates, inequalities, factored expressions, radicals, matrices, sets and
+// scientific notation, so most computed answers round-trip through typed input.
+const NON_TYPEABLE_ANSWER_TYPES = new Set([
+    'text', 'pattern_symbol', 'positional', 'fraction_word',
+    'boolean', 'operation', 'geometry', 'angle_type',
+    'divisibility', 'zscore_interpretation',
+    'quadrant', 'directional'
+]);
+
+function answerIsTypeable(answer) {
+    if (typeof answer === 'number') return true;
+    if (typeof answer !== 'string' || answer.trim() === '') return false;
+    // Roster-notation sets — "{1, 4, 6}", "{}" — are a COMPUTED answer, but
+    // detectType classifies them as plain text, which would send Set Theory
+    // back to multiple choice. Grading falls through to the whitespace- and
+    // case-insensitive comparison in typedAnswerIsCorrect, so "{1,4,6}" and
+    // "{1, 4, 6}" both pass. (Matrices like "[7 6; 9 6]" are deliberately NOT
+    // included: typing one into a single-line box tests bracket formatting,
+    // not mathematics.)
+    if (/^\{\s*(?:[^{}]*)\}$/.test(answer.trim())) return true;
+    let detected;
+    try { detected = AnswerInterpreter.detectType(answer); } catch (e) { return false; }
+    return !NON_TYPEABLE_ANSWER_TYPES.has(detected);
+}
+
+// The rule. `tier` is passed explicitly because the practice phase reads it
+// from state.learningTier while the arcade path carries it on the question.
+// NOTE: this deliberately does NOT require q.type === 'procedural'. Many
+// generators (especially the V2 _addSkill ones) never set `type` at all, and
+// those were silently falling through to multiple choice.
+function shouldTypeAnswer(q, tier) {
+    if (!q) return false;
+    if (q.visual && q.visual.mode === 'interactive') return false;
+    return Number(tier) >= 5 && answerIsTypeable(q.answer);
+}
+
+// Shared grader for typed input: AnswerInterpreter first, then a
+// case/whitespace-insensitive fallback so "X + 5" never loses to "x + 5".
+function typedAnswerIsCorrect(userInput, expected) {
+    if (!userInput) return false;
+    let correct = false;
+    try { correct = AnswerInterpreter.checkAnswer(userInput, expected).correct; } catch (e) { correct = false; }
+    if (!correct && expected != null) {
+        const norm = s => String(s).toLowerCase().replace(/\s+/g, '');
+        const alts = Array.isArray(expected) ? expected : [expected];
+        if (alts.some(a => norm(a) === norm(userInput))) correct = true;
+    }
+    return correct;
+}
+
+// ========================================
 // SUB-SKILL GATING HELPER
 // ========================================
 // Generators for multi-sub-skill lessons used to default to "all question
@@ -41861,32 +41928,10 @@ function renderQuestion() {
     const opts = document.getElementById('answer-options');
     opts.innerHTML = '';
 
-    // Determine if this should be a typed-answer question.
-    // Rule: at middle school and above (tier 5+), every calculated/procedural
-    // question is input-only — MC lets students guess instead of computing.
-    // AnswerInterpreter parses many calculated forms (numbers, fractions,
-    // coordinates, inequalities, factored expressions, radicals, scientific
-    // notation, etc.) so most "calculated" answers can round-trip through
-    // typed input. We only fall back to MC when the answer is a vocabulary
-    // word or other text-shaped response that students would have to recall
-    // by spelling rather than compute.
-    const NON_TYPEABLE_ANSWER_TYPES = new Set([
-        'text', 'pattern_symbol', 'positional', 'fraction_word',
-        'boolean', 'operation', 'geometry', 'angle_type',
-        'divisibility', 'zscore_interpretation',
-        'quadrant', 'directional'
-    ]);
-    const answerIsTypeable = (() => {
-        if (typeof q.answer === 'number') return true;
-        if (typeof q.answer !== 'string' || q.answer.trim() === '') return false;
-        const detected = AnswerInterpreter.detectType(q.answer);
-        return !NON_TYPEABLE_ANSWER_TYPES.has(detected);
-    })();
-    const isCalculated = q.type === 'procedural' && answerIsTypeable;
-    const isTypedAnswer = q.tier >= 5 && (
-        isCalculated ||
-        (typeof q.answer === 'number' && !q.options?.some(o => typeof o === 'string' && isNaN(o)))
-    );
+    // Typed vs multiple choice — see shouldTypeAnswer() for the rule and why it
+    // lives in one place. This path used to carry its own copy that additionally
+    // required q.type === 'procedural', which sent every untyped generator to MC.
+    const isTypedAnswer = shouldTypeAnswer(q, q.tier);
     state.isTypedAnswer = isTypedAnswer;
 
     // For interactive visuals, hide multiple choice options
@@ -42036,16 +42081,7 @@ function submitAnswer() {
         // Typed answer - use intelligent interpreter
         const input = document.getElementById('typed-answer-input');
         const userInput = input?.value?.trim();
-        const result = AnswerInterpreter.checkAnswer(userInput, q.answer);
-        correct = result.correct;
-        // Belt-and-suspenders: case + whitespace insensitive fallback so a
-        // student typing "X + 5" never gets marked wrong vs "x + 5" if some
-        // edge case slips past the AnswerInterpreter parsers.
-        if (!correct && userInput && q.answer != null) {
-            const norm = s => String(s).toLowerCase().replace(/\s+/g, '');
-            const expectedAlts = Array.isArray(q.answer) ? q.answer : [q.answer];
-            if (expectedAlts.some(a => norm(a) === norm(userInput))) correct = true;
-        }
+        correct = typedAnswerIsCorrect(userInput, q.answer);
         correctAnswerDisplay = q.answer;
     } else {
         // Standard multiple choice
@@ -43711,9 +43747,48 @@ function renderPracticePhase(lesson) {
         }
     }
 
-    document.getElementById('practice-options').innerHTML = question.options.map((opt, i) =>
-        `<div class="practice-option" onclick="selectPracticeOption(${i})">${opt}</div>`
-    ).join('');
+    // Typed input from Algebra I up; multiple choice only for vocabulary-shaped
+    // answers and below tier 5. See shouldTypeAnswer().
+    const practiceTyped = shouldTypeAnswer(question, state.learningTier);
+    state.practiceTyped = practiceTyped;
+    const optsEl = document.getElementById('practice-options');
+
+    if (practiceTyped) {
+        const ansStr = String(question.answer) + ' ' + (question.acceptableAnswers || []).join(' ');
+        const sym = [
+            [/√|sqrt/i, '√', 'Square root'], [/∛|cbrt/i, '∛', 'Cube root'],
+            [/π|pi/i, 'π', 'Pi'], [/[²³⁴⁵⁶]|\^[2-9]/, '²', 'Squared'],
+            [/°|degree/i, '°', 'Degree'], [/≤/, '≤', 'Less than or equal'],
+            [/≥/, '≥', 'Greater than or equal'], [/≠/, '≠', 'Not equal']
+        ].filter(([re]) => re.test(ansStr));
+        const symRow = sym.length ? `<div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:center;margin-bottom:8px;">${
+            sym.map(([, s, t]) => `<button type="button" class="btn btn-secondary" style="padding:2px 10px;font-size:16px;min-width:36px;" onclick="insertPracticeSymbol('${s}')" title="${t}">${s}</button>`).join('')
+        }</div>` : '';
+        const ph = (typeof getSmartPlaceholder === 'function'
+            ? getSmartPlaceholder({ answer: question.answer, acceptableAnswers: question.acceptableAnswers })
+            : '') || 'Type your answer';
+        optsEl.innerHTML = `
+            ${symRow}
+            <div style="display:flex;align-items:center;gap:12px;justify-content:center;flex-wrap:wrap;">
+                <label for="practice-typed-input" style="font-size:1.1rem;color:var(--slate-300);white-space:nowrap;">Your answer:</label>
+                <input type="text" id="practice-typed-input" class="typed-answer-input"
+                       style="max-width:260px;padding:12px 16px;font-size:1.2rem;background:var(--slate-700);border:2px solid var(--slate-600);border-radius:10px;color:white;outline:none;text-align:center;"
+                       placeholder="${ph}" autocomplete="off" inputmode="text">
+                <button type="button" class="btn btn-emerald" id="practice-submit-btn"
+                        onclick="submitPracticeTypedAnswer()" disabled>Check</button>
+            </div>`;
+        const input = document.getElementById('practice-typed-input');
+        const btn = document.getElementById('practice-submit-btn');
+        input.addEventListener('input', () => { btn.disabled = input.value.trim() === ''; });
+        input.addEventListener('keypress', e => {
+            if (e.key === 'Enter' && input.value.trim() !== '') submitPracticeTypedAnswer();
+        });
+        input.focus();
+    } else {
+        optsEl.innerHTML = (question.options || []).map((opt, i) =>
+            `<div class="practice-option" onclick="selectPracticeOption(${i})">${opt}</div>`
+        ).join('');
+    }
 
     // Update progress display
     document.getElementById('practice-correct-count').textContent = state.practiceCorrect;
@@ -43726,11 +43801,36 @@ function renderPracticePhase(lesson) {
     document.getElementById('mistake-analysis').classList.remove('show');
 }
 
+function insertPracticeSymbol(symbol) {
+    const input = document.getElementById('practice-typed-input');
+    if (!input) return;
+    const start = input.selectionStart ?? input.value.length;
+    const end = input.selectionEnd ?? input.value.length;
+    input.value = input.value.slice(0, start) + symbol + input.value.slice(end);
+    input.selectionStart = input.selectionEnd = start + symbol.length;
+    input.focus();
+    const btn = document.getElementById('practice-submit-btn');
+    if (btn) btn.disabled = input.value.trim() === '';
+}
+
+function submitPracticeTypedAnswer() {
+    const question = state.currentPracticeQuestion;
+    const input = document.getElementById('practice-typed-input');
+    const userInput = input?.value?.trim();
+    if (!userInput) return;
+    if (input) input.disabled = true;
+    const btn = document.getElementById('practice-submit-btn');
+    if (btn) btn.disabled = true;
+    applyPracticeResult(question, typedAnswerIsCorrect(userInput, question.answer), -1);
+}
+
 function selectPracticeOption(index) {
     const question = state.currentPracticeQuestion;
     const selectedAnswer = question.options[index];
-    const correct = String(selectedAnswer) === String(question.answer);
+    applyPracticeResult(question, String(selectedAnswer) === String(question.answer), index);
+}
 
+function applyPracticeResult(question, correct, index) {
     state.practiceAttempts++;
 
     // Record for batched session tracking
@@ -43787,9 +43887,15 @@ function selectPracticeOption(index) {
         }
 
         fb.className = 'practice-feedback show incorrect';
-        fb.innerHTML = hadProgress ? `Not quite. Streak reset - let's try again!` : `Not quite. Try again!`;
+        // On a typed answer there is no option to strike through, so name the
+        // correct answer here — otherwise the student only ever sees "not quite".
+        const missed = state.practiceTyped
+            ? ` The correct answer is <strong>${question.answer}</strong>.`
+            : '';
+        fb.innerHTML = (hadProgress ? `Not quite. Streak reset - let's try again!` : `Not quite. Try again!`) + missed;
 
-        document.querySelectorAll('.practice-option')[index].classList.add('incorrect');
+        const wrongOpt = document.querySelectorAll('.practice-option')[index];
+        if (wrongOpt) wrongOpt.classList.add('incorrect');
 
         // Show explanation if available
         const mistakeDiv = document.getElementById('mistake-analysis');
