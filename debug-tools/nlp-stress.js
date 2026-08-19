@@ -426,6 +426,23 @@ const T7 = [
   ["change sam's academic grade in math to 88", 'SET_GRADE', 'Sam Carter', true],
   ["what are charlotte's grades", 'VIEW_GRADES', 'Charlotte Tebow', true],
   ['grades for the math class', 'VIEW_GRADES', null, true],
+  // STUDENT_BRIEFING — the whole picture for one student. These used to land on
+  // VIEW_STUDENT, which prints an ACCOUNT card (email, RTC, join date): a
+  // confident answer with nothing academic in it.
+  ['how is charlotte doing', 'STUDENT_BRIEFING', 'Charlotte Tebow', true],
+  ["how's charlotte doing?", 'STUDENT_BRIEFING', 'Charlotte Tebow', true],
+  ['what does charlotte need to be working on', 'STUDENT_BRIEFING', 'Charlotte Tebow', true],
+  ['what should eli morris be working on', 'STUDENT_BRIEFING', 'Eli Morris', true],
+  ['is charlotte struggling', 'STUDENT_BRIEFING', 'Charlotte Tebow', true],
+  ['what is charlotte behind on', 'STUDENT_BRIEFING', 'Charlotte Tebow', true],
+  ['catch me up on charlotte', 'STUDENT_BRIEFING', 'Charlotte Tebow', true],
+  ['how is charlotte coming along', 'STUDENT_BRIEFING', 'Charlotte Tebow', true],
+  // ...and the boundaries it must NOT cross. A named subject stays with the
+  // grades reader (VIEW_GRADES carries a w:7 sub-pattern for "...doing in X"),
+  // and with no student named these stay aggregate/teacher-wide.
+  ['how is charlotte doing in math', 'VIEW_GRADES', 'Charlotte Tebow', true],
+  ['catch me up', 'BRIEFING', null, true],
+  ['charlotte', 'VIEW_STUDENT', 'Charlotte Tebow', true],
   ['compare charlotte and noah grades', 'COMPARE_STUDENTS', null, true],
   // roster
   ["who's in robotics?", 'VIEW_ROSTER', null, true],

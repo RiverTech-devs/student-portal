@@ -44548,6 +44548,46 @@
             /\bwhat (do i need to|should i) (deal with|look at|handle|start with|do)\b/,
           ]
         },
+        // STUDENT_BRIEFING — "how is Jace doing", "what does Jace need to work
+        // on". One student, everything that matters: overdue work, current
+        // work, grades slipping, attendance, and recent notes.
+        //
+        // These used to land on VIEW_STUDENT (w:2, the catch-all), which prints
+        // an ACCOUNT card — email, RTC balance, status, join date. It looked
+        // like an answer while containing nothing academic, which is the worst
+        // way to be wrong.
+        //
+        // w:6 +2 (requiresStudent) = 8. That clears bare VIEW_GRADES (5+2=7)
+        // but deliberately LOSES to its "...doing in <subject>" sub-pattern
+        // (7+2=9), so "how is Jace doing in math" still goes to the grades
+        // reader. requiresStudent also keeps "who is struggling" — no name —
+        // with ATTENDANCE_ISSUES, where it belongs.
+        //
+        // NOTE: patterns run against NORMALIZED text. _normalizeInput has
+        // already turned "how's"->"how is", "give me"/"pull up"->"show",
+        // "check"->"show", and stripped possessive 's.
+        {
+          intent: 'STUDENT_BRIEFING',
+          w: 6,
+          requiresStudent: true,
+          notIfNoteCommand: true,
+          // The (?:\w+ ){1,2} slots are the STUDENT NAME. They must allow two
+          // words: "what should eli morris be working on" silently fell back to
+          // VIEW_STUDENT when this was a single \w+, so the feature worked for
+          // first-name-only students and quietly failed for everyone else.
+          patterns: [
+            /\bhow (is|are|has|have) (?:\w+ ){0,2}(been )?doing\b/,
+            /\bhow (is|are) (?:\w+ ){1,2}(getting on|coming along|holding up|progressing|shaping up)\b/,
+            /\bwhat (does|do|should) (?:\w+ ){1,2}(need to |needs to )?(be )?work(ing)? on\b/,
+            /\bwhat (does|do) (?:\w+ ){1,2}need (help )?(with|on)\b/,
+            /\bwhat (is|are) (?:\w+ ){1,2}(behind|struggling) (on|with)\b/,
+            /\b(is|are) (?:\w+ ){1,2}struggling\b/,
+            /\bwhere (is|are) (?:\w+ ){1,2}at\b/,
+            /\bcatch me up on \w+/,
+            /\bshow (me )?(a |the )?(rundown|summary|overview|picture|snapshot) (on|of|for|about)\b/,
+            /\b(?:\w+ ){1,2}(progress|standing) (report|update|summary)\b/,
+          ]
+        },
         // CLEAR_CHAT — bare "clear" / "clear chat" (mirrors /clear command)
         {
           intent: 'CLEAR_CHAT',
@@ -45540,6 +45580,10 @@
 
         case 'CLASS_VS':
           await this.terminalCompareClasses(entities);
+          break;
+
+        case 'STUDENT_BRIEFING':
+          await this.terminalStudentBriefing(entities);
           break;
 
         case 'BRIEFING':
@@ -49740,6 +49784,210 @@
         `<div id="${id}" style="display: none;">` + lines.slice(visible).join(joiner) + `</div>` +
         `<div style="color: #2f6b6d; cursor: pointer; text-decoration: underline; font-size: 12px; margin-top: 2px;" ` +
         `onclick="const d = document.getElementById('${id}'); const open = d.style.display === 'none'; d.style.display = open ? 'block' : 'none'; this.textContent = open ? 'show less' : '…and ${more} more ${noun} — show all';">…and ${more} more ${noun} — show all</div>`;
+    }
+
+    // Everything a teacher needs about ONE student in a single answer: what's
+    // overdue, what's on their plate now, which grades are slipping, whether
+    // they're showing up, and what staff have written down.
+    //
+    // Executor for "how is Jace doing" / "what does Jace need to be working
+    // on". These used to hit VIEW_STUDENT, which prints an account card —
+    // email, RTC balance, join date — so the question got a confident answer
+    // containing nothing academic.
+    //
+    // Worrying sections come FIRST. A briefing that buries three overdue
+    // assignments under a wall of fine-everything is no better than the card
+    // it replaced. Empty sections are omitted rather than rendered as "none".
+    async terminalStudentBriefing(entities) {
+      const student = entities.student?.student || entities.student;
+      if (!student?.id) {
+        this.terminalPrintError('Which student? Try "how is Charlotte doing".');
+        return;
+      }
+
+      const first = (student.full_name || '').split(' ')[0] || 'them';
+      this.terminalPrint(`Pulling together ${first}'s picture…`, '#6aa9ff');
+
+      const sb = this.auth.supabase;
+      const today = this._isoDaysAgo(0);
+      const since = this._isoDaysAgo(30);
+      // If the teacher named a class ("how is Jace doing in Robotics" reaching
+      // here via a non-subject phrasing), narrow every section to it.
+      const classMatch = entities.classMatch ? (entities.classMatch.candidates?.[0] || null) : null;
+
+      try {
+        const quarter = await this._rivenCurrentQuarter().catch(() => null);
+
+        const [hwRes, enrRes, attRes, notesBundle] = await Promise.all([
+          sb.from('homework_assignments')
+            .select('id, title, subject, skill_name, due_date, status, class_id')
+            .eq('student_id', student.id)
+            .in('status', ['assigned', 'in_progress', 'overdue'])
+            .order('due_date', { ascending: true }).limit(60),
+          sb.from('class_enrollments')
+            .select('id, class_id')
+            .eq('student_id', student.id).eq('status', 'active'),
+          sb.from('class_attendance')
+            .select('status, date, class_id')
+            .eq('student_id', student.id).gte('date', since)
+            .order('date', { ascending: false }).limit(200),
+          this._fetchAllNotes().catch(() => ({ rows: [] })),
+        ]);
+
+        const classById = {};
+        (this._terminalAllClasses || []).forEach(c => { classById[c.id] = c; });
+        const className = (id) => classById[id]?.name || 'a class';
+
+        let enrollments = enrRes.data || [];
+        if (classMatch) enrollments = enrollments.filter(e => e.class_id === classMatch.id);
+        const classIds = enrollments.map(e => e.class_id);
+        const enrIds = enrollments.map(e => e.id);
+
+        // Class assignments the student hasn't turned in, plus what's coming.
+        let pastDue = [], upcoming = [];
+        if (classIds.length) {
+          const { data: aData } = await sb.from('assignments')
+            .select('id, title, class_id, due_date, graded_offline')
+            .in('class_id', classIds).eq('is_published', true)
+            .order('due_date', { ascending: true }).limit(120);
+          // graded_offline work is collected on paper — never "missing" here.
+          const assignments = (aData || []).filter(a => !a.graded_offline && a.due_date);
+          if (assignments.length) {
+            const { data: sData } = await sb.from('assignment_submissions')
+              .select('assignment_id, status')
+              .eq('student_id', student.id)
+              .in('assignment_id', assignments.map(a => a.id));
+            // A row in assignment_submissions only exists once the student has
+            // actually turned something in ('submitted' / 'graded') — nothing
+            // pre-creates them. So presence, not status, is the signal. Same
+            // rule terminalBriefing uses; the two must not disagree about who
+            // is missing work.
+            const submitted = new Set((sData || []).map(s => s.assignment_id));
+            for (const a of assignments) {
+              if (a.due_date < today) { if (!submitted.has(a.id)) pastDue.push(a); }
+              else upcoming.push(a);
+            }
+          }
+        }
+
+        // Current-quarter grades per class.
+        let grades = [];
+        if (quarter && enrIds.length) {
+          const { data: gData } = await sb.from('quarter_grade_snapshots')
+            .select('enrollment_id, class_grade')
+            .eq('quarter_id', quarter.id).in('enrollment_id', enrIds);
+          const enrToClass = {};
+          enrollments.forEach(e => { enrToClass[e.id] = e.class_id; });
+          grades = (gData || [])
+            .filter(g => g.class_grade != null && g.class_grade !== 0)
+            .map(g => ({ name: className(enrToClass[g.enrollment_id]), pct: g.class_grade }))
+            .sort((a, b) => a.pct - b.pct);
+        }
+
+        let homework = hwRes.data || [];
+        if (classMatch) homework = homework.filter(h => !h.class_id || h.class_id === classMatch.id);
+        const overdueHw = homework.filter(h => h.status === 'overdue');
+        const openHw = homework.filter(h => h.status !== 'overdue');
+
+        let attendance = attRes.data || [];
+        if (classMatch) attendance = attendance.filter(a => a.class_id === classMatch.id);
+        const absences = attendance.filter(a => /absent/i.test(a.status || ''));
+        const tardies = attendance.filter(a => /tardy|late/i.test(a.status || ''));
+
+        const notes = this._filterNotesRows(notesBundle.rows || [], {
+          studentIds: [student.id],
+          classId: classMatch?.id || '',
+          from: '', keyword: ''
+        });
+        // Anything logged as a concern leads; the rest is context.
+        const concernNotes = notes.filter(n => /negative|concern|struggl/i.test(
+          `${n.sentiment || ''} ${n.category || ''}`));
+
+        const esc = (s) => this.escapeHtml(s || '');
+        const dueLabel = (d) => {
+          if (!d) return '';
+          const days = Math.round((new Date(d) - new Date(today)) / 86400000);
+          if (days < 0) return `<span style="color:#ff6a6a;">${Math.abs(days)}d overdue</span>`;
+          if (days === 0) return '<span style="color:#ffd36a;">due today</span>';
+          if (days === 1) return 'due tomorrow';
+          return `due in ${days}d`;
+        };
+
+        const sections = [];
+
+        // ── needs attention ────────────────────────────────────────────────
+        const missing = [
+          ...pastDue.map(a => `• ${esc(a.title)} <span style="color:#97a2b0;">(${esc(className(a.class_id))}, ${dueLabel(a.due_date)})</span>`),
+          ...overdueHw.map(h => `• ${esc(h.title || h.skill_name)} <span style="color:#97a2b0;">(${esc(h.subject || 'homework')}, ${dueLabel(h.due_date)})</span>`),
+        ];
+        if (missing.length) {
+          sections.push(`<div style="margin-bottom:10px;">⚠️ <b>${missing.length} piece${missing.length === 1 ? '' : 's'} of work not turned in</b><br>
+            <span style="font-size:12px;">${this._briefingExpand(missing, 4, 'items')}</span></div>`);
+        }
+
+        const slipping = grades.filter(g => g.pct < 70);
+        if (slipping.length) {
+          const lines = slipping.map(g => `• ${esc(g.name)} — <b style="color:#ff6a6a;">${g.pct}%</b> (${this._pctToLetter(g.pct)})`);
+          sections.push(`<div style="margin-bottom:10px;">📉 <b>Below 70% in ${slipping.length} class${slipping.length === 1 ? '' : 'es'}</b><br>
+            <span style="font-size:12px;">${this._briefingExpand(lines, 4, 'classes')}</span></div>`);
+        }
+
+        if (absences.length >= 3 || tardies.length >= 3) {
+          const bits = [];
+          if (absences.length) bits.push(`${absences.length} absence${absences.length === 1 ? '' : 's'}`);
+          if (tardies.length) bits.push(`${tardies.length} tardy/late`);
+          sections.push(`<div style="margin-bottom:10px;">🚪 <b>Attendance</b><br>
+            <span style="font-size:12px;">${bits.join(' · ')} in the last 30 days</span></div>`);
+        }
+
+        if (concernNotes.length) {
+          sections.push(`<div style="margin-bottom:10px;">🗒️ <b>Flagged in notes</b><br>${this._renderNoteCards(concernNotes, 3)}</div>`);
+        }
+
+        // ── what they're working on ────────────────────────────────────────
+        const current = [
+          ...openHw.map(h => `• ${esc(h.title || h.skill_name)} <span style="color:#97a2b0;">(${esc(h.subject || 'homework')}${h.due_date ? ', ' + dueLabel(h.due_date) : ''})</span>`),
+          ...upcoming.slice(0, 8).map(a => `• ${esc(a.title)} <span style="color:#97a2b0;">(${esc(className(a.class_id))}, ${dueLabel(a.due_date)})</span>`),
+        ];
+        if (current.length) {
+          sections.push(`<div style="margin-bottom:10px;">📌 <b>Currently on their plate</b><br>
+            <span style="font-size:12px;">${this._briefingExpand(current, 5, 'items')}</span></div>`);
+        }
+
+        // ── standing ───────────────────────────────────────────────────────
+        if (grades.length) {
+          const avg = Math.round((grades.reduce((s, g) => s + g.pct, 0) / grades.length) * 10) / 10;
+          const lines = grades.map(g => `• ${esc(g.name)} — ${g.pct}% (${this._pctToLetter(g.pct)})`);
+          sections.push(`<div style="margin-bottom:10px;">📊 <b>Grades — ${avg}% average (${this._pctToLetter(avg)})</b><br>
+            <span style="font-size:12px;">${this._briefingExpand(lines, 4, 'classes')}</span></div>`);
+        }
+
+        const otherNotes = notes.filter(n => !concernNotes.includes(n));
+        if (otherNotes.length) {
+          sections.push(`<div style="margin-bottom:10px;">📝 <b>Recent notes</b><br>${this._renderNoteCards(otherNotes, 3)}</div>`);
+        }
+
+        const scope = classMatch ? ` in ${esc(classMatch.name)}` : '';
+        if (!sections.length) {
+          this._showRivenMessage(
+            `Nothing flagged for <b>${esc(student.full_name)}</b>${scope} — no missing work, no grades under 70%, no attendance concerns, and no notes on file. ` +
+            `If that seems too quiet, their work may not be recorded in the portal yet.`, true);
+          return;
+        }
+
+        const headline = missing.length || slipping.length
+          ? `Here's where <b>${esc(student.full_name)}</b> stands${scope} — the top items need attention:`
+          : `<b>${esc(student.full_name)}</b> looks steady${scope}. Here's the picture:`;
+
+        this._showRivenMessage(
+          `<div style="margin-bottom:8px;">${headline}</div>${sections.join('')}` +
+          `<div style="margin-top:6px;font-size:12px;color:#97a2b0;">Ask for "${esc(first)}'s grades", "${esc(first)}'s attendance", or "notes for ${esc(first)}" to go deeper.</div>`,
+          true);
+
+      } catch (err) {
+        console.error('Student briefing failed:', err);
+        this.terminalPrintError('I could not pull that together: ' + (err.message || err));
+      }
     }
 
     async terminalBriefing({ auto = false } = {}) {
