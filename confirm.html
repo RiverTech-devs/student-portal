@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Confirming Email...</title>
     <script src="shared/supabase.min.js"></script>
-    <script src="shared/config.js?v=10"></script>
+    <script src="shared/config.js?v=11"></script>
     <style>
         body {
             font-family: system-ui, -apple-system, sans-serif;
@@ -33,6 +33,40 @@
     </div>
 
     <script>
+        function escapeHtml(s) {
+            if (s == null) return '';
+            return String(s)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        // Mirror the freshly confirmed auth email onto user_profiles.email.
+        // Same job as PortalAuth._syncProfileEmail(), but this page runs its own
+        // Supabase client, so it does the write itself. Failure is non-fatal —
+        // the next sign-in retries it through PortalAuth.
+        async function syncProfileEmail(client, user) {
+            try {
+                if (!user?.email || !user?.id) return;
+                if (/@pin\.rivertech\.me$/i.test(user.email)) return;
+
+                const { error } = await client
+                    .from('user_profiles')
+                    .update({ email: user.email })
+                    .eq('auth_user_id', user.id);
+
+                if (error) {
+                    console.warn('Profile email sync failed:', error.message);
+                } else {
+                    console.log('✉️ Profile email synced to', user.email);
+                }
+            } catch (err) {
+                console.warn('Profile email sync error:', err);
+            }
+        }
+
         async function handleEmailConfirmation() {
             // Use exact same values from config.js
             const supabaseUrl = 'https://joxvhzxkrcigknsdrusr.supabase.co';
@@ -78,6 +112,44 @@
                     const isTeacherSetup = urlParams.get('teacher_setup') === 'true';
                     const userMetadata = data?.user?.user_metadata || {};
                     const needsPasswordSetup = userMetadata.needs_password_setup;
+                    const isEmailChange = type === 'email_change' || urlParams.get('email_change') === 'true';
+
+                    if (isEmailChange) {
+                        // Supabase's "Secure email change" sends a link to BOTH the old
+                        // and the new address, and only swaps user.email once both have
+                        // been clicked. Until then new_email stays populated.
+                        const { data: fresh } = await supabaseClient.auth.getUser();
+                        const user = fresh?.user || data?.user;
+                        const pending = user?.new_email;
+
+                        if (pending) {
+                            document.querySelector('.container').innerHTML = `
+                                <h2>✅ One down, one to go</h2>
+                                <p>Thanks — this address is confirmed.</p>
+                                <p>To finish switching to <strong>${escapeHtml(pending)}</strong>,
+                                   open the other confirmation email and click its link too.</p>
+                                <p>Until then, keep signing in with your current email.</p>
+                                <a href="/">Return to Portal</a>
+                            `;
+                            return;
+                        }
+
+                        // Both links clicked — Auth has swapped the address. Bring the
+                        // user_profiles mirror along so notification emails, enrollment
+                        // RLS and directory lookups all follow.
+                        await syncProfileEmail(supabaseClient, user);
+
+                        document.querySelector('.container').innerHTML = `
+                            <h2>✅ Email Updated!</h2>
+                            <p>Your account email is now <strong>${escapeHtml(user?.email || '')}</strong>.</p>
+                            <p>Use it the next time you sign in. Redirecting to the portal...</p>
+                        `;
+
+                        setTimeout(() => {
+                            window.location.href = '/' + window.location.hash;
+                        }, 2500);
+                        return;
+                    }
 
                     if (isTeacherSetup || needsPasswordSetup) {
                         // Teacher was invited by admin - redirect to main portal password setup
@@ -126,6 +198,18 @@
                     setTimeout(() => {
                         window.location.href = '/reset.html' + window.location.hash;
                     }, 500);
+                    return;
+                } else if (type === 'email_change' || new URLSearchParams(window.location.search).get('email_change') === 'true') {
+                    // Confirmed, but this link didn't carry a session (already-signed-in
+                    // browser, or the first half of a secure email change). Nothing to
+                    // set up here — say so plainly instead of "invalid link".
+                    document.querySelector('.container').innerHTML = `
+                        <h2>✅ Email Confirmation Received</h2>
+                        <p>If your email change required confirming from both your old and new
+                           address, open the other confirmation email and click its link too.</p>
+                        <p>Sign in again to see the change take effect.</p>
+                        <a href="/">Return to Portal</a>
+                    `;
                     return;
                 } else {
                     document.querySelector('.container').innerHTML = `

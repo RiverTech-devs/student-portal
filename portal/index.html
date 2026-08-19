@@ -14,7 +14,7 @@
   <link rel="stylesheet" href="styles.css">
 
   <!-- Load shared configuration -->
-  <script src="../shared/config.js?v=10"></script>
+  <script src="../shared/config.js?v=11"></script>
   <script src="../shared/components.js"></script>
   <script src="../shared/supabase.min.js"></script>
 
@@ -1729,6 +1729,48 @@
                 </div>
               </div>
 
+              <!-- Change Email Section -->
+              <div class="card" id="change-email-card" style="margin-top: 20px;">
+                <h3>✉️ Change Email</h3>
+                <p style="color: var(--muted); margin-bottom: 20px;">
+                  Update the email address you sign in with. For your security, the change only takes
+                  effect after you confirm it from your inbox.
+                </p>
+
+                <div style="display: grid; gap: 15px; max-width: 400px;">
+                  <div class="form-group">
+                    <label>Current Email</label>
+                    <div id="current-email-display" style="padding: 10px 0; color: var(--muted); word-break: break-all;">—</div>
+                  </div>
+
+                  <div id="email-pending-notice" style="display: none; background: rgba(255, 211, 106, 0.1); border: 1px solid var(--warning); border-radius: 8px; padding: 12px; font-size: 13px; color: var(--warning);">
+                    <!-- Populated by _renderEmailSettings() -->
+                  </div>
+
+                  <div class="form-group">
+                    <label for="new-email">New Email</label>
+                    <input type="email" id="new-email" class="form-control" placeholder="you@example.com" autocomplete="email">
+                  </div>
+
+                  <div class="form-group">
+                    <label for="confirm-new-email">Confirm New Email</label>
+                    <input type="email" id="confirm-new-email" class="form-control" placeholder="Re-type the new email" autocomplete="email">
+                  </div>
+
+                  <div id="email-error" style="color: var(--danger); font-size: 14px; display: none;"></div>
+
+                  <button class="btn btn-primary" onclick="app.changeEmail()" id="change-email-btn">
+                    Send Confirmation Link
+                  </button>
+
+                  <p style="color: var(--muted); font-size: 12px; margin: 0;">
+                    You'll get a confirmation link at your current address and at the new one. Click
+                    the link in <strong>both</strong> emails to finish the change. Until then, keep
+                    signing in with your current email.
+                  </p>
+                </div>
+              </div>
+
               <!-- Email Notification Preferences -->
               <div class="card" style="margin-top: 20px;">
                 <h3>📧 Email Notifications</h3>
@@ -2411,15 +2453,15 @@
 
             <form id="password-setup-form" onsubmit="app.handlePasswordSetup(event)">
               <div class="form-group" style="margin-bottom: 15px;">
-                <label for="new-password" style="display: block; margin-bottom: 5px; font-weight: 500;">New Password</label>
-                <input type="password" id="new-password" class="form-control" required minlength="8"
+                <label for="setup-new-password" style="display: block; margin-bottom: 5px; font-weight: 500;">New Password</label>
+                <input type="password" id="setup-new-password" class="form-control" required minlength="8"
                        placeholder="Enter your new password"
                        style="width: 100%; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text);">
               </div>
 
               <div class="form-group" style="margin-bottom: 20px;">
-                <label for="confirm-password" style="display: block; margin-bottom: 5px; font-weight: 500;">Confirm Password</label>
-                <input type="password" id="confirm-password" class="form-control" required minlength="8"
+                <label for="setup-confirm-password" style="display: block; margin-bottom: 5px; font-weight: 500;">Confirm Password</label>
+                <input type="password" id="setup-confirm-password" class="form-control" required minlength="8"
                        placeholder="Confirm your new password"
                        style="width: 100%; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text);">
               </div>
@@ -2441,8 +2483,15 @@
       async handlePasswordSetup(event) {
         event.preventDefault();
 
-        const newPassword = document.getElementById('new-password')?.value;
-        const confirmPassword = document.getElementById('confirm-password')?.value;
+        // NOTE: these IDs are setup-prefixed on purpose. showModal() appends to
+        // document.body, so this modal lands AFTER the Profile section's own
+        // Change Password inputs. When both used id="new-password",
+        // getElementById returned the profile's (empty) field and setup always
+        // failed with "Please fill in both password fields" — no matter what
+        // the teacher typed. Keep these IDs distinct from the ones at the
+        // Change Password card in #profile-section.
+        const newPassword = document.getElementById('setup-new-password')?.value;
+        const confirmPassword = document.getElementById('setup-confirm-password')?.value;
 
         if (!newPassword || !confirmPassword) {
           this.showNotification('Please fill in both password fields', 'error');
@@ -11844,6 +11893,9 @@
           </div>
         `;
 
+        // Populate the change-email card (current address + any pending change)
+        this._renderEmailSettings();
+
         // Load notification preferences
         this.loadNotificationPreferences();
 
@@ -12529,6 +12581,141 @@
           if (btn) {
             btn.disabled = false;
             btn.textContent = 'Update Password';
+          }
+        }
+      }
+
+      // ==================== CHANGE EMAIL ====================
+      // The address a user signs in with lives in Supabase Auth; user_profiles.email
+      // is a mirror the rest of the app reads (enrollment RLS, notification emails,
+      // directory lookups). We never write the mirror here — the new address isn't
+      // proven yet. PortalAuth._syncProfileEmail() copies it across once Auth itself
+      // reports the change as confirmed.
+
+      // PIN-only students sign in against a synthetic pin-<uuid>@pin.rivertech.me
+      // auth user, not a real mailbox. There's nowhere to send a confirmation link,
+      // so they get pointed at Activate Account instead.
+      _isPlaceholderEmail(email) {
+        return /@pin\.rivertech\.me$/i.test(String(email || ''));
+      }
+
+      _renderEmailSettings() {
+        const card = document.getElementById('change-email-card');
+        if (!card) return;
+
+        const authEmail = this.userInfo?.user?.email || '';
+        // Supabase exposes the not-yet-confirmed address as new_email while a
+        // change is in flight; it clears once every required link is clicked.
+        const pendingEmail = this.userInfo?.user?.new_email || '';
+
+        const display = document.getElementById('current-email-display');
+        if (display) display.textContent = authEmail || '(none on file)';
+
+        // No real mailbox behind this account — hide the whole card.
+        if (!authEmail || this._isPlaceholderEmail(authEmail)) {
+          card.innerHTML = `
+            <h3>✉️ Change Email</h3>
+            <p style="color: var(--muted); margin: 0;">
+              This account signs in with a PIN and has no email address yet. Use
+              <strong>Activate Account</strong> on the sign-in page to attach one.
+            </p>
+          `;
+          return;
+        }
+
+        const notice = document.getElementById('email-pending-notice');
+        if (notice) {
+          if (pendingEmail) {
+            notice.innerHTML = `
+              ⏳ A change to <strong>${this._escapeHtml(pendingEmail)}</strong> is waiting on
+              confirmation. Check both inboxes and click the link in each email. Submitting a new
+              address below replaces this pending change.
+            `;
+            notice.style.display = 'block';
+          } else {
+            notice.style.display = 'none';
+            notice.innerHTML = '';
+          }
+        }
+      }
+
+      async changeEmail() {
+        const newEmail = (document.getElementById('new-email')?.value || '').trim();
+        const confirmEmail = (document.getElementById('confirm-new-email')?.value || '').trim();
+        const errorDiv = document.getElementById('email-error');
+        const btn = document.getElementById('change-email-btn');
+        const currentEmail = this.userInfo?.user?.email || '';
+
+        const fail = (msg) => {
+          if (errorDiv) {
+            errorDiv.textContent = msg;
+            errorDiv.style.display = 'block';
+          } else {
+            this.showNotification(msg, 'error');
+          }
+        };
+
+        if (errorDiv) {
+          errorDiv.style.display = 'none';
+          errorDiv.textContent = '';
+        }
+
+        if (!newEmail) return fail('Enter the new email address.');
+        // Deliberately loose: the confirmation link is the real validator. This
+        // only catches typos that would burn a send.
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newEmail)) return fail('That doesn\'t look like a valid email address.');
+        if (newEmail.toLowerCase() !== confirmEmail.toLowerCase()) return fail('The two email addresses don\'t match.');
+        if (newEmail.toLowerCase() === currentEmail.toLowerCase()) return fail('That\'s already your current email address.');
+        if (this._isPlaceholderEmail(newEmail)) return fail('That address is reserved. Please use a real inbox you can receive mail at.');
+
+        if (btn) {
+          btn.disabled = true;
+          btn.textContent = 'Sending...';
+        }
+
+        try {
+          const { error } = await this.auth.supabase.auth.updateUser(
+            { email: newEmail },
+            { emailRedirectTo: `${window.location.origin}/confirm.html?email_change=true` }
+          );
+
+          if (error) throw error;
+
+          document.getElementById('new-email').value = '';
+          document.getElementById('confirm-new-email').value = '';
+
+          // Reflect the pending state without a reload. getUser() re-reads the
+          // user from Auth so new_email is populated.
+          try {
+            const { data } = await this.auth.supabase.auth.getUser();
+            if (data?.user) {
+              this.auth.currentUser = data.user;
+              this.userInfo.user = data.user;
+            }
+          } catch (e) { /* non-fatal — the notice just won't show until reload */ }
+          this._renderEmailSettings();
+
+          this.showNotification(
+            `Confirmation links sent. Click the link in the email at ${currentEmail} AND at ${newEmail} to finish the change.`,
+            'success'
+          );
+
+        } catch (error) {
+          console.error('Error changing email:', error);
+          const raw = (error.message || '').toLowerCase();
+          let msg = error.message || 'Failed to update email.';
+          if (raw.includes('already') && (raw.includes('registered') || raw.includes('exists') || raw.includes('taken'))) {
+            msg = 'That email is already in use by another account.';
+          } else if (raw.includes('rate limit') || raw.includes('too many') || raw.includes('security purposes')) {
+            msg = 'Too many requests. Wait a minute and try again.';
+          } else if (raw.includes('invalid')) {
+            msg = 'Supabase rejected that address. Double-check it and try again.';
+          }
+          fail(msg);
+        } finally {
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = 'Send Confirmation Link';
           }
         }
       }

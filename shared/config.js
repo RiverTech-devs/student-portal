@@ -410,6 +410,7 @@ class PortalAuth {
             // If profile exists, use it
             if (profiles && profiles.length > 0) {
                 this.userProfile = profiles[0];
+                await this._syncProfileEmail(user, profiles[0]);
                 return profiles[0];
             }
     
@@ -425,6 +426,55 @@ class PortalAuth {
         } catch (error) {
             console.error('Profile load error:', error);
             return null;
+        }
+    }
+
+    // Keep user_profiles.email in step with the address in Supabase Auth.
+    //
+    // Auth is the source of truth: it's what you sign in with, and it only
+    // changes after the confirmation links are clicked. user_profiles.email is
+    // a mirror that the rest of the app reads — notification emails, the
+    // enrollment_applications RLS policies, directory lookups. If a user
+    // changes their email and the mirror doesn't follow, their notifications
+    // keep going to the old address.
+    //
+    // Runs on every profile load, only writes when the two disagree, and only
+    // ever touches the caller's own row.
+    async _syncProfileEmail(user, profile) {
+        try {
+            const authEmail = user?.email;
+            if (!authEmail) return;
+
+            // PIN-only students are signed in against a synthetic
+            // pin-<uuid>@pin.rivertech.me auth user created by the pin-login
+            // edge function. That's not a real mailbox — never let it
+            // overwrite a genuine address on the profile.
+            if (/@pin\.rivertech\.me$/i.test(authEmail)) return;
+
+            if ((profile?.email || '').toLowerCase() === authEmail.toLowerCase()) return;
+
+            // The "Users can update own profile" RLS policy keys on
+            // auth_user_id. Legacy rows that never got one can't self-update,
+            // so don't fire a write that would silently match zero rows.
+            if (!profile?.auth_user_id) return;
+
+            const { error } = await this.supabase
+                .from('user_profiles')
+                .update({ email: authEmail })
+                .eq('auth_user_id', user.id);
+
+            if (error) {
+                console.warn('Profile email sync failed:', error.message);
+                return;
+            }
+
+            console.log(`✉️ Profile email synced to confirmed auth email: ${authEmail}`);
+            profile.email = authEmail;
+            if (this.userProfile) this.userProfile.email = authEmail;
+
+        } catch (err) {
+            // Never let a mirror update break sign-in.
+            console.warn('Profile email sync error:', err);
         }
     }
 
