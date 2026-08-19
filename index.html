@@ -1093,7 +1093,14 @@
                 const urlParams = new URLSearchParams(window.location.search);
                 const needsPasswordSetup = urlParams.get('setup_password') === 'true';
 
-                if (needsPasswordSetup && accessToken) {
+                // Deliberately NOT gated on accessToken. confirm.html has already
+                // called setSession() and persisted it, and supabase-js wipes
+                // window.location.hash the instant it detects an implicit grant —
+                // so the tokens can legitimately be gone by the time we get here.
+                // Requiring them meant an invited teacher silently fell through to
+                // the ordinary login screen. handleTeacherPasswordSetup() falls
+                // back to the stored session when the fragment is missing.
+                if (needsPasswordSetup) {
                     console.log('👩‍🏫 Teacher password setup detected...');
                     await this.handleTeacherPasswordSetup(accessToken, refreshToken);
                     return;
@@ -1936,21 +1943,38 @@
             }
 
             async handleTeacherPasswordSetup(accessToken, refreshToken) {
-                // Set up the session with the tokens from the URL
                 try {
-                    const { data, error } = await this.auth.supabase.auth.setSession({
-                        access_token: accessToken,
-                        refresh_token: refreshToken
-                    });
+                    let user = null;
 
-                    if (error) {
-                        console.error('Session setup error:', error);
-                        window.PortalUI?.showNotification('Invalid or expired invitation link. Please contact an administrator.', 'error');
-                        this.showLoginForm();
-                        return;
+                    if (accessToken && refreshToken) {
+                        // Fresh tokens in the fragment — adopt them.
+                        const { data, error } = await this.auth.supabase.auth.setSession({
+                            access_token: accessToken,
+                            refresh_token: refreshToken
+                        });
+
+                        if (error) {
+                            console.error('Session setup error:', error);
+                            window.PortalUI?.showNotification('Invalid or expired invitation link. Please contact an administrator.', 'error');
+                            this.showLoginForm();
+                            return;
+                        }
+                        user = data?.user;
+                    } else {
+                        // No fragment: confirm.html already consumed the invite link
+                        // and persisted the session, and supabase-js cleared the hash
+                        // behind it. Use the session we're already holding.
+                        const { data, error } = await this.auth.supabase.auth.getSession();
+
+                        if (error || !data?.session) {
+                            console.error('No session for password setup:', error);
+                            window.PortalUI?.showNotification('Your invitation link has expired. Please ask an administrator for a new one.', 'error');
+                            this.showLoginForm();
+                            return;
+                        }
+                        user = data.session.user;
                     }
 
-                    const user = data?.user;
                     const firstName = user?.user_metadata?.first_name || 'Teacher';
 
                     // Show password setup modal

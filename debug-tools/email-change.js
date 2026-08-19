@@ -349,12 +349,57 @@ function sectionD() {
         overlap.length === 0, 'shared: ' + overlap.join(','));
 }
 
+// ── E. invite-link token hand-off ────────────────────────────────────────────
+// supabase-js ends _getSessionFromURL() with a literal `window.location.hash = ""`
+// as soon as it detects an implicit grant, and that runs inside createClient().
+// confirm.html's redirects fire on a 1.5s timer, long after — so building the
+// next URL from window.location.hash handed root index.html an empty fragment,
+// its `needsPasswordSetup && accessToken` gate failed, and an invited teacher
+// landed on the ordinary login screen instead of the password-setup modal.
+function sectionE() {
+  say('E. invite link → password setup hand-off');
+
+  const confirmHtml = fs.readFileSync(path.join(root, 'confirm.html'), 'utf8');
+  const indexHtml = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+
+  // The library behaviour this all hinges on. If a supabase-js upgrade ever
+  // stops clearing the hash, this check tells you the workaround is now moot.
+  const lib = fs.readFileSync(path.join(root, 'shared', 'supabase.min.js'), 'utf8');
+  check('E: supabase-js still clears the hash (the reason sessionHash exists)',
+        /window\.location\.hash\s*=\s*""/.test(lib));
+
+  // Redirects that must carry the session forward.
+  const carriers = [
+    ["/index.html?setup_password=true", 'teacher setup'],
+    ["'/' + ", 'portal hand-off'],
+  ];
+  check('E: teacher-setup redirect uses the rebuilt fragment',
+        /setup_password=true'\s*\+\s*sessionHash/.test(confirmHtml),
+        'still concatenating window.location.hash');
+  check('E: no session-carrying redirect reads window.location.hash',
+        !/href\s*=\s*'\/index\.html\?setup_password=true'\s*\+\s*window\.location\.hash/.test(confirmHtml) &&
+        !/href\s*=\s*'\/'\s*\+\s*window\.location\.hash/.test(confirmHtml));
+  check('E: sessionHash is built from the captured tokens',
+        /const sessionHash\s*=[\s\S]{0,240}access_token=/.test(confirmHtml));
+
+  // Root must not require the fragment.
+  check('E: root does not gate password setup on a URL token',
+        !/needsPasswordSetup\s*&&\s*accessToken/.test(indexHtml),
+        'still requires accessToken, so a cleared hash skips the modal');
+  check('E: root falls back to the persisted session',
+        /handleTeacherPasswordSetup[\s\S]{0,1600}auth\.getSession\(\)/.test(indexHtml));
+
+  // A dead link should say so rather than dumping the user on a login screen.
+  check('E: confirm.html reports expired/used links', /hashError/.test(confirmHtml));
+}
+
 // ── run ──────────────────────────────────────────────────────────────────────
 (async () => {
   await sectionA();
   await sectionB();
   sectionC();
   sectionD();
+  sectionE();
 
   say('');
   if (fail) {

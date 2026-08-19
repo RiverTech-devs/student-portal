@@ -87,10 +87,47 @@
             const access_token = hashParams.get('access_token');
             const refresh_token = hashParams.get('refresh_token');
             const type = hashParams.get('type');
-            
+
+            // supabase-js CLEARS window.location.hash the moment it detects an
+            // implicit grant — literally `window.location.hash = ""` at the end of
+            // _getSessionFromURL(), which runs inside createClient() above. That
+            // happens long before the setTimeout redirects below fire, so
+            // `'/index.html?setup_password=true' + window.location.hash` handed the
+            // next page an EMPTY fragment. Root index.html gates the teacher
+            // password-setup modal on `needsPasswordSetup && accessToken`, so the
+            // modal never opened and the invited teacher just landed on the normal
+            // login screen. Rebuild the fragment from the values captured here,
+            // which were read before supabase-js could wipe them.
+            const sessionHash = (access_token && refresh_token)
+                ? '#access_token=' + encodeURIComponent(access_token) +
+                  '&refresh_token=' + encodeURIComponent(refresh_token) +
+                  (type ? '&type=' + encodeURIComponent(type) : '')
+                : '';
+
+            // Supabase reports a dead link (already clicked, expired, or consumed
+            // by an email-security scanner that pre-fetches URLs) as error params
+            // in the hash, with no tokens. Name the cause instead of falling
+            // through to a generic "invalid link".
+            const hashError = hashParams.get('error');
+            const hashErrorCode = hashParams.get('error_code');
+
             console.log('Verification type:', type);
             console.log('Has access token:', !!access_token);
-            
+
+            if (hashError && !access_token) {
+                const expired = /expired|invalid/i.test(hashErrorCode || hashError || '');
+                document.querySelector('.container').innerHTML = `
+                    <h2>⚠️ This link is no longer valid</h2>
+                    <p>${expired
+                        ? 'Invitation and confirmation links can only be used once, and they expire.'
+                        : escapeHtml(hashParams.get('error_description') || 'The link could not be verified.')}</p>
+                    <p>Ask an administrator to send a fresh invite, then open it on this device
+                       without forwarding it.</p>
+                    <a href="/">Return to Portal</a>
+                `;
+                return;
+            }
+
             if (access_token && refresh_token) {
                 try {
                     // Set the session with the tokens
@@ -146,7 +183,7 @@
                         `;
 
                         setTimeout(() => {
-                            window.location.href = '/' + window.location.hash;
+                            window.location.href = '/' + sessionHash;
                         }, 2500);
                         return;
                     }
@@ -162,7 +199,7 @@
                         // Redirect to main index.html with setup_password flag
                         // The hash tokens are preserved so the session remains valid
                         setTimeout(() => {
-                            window.location.href = '/index.html?setup_password=true' + window.location.hash;
+                            window.location.href = '/index.html?setup_password=true' + sessionHash;
                         }, 1500);
                     } else {
                         document.querySelector('.container').innerHTML = `
@@ -174,7 +211,7 @@
                         // Redirect after 2 seconds - preserve hash tokens as backup
                         setTimeout(() => {
                             // Include hash tokens in case session storage didn't persist
-                            window.location.href = '/' + window.location.hash;
+                            window.location.href = '/' + sessionHash;
                         }, 2000);
                     }
                     
