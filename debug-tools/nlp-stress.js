@@ -303,6 +303,11 @@ console.log('\n== guard / no-false-match ==');
 const G = [
   ['does sarah jones have rtc', 'VIEW_STUDENT', 'Sarah Jones'],   // 'does' must not match 'Jones'
   ["sarah's balance", 'VIEW_STUDENT', 'Sarah Jones'],
+  ['what are the RIVER values', 'SMALLTALK:schoolvalues', null],
+  ['what are our school values', 'SMALLTALK:schoolvalues', null],
+  ['what does RIVER stand for', 'SMALLTALK:schoolvalues', null],
+  ['remind me of the River Tech values', 'SMALLTALK:schoolvalues', null],
+  ['spell out the RIVER acronym', 'SMALLTALK:schoolvalues', null],
   ['how are you today', 'SMALLTALK:howareyou', null],
   ['thanks riven', 'SMALLTALK:thanks', null],
   ['hello', 'SMALLTALK:greeting', null],
