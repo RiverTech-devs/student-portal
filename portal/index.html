@@ -3448,12 +3448,20 @@
 
       // ==================== SCHOOL DOCUMENTS ====================
 
-      openRiverTechHandbook() {
-        window.open(
-          'https://docs.google.com/document/d/1XAgpcRyvvTAXctY23IByo1zHRbS4rXlSbXo5C6aCimA',
-          '_blank',
-          'noopener,noreferrer'
-        );
+      isRiverTechHandbook(doc) {
+        return doc?.category === 'handbook' && /handbook/i.test(doc.title || '');
+      }
+
+      getRiverTechHandbookUrl(doc) {
+        const savedUrl = typeof doc?.content === 'string' ? doc.content.trim() : '';
+        if (/^https?:\/\/\S+$/i.test(savedUrl)) return savedUrl;
+        return 'https://docs.google.com/document/d/1XAgpcRyvvTAXctY23IByo1zHRbS4rXlSbXo5C6aCimA';
+      }
+
+      openRiverTechHandbook(documentId) {
+        const url = this.documentExternalLinks?.[documentId];
+        if (!url) return;
+        window.open(url, '_blank', 'noopener,noreferrer');
       }
 
       async renderDocuments() {
@@ -3474,6 +3482,8 @@
 
           const { data: documents, error } = await query;
           if (error) throw error;
+
+          this.documentExternalLinks = {};
 
           // Group by category
           const categories = {};
@@ -3516,7 +3526,10 @@
                 <h3 style="margin-bottom: 12px; color: var(--muted); font-size: var(--text-sm); text-transform: uppercase; letter-spacing: 1px;">${label}</h3>
                 <div class="doc-card-grid">`;
               docs.forEach(doc => {
-                const isRiverTechHandbook = doc.category === 'handbook' && /handbook/i.test(doc.title || '');
+                const isRiverTechHandbook = this.isRiverTechHandbook(doc);
+                if (isRiverTechHandbook) {
+                  this.documentExternalLinks[doc.id] = this.getRiverTechHandbookUrl(doc);
+                }
                 const excerpt = isRiverTechHandbook
                   ? 'Open the live River Tech Handbook in Google Drive.'
                   : doc.content
@@ -3531,7 +3544,7 @@
                   ? `<span style="background: var(--accent); color: #0b0f14; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;">${visibilityLabels[doc.visibility]}</span>`
                   : '';
                 html += `
-                  <div class="doc-card" onclick="${isRiverTechHandbook ? 'app.openRiverTechHandbook()' : `app.viewDocument('${doc.id}')`}" style="cursor: pointer;">
+                  <div class="doc-card" onclick="${isRiverTechHandbook ? `app.openRiverTechHandbook('${this.jsAttr(doc.id)}')` : `app.viewDocument('${this.jsAttr(doc.id)}')`}" style="cursor: pointer;">
                     <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 8px;">
                       <h4 style="margin: 0; color: var(--text);">${doc.title}</h4>
                       <div style="display: flex; gap: 4px;">${visibilityBadge}${draftBadge}</div>
@@ -3629,6 +3642,25 @@
 
       openDocumentEditor(doc) {
         const isNew = !doc;
+        const isRiverTechHandbook = !isNew && this.isRiverTechHandbook(doc);
+
+        if (isRiverTechHandbook) {
+          const handbookUrl = this.getRiverTechHandbookUrl(doc);
+          const modalContent = `
+            <div class="form-group">
+              <label class="form-label">Handbook Link</label>
+              <input type="url" id="doc-editor-link" class="form-input" value="${this.escapeHtml(handbookUrl)}" placeholder="https://docs.google.com/..." required>
+              <p style="color: var(--muted); font-size: var(--text-sm); margin: 8px 0 0;">The handbook button opens this link.</p>
+            </div>
+            <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; border-top: 1px solid var(--border); padding-top: 16px;">
+              <button class="btn btn-secondary" onclick="app.closeModal('doc-editor')">Cancel</button>
+              <button class="btn btn-primary" onclick="app.saveHandbookLink('${this.jsAttr(doc.id)}')">💾 Save Link</button>
+            </div>
+          `;
+          this.showModal('doc-editor', '🔗 Edit Handbook Link', modalContent);
+          return;
+        }
+
         const title = isNew ? 'Create Document' : 'Edit Document';
 
         const modalContent = `
@@ -3702,6 +3734,32 @@
             this.docQuillEditor.root.innerHTML = doc.content;
           }
         }, 100);
+      }
+
+      async saveHandbookLink(documentId) {
+        const link = document.getElementById('doc-editor-link')?.value?.trim();
+        if (!link || !/^https?:\/\/\S+$/i.test(link)) {
+          alert('Please enter a valid http or https link.');
+          return;
+        }
+
+        try {
+          const { error } = await this.auth.supabase
+            .from('school_documents')
+            .update({
+              content: link,
+              updated_by: this.userInfo.profile.id,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', documentId);
+          if (error) throw error;
+
+          this.closeModal('doc-editor');
+          this.renderDocuments();
+        } catch (err) {
+          console.error('Error saving handbook link:', err);
+          alert('Failed to save the handbook link. Please try again.');
+        }
       }
 
       async saveDocument(documentId) {
